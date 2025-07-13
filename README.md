@@ -25,8 +25,54 @@ and automatically executes them based on the AI's requests.
 # Multiple tools with temperature 0.1
 ./tools.sh -T 0.1 "What is 2+2. If you have the result of that, multiply with 5, after add 4.2. Finally divide the previous result by the temperature in C in Munich. Use this result to search the internet, but only show the first result"
 
+```
+Output of the last call above:
+```text
+Starting tool calling session...
+Tools folder: ./tools
+Found 3 tools
+Iteration 1/10
+Tokens: prompt=604, completion=36
+Processing 1 tool call(s)...
+Executing tool: calculator
+Tool result: 2+2 = 4...
+Iteration 2/10
+Tokens: prompt=731, completion=36
+Processing 1 tool call(s)...
+Executing tool: calculator
+Tool result: 4*5 = 20...
+Iteration 3/10
+Tokens: prompt=857, completion=39
+Processing 1 tool call(s)...
+Executing tool: calculator
+Tool result: 20+4.2 = 24.2...
+Iteration 4/10
+Tokens: prompt=987, completion=52
+Processing 1 tool call(s)...
+Executing tool: weather
+Tool result: Current Weather Report
+=====================
+Location: 48.1351°, 11.582°
+Station: Muenchen-Stadt (4....
+Iteration 5/10
+Tokens: prompt=1389, completion=42
+Processing 1 tool call(s)...
+Executing tool: calculator
+Tool result: 24.2/22.4 = 1.080357...
+Iteration 6/10
+Tokens: prompt=1535, completion=50
+Processing 1 tool call(s)...
+Executing tool: web_search
+Tool result: BEGIN_RESULTS
+URL: https://cloud.stc.com.sa/services/subscriptions/copy-of-co-location-134
+Content: ...
+Iteration 7/10
+Tokens: prompt=5688, completion=481
+Final response:
+Here is the first result of the web search for "1.080357":
 
-
+URL: [https://cloud.stc.com.sa/services/subscriptions/copy-of-co-location-134](https://cloud.stc.com.sa/services/subscriptions/copy-of-co-location-134)
+Content: STC Data Centers provide a variety of special services to host your IT infrastructure in a safe environment, ensuring availability and helping you further to develop your business. The STC Data Center conforms to international rules and regulations and applies only the best practices. The Data Centers main network has been set up using highly advanced network equipment. Moreover, our support team consists of network and security engineers and technician that are highly skilled and assure guaranteed service delivery. STC Data Centers have different levels of facility and design certifications to offer different options for our customers based on their business needs.
 ```
 
 ## Installation
