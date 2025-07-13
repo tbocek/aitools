@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 # Tool metadata
-TOOL_NAME="calculate"
+TOOL_NAME="calculator"
 TOOL_DESCRIPTION="Perform mathematical calculations using bc calculator. Input is the expression directly in plain text"
 TOOL_PARAMETERS='{
   "type": "object",
