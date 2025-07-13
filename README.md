@@ -1,14 +1,17 @@
 # AI Tool Calling System
 
-A bash-based tool calling system that enables Language Learning Models (LLMs) to execute local bash scripts as tools. This system dynamically discovers tools, presents them to the AI, and automatically executes them based on the AI's requests.
+A bash-based tool calling system that enables Language Learning Models (LLMs) to execute 
+local tools as needed. This system dynamically discovers tools, presents them to the AI, 
+and automatically executes them based on the AI's requests.
 
 ## Features
 
-- **Dynamic Tool Discovery**: Automatically discovers and registers bash scripts as tools
+- **Dynamic Tool Discovery**: Automatically discovers and registers tools (bash scripts)
 - **OpenAI-Compatible API**: Works with any OpenAI-compatible API endpoint (OpenAI, llama.cpp, etc.)
 - **Automatic Tool Execution**: Handles the complete tool-calling loop automatically
 - **Token Tracking**: Monitors token usage for prompt and completion
 - **Flexible Tool Framework**: Easy to add new tools by creating bash scripts
+- **Enhanced Security**: Tools are executed within a Docker container for improved isolation and security.
 
 ## Quick Start
 
@@ -30,17 +33,12 @@ A bash-based tool calling system that enables Language Learning Models (LLMs) to
    - `bash` (version 4.0+)
    - `curl`
    - `jq`
+   - `docker` and `docker-compose` installed and running.
    - An API key for an OpenAI-compatible service
 
 3. Set your API key:
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
-```
-
-4. Make scripts executable:
-```bash
-chmod +x tools.sh
-chmod +x tools/*.sh
 ```
 
 ## Usage
@@ -65,6 +63,7 @@ Tools are bash scripts with special metadata headers. Here's the structure:
 
 ```bash
 #!/usr/bin/env bash
+set -Euo pipefail
 
 # Tool metadata
 TOOL_NAME="your_tool_name"
@@ -79,6 +78,10 @@ TOOL_PARAMETERS='{
   },
   "required": ["param1"]
 }'
+
+usage() {
+  # ... your usage instructions here ...
+}
 
 # Handle metadata requests
 case "$1" in
@@ -106,23 +109,40 @@ echo "Result of tool execution"
 ### Weather Tool (weather.sh)
 Fetches current weather data for given coordinates:
 ```bash
-./weather.sh --lat 52.52 --lon 13.41
+docker build tools -t tools
+docker run tools weather.sh --lat 52.52 --lon 13.41
 ```
 
 ### Calculator Tool (calculate.sh)
 Performs mathematical calculations:
 ```bash
-./calculate.sh --expression "sqrt(144)"
+docker build tools -t tools
+docker run tools calculate.sh --expression "sqrt(144)"
+```
+
+### Web Search Tool (web_search.sh)
+Performs web searches using DuckDuckGo and extracts content from results:
+```bash
+docker build tools -t tools
+docker run tools web_search.sh --query "current events" --num-results 5
 ```
 
 ## How It Works
 
-1. **Tool Discovery**: The system scans the tools folder for executable bash scripts
-2. **Tool Registration**: Each tool's metadata is extracted and formatted for the AI
-3. **API Request**: Your prompt is sent to the AI along with available tools
-4. **Tool Execution**: When the AI requests a tool, the system executes it automatically
-5. **Response Loop**: Tool results are sent back to the AI for further processing
-6. **Final Answer**: The AI provides a final response incorporating tool results
+1. **Tool Discovery**: The system scans the tools folder for executable bash scripts.
+2. **Tool Registration**: Each tool's metadata is extracted and formatted for the AI.
+3. **API Request**: Your prompt is sent to the AI along with available tools.
+4. **Tool Execution**: When the AI requests a tool, the system executes it automatically *within a Docker container*.
+5. **Response Loop**: Tool results are sent back to the AI for further processing.
+6. **Final Answer**: The AI provides a final response incorporating tool results.
+
+## Security Considerations
+
+This system now leverages Docker to significantly enhance security. Each tool is executed in an 
+isolated container, preventing it from directly accessing the host system and mitigating 
+potential risks associated with running untrusted code.  This helps protect against 
+malicious code injection or unintended system modifications.  Ensure Docker is properly 
+configured and updated for optimal security.
 
 ## Token Usage
 
@@ -143,35 +163,3 @@ The system tracks token usage throughout the conversation:
 - Temperature: `0.1`
 - Max iterations: `10`
 - Tools folder: `./tools`
-
-### Debug Mode
-
-Use `-v` or `--verbose` flag to see detailed request/response information:
-```bash
-./tools.sh -v "What's 2+2?"
-```
-
-## Advanced Usage
-
-### Custom API Endpoints
-
-Use with llama.cpp or other OpenAI-compatible endpoints:
-```bash
-./tools.sh -u http://localhost:8080/v1/chat/completions "Your prompt"
-```
-
-### Limiting Iterations
-
-Prevent infinite loops by setting max iterations:
-```bash
-./tools.sh -m 3 "Complex task requiring multiple tools"
-```
-
-### Batch Processing
-
-Process multiple queries:
-```bash
-for prompt in "Weather in Paris" "Calculate 100*50" "Weather in London"; do
-  ./tools.sh "$prompt"
-done
-```
