@@ -203,10 +203,10 @@ execute_tool() {
     done < <(echo "$arguments" | jq -r 'to_entries | .[] | "--\(.key)", .value')
   fi
 
-  [[ $verbose -eq 1 ]] && msg "Executing: $script_path ${cmd_args[*]}"
+  [[ $verbose -eq 1 ]] && msg "Executing: ${tool_name}.sh ${cmd_args[*]}"
 
   # Execute the script with arguments
-  local result=$("$script_path" "${cmd_args[@]}" 2>&1)
+  local result=$(docker run tools "${tool_name}.sh" "${cmd_args[@]}" 2>&1)
 
   echo "$result"
 }
@@ -216,18 +216,20 @@ call_api() {
   local messages="$1"
   local tools="$2"
   local include_tools="$3"
-
   local request_body=""
+
+  local temp_file=$(mktemp)
+   echo "$messages" > "$temp_file"
 
   if [[ "$include_tools" == "true" ]] && [[ "$tools" != "[]" ]]; then
     request_body=$(jq -n \
-      --argjson messages "$messages" \
+      --rawfile messages "$temp_file" \
       --argjson tools "$tools" \
       --arg model "$model" \
       --arg temp "$temperature" \
       '{
         model: $model,
-        messages: $messages,
+        messages: ($messages | fromjson),
         tools: $tools,
         tool_choice: "auto",
         temperature: ($temp | tonumber),
@@ -235,12 +237,12 @@ call_api() {
       }')
   else
     request_body=$(jq -n \
-      --argjson messages "$messages" \
+      --rawfile messages "$temp_file" \
       --arg model "$model" \
       --arg temp "$temperature" \
       '{
         model: $model,
-        messages: $messages,
+        messages: ($messages | fromjson),
         temperature: ($temp | tonumber),
         stream: false
       }')
@@ -248,18 +250,25 @@ call_api() {
 
   [[ $verbose -eq 1 ]] && msg "${BLUE}Request:${NOFORMAT}" && echo "$request_body" | jq '.' >&2
 
+  local temp_file=$(mktemp)
+  echo "$request_body" > "$temp_file"
+
   local response=$(curl -s -X POST \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $api_key" \
-    -d "$request_body" \
+    -d "@$temp_file" \
     "$url")
+
+  rm "$temp_file"
 
   [[ $verbose -eq 1 ]] && msg "${BLUE}Response:${NOFORMAT}" && echo "$response" | jq '.' >&2
 
   # Update token counts
   if echo "$response" | jq -e '.usage' > /dev/null 2>&1; then
-    local prompt_tokens=$(echo "$response" | jq -r '.usage.prompt_tokens // 0')
-    local completion_tokens=$(echo "$response" | jq -r '.usage.completion_tokens // 0')
+    local prompt_tokens
+    local completion_tokens
+    prompt_tokens=$(jq -r '.usage.prompt_tokens // 0' <<< "$response")
+    completion_tokens=$(jq -r '.usage.completion_tokens // 0' <<< "$response")
 
     total_prompt_tokens=$((total_prompt_tokens + prompt_tokens))
     total_completion_tokens=$((total_completion_tokens + completion_tokens))
@@ -275,6 +284,7 @@ call_api() {
 main() {
   setup_colors
   parse_params "$@"
+  docker build tools -t tools
 
   msg "${GREEN}Starting tool calling session...${NOFORMAT}"
   msg "Tools folder: $tools_folder"
@@ -333,16 +343,96 @@ main() {
         msg "Tool result: ${result:0:100}..."
 
         # Add tool result to messages
-        local tool_msg=$(jq -n \
-          --arg id "$call_id" \
-          --arg content "$result" \
-          '{
-            role: "tool",
-            tool_call_id: $id,
-            content: $content
-          }')
+        DELIMITER="---...---RESULT_SEPARATOR_8723c3b3---...---"
+        # Check if delimiter exists
+        if [[ "$result" == *"$DELIMITER"* ]]; then
+          # Split results and process each chunk
 
-        messages=$(echo "$messages" | jq ". += [$tool_msg]")
+          local chunks=()
+          local current_chunk=""
+          local cleaned_result=""
+          local chunk_count=0
+
+          while IFS= read -r line; do
+            if [[ "$line" == "$DELIMITER" ]]; then
+              chunks+=("$current_chunk")
+              current_chunk=""
+            else
+              current_chunk+="$line"$'\n'
+            fi
+          done <<< "$result"
+
+          # Add the last chunk if not empty
+          if [[ -n "$current_chunk" ]]; then
+            chunks+=("$current_chunk")
+          fi
+
+          [[ $verbose -eq 1 ]] && msg "${BLUE}Created ${#chunks[@]} chunks${NOFORMAT}" >&2
+
+          # Process each chunk
+
+          for chunk in "${chunks[@]}"; do
+            # Skip empty chunks, we consider empty if less than 100 characters
+            if [[ $(printf '%s' "$chunk" | wc -c) -lt 100 ]]; then
+              continue
+            fi
+
+            # Debug: show chunk size
+            [[ $verbose -eq 1 ]] && msg "${BLUE}Processing chunk $((++chunk_count)) (${#chunk} chars)${NOFORMAT}" >&2
+
+            # Only process chunks with substantial content
+            if [[ ${#chunk} -gt 100 ]]; then
+              # Create a temporary message to send to LLM for cleaning
+              local temp_file=$(mktemp)
+              echo "$chunk" > "$temp_file"
+              local temp_msg=$(jq -n \
+                  --rawfile content "$temp_file" \
+                  '[{role: "system", content: "Summarize the following content, keeping all relevant information. Extract key facts, data, and important details. Be comprehensive but organized."},
+                   {role: "user", content: $content}]')
+              rm "$temp_file"
+
+              # Call LLM to clean/summarize the chunk
+              local clean_response=$(call_api "$temp_msg" "[]" "false")
+              local cleaned_chunk=$(echo "$clean_response" | jq -r '.choices[0].message.content // ""')
+
+              # Append cleaned chunk with delimiter
+              if [[ -n "$cleaned_result" ]]; then
+                cleaned_result="${cleaned_result}${DELIMITER}${cleaned_chunk}"
+              else
+                cleaned_result="$cleaned_chunk"
+              fi
+            fi
+          done
+          # Add the cleaned result to messages
+          local temp_file=$(mktemp)
+          echo "$cleaned_result" > "$temp_file"
+          local tool_msg=$(jq -n \
+              --arg id "$call_id" \
+              --rawfile content "$temp_file" \
+              '{
+                role: "tool",
+                tool_call_id: $id,
+                content: $content
+              }')
+          echo "$tool_msg" > "$temp_file"
+          messages=$(echo "$messages" | jq --rawfile msg "$temp_file" '. += [($msg | fromjson)]')
+          rm "$temp_file"
+        else
+           # No delimiter, use as-is
+           local temp_file=$(mktemp)
+           echo "$result" > "$temp_file"
+           local tool_msg=$(jq -n \
+               --arg id "$call_id" \
+               --rawfile content "$temp_file" \
+               '{
+                 role: "tool",
+                 tool_call_id: $id,
+                 content: $content
+               }')
+           echo "$tool_msg" > "$temp_file"
+           messages=$(echo "$messages" | jq --rawfile msg "$temp_file" '. += [($msg | fromjson)]')
+           rm "$temp_file"
+        fi
       done
     else
       # No tool calls, just a regular response
