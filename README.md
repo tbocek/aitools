@@ -23,7 +23,10 @@ and automatically executes them based on the AI's requests.
 ./tools.sh -t /path/to/tools "Calculate 25 * 4"
 
 # Multiple tools with temperature 0.1
-./tools.sh -T 0.1 "What is 2+2. If you have the result of that, multiply with 5, after add 4.2. Finally divide the previous result by the temperature in C in Munich"
+./tools.sh -T 0.1 "What is 2+2. If you have the result of that, multiply with 5, after add 4.2. Finally divide the previous result by the temperature in C in Munich. Use this result to search the internet, but only show the first result"
+
+
+
 ```
 
 ## Installation
