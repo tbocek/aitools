@@ -11,7 +11,7 @@ TOOL_PARAMETERS='{
       "type": "string",
       "description": "Search query to perform (examples: \"weather in Paris\", \"latest news\")"
     },
-    "num_results": {
+    "num-results": {
       "type": "integer",
       "description": "Number of results to fetch and process (default: 10)",
       "minimum": 1,
