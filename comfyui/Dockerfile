@@ -94,6 +94,7 @@ ENV CMAKE_ARGS="-DLLAMA_CURL=ON -DGGML_HIP_ROCWMMA_FATTN=ON -DGGML_HIP=ON -DAMDG
 ENV FORCE_CMAKE=1
 ENV HIP_PLATFORM=amd
 ENV HIP_PATH="/opt/rocm"
+ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang++"
 RUN pip install llama-cpp-python --no-cache-dir
 
 # Clone ComfyUI-GGUF extension
