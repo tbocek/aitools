@@ -10,7 +10,6 @@ IMAGE_NAME="comfyui-rocm-gguf"
 CONTAINER_NAME="comfyui-rocm-gguf-container"
 HOST_PORT="8188"
 CONTAINER_PORT="8188"
-DOCKERFILE="Dockerfile.gguf"
 
 # Directory paths (adjust these to your preferences)
 MODELS_DIR="$HOME/comfyui-models"
@@ -57,19 +56,8 @@ check_docker() {
 # Function to build Docker image
 build_image() {
     print_status "Building ComfyUI ROCm Docker image..."
-    print_status "Using dockerfile: $DOCKERFILE"
 
-    if [ ! -f "$DOCKERFILE" ]; then
-        print_error "Dockerfile '$DOCKERFILE' not found in current directory"
-        exit 1
-    fi
-
-    if [ ! -f "start_comfyui.sh" ]; then
-        print_error "start_comfyui.sh script not found in current directory"
-        exit 1
-    fi
-
-    docker build -f "$DOCKERFILE" -t "$IMAGE_NAME" .
+    docker build -t "$IMAGE_NAME" .
 
     if [ $? -eq 0 ]; then
         print_success "Docker image '$IMAGE_NAME' built successfully"
