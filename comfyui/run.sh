@@ -11,10 +11,10 @@ CONTAINER_NAME="comfyui-rocm-gguf-container"
 HOST_PORT="8188"
 CONTAINER_PORT="8188"
 
-# Directory paths (adjust these to your preferences)
-MODELS_DIR="$HOME/comfyui-models"
-INPUT_DIR="$HOME/comfyui-input"
-OUTPUT_DIR="$HOME/comfyui-output"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MODELS_DIR="$SCRIPT_DIR/comfyui-models"
+INPUT_DIR="$SCRIPT_DIR/comfyui-input"
+OUTPUT_DIR="$SCRIPT_DIR/comfyui-output"
 
 # Colors for output
 RED='\033[0;31m'
@@ -84,7 +84,6 @@ run_container() {
         -v "$MODELS_DIR:/home/comfyui/ComfyUI/models" \
         -v "$INPUT_DIR:/home/comfyui/ComfyUI/input" \
         -v "$OUTPUT_DIR:/home/comfyui/ComfyUI/output" \
-        -v "$PWD/extra_model_paths.yaml:/home/comfyui/ComfyUI/extra_model_paths.yaml:ro" \
         -e HIP_VISIBLE_DEVICES=0 \
         -e ROCM_PATH=/opt/rocm \
         -it "$IMAGE_NAME"
