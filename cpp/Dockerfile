@@ -43,7 +43,8 @@ ENV HIP_PATH="/opt/rocm"
 RUN cd llama.cpp && cmake -B build \
     -DLLAMA_CURL=ON \
     -DGGML_HIP_ROCWMMA_FATTN=ON \
-    -DGGML_HIP=ON -DGPU_TARGETS=gfx1100 \
+    -DGGML_HIP=ON \
+    -DGPU_TARGETS=gfx1100 \
     -DGGML_CUDA_FA_ALL_QUANTS=1 \
     -DCMAKE_BUILD_TYPE=Release
 RUN cd llama.cpp && cmake --build build --config Release --parallel
@@ -56,7 +57,8 @@ ENV HIP_PATH="/opt/rocm"
 RUN cd whisper.cpp && cmake -B build \
     -DLLAMA_CURL=ON \
     -DGGML_HIP_ROCWMMA_FATTN=ON \
-    -DGGML_HIP=ON -DGPU_TARGETS=gfx1100 \
+    -DGGML_HIP=ON \
+    -DGPU_TARGETS=gfx1100 \
     -DGGML_CUDA_FA_ALL_QUANTS=1 \
     -DWHISPER_FFMPEG=yes \
     -DCMAKE_BUILD_TYPE=Release

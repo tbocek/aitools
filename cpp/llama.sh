@@ -6,7 +6,7 @@ docker run -it \
     --device=/dev/kfd \
     --device=/dev/dri \
     --group-add=video \
-    -e CUDA_VISIBLE_DEVICES=0
+    -e CUDA_VISIBLE_DEVICES=0 \
     -p 9001:9001 \
     -v /mnt/models:/models \
     cpp:latest /home/cpp/llama.cpp/build/bin/llama-server \
