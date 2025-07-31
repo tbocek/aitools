@@ -7,6 +7,8 @@ docker run -it \
     --device=/dev/dri \
     --group-add=video \
     -e CUDA_VISIBLE_DEVICES=0 \
+    -e HIP_VISIBLE_DEVICES=0 \
+    -e HSA_OVERRIDE_GFX_VERSION=gfx1100 \
     -p 9001:9001 \
     -v /mnt/models:/models \
     cpp:latest /home/cpp/llama.cpp/build/bin/llama-server \
