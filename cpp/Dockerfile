@@ -5,6 +5,7 @@ RUN pacman -Syu --noconfirm && \
         git \
         go \
         libxml2 \
+        libxml2-legacy \
         base-devel \
         ninja \
         python3 \
@@ -17,7 +18,7 @@ RUN useradd -m -s /bin/bash cpp && \
     usermod -aG render cpp && \
     usermod -aG wheel cpp && \
     echo '%wheel ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
-    
+
 USER cpp
 WORKDIR /home/cpp
 
@@ -32,8 +33,6 @@ RUN yay -S --noconfirm \
   ffmpeg \
   && sudo pacman -Scc --noconfirm
 
-# ROCM has issues with finding /usr/lib/libxml2.so.2
-RUN sudo ln -s /usr/lib/libxml2.so.16.0.5 /usr/lib/libxml2.so.2
 
 #LLAMA.CPP
 #https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md

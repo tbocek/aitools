@@ -20,6 +20,7 @@ docker run -it \
         --cache-type-k f16 \
         --cache-type-v q8_0 \
         --port 9001 \
+        --host 0.0.0.0 \
         --mlock \
         --no-mmap \
         --jinja

@@ -15,6 +15,7 @@ docker run -it \
         --model /models/ggml-large-v3.bin \
         --flash-attn \
         --port 9000 \
+        --host 0.0.0.0 \
         --inference-path /v1/audio/transcriptions \
         --convert \
         --no-context
