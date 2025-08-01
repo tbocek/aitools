@@ -67,10 +67,15 @@ RUN cd whisper.cpp && cmake --build build --config Release --parallel
 #STABLE-DIFFUSION.CPP
 #https://github.com/leejet/stable-diffusion.cpp
 RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp
+#ROCM not working atm, use vulkan
+#RUN cd stable-diffusion.cpp && cmake -B build -G "Ninja" \
+#    -DCMAKE_C_COMPILER=/opt/rocm/lib/llvm/bin/clang \
+#    -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
+#    -DSD_HIPBLAS=ON \
+#    -DCMAKE_BUILD_TYPE=Release \
+#    -DAMDGPU_TARGETS=gfx1100
 RUN cd stable-diffusion.cpp && cmake -B build -G "Ninja" \
-    -DCMAKE_C_COMPILER=/opt/rocm/lib/llvm/bin/clang \
-    -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
-    -DSD_HIPBLAS=ON \
+    -DSD_VULKAN=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DAMDGPU_TARGETS=gfx1100
 RUN cd stable-diffusion.cpp && cmake --build build --config Release --parallel
