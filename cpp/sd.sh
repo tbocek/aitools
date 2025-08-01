@@ -5,8 +5,8 @@ docker build . -t cpp
 docker run -it \
     --device=/dev/kfd \
     --device=/dev/dri \
-    --group-add=$(getent group render | cut -d: -f3) \
-    --group-add=$(getent group video | cut -d: -f3) \
+    --group-add render \
+    --group-add video \
     --security-opt seccomp=unconfined \
     -e CUDA_VISIBLE_DEVICES=0 \
     -e HIP_VISIBLE_DEVICES=0 \
