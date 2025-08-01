@@ -44,7 +44,7 @@ RUN cd llama.cpp && cmake -B build \
     -DLLAMA_CURL=ON \
     -DGGML_HIP_ROCWMMA_FATTN=ON \
     -DGGML_HIP=ON \
-    -DGPU_TARGETS=gfx1100 \
+    -DAMDGPU_TARGETS=gfx1100 \
     -DGGML_CUDA_FA_ALL_QUANTS=1 \
     -DCMAKE_BUILD_TYPE=Release
 RUN cd llama.cpp && cmake --build build --config Release --parallel
@@ -58,7 +58,7 @@ RUN cd whisper.cpp && cmake -B build \
     -DLLAMA_CURL=ON \
     -DGGML_HIP_ROCWMMA_FATTN=ON \
     -DGGML_HIP=ON \
-    -DGPU_TARGETS=gfx1100 \
+    -DAMDGPU_TARGETS=gfx1100 \
     -DGGML_CUDA_FA_ALL_QUANTS=1 \
     -DWHISPER_FFMPEG=yes \
     -DCMAKE_BUILD_TYPE=Release
@@ -72,11 +72,10 @@ RUN cd stable-diffusion.cpp && cmake -B build -G "Ninja" \
     -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
     -DSD_HIPBLAS=ON \
     -DCMAKE_BUILD_TYPE=Release \
-    -DGPU_TARGETS=gfx1100
+    -DAMDGPU_TARGETS=gfx1100
 RUN cd stable-diffusion.cpp && cmake --build build --config Release --parallel
 #https://github.com/daniandtheweb/sd.cpp-webui
 RUN git clone https://github.com/daniandtheweb/sd.cpp-webui.git
-RUN ls -la stable-diffusion.cpp/build/bin
 RUN cp stable-diffusion.cpp/build/bin/sd sd.cpp-webui
 RUN cd sd.cpp-webui && \
     chmod a+x sdcpp_webui.sh && \
