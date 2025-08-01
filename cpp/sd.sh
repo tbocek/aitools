@@ -7,6 +7,7 @@ docker run -it \
     --device=/dev/kfd \
     --device=/dev/dri/card1 \
     --device=/dev/dri/renderD128 \
+    --cap-add=SYS_PTRACE \
     --group-add render \
     --group-add video \
     --security-opt seccomp=unconfined \

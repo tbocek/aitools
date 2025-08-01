@@ -31,6 +31,7 @@ RUN git clone https://aur.archlinux.org/yay.git && \
     
 # Base installed, lets get specific
 RUN yay -S --noconfirm \
+  opencv \
   opencl-amd-dev \
   ffmpeg \
   vulkan-headers \
