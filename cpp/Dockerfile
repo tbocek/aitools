@@ -31,7 +31,8 @@ RUN git clone https://aur.archlinux.org/yay.git && \
 RUN yay -S --noconfirm \
   opencl-amd-dev \
   ffmpeg \
-  clang vulkan-headers \
+  clang \
+  vulkan-headers \
   vulkan-icd-loader \
   vulkan-radeon \
   && sudo pacman -Scc --noconfirm
