@@ -9,6 +9,8 @@ RUN pacman -Syu --noconfirm && \
         base-devel \
         ninja \
         python3 \
+        linux-headers \
+        clang \
         cmake && \
     pacman -Scc --noconfirm   
 
@@ -31,7 +33,6 @@ RUN git clone https://aur.archlinux.org/yay.git && \
 RUN yay -S --noconfirm \
   opencl-amd-dev \
   ffmpeg \
-  clang \
   vulkan-headers \
   vulkan-icd-loader \
   vulkan-radeon \

@@ -11,6 +11,7 @@ docker run -it \
     -e CUDA_VISIBLE_DEVICES=0 \
     -p 9000:9000 \
     -v /mnt/models:/models \
+    -v /opt/rocm/lib:/opt/rocm/lib:ro \
     cpp:latest /home/cpp/whisper.cpp/build/bin/whisper-server \
         --model /models/ggml-large-v3.bin \
         --flash-attn \
