@@ -13,7 +13,7 @@ docker run -it \
     -p 9000:9000 \
     -v /mnt/models:/models \
     -v /opt/rocm/lib:/opt/rocm/lib:ro \
-    cpp:latest /home/cpp/whisper.cpp/build/bin/whisper-server \
+    cpp:latest /home/arch/whisper.cpp/build/bin/whisper-server \
         --model /models/ggml-large-v3.bin \
         --flash-attn \
         --port 9000 \

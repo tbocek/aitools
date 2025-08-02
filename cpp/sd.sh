@@ -13,4 +13,4 @@ docker run -it \
     -p 7860:7860 \
     -v /mnt/models/sd:/home/cpp/sd.cpp-webui/models \
     -v /opt/rocm/lib:/opt/rocm/lib:ro \
-    cpp:latest /home/cpp/sd.cpp-webui/sdcpp_webui.sh --listen
+    cpp:latest /home/arch/sd.cpp-webui/sdcpp_webui.sh --listen

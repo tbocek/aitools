@@ -13,7 +13,7 @@ docker run -it \
     -p 9001:9001 \
     -v /mnt/models:/models \
     -v /opt/rocm/lib:/opt/rocm/lib:ro \
-    cpp:latest /home/cpp/llama.cpp/build/bin/llama-server \
+    cpp:latest /home/arch/llama.cpp/build/bin/llama-server \
         --model /models/mistralai_Devstral-Small-2505-Q5_K_L.gguf \
         --ctx-size 60000 \
         --n-gpu-layers 9999 \
