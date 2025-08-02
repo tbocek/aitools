@@ -5,10 +5,10 @@ docker build . -t cpp
 docker run -it \
     --device=/dev/kfd \
     --device=/dev/dri \
-    --cap-add=SYS_PTRACE \
     --group-add render \
     --group-add video \
     --security-opt seccomp=unconfined \
+    --ulimit memlock=-1:-1 \
     -e CUDA_VISIBLE_DEVICES=0 \
     -p 9001:9001 \
     -v /mnt/models:/models \

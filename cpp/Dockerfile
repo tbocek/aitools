@@ -15,14 +15,14 @@ RUN pacman -Syu --noconfirm && \
     pacman -Scc --noconfirm   
 
 # Create non-root user and add to video, render, and wheel groups
-RUN useradd -m -s /bin/bash cpp && \
-    usermod -aG video cpp && \
-    usermod -aG render cpp && \
-    usermod -aG wheel cpp && \
+RUN useradd -m -s /bin/bash arch && \
+    usermod -aG video arch && \
+    usermod -aG render arch && \
+    usermod -aG wheel arch && \
     echo '%wheel ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 
-USER cpp
-WORKDIR /home/cpp
+USER arch
+WORKDIR /home/arch
 
 # Install yay AUR helper
 RUN git clone https://aur.archlinux.org/yay.git && \
@@ -31,8 +31,8 @@ RUN git clone https://aur.archlinux.org/yay.git && \
     
 # Base installed, lets get specific
 RUN yay -S --noconfirm \
-  opencv \
-  opencl-amd-dev \
+  rocwmma \
+  rocm-hip-sdk \
   ffmpeg \
   vulkan-headers \
   vulkan-icd-loader \
