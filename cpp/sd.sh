@@ -11,6 +11,5 @@ docker run -it \
     --ulimit memlock=-1:-1 \
     -e GGML_VK_VISIBLE_DEVICES=1 \
     -p 7860:7860 \
-    -v /mnt/models/sd:/home/cpp/sd.cpp-webui/models \
-    -v /opt/rocm/lib:/opt/rocm/lib:ro \
+    -v /mnt/models/sd:/home/arch/sd.cpp-webui/models \
     cpp:latest /home/arch/sd.cpp-webui/sdcpp_webui.sh --listen
