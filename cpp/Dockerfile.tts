@@ -1,5 +1,8 @@
 FROM arch:latest
 
+USER arch
+WORKDIR /home/arch
+
 RUN git clone https://github.com/devnen/Chatterbox-TTS-Server.git
 WORKDIR /Chatterbox-TTS-Server
 

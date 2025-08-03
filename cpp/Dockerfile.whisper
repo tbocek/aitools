@@ -1,5 +1,8 @@
 FROM arch:latest
 
+USER arch
+WORKDIR /home/arch
+
 # Base installed, lets get specific
 RUN yay -S --noconfirm \
   rocwmma \
