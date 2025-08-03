@@ -3,6 +3,10 @@ FROM arch:latest
 USER arch
 WORKDIR /home/arch
 
+RUN yay -S --noconfirm \
+  ffmpeg \
+  && sudo pacman -Scc --noconfirm
+
 RUN git clone https://github.com/devnen/Chatterbox-TTS-Server.git
 WORKDIR /home/arch/Chatterbox-TTS-Server
 
