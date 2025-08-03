@@ -39,11 +39,14 @@ EOF
 msg() {
   echo >&2 -e "${1-}"
 }
+err_msg() {
+ echo >&2 -e "${RED}Error: ${1-}${NOFORMAT}"
+}
 
 die() {
   local msg=$1
   local code=${2-1}
-  msg "${RED}Error: $msg${NOFORMAT}"
+  err_msg "$msg"
   exit "$code"
 }
 
@@ -72,45 +75,45 @@ parse_params() {
     -h | --help) usage ;;
     -s)
       if [[ $# -lt 2 ]]; then
+        err_msg "Option -s requires an argument"
         usage
-        die "Option -s requires an argument"
       fi
       SERVICES+=("${2}")
       shift 2 ;;
     -la)
       if [[ $# -lt 2 ]]; then
+        err_msg "Option -la requires an argument"
         usage
-        die "Option -la requires an argument"
       fi
       LLAMA_ARGS="${2}"
       shift 2 ;;
     -ld)
       if [[ $# -lt 2 ]]; then
+        err_msg "Option -ld requires an argument"
         usage
-        die "Option -ld requires an argument"
       fi
       LD="${2}"
       shift 2 ;;
     -sd)
       if [[ $# -lt 2 ]]; then
+        err_msg "Option -sd requires an argument"
         usage
-        die "Option -sd requires an argument"
       fi
       SD="${2}"
       shift 2 ;;
     -wd)
       if [[ $# -lt 2 ]]; then
+        err_msg "Option -wd requires an argument"
         usage  
-        die "Option -wd requires an argument"
       fi
       WD="${2}"
       shift 2 ;;
     -?*)
+      err_msg "Unknown option: $1" ;;
       usage  
-      die "Unknown option: $1" ;;
     *)
+      err_msg "Unexpected argument: $1"
       usage
-      die "Unexpected argument: $1"
       ;;
     esac
   done
