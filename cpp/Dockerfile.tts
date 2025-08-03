@@ -9,5 +9,9 @@ RUN uv python install 3.10 && uv venv --python 3.10 venv
 # Install requirements directly
 RUN uv pip install --python ./venv -r requirements-rocm.txt
 
+# Pre-download specific model components
+RUN mkdir -p model_cache reference_audio outputs voices logs hf_cache
+RUN uv run --python ./venv python download_model.py
+
 # Test PyTorch installation
 RUN uv run --python ./venv python -c 'import torch; print(f"PyTorch version: {torch.__version__}"); print(f"ROCm available: {torch.cuda.is_available()}"); print(f"Device name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}")'

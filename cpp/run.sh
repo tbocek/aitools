@@ -30,6 +30,7 @@ AVAILABLE SERVICES:
   sd-vulkan      Run Stable Diffusion web UI with Vulkan GPU acceleration
   whisper-rocm   Run Whisper server with ROCM GPU acceleration
   whisper-vulkan Run Whisper server with Vulkan GPU acceleration
+  tts-rocm       Run Chatterbox-TTS-Server with ROCM GPU acceleration
 EXAMPLES:
   $(basename "${BASH_SOURCE[0]}") -s llama-rocm -s sd-rocm -la "--model model_name --mmproj mmproj_name --ctx-size 2048" -ld 1 -sd 0
 EOF
@@ -124,7 +125,7 @@ parse_params() {
   # Validate service names
   for service in "${SERVICES[@]}"; do
     case "$service" in
-      llama-rocm|llama-vulkan|sd-rocm|sd-vulkan|whisper-rocm|whisper-vulkan)
+      llama-rocm|llama-vulkan|sd-rocm|sd-vulkan|whisper-rocm|whisper-vulkan|tts-rocm)
         ;;
       *)
         die "Invalid service: $service. Use -h for help."
