@@ -109,11 +109,12 @@ parse_params() {
       WD="${2}"
       shift 2 ;;
     -?*)
-      err_msg "Unknown option: $1" ;;
-      usage  
+      err_msg "Unknown option: $1"
+      usage 
+      ;;
     *)
       err_msg "Unexpected argument: $1"
-      usage
+      usage 
       ;;
     esac
   done
