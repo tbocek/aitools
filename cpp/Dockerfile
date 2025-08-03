@@ -101,8 +101,14 @@ RUN cd stable-diffusion.cpp.vulkan && cmake -B build -G "Ninja" \
 RUN cd stable-diffusion.cpp.vulkan && cmake --build build --config Release --parallel
 #https://github.com/daniandtheweb/sd.cpp-webui
 RUN git clone https://github.com/daniandtheweb/sd.cpp-webui.git
-RUN cp stable-diffusion.cpp/build/bin/sd sd.cpp-webui
-RUN cd sd.cpp-webui && \
+RUN mv sd.cpp-webui sd.cpp-webui.rocm && cp -r sd.cpp-webui.rocm sd.cpp-webui.vulkan
+RUN cp stable-diffusion.cpp.rocm/build/bin/sd sd.cpp-webui.rocm && cp stable-diffusion.cpp.vulkan/build/bin/sd sd.cpp-webui.vulkan
+RUN cd sd.cpp-webui.rocm && \
+    chmod a+x sdcpp_webui.sh && \
+    python3 -m venv venv && \
+    source venv/bin/activate && \
+    pip install -r requirements.txt --upgrade pip
+RUN cd sd.cpp-webui.vulkan && \
     chmod a+x sdcpp_webui.sh && \
     python3 -m venv venv && \
     source venv/bin/activate && \
