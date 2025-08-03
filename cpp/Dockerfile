@@ -43,7 +43,7 @@ RUN yay -S --noconfirm \
 #LLAMA.CPP
 #https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md
 RUN git clone https://github.com/ggml-org/llama.cpp
-RUN mv llama.cpp llama.cpp.rocm && cp -r llama.cpp.vulkan
+RUN mv llama.cpp llama.cpp.rocm && cp -r llama.cpp.rocm llama.cpp.vulkan
 ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang" 
 ENV HIP_PATH="/opt/rocm"
 RUN cd llama.cpp.rocm && cmake -B build \
@@ -64,7 +64,7 @@ RUN cd llama.cpp.vulkan && cmake --build build --config Release --parallel
 #WHISPER.CPP
 #https://github.com/ggml-org/whisper.cpp
 RUN git clone https://github.com/ggml-org/whisper.cpp.git
-RUN mv whisper.cpp whisper.cpp.rocm && cp -r whisper.cpp.vulkan
+RUN mv whisper.cpp whisper.cpp.rocm && cp -r whisper.cpp.rocm whisper.cpp.vulkan
 ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang" 
 ENV HIP_PATH="/opt/rocm"
 RUN cd whisper.cpp.rocm && cmake -B build \
@@ -86,7 +86,7 @@ RUN cd whisper.cpp.vulkan && cmake --build build --config Release --parallel
 #STABLE-DIFFUSION.CPP
 #https://github.com/leejet/stable-diffusion.cpp
 RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp
-RUN mv stable-diffusion.cpp stable-diffusion.cpp.rocm && cp -r stable-diffusion.cpp.vulkan
+RUN mv stable-diffusion.cpp stable-diffusion.cpp.rocm && cp -r stable-diffusion.cpp.rocm stable-diffusion.cpp.vulkan
 RUN cd stable-diffusion.cpp.rocm && cmake -B build -G "Ninja" \
     -DCMAKE_C_COMPILER=/opt/rocm/lib/llvm/bin/clang \
     -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
