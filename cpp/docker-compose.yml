@@ -1,7 +1,7 @@
 services:
   llama-rocm:
     build: .
-    image: cpp:latest
+    image: llama:latest
     devices:
       - /dev/kfd
       - /dev/dri
@@ -24,7 +24,7 @@ services:
 
   llama-vulkan:
     build: .
-    image: cpp:latest
+    image: llama:latest
     devices:
       - /dev/kfd
       - /dev/dri
@@ -47,7 +47,7 @@ services:
 
   sd-rocm:
     build: .
-    image: cpp:latest
+    image: sd:latest
     devices:
       - /dev/kfd
       - /dev/dri
@@ -70,7 +70,7 @@ services:
 
   sd-vulkan:
     build: .
-    image: cpp:latest
+    image: sd:latest
     devices:
       - /dev/kfd
       - /dev/dri
@@ -93,7 +93,7 @@ services:
 
   whisper-rocm:
     build: .
-    image: cpp:latest
+    image: whisper:latest
     devices:
       - /dev/kfd
       - /dev/dri
@@ -116,7 +116,7 @@ services:
 
   whisper-vulkan:
     build: .
-    image: cpp:latest
+    image: whisper:latest
     devices:
       - /dev/kfd
       - /dev/dri
@@ -136,3 +136,10 @@ services:
     volumes:
       - /mnt/models:/models
     command: /home/arch/whisper.cpp.vulkan/build/bin/whisper-server --model /models/ggml-large-v3.bin --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
+    
+  tts:
+    build: Dockerfile.tts
+    image: tts:latest
+    ports: 
+      -  "4123:4123"
+    command: source venv/bin/activate && python server.py

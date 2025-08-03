@@ -155,6 +155,11 @@ main() {
   validate_docker
   
   msg "${GREEN}Building services${NOFORMAT}"
+  docker build . -f Dockerfile.arch -t arch
+  docker build . -f Dockerfile.tts -t tts
+  docker build . -f Dockerfile.llama -t llama
+  docker build . -f Dockerfile.whisper -t whisper
+  docker build . -f Dockerfile.sd -t sd
   docker build . -t cpp
 
   msg "${GREEN}Starting services: ${SERVICES[*]}${NOFORMAT}"

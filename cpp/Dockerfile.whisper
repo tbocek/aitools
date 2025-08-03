@@ -1,0 +1,33 @@
+FROM arch:latest
+
+# Base installed, lets get specific
+RUN yay -S --noconfirm \
+  rocwmma \
+  rocm-hip-sdk \
+  ffmpeg \
+  vulkan-headers \
+  vulkan-icd-loader \
+  vulkan-radeon \
+  && sudo pacman -Scc --noconfirm
+
+#WHISPER.CPP
+#https://github.com/ggml-org/whisper.cpp
+RUN git clone https://github.com/ggml-org/whisper.cpp.git
+RUN mv whisper.cpp whisper.cpp.rocm && cp -r whisper.cpp.rocm whisper.cpp.vulkan
+ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang" 
+ENV HIP_PATH="/opt/rocm"
+RUN cd whisper.cpp.rocm && cmake -B build \
+    -DLLAMA_CURL=ON \
+    -DGGML_HIP_ROCWMMA_FATTN=ON \
+    -DGGML_HIP=ON \
+    -DAMDGPU_TARGETS=gfx1100 \
+    -DGGML_CUDA_FA_ALL_QUANTS=1 \
+    -DWHISPER_FFMPEG=yes \
+    -DCMAKE_BUILD_TYPE=Release
+RUN cd whisper.cpp.rocm && cmake --build build --config Release --parallel
+RUN cd whisper.cpp.vulkan && cmake -B build \
+    -DLLAMA_CURL=ON \
+    -DGGML_VULKAN=ON \
+    -DWHISPER_FFMPEG=yes \
+    -DCMAKE_BUILD_TYPE=Release
+RUN cd whisper.cpp.vulkan && cmake --build build --config Release --parallel

@@ -1,0 +1,31 @@
+FROM arch:latest
+
+# Base installed, lets get specific
+RUN yay -S --noconfirm \
+  rocwmma \
+  rocm-hip-sdk \
+  vulkan-headers \
+  vulkan-icd-loader \
+  vulkan-radeon \
+  shaderc \
+  && sudo pacman -Scc --noconfirm
+
+#LLAMA.CPP
+#https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md
+RUN git clone https://github.com/ggml-org/llama.cpp
+RUN mv llama.cpp llama.cpp.rocm && cp -r llama.cpp.rocm llama.cpp.vulkan
+ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang" 
+ENV HIP_PATH="/opt/rocm"
+RUN cd llama.cpp.rocm && cmake -B build \
+    -DLLAMA_CURL=ON \
+    -DGGML_HIP_ROCWMMA_FATTN=ON \
+    -DGGML_HIP=ON \
+    -DAMDGPU_TARGETS=gfx1100 \
+    -DGGML_CUDA_FA_ALL_QUANTS=1 \
+    -DCMAKE_BUILD_TYPE=Release
+RUN cd llama.cpp.rocm && cmake --build build --config Release --parallel
+RUN cd llama.cpp.vulkan && cmake -B build \
+    -DLLAMA_CURL=ON \
+    -DGGML_VULKAN=ON \
+    -DCMAKE_BUILD_TYPE=Release
+RUN cd llama.cpp.vulkan && cmake --build build --config Release --parallel
