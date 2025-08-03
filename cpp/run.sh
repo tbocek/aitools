@@ -24,12 +24,12 @@ OPTIONS:
   -wd DEV_NUM    Specify device for whisper.cpp (-wd 1)
   -h, --help     Print this help and exit
 AVAILABLE SERVICES:
-  llama-rocm     - Run LLaMA server with ROCM GPU acceleration
-  llama-vulkan   - Run LLaMA server with Vulkan GPU acceleration
-  sd-rocm        - Run Stable Diffusion web UI with ROCM GPU acceleration
-  sd-vulkan      - Run Stable Diffusion web UI with Vulkan GPU acceleration
-  whisper-rocm   - Run Whisper server with ROCM GPU acceleration
-  whisper-vulkan - Run Whisper server with Vulkan GPU acceleration
+  llama-rocm     Run LLaMA server with ROCM GPU acceleration
+  llama-vulkan   Run LLaMA server with Vulkan GPU acceleration
+  sd-rocm        Run Stable Diffusion web UI with ROCM GPU acceleration
+  sd-vulkan      Run Stable Diffusion web UI with Vulkan GPU acceleration
+  whisper-rocm   Run Whisper server with ROCM GPU acceleration
+  whisper-vulkan Run Whisper server with Vulkan GPU acceleration
 EXAMPLES:
   $(basename "${BASH_SOURCE[0]}") -s llama-rocm -s sd-rocm -la "--model model_name --mmproj mmproj_name --ctx-size 2048" -ld 1 -sd 0
 EOF
