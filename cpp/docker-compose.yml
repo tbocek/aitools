@@ -142,4 +142,4 @@ services:
     image: tts:latest
     ports: 
       -  "8004:8004"
-    command: source venv/bin/activate && python server.py
+    command: /bin/bash -c "source venv/bin/activate && python server.py"
