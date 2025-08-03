@@ -4,7 +4,7 @@ USER arch
 WORKDIR /home/arch
 
 RUN git clone https://github.com/devnen/Chatterbox-TTS-Server.git
-WORKDIR /Chatterbox-TTS-Server
+WORKDIR /home/arch/Chatterbox-TTS-Server
 
 # Install Python 3.10 and create venv
 RUN uv python install 3.10 && uv venv --python 3.10 venv
