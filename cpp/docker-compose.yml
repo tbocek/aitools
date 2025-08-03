@@ -65,7 +65,7 @@ services:
     ports:
       - "7860:7860"
     volumes:
-      - /mnt/models/sd:/home/arch/sd.cpp-webui/models
+      - /mnt/models/sd:/home/arch/sd.cpp-webui.rocm/models
     command: /home/arch/sd.cpp-webui.rocm/sdcpp_webui.sh --listen
 
   sd-vulkan:
@@ -88,7 +88,7 @@ services:
     ports:
       - "7860:7860"
     volumes:
-      - /mnt/models/sd:/home/arch/sd.cpp-webui/models
+      - /mnt/models/sd:/home/arch/sd.cpp-webui.vulkan/models
     command: /home/arch/sd.cpp-webui.vulkan/sdcpp_webui.sh --listen
 
   whisper-rocm:
