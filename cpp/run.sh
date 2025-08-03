@@ -72,37 +72,44 @@ parse_params() {
     -h | --help) usage ;;
     -s)
       if [[ $# -lt 2 ]]; then
+        usage
         die "Option -s requires an argument"
       fi
       SERVICES+=("${2}")
       shift 2 ;;
     -la)
       if [[ $# -lt 2 ]]; then
+        usage
         die "Option -la requires an argument"
       fi
       LLAMA_ARGS="${2}"
       shift 2 ;;
     -ld)
       if [[ $# -lt 2 ]]; then
+        usage
         die "Option -ld requires an argument"
       fi
       LD="${2}"
       shift 2 ;;
     -sd)
       if [[ $# -lt 2 ]]; then
+        usage
         die "Option -sd requires an argument"
       fi
       SD="${2}"
       shift 2 ;;
     -wd)
       if [[ $# -lt 2 ]]; then
+        usage  
         die "Option -wd requires an argument"
       fi
       WD="${2}"
       shift 2 ;;
     -?*)
+      usage  
       die "Unknown option: $1" ;;
     *)
+      usage
       die "Unexpected argument: $1"
       ;;
     esac
@@ -142,6 +149,9 @@ main() {
   setup_colors
   parse_params "$@"
   validate_docker
+  
+  msg "${GREEN}Building services${NOFORMAT}"
+  docker build . -t cpp
 
   msg "${GREEN}Starting services: ${SERVICES[*]}${NOFORMAT}"
 
