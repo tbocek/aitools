@@ -1,0 +1,156 @@
+services:
+  llama-rocm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cpp:latest
+    container_name: llama-server-rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - CUDA_VISIBLE_DEVICES=${LD_DEVICE:-0}
+    ports:
+      - "9001:9001"
+    volumes:
+      - /mnt/models:/models
+    command: /home/arch/llama.cpp.rocm/build/bin/llama-server --model /models/mistralai_Devstral-Small-2505-Q5_K_L.gguf --ctx-size 60000 --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja
+
+  llama-vulkan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cpp:latest
+    container_name: llama-server-vulkan
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - GGML_VK_VISIBLE_DEVICES=${LD_DEVICE:-0}
+    ports:
+      - "9001:9001"
+    volumes:
+      - /mnt/models:/models
+    command: /home/arch/llama.cpp.vulkan/build/bin/llama-server ${LLAMA_ARGS} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja --embeddings
+
+  sd-rocm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cpp:latest
+    container_name: sd-webui-rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - CUDA_VISIBLE_DEVICES=${SD_DEVICE:-0}
+    ports:
+      - "7860:7860"
+    volumes:
+      - /mnt/models/sd:/home/arch/sd.cpp-webui/models
+    command: /home/arch/sd.cpp-webui.rocm/sdcpp_webui.sh --listen
+
+  sd-vulkan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cpp:latest
+    container_name: sd-webui-vulkan
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - GGML_VK_VISIBLE_DEVICES=${SD_DEVICE:-0}
+    ports:
+      - "7860:7860"
+    volumes:
+      - /mnt/models/sd:/home/arch/sd.cpp-webui/models
+    command: /home/arch/sd.cpp-webui.vulkan/sdcpp_webui.sh --listen
+
+  whisper-rocm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cpp:latest
+    container_name: whisper-server-rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - CUDA_VISIBLE_DEVICES=${WD_DEVICE:-0}
+    ports:
+      - "9000:9000"
+    volumes:
+      - /mnt/models:/models
+    command: /home/arch/whisper.cpp.rocm/build/bin/whisper-server --model /models/ggml-large-v3.bin --flash-attn --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
+
+  whisper-vulkan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cpp:latest
+    container_name: whisper-server-vulkan
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - GGML_VK_VISIBLE_DEVICES=${WD_DEVICE:-0}
+    ports:
+      - "9000:9000"
+    volumes:
+      - /mnt/models:/models
+    command: /home/arch/whisper.cpp.vulkan/build/bin/whisper-server --model /models/ggml-large-v3.bin --flash-attn --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
