@@ -1,6 +1,6 @@
 services:
   llama-rocm:
-    build: .
+    build: Dockerfile.llama
     image: llama:latest
     devices:
       - /dev/kfd
@@ -23,7 +23,7 @@ services:
     command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja --embeddings
 
   llama-vulkan:
-    build: .
+    build: Dockerfile.llama
     image: llama:latest
     devices:
       - /dev/kfd
@@ -46,7 +46,7 @@ services:
     command: /home/arch/llama.cpp.vulkan/build/bin/llama-server ${LLAMA_ARGS} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja --embeddings
 
   sd-rocm:
-    build: .
+    build: Dockerfile.sd
     image: sd:latest
     devices:
       - /dev/kfd
@@ -69,7 +69,7 @@ services:
     command: /home/arch/sd.cpp-webui.rocm/sdcpp_webui.sh --listen
 
   sd-vulkan:
-    build: .
+    build: Dockerfile.sd
     image: sd:latest
     devices:
       - /dev/kfd
@@ -92,7 +92,7 @@ services:
     command: /home/arch/sd.cpp-webui.vulkan/sdcpp_webui.sh --listen
 
   whisper-rocm:
-    build: .
+    build: Dockerfile.whisper
     image: whisper:latest
     devices:
       - /dev/kfd
@@ -115,7 +115,7 @@ services:
     command: /home/arch/whisper.cpp.rocm/build/bin/whisper-server --model /models/ggml-large-v3.bin --flash-attn --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
 
   whisper-vulkan:
-    build: .
+    build: Dockerfile.whisper
     image: whisper:latest
     devices:
       - /dev/kfd
