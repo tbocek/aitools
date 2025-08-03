@@ -135,4 +135,4 @@ services:
       - "9000:9000"
     volumes:
       - /mnt/models:/models
-    command: /home/arch/whisper.cpp.vulkan/build/bin/whisper-server --model /models/ggml-large-v3.bin --flash-attn --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
+    command: /home/arch/whisper.cpp.vulkan/build/bin/whisper-server --model /models/ggml-large-v3.bin --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
