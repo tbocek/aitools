@@ -21,6 +21,7 @@ OPTIONS:
   -la LLAMA_ARGS Specify arguments for llama.cpp (e.g., "--model model_name --mmproj mmproj_name --ctx-size 2048")
   -ld DEV_NUM    Specify device for llama.cpp (-ld 1)
   -sd DEV_NUM    Specify device for sd.cpp (-sd 0)
+  -td DEV_NUM    Specify device for Chatterbox-TTS-Server (-sd 0)
   -wd DEV_NUM    Specify device for whisper.cpp (-wd 1)
   -h, --help     Print this help and exit
 AVAILABLE SERVICES:
@@ -64,6 +65,7 @@ parse_params() {
   LLAMA_ARGS=""
   LD=""
   SD=""
+  TD=""
   WD=""
   
   # Check if no arguments provided
@@ -102,6 +104,13 @@ parse_params() {
       fi
       SD="${2}"
       shift 2 ;;
+    -td)
+      if [[ $# -lt 2 ]]; then
+        err_msg "Option -td requires an argument"
+        usage
+      fi
+      TD="${2}"
+      shift 2 ;;  
     -wd)
       if [[ $# -lt 2 ]]; then
         err_msg "Option -wd requires an argument"
@@ -168,6 +177,7 @@ main() {
   export LLAMA_ARGS="$LLAMA_ARGS"
   export LD_DEVICE="$LD"
   export SD_DEVICE="$SD"
+  export TD_DEVICE="$TD"
   export WD_DEVICE="$WD"
   docker-compose up --abort-on-container-failure "${SERVICES[@]}"
 }

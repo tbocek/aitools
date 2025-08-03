@@ -140,6 +140,20 @@ services:
   tts-rocm:
     build: Dockerfile.tts
     image: tts:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - CUDA_VISIBLE_DEVICES=${TD_DEVICE:-0}
     ports: 
       -  "8004:8004"
     command: /bin/bash -c "source venv/bin/activate && python server.py"
