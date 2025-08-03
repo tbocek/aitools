@@ -12,10 +12,10 @@ RUN yay -S --noconfirm \
 
 #LLAMA.CPP
 #https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md
-RUN git clone https://github.com/ggml-org/llama.cpp
-RUN mv llama.cpp llama.cpp.rocm && cp -r llama.cpp.rocm llama.cpp.vulkan
 ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang" 
 ENV HIP_PATH="/opt/rocm"
+RUN git clone https://github.com/ggml-org/llama.cpp
+RUN mv llama.cpp llama.cpp.rocm && cp -r llama.cpp.rocm llama.cpp.vulkan
 RUN cd llama.cpp.rocm && cmake -B build \
     -DLLAMA_CURL=ON \
     -DGGML_HIP_ROCWMMA_FATTN=ON \

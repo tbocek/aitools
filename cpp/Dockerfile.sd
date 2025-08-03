@@ -12,6 +12,8 @@ RUN yay -S --noconfirm \
 
 #STABLE-DIFFUSION.CPP
 #https://github.com/leejet/stable-diffusion.cpp
+ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang" 
+ENV HIP_PATH="/opt/rocm"
 RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp
 RUN mv stable-diffusion.cpp stable-diffusion.cpp.rocm && cp -r stable-diffusion.cpp.rocm stable-diffusion.cpp.vulkan
 RUN cd stable-diffusion.cpp.rocm && cmake -B build -G "Ninja" \
