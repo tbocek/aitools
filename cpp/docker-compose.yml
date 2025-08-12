@@ -20,7 +20,7 @@ services:
       - "9001:9001"
     volumes:
       - /mnt/models:/models
-    command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja --embeddings
+    command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS} --cache-reuse 256 --n-gpu-layers 9999 --threads 60 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja --embeddings
 
   llama-vulkan:
     build: Dockerfile.llama
