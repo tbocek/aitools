@@ -68,7 +68,7 @@ npm start
 npm run dev
 
 # With custom configuration
-AUDIO_CHUNK_SECS=2 PORT=3000 npm start
+PORT=3000 npm start
 ```
 
 ### 2. Access the Demo
@@ -129,7 +129,6 @@ curl -X POST http://localhost:8080/transcribe/file \
 |----------|---------|-------------|
 | `HOST` | `0.0.0.0` | Server bind address |
 | `PORT` | `8080` | Server port |
-| `AUDIO_CHUNK_SECS` | `1` | Audio chunk duration (0.5-5s) |
 | `CLI_PATH` | `llama-server` | Path to llama-server binary |
 | `VOXTRAL_SERVER_PORT` | `8081` | Internal Voxtral server port |
 | `TEMP_DIR` | `/tmp/voxtral` | Temporary file directory |
