@@ -1,6 +1,8 @@
 services:
   llama-rocm:
-    build: Dockerfile.llama
+    build: 
+      context: .
+      dockerfile: Dockerfile.llama
     image: llama:latest
     devices:
       - /dev/kfd
@@ -21,9 +23,11 @@ services:
     volumes:
       - /mnt/models:/models
 
-    command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja --embeddings --cache-reuse 1024
+    command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja --embeddings --cache-reuse 1024
   llama-vulkan:
-    build: Dockerfile.llama
+    build: 
+      context: .
+      dockerfile: Dockerfile.llama
     image: llama:latest
     devices:
       - /dev/kfd
@@ -43,10 +47,12 @@ services:
       - "9001:9001"
     volumes:
       - /mnt/models:/models
-    command: /home/arch/llama.cpp.vulkan/build/bin/llama-server ${LLAMA_ARGS} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja --embeddings
+    command: /home/arch/llama.cpp.vulkan/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k f16 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja --embeddings
 
   sd-rocm:
-    build: Dockerfile.sd
+    build: 
+      context: .
+      dockerfile: Dockerfile.sd
     image: sd:latest
     devices:
       - /dev/kfd
@@ -62,14 +68,21 @@ services:
         hard: -1
     environment:
       - CUDA_VISIBLE_DEVICES=${SD_DEVICE:-0}
+      - TERM=xterm-256color
+      - FORCE_COLOR=1
+      - PYTHONUNBUFFERED=1
     ports:
       - "7860:7860"
     volumes:
       - /mnt/models/sd:/home/arch/sd.cpp-webui.rocm/models
+    tty: true
+    stdin_open: true
     command: /home/arch/sd.cpp-webui.rocm/sdcpp_webui.sh --listen
 
   sd-vulkan:
-    build: Dockerfile.sd
+    build: 
+      context: .
+      dockerfile: Dockerfile.sd
     image: sd:latest
     devices:
       - /dev/kfd
@@ -92,7 +105,9 @@ services:
     command: /home/arch/sd.cpp-webui.vulkan/sdcpp_webui.sh --listen
 
   whisper-rocm:
-    build: Dockerfile.whisper
+    build: 
+      context: .
+      dockerfile: Dockerfile.whisper
     image: whisper:latest
     devices:
       - /dev/kfd
@@ -115,7 +130,9 @@ services:
     command: /home/arch/whisper.cpp.rocm/build/bin/whisper-server --model /models/ggml-large-v3.bin --flash-attn --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
 
   whisper-vulkan:
-    build: Dockerfile.whisper
+    build: 
+      context: .
+      dockerfile: Dockerfile.whisper
     image: whisper:latest
     devices:
       - /dev/kfd
@@ -138,7 +155,9 @@ services:
     command: /home/arch/whisper.cpp.vulkan/build/bin/whisper-server --model /models/ggml-large-v3.bin --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
     
   tts-rocm:
-    build: Dockerfile.tts
+    build:
+      context: .
+      dockerfile: Dockerfile.tts
     image: tts:latest
     devices:
       - /dev/kfd
@@ -155,5 +174,33 @@ services:
     environment:
       - CUDA_VISIBLE_DEVICES=${TD_DEVICE:-0}
     ports: 
-      -  "8004:8004"
+      - "8004:8004"
     command: /bin/bash -c "source venv/bin/activate && python server.py"
+    
+  sdw-rocm:
+    build: 
+      context: .
+      dockerfile: Dockerfile.sdw
+    image: sdw:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - CUDA_VISIBLE_DEVICES=${TD_DEVICE:-0}
+    ports: 
+      - "7860:7860"
+    volumes:
+      - /opt/models/sd.next/app:/app
+      - /opt/models/sd.next/python:/mnt/python
+      - /mnt/models/sd.next/data:/mnt/data
+      - /mnt/models/sd.next/models:/mnt/models
+      - /mnt/models/sd.next/huggingface:/root/.cache/huggingface
