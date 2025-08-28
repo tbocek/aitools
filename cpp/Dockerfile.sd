@@ -5,13 +5,50 @@ WORKDIR /home/arch
 
 # Base installed, lets get specific
 RUN yay -S --noconfirm \
-  rocwmma \
-  rocm-hip-sdk \
   vulkan-headers \
   vulkan-icd-loader \
   vulkan-radeon \
   shaderc \
+  downgrade \
+  sudo \
   && sudo pacman -Scc --noconfirm
+  
+RUN sudo downgrade --ignore never \
+  comgr=${ROCM_VERSION} \
+  composable-kernel=${ROCM_VERSION} \
+  hipblas-common=${ROCM_VERSION} \
+  hipblaslt=${ROCM_VERSION} \
+  hsa-rocr=${ROCM_VERSION}-2 \
+  rocm-cmake=${ROCM_VERSION} \
+  rocm-device-libs=${ROCM_VERSION} \
+  rocm-language-runtime=${ROCM_VERSION} \
+  rocm-smi-lib=${ROCM_VERSION} \
+  rocminfo=${ROCM_VERSION} \
+  rocprofiler-register=${ROCM_VERSION} \
+  roctracer=${ROCM_VERSION} \
+  hip-runtime-amd=${ROCM_VERSION} \
+  hipblas=${ROCM_VERSION} \
+  hipcub=${ROCM_VERSION} \
+  hipfft=${ROCM_VERSION} \
+  hiprand=${ROCM_VERSION} \
+  hipsolver=${ROCM_VERSION} \
+  hipsparse=${ROCM_VERSION} \
+  rccl=${ROCM_VERSION} \
+  rocalution=${ROCM_VERSION} \
+  rocblas=${ROCM_VERSION} \
+  rocfft=${ROCM_VERSION} \
+  rocm-core=${ROCM_VERSION} \
+  rocm-hip-libraries=${ROCM_VERSION} \
+  rocm-hip-runtime=${ROCM_VERSION} \
+  rocm-hip-sdk=${ROCM_VERSION} \
+  rocm-llvm=${ROCM_VERSION} \
+  rocprim=${ROCM_VERSION} \
+  rocrand=${ROCM_VERSION} \
+  rocsolver=${ROCM_VERSION} \
+  rocsparse=${ROCM_VERSION} \
+  rocthrust=${ROCM_VERSION} \
+  rocwmma=${ROCM_VERSION} \
+  -- --noconfirm
 
 #STABLE-DIFFUSION.CPP
 #https://github.com/leejet/stable-diffusion.cpp
