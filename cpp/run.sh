@@ -144,32 +144,9 @@ parse_params() {
   return 0
 }
 
-validate_docker() {
-  if ! command -v docker &> /dev/null; then
-    die "Docker is not installed. Please install Docker first."
-  fi
-  
-  if ! command -v docker-compose &> /dev/null; then
-    die "Docker Compose is not installed. Please install Docker Compose first."
-  fi
-  
-  # Test docker access
-  if ! docker info &> /dev/null; then
-    die "Cannot access Docker daemon. Please ensure Docker is running and you have proper permissions."
-  fi
-}
-
 main() {
   setup_colors
   parse_params "$@"
-  validate_docker
-  
-  msg "${GREEN}Building services${NOFORMAT}"
-  docker build . -f Dockerfile.arch -t arch
-  docker build . -f Dockerfile.tts -t tts
-  docker build . -f Dockerfile.llama -t llama
-  docker build . -f Dockerfile.whisper -t whisper
-  docker build . -f Dockerfile.sd -t sd
 
   msg "${GREEN}Starting services: ${SERVICES[*]}${NOFORMAT}"
 
@@ -179,7 +156,7 @@ main() {
   export SD_DEVICE="$SD"
   export TD_DEVICE="$TD"
   export WD_DEVICE="$WD"
-  docker-compose up --abort-on-container-failure "${SERVICES[@]}"
+  docker-compose up --build --abort-on-container-failure "${SERVICES[@]}"
 }
 
 # Run main function
