@@ -147,6 +147,9 @@ parse_params() {
 main() {
   setup_colors
   parse_params "$@"
+  
+  msg "${GREEN}Building services${NOFORMAT}"
+  docker build . -f Dockerfile.arch -t arch
 
   msg "${GREEN}Starting services: ${SERVICES[*]}${NOFORMAT}"
 
