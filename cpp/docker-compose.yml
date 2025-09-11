@@ -22,7 +22,7 @@ services:
       - "9001:9001"
     volumes:
       - /mnt/models:/models
-    command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja
+    command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja
 
   llama-vulkan:
     build: 
@@ -47,7 +47,7 @@ services:
       - "9001:9001"
     volumes:
       - /mnt/models:/models
-    command: /home/arch/llama.cpp.vulkan/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja
+    command: /home/arch/llama.cpp.vulkan/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --mlock --no-mmap --jinja
 
   sd-rocm:
     build: 
@@ -127,7 +127,7 @@ services:
       - "9000:9000"
     volumes:
       - /mnt/models:/models
-    command: /home/arch/whisper.cpp.rocm/build/bin/whisper-server --model /models/ggml-large-v3.bin --flash-attn --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
+    command: /home/arch/whisper.cpp.rocm/build/bin/whisper-server --model /models/ggml-large-v3.bin --flash-attn on --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
 
   whisper-vulkan:
     build: 
