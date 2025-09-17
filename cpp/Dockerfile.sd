@@ -40,6 +40,7 @@ RUN cmake -B build -G "Ninja" \
 RUN cmake --build build --config Release --parallel
 
 #https://github.com/daniandtheweb/sd.cpp-webui
+WORKDIR /home/arch/
 RUN git clone https://github.com/daniandtheweb/sd.cpp-webui.git && \
     mv sd.cpp-webui sd.cpp-webui.rocm && \
     cp -r sd.cpp-webui.rocm sd.cpp-webui.vulkan
