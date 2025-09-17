@@ -30,7 +30,7 @@ RUN cmake -B build -G "Ninja" \
     -DSD_HIPBLAS=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DAMDGPU_TARGETS=gfx1100
-RUN ccmake --build build --config Release --parallel
+RUN cmake --build build --config Release --parallel
 
 WORKDIR /home/arch/stable-diffusion.cpp.vulkan
 RUN cmake -B build -G "Ninja" \
