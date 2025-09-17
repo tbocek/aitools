@@ -9,27 +9,35 @@ RUN yay -S --noconfirm \
   vulkan-icd-loader \
   vulkan-radeon \
   shaderc \
-  sudo \
+  rocwmma \
+  rocm-hip-sdk \
   && sudo pacman -Scc --noconfirm
+
+ENV HIP_PATH=/opt/rocm \
+    ROCM_PATH=/opt/rocm
 
 #WHISPER.CPP
 #https://github.com/ggml-org/whisper.cpp
-ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang" 
-ENV HIP_PATH="/opt/rocm"
-RUN git clone https://github.com/ggml-org/whisper.cpp.git
-RUN mv whisper.cpp whisper.cpp.rocm && cp -r whisper.cpp.rocm whisper.cpp.vulkan
-RUN cd whisper.cpp.rocm && cmake -B build \
+
+RUN git clone https://github.com/ggml-org/whisper.cpp.git && \
+    mv whisper.cpp whisper.cpp.rocm && \
+    cp -r whisper.cpp.rocm whisper.cpp.vulkan
+
+WORKDIR /home/arch/whisper.cpp.rocm
+RUN cmake -B build \
     -DLLAMA_CURL=ON \
     -DGGML_HIP_ROCWMMA_FATTN=ON \
     -DGGML_HIP=ON \
     -DAMDGPU_TARGETS=gfx1100 \
-    -DGGML_CUDA_FA_ALL_QUANTS=1 \
+    -DGGML_CUDA_FA_ALL_QUANTS=ON \
     -DWHISPER_FFMPEG=yes \
     -DCMAKE_BUILD_TYPE=Release
-RUN cd whisper.cpp.rocm && cmake --build build --config Release --parallel
-RUN cd whisper.cpp.vulkan && cmake -B build \
+RUN cmake --build build --config Release --parallel
+
+WORKDIR /home/arch/whisper.cpp.vulkan
+RUN cmake -B build \
     -DLLAMA_CURL=ON \
     -DGGML_VULKAN=ON \
     -DWHISPER_FFMPEG=yes \
     -DCMAKE_BUILD_TYPE=Release
-RUN cd whisper.cpp.vulkan && cmake --build build --config Release --parallel
+RUN cmake --build build --config Release --parallel

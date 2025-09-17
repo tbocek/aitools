@@ -9,38 +9,49 @@ RUN yay -S --noconfirm \
   vulkan-icd-loader \
   vulkan-radeon \
   shaderc \
-  sudo \
+  rocwmma \
+  rocm-hip-sdk \
   && sudo pacman -Scc --noconfirm
 
 #STABLE-DIFFUSION.CPP
 #https://github.com/leejet/stable-diffusion.cpp
-ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang" 
-ENV HIP_PATH="/opt/rocm"
-RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp
-RUN mv stable-diffusion.cpp stable-diffusion.cpp.rocm && cp -r stable-diffusion.cpp.rocm stable-diffusion.cpp.vulkan
-RUN cd stable-diffusion.cpp.rocm && cmake -B build -G "Ninja" \
+    
+RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp && \
+    mv stable-diffusion.cpp stable-diffusion.cpp.rocm && \
+    cp -r stable-diffusion.cpp.rocm stable-diffusion.cpp.vulkan
+
+WORKDIR /home/arch/stable-diffusion.cpp.rocm
+RUN cmake -B build -G "Ninja" \
     -DCMAKE_C_COMPILER=/opt/rocm/lib/llvm/bin/clang \
     -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
     -DSD_HIPBLAS=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DAMDGPU_TARGETS=gfx1100
-RUN cd stable-diffusion.cpp.rocm && cmake --build build --config Release --parallel
-RUN cd stable-diffusion.cpp.vulkan && cmake -B build -G "Ninja" \
+RUN ccmake --build build --config Release --parallel
+
+WORKDIR /home/arch/stable-diffusion.cpp.vulkan
+RUN cmake -B build -G "Ninja" \
     -DSD_VULKAN=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DAMDGPU_TARGETS=gfx1100
-RUN cd stable-diffusion.cpp.vulkan && cmake --build build --config Release --parallel
+RUN cmake --build build --config Release --parallel
+
 #https://github.com/daniandtheweb/sd.cpp-webui
-RUN git clone https://github.com/daniandtheweb/sd.cpp-webui.git
-RUN mv sd.cpp-webui sd.cpp-webui.rocm && cp -r sd.cpp-webui.rocm sd.cpp-webui.vulkan
-RUN cp stable-diffusion.cpp.rocm/build/bin/sd sd.cpp-webui.rocm && cp stable-diffusion.cpp.vulkan/build/bin/sd sd.cpp-webui.vulkan
-RUN cd sd.cpp-webui.rocm && \
-    chmod a+x sdcpp_webui.sh && \
+RUN git clone https://github.com/daniandtheweb/sd.cpp-webui.git && \
+    mv sd.cpp-webui sd.cpp-webui.rocm && \
+    cp -r sd.cpp-webui.rocm sd.cpp-webui.vulkan
+    
+RUN cp stable-diffusion.cpp.rocm/build/bin/sd sd.cpp-webui.rocm && \
+    cp stable-diffusion.cpp.vulkan/build/bin/sd sd.cpp-webui.vulkan
+
+WORKDIR /home/arch/sd.cpp-webui.rocm
+RUN chmod a+x sdcpp_webui.sh && \
     python3 -m venv venv && \
     source venv/bin/activate && \
     pip install -r requirements.txt --upgrade pip
-RUN cd sd.cpp-webui.vulkan && \
-    chmod a+x sdcpp_webui.sh && \
+    
+WORKDIR /home/arch/sd.cpp-webui.vulkan
+RUN chmod a+x sdcpp_webui.sh && \
     python3 -m venv venv && \
     source venv/bin/activate && \
     pip install -r requirements.txt --upgrade pip

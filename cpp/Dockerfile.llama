@@ -3,33 +3,41 @@ FROM arch:latest
 USER arch
 WORKDIR /home/arch
 
-ENV ROCM_VERSION="6.4.1"
-
 # Base installed, lets get specific
 RUN yay -S --noconfirm \
   vulkan-headers \
   vulkan-icd-loader \
   vulkan-radeon \
   shaderc \
-  sudo \
+  rocwmma \
+  rocm-hip-sdk \
   && sudo pacman -Scc --noconfirm
+
+ENV HIP_PATH=/opt/rocm \
+    ROCM_PATH=/opt/rocm
 
 #LLAMA.CPP
 #https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md
-ENV HIPCXX="/opt/rocm/lib/llvm/bin/clang"
-ENV HIP_PATH="/opt/rocm"
-RUN git clone https://github.com/ggml-org/llama.cpp
-RUN mv llama.cpp llama.cpp.rocm && cp -r llama.cpp.rocm llama.cpp.vulkan
-RUN cd llama.cpp.rocm && cmake -B build \
+    
+RUN git clone https://github.com/ggml-org/llama.cpp && \
+    mv llama.cpp llama.cpp.rocm && \
+    cp -r llama.cpp.rocm llama.cpp.vulkan
+
+WORKDIR /home/arch/llama.cpp.rocm
+RUN cmake -B build \
     -DLLAMA_CURL=ON \
     -DGGML_HIP_ROCWMMA_FATTN=ON \
     -DGGML_HIP=ON \
     -DAMDGPU_TARGETS=gfx1100 \
-    -DGGML_CUDA_FA_ALL_QUANTS=1 \
+    -DGGML_CUDA_FA_ALL_QUANTS=ON \
     -DCMAKE_BUILD_TYPE=Release
-RUN cd llama.cpp.rocm && cmake --build build --config Release --parallel
-RUN cd llama.cpp.vulkan && cmake -B build \
+RUN cmake --build build --config Release --parallel
+
+WORKDIR /home/arch/llama.cpp.vulkan
+RUN cmake -B build \
     -DLLAMA_CURL=ON \
     -DGGML_VULKAN=ON \
     -DCMAKE_BUILD_TYPE=Release
-RUN cd llama.cpp.vulkan && cmake --build build --config Release --parallel
+RUN cmake --build build --config Release --parallel
+
+WORKDIR /home/arch
