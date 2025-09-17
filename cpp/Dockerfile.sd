@@ -13,6 +13,9 @@ RUN yay -S --noconfirm \
   rocm-hip-sdk \
   && sudo pacman -Scc --noconfirm
 
+ENV HIP_PATH=/opt/rocm \
+    ROCM_PATH=/opt/rocm
+
 #STABLE-DIFFUSION.CPP
 #https://github.com/leejet/stable-diffusion.cpp
     
