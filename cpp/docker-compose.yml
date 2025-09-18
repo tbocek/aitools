@@ -18,12 +18,14 @@ services:
         hard: -1
     mem_limit: 32g
     environment:
-      - CUDA_VISIBLE_DEVICES=${LD_DEVICE:-0}
+      - CUDA_VISIBLE_DEVICES=${LLAMA_DEVICE:-0}
     restart: unless-stopped
     ports:
       - "9001:9001"
     volumes:
       - /mnt/models:/models
+    tty: true
+    stdin_open: true
     command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --jinja
 
   llama-vulkan:
@@ -44,12 +46,14 @@ services:
         soft: -1
         hard: -1
     environment:
-      - GGML_VK_VISIBLE_DEVICES=${LD_DEVICE:-0}
+      - GGML_VK_VISIBLE_DEVICES=${LLAMA_DEVICE:-0}
     restart: unless-stopped
     ports:
       - "9001:9001"
     volumes:
       - /mnt/models:/models
+    tty: true
+    stdin_open: true
     command: /home/arch/llama.cpp.vulkan/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --jinja
 
   sd-rocm:
@@ -81,7 +85,7 @@ services:
       - /mnt/models/sd:/home/arch/sd.cpp-webui.rocm/models
     tty: true
     stdin_open: true
-    command: /home/arch/sd.cpp-webui.rocm/sdcpp_webui.sh --listen
+    command: /home/arch/sd.cpp-webui.rocm/sdcpp_webui.sh --listen ${SD_ARGS:-}
 
   sd-vulkan:
     build: 
@@ -107,7 +111,9 @@ services:
       - "7860:7860"
     volumes:
       - /mnt/models/sd:/home/arch/sd.cpp-webui.vulkan/models
-    command: /home/arch/sd.cpp-webui.vulkan/sdcpp_webui.sh --listen
+    tty: true
+    stdin_open: true
+    command: /home/arch/sd.cpp-webui.vulkan/sdcpp_webui.sh --listen ${SD_ARGS:-}
 
   whisper-rocm:
     build: 
@@ -127,13 +133,15 @@ services:
         soft: -1
         hard: -1
     environment:
-      - CUDA_VISIBLE_DEVICES=${WD_DEVICE:-0}
+      - CUDA_VISIBLE_DEVICES=${WHISPER_DEVICE:-0}
     restart: unless-stopped
     ports:
       - "9000:9000"
     volumes:
       - /mnt/models:/models
-    command: /home/arch/whisper.cpp.rocm/build/bin/whisper-server --model /models/ggml-large-v3.bin --flash-attn on --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
+    tty: true
+    stdin_open: true
+    command: /home/arch/whisper.cpp.rocm/build/bin/whisper-server ${WHISPER_ARGS:-} --flash-attn on --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
 
   whisper-vulkan:
     build: 
@@ -153,13 +161,15 @@ services:
         soft: -1
         hard: -1
     environment:
-      - GGML_VK_VISIBLE_DEVICES=${WD_DEVICE:-0}
+      - GGML_VK_VISIBLE_DEVICES=${WHISPER_DEVICE:-0}
     restart: unless-stopped
     ports:
       - "9000:9000"
     volumes:
       - /mnt/models:/models
-    command: /home/arch/whisper.cpp.vulkan/build/bin/whisper-server --model /models/ggml-large-v3.bin --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
+    tty: true
+    stdin_open: true
+    command: /home/arch/whisper.cpp.vulkan/build/bin/whisper-server ${WHISPER_ARGS:-} --port 9000 --host 0.0.0.0 --inference-path /v1/audio/transcriptions --convert --no-context
     
   tts-rocm:
     build:
@@ -179,7 +189,7 @@ services:
         soft: -1
         hard: -1
     environment:
-      - CUDA_VISIBLE_DEVICES=${TD_DEVICE:-0}
+      - CUDA_VISIBLE_DEVICES=${TTS_DEVICE:-0}
     restart: unless-stopped
     ports: 
       - "8004:8004"
@@ -203,7 +213,7 @@ services:
         soft: -1
         hard: -1
     environment:
-      - CUDA_VISIBLE_DEVICES=${TD_DEVICE:-0}
+      - CUDA_VISIBLE_DEVICES=${TTS_DEVICE:-0}
     restart: unless-stopped
     ports: 
       - "7860:7860"

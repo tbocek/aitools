@@ -5,6 +5,7 @@ trap cleanup SIGINT SIGTERM ERR EXIT
 
 # Global variables
 SERVICES=()
+DETACHED=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cleanup() {
@@ -17,13 +18,9 @@ usage() {
 Usage: $(basename "${BASH_SOURCE[0]}") [OPTIONS]
 Manage and run services in the Docker environment.
 OPTIONS:
-  -s SERVICE     Specify service to run (e.g., -s llama-rocm -s sd-rocm)
-  -la LLAMA_ARGS Specify arguments for llama.cpp (e.g., "--model model_name --mmproj mmproj_name --ctx-size 2048")
-  -ld DEV_NUM    Specify device for llama.cpp (-ld 1)
-  -sd DEV_NUM    Specify device for sd.cpp (-sd 0)
-  -td DEV_NUM    Specify device for Chatterbox-TTS-Server (-sd 0)
-  -wd DEV_NUM    Specify device for whisper.cpp (-wd 1)
-  -h, --help     Print this help and exit
+  -s SERVICE[:DEVICE] [ARGS]  Specify service with optional device and arguments
+  -d                          Run in detached mode
+  -h, --help                  Print this help and exit
 AVAILABLE SERVICES:
   llama-rocm     Run LLaMA server with ROCM GPU acceleration
   llama-vulkan   Run LLaMA server with Vulkan GPU acceleration
@@ -33,7 +30,8 @@ AVAILABLE SERVICES:
   whisper-vulkan Run Whisper server with Vulkan GPU acceleration
   tts-rocm       Run Chatterbox-TTS-Server with ROCM GPU acceleration
 EXAMPLES:
-  $(basename "${BASH_SOURCE[0]}") -s llama-rocm -s sd-rocm -la "--model model_name --mmproj mmproj_name --ctx-size 2048" -ld 1 -sd 0
+  $(basename "${BASH_SOURCE[0]}") -s "llama-rocm:1 --model model_name --ctx-size 2048" -s "sd-rocm:0"
+  $(basename "${BASH_SOURCE[0]}") -d -s "whisper-rocm:1" -s "tts-rocm:0"
 EOF
   exit
 }
@@ -60,14 +58,61 @@ setup_colors() {
   fi
 }
 
-parse_params() {
-  # Default values
-  LLAMA_ARGS=""
-  LD=""
-  SD=""
-  TD=""
-  WD=""
+parse_service_spec() {
+  local service_spec="$1"
+  local service_name device args
   
+  # Split on first space to separate service:device from args
+  if [[ "$service_spec" =~ ^([^[:space:]]+)[[:space:]]+(.*)$ ]]; then
+    service_name="${BASH_REMATCH[1]}"
+    args="${BASH_REMATCH[2]}"
+  else
+    service_name="$service_spec"
+    args=""
+  fi
+  
+  # Split service:device
+  if [[ "$service_name" =~ ^([^:]+):([0-9]+)$ ]]; then
+    service="${BASH_REMATCH[1]}"
+    device="${BASH_REMATCH[2]}"
+  else
+    service="$service_name"
+    device=""
+  fi
+  
+  # Validate service name
+  case "$service" in
+    llama-rocm|llama-vulkan|sd-rocm|sd-vulkan|whisper-rocm|whisper-vulkan|tts-rocm)
+      ;;
+    *)
+      die "Invalid service: $service. Use -h for help."
+      ;;
+  esac
+  
+  # Export service-specific environment variables
+  case "$service" in
+    llama-*)
+      [[ -n "$device" ]] && export LLAMA_DEVICE="$device"
+      [[ -n "$args" ]] && export LLAMA_ARGS="$args"
+      ;;
+    sd-*)
+      [[ -n "$device" ]] && export SD_DEVICE="$device"
+      [[ -n "$args" ]] && export SD_ARGS="$args"
+      ;;
+    whisper-*)
+      [[ -n "$device" ]] && export WHISPER_DEVICE="$device"
+      [[ -n "$args" ]] && export WHISPER_ARGS="$args"
+      ;;
+    tts-*)
+      [[ -n "$device" ]] && export TTS_DEVICE="$device"
+      [[ -n "$args" ]] && export TTS_ARGS="$args"
+      ;;
+  esac
+  
+  SERVICES+=("$service")
+}
+
+parse_params() {
   # Check if no arguments provided
   if [[ $# -eq 0 ]]; then
     usage
@@ -76,47 +121,15 @@ parse_params() {
   while [[ $# -gt 0 ]]; do
     case "${1}" in
     -h | --help) usage ;;
+    -d | --detach)
+      DETACHED=true
+      shift ;;
     -s)
       if [[ $# -lt 2 ]]; then
         err_msg "Option -s requires an argument"
         usage
       fi
-      SERVICES+=("${2}")
-      shift 2 ;;
-    -la)
-      if [[ $# -lt 2 ]]; then
-        err_msg "Option -la requires an argument"
-        usage
-      fi
-      LLAMA_ARGS="${2}"
-      shift 2 ;;
-    -ld)
-      if [[ $# -lt 2 ]]; then
-        err_msg "Option -ld requires an argument"
-        usage
-      fi
-      LD="${2}"
-      shift 2 ;;
-    -sd)
-      if [[ $# -lt 2 ]]; then
-        err_msg "Option -sd requires an argument"
-        usage
-      fi
-      SD="${2}"
-      shift 2 ;;
-    -td)
-      if [[ $# -lt 2 ]]; then
-        err_msg "Option -td requires an argument"
-        usage
-      fi
-      TD="${2}"
-      shift 2 ;;  
-    -wd)
-      if [[ $# -lt 2 ]]; then
-        err_msg "Option -wd requires an argument"
-        usage  
-      fi
-      WD="${2}"
+      parse_service_spec "${2}"
       shift 2 ;;
     -?*)
       err_msg "Unknown option: $1"
@@ -131,36 +144,21 @@ parse_params() {
   
   # Validate required parameters
   [[ ${#SERVICES[@]} -eq 0 ]] && die "No service specified. Use -h for help."
-  # Validate service names
-  for service in "${SERVICES[@]}"; do
-    case "$service" in
-      llama-rocm|llama-vulkan|sd-rocm|sd-vulkan|whisper-rocm|whisper-vulkan|tts-rocm)
-        ;;
-      *)
-        die "Invalid service: $service. Use -h for help."
-        ;;
-    esac
-  done
   return 0
 }
 
-main() {
-  setup_colors
-  parse_params "$@"
+setup_colors
+parse_params "$@"
   
-  msg "${GREEN}Building services${NOFORMAT}"
-  docker build . -f Dockerfile.arch -t arch
+msg "${GREEN}Building services${NOFORMAT}"
+docker build . -f Dockerfile.arch -t arch
 
-  msg "${GREEN}Starting services: ${SERVICES[*]}${NOFORMAT}"
+msg "${GREEN}Starting services: ${SERVICES[*]}${NOFORMAT}"
+# Prepare docker-compose command
+local compose_args=("up" "--build" "--abort-on-container-failure")
+if [[ "$DETACHED" == true ]]; then
+  compose_args+=("-d")
+fi
+compose_args+=("${SERVICES[@]}")
 
-  # Export the variables
-  export LLAMA_ARGS="$LLAMA_ARGS"
-  export LD_DEVICE="$LD"
-  export SD_DEVICE="$SD"
-  export TD_DEVICE="$TD"
-  export WD_DEVICE="$WD"
-  docker-compose up --build --abort-on-container-failure "${SERVICES[@]}"
-}
-
-# Run main function
-main "$@"
+docker-compose "${compose_args[@]}"
