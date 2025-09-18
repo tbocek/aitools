@@ -155,7 +155,7 @@ docker build . -f Dockerfile.arch -t arch
 
 msg "${GREEN}Starting services: ${SERVICES[*]}${NOFORMAT}"
 # Prepare docker-compose command
-local compose_args=("up" "--build" "--abort-on-container-failure")
+compose_args=("up" "--build" "--abort-on-container-failure")
 if [[ "$DETACHED" == true ]]; then
   compose_args+=("-d")
 fi
