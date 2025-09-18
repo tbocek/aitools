@@ -26,7 +26,7 @@ services:
       - /mnt/models:/models
     tty: true
     stdin_open: true
-    command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --jinja
+    command: /home/arch/llama.cpp.rocm/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --jinja --cache-reuse 1024
 
   llama-vulkan:
     build: 
@@ -54,7 +54,7 @@ services:
       - /mnt/models:/models
     tty: true
     stdin_open: true
-    command: /home/arch/llama.cpp.vulkan/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --jinja
+    command: /home/arch/llama.cpp.vulkan/build/bin/llama-server ${LLAMA_ARGS:-} --n-gpu-layers 9999 --threads 64 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --port 9001 --host 0.0.0.0 --jinja --cache-reuse 1024
 
   sd-rocm:
     build: 
