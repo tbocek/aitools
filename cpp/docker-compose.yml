@@ -16,6 +16,7 @@ services:
       memlock:
         soft: -1
         hard: -1
+    mem_limit: 32g
     environment:
       - CUDA_VISIBLE_DEVICES=${LD_DEVICE:-0}
     restart: unless-stopped

@@ -11,9 +11,11 @@ RUN yay -S --noconfirm \
   shaderc \
   rocwmma \
   rocm-hip-sdk \
+  hip-runtime-amd \
   && sudo pacman -Scc --noconfirm
 
-ENV HIP_PATH=/opt/rocm \
+ENV PATH="/opt/rocm/bin:${PATH}" \
+    HIP_PATH=/opt/rocm \
     ROCM_PATH=/opt/rocm
 
 #STABLE-DIFFUSION.CPP
