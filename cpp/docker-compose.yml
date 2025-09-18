@@ -18,6 +18,7 @@ services:
         hard: -1
     environment:
       - CUDA_VISIBLE_DEVICES=${LD_DEVICE:-0}
+    restart: unless-stopped
     ports:
       - "9001:9001"
     volumes:
@@ -43,6 +44,7 @@ services:
         hard: -1
     environment:
       - GGML_VK_VISIBLE_DEVICES=${LD_DEVICE:-0}
+    restart: unless-stopped
     ports:
       - "9001:9001"
     volumes:
@@ -71,6 +73,7 @@ services:
       - TERM=xterm-256color
       - FORCE_COLOR=1
       - PYTHONUNBUFFERED=1
+    restart: unless-stopped
     ports:
       - "7860:7860"
     volumes:
@@ -98,6 +101,7 @@ services:
         hard: -1
     environment:
       - GGML_VK_VISIBLE_DEVICES=${SD_DEVICE:-0}
+    restart: unless-stopped
     ports:
       - "7860:7860"
     volumes:
@@ -123,6 +127,7 @@ services:
         hard: -1
     environment:
       - CUDA_VISIBLE_DEVICES=${WD_DEVICE:-0}
+    restart: unless-stopped
     ports:
       - "9000:9000"
     volumes:
@@ -148,6 +153,7 @@ services:
         hard: -1
     environment:
       - GGML_VK_VISIBLE_DEVICES=${WD_DEVICE:-0}
+    restart: unless-stopped
     ports:
       - "9000:9000"
     volumes:
@@ -173,6 +179,7 @@ services:
         hard: -1
     environment:
       - CUDA_VISIBLE_DEVICES=${TD_DEVICE:-0}
+    restart: unless-stopped
     ports: 
       - "8004:8004"
     command: /bin/bash -c "source venv/bin/activate && python server.py"
@@ -196,6 +203,7 @@ services:
         hard: -1
     environment:
       - CUDA_VISIBLE_DEVICES=${TD_DEVICE:-0}
+    restart: unless-stopped
     ports: 
       - "7860:7860"
     volumes:
