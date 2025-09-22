@@ -155,7 +155,7 @@ docker build . -f Dockerfile.arch -t arch
 
 msg "${GREEN}Starting services: ${SERVICES[*]}${NOFORMAT}"
 # Prepare docker-compose command
-compose_args=("up" "--build")
+compose_args=("up" "--build" "--no-cache")
 if [[ "$DETACHED" == true ]]; then
   compose_args+=("-d")
 else
