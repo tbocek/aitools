@@ -31,14 +31,15 @@ RUN cmake -B build -G "Ninja" \
     -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
     -DSD_HIPBLAS=ON \
     -DCMAKE_BUILD_TYPE=Release \
-    -DAMDGPU_TARGETS=gfx1100
+    -DAMDGPU_TARGETS=gfx1100 \
+    -DGPU_TARGETS=gfx1100 \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 RUN cmake --build build --config Release --parallel
 
 WORKDIR /home/arch/stable-diffusion.cpp.vulkan
 RUN cmake -B build -G "Ninja" \
-    -DSD_VULKAN=ON \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DAMDGPU_TARGETS=gfx1100
+    -DSD_VULKAN=ON
 RUN cmake --build build --config Release --parallel
 
 #https://github.com/daniandtheweb/sd.cpp-webui
