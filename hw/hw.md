@@ -15,7 +15,7 @@ LM Studio provides a user-friendly desktop GUI for running local language models
 **Hardware Support:** CPU, CUDA, Metal (Apple Silicon) - Uses llama.cpp and MLX backends so inherits their hardware support
 
 **Ollama**
-Ollama simplifies LLM deployment with Docker-like commands and is primarily command-line focused rather than GUI-focused. Originally built on llama.cpp, Ollama has developed its own engine for multimodal models that uses ggml directly to improve reliability and support future modalities. This architectural shift allows each model to be fully self-contained but may impact features like strict structured output that were previously provided by llama.cpp. For beginners, Ollama remains easier as it simplifies many technical aspects.
+Ollama simplifies LLM deployment with Docker-like commands and is primarily command-line focused. It uses llama.cpp for text-only models but has developed its own engine for multimodal models that uses ggml directly. This architectural shift allows each multimodal model to be fully self-contained. Ollama supports structured output through JSON schema enforcement. For beginners, Ollama remains easier as it simplifies many technical aspects.
 
 **Hardware Support:** [CPU, CUDA](https://markaicode.com/install-ollama-nvidia-gpu-cuda-support/), Metal (Apple Silicon), [ROCm](https://llm-tracker.info/howto/AMD-GPUs), [Intel GPUs via IPEX-LLM](https://github.com/NikolasEnt/ollama-webui-intel) - [ONNX backend has been requested](https://github.com/ollama/ollama/issues/6502) but not yet implemented
 
@@ -36,7 +36,7 @@ ONNXRuntime is Microsoft's cross-platform, high-performance ML inference engine 
 
 ### Key Technical Facts
 - **ggml foundation**: llama.cpp is built on ggml, a C++ tensor library that provides the computational foundation
-- **Architectural evolution**: Ollama has moved from using llama.cpp as a dependency to working directly with ggml for better multimodal support
+- **Architectural evolution**: Ollama uses llama.cpp for text models but developed its own ggml-based engine for improved multimodal support
 - **Performance focus**: vLLM prioritizes maximum throughput for production serving, while ONNXRuntime focuses on cross-platform optimization
 - **User experience spectrum**: Ranges from LM Studio's no-code GUI approach to llama.cpp's technical flexibility
 - **Open source status**: Most tools are open source except LM Studio (proprietary but free)
