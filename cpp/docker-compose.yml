@@ -195,11 +195,10 @@ services:
       - "8004:8004"
     command: /bin/bash -c "source venv/bin/activate && python server.py"
     
-  sdw-rocm:
+  sdnext-rocm:
     build: 
       context: .
-      dockerfile: Dockerfile.sdw
-    image: sdw:latest
+      dockerfile: Dockerfile.sdnext
     devices:
       - /dev/kfd
       - /dev/dri
