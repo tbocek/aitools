@@ -9,9 +9,8 @@ RUN yay -S --noconfirm \
   vulkan-icd-loader \
   vulkan-radeon \
   shaderc \
-  rocwmma \
-  rocm-hip-sdk \
-  hip-runtime-amd \
+  rocm-gfx1151-bin \
+  openmp \
   && sudo pacman -Scc --noconfirm
 
 ENV PATH="/opt/rocm/bin:${PATH}" \
@@ -26,13 +25,23 @@ RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp && \
     cp -r stable-diffusion.cpp.rocm stable-diffusion.cpp.vulkan
 
 WORKDIR /home/arch/stable-diffusion.cpp.rocm
+
+ENV HIPCXX="/opt/rocm/llvm/bin/clang"
+ENV ROCM_PATH="/opt/rocm"
+ENV HIP_PATH="/opt/rocm"
+ENV HIP_PLATFORM=amd
+
 RUN cmake -B build -G "Ninja" \
     -DCMAKE_C_COMPILER=/opt/rocm/lib/llvm/bin/clang \
     -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
     -DSD_HIPBLAS=ON \
+    -DGGML_HIP=ON \
     -DCMAKE_BUILD_TYPE=Release \
-    -DAMDGPU_TARGETS=gfx1100 \
-    -DGPU_TARGETS=gfx1100 \
+    -DAMDGPU_TARGETS=gfx1151 \
+    -DGGML_CUDA_ENABLE_UNIFIED_MEMORY=ON \
+    -DGGML_HIP_ROCWMMA_FATTN=ON \
+    -DGGML_CUDA_FA_ALL_QUANTS=ON \
+    -DCMAKE_HIP_FLAGS="--rocm-device-lib-path=/opt/rocm/lib/llvm/amdgcn/bitcode" \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 RUN cmake --build build --config Release --parallel
@@ -48,8 +57,10 @@ RUN git clone https://github.com/daniandtheweb/sd.cpp-webui.git && \
     mv sd.cpp-webui sd.cpp-webui.rocm && \
     cp -r sd.cpp-webui.rocm sd.cpp-webui.vulkan
     
-RUN cp stable-diffusion.cpp.rocm/build/bin/sd sd.cpp-webui.rocm && \
-    cp stable-diffusion.cpp.vulkan/build/bin/sd sd.cpp-webui.vulkan
+RUN ls -la stable-diffusion.cpp.rocm/build/*
+RUN ls -la stable-diffusion.cpp.rocm/build/bin
+RUN cp stable-diffusion.cpp.rocm/build/bin/sd-cli sd.cpp-webui.rocm && \
+    cp stable-diffusion.cpp.vulkan/build/bin/sd-cli sd.cpp-webui.vulkan
 
 WORKDIR /home/arch/sd.cpp-webui.rocm
 RUN chmod a+x sdcpp_webui.sh && \
