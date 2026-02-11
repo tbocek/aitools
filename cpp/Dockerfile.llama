@@ -11,7 +11,6 @@ RUN yay -S --noconfirm \
   shaderc \
   rocwmma \
   rocm-hip-sdk \
-  hip-runtime-amd \
   && sudo pacman -Scc --noconfirm
   
 ENV PATH="/opt/rocm/bin:${PATH}" \
@@ -27,9 +26,8 @@ RUN git clone https://github.com/ggml-org/llama.cpp && \
 
 WORKDIR /home/arch/llama.cpp.rocm
 RUN cmake -B build \
-    -DLLAMA_CURL=ON \
-    -DGGML_HIP_ROCWMMA_FATTN=ON \
     -DGGML_HIP=ON \
+    -DGGML_HIP_ROCWMMA_FATTN=ON \
     -DAMDGPU_TARGETS=gfx1100 \
     -DGGML_CUDA_FA_ALL_QUANTS=ON \
     -DCMAKE_BUILD_TYPE=Release
