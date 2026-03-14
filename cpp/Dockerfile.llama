@@ -11,7 +11,6 @@ RUN yay -S --noconfirm \
   shaderc \
   rocwmma \
   rocm-hip-sdk \
-  hip-runtime-amd \
   && sudo pacman -Scc --noconfirm
   
 ENV PATH="/opt/rocm/bin:${PATH}" \
@@ -27,17 +26,16 @@ RUN git clone https://github.com/ggml-org/llama.cpp && \
 
 WORKDIR /home/arch/llama.cpp.rocm
 RUN cmake -B build \
-    -DLLAMA_CURL=ON \
-    -DGGML_HIP_ROCWMMA_FATTN=ON \
     -DGGML_HIP=ON \
-    -DAMDGPU_TARGETS=gfx1100 \
+    -DAMDGPU_TARGETS=gfx1151 \
     -DGGML_CUDA_FA_ALL_QUANTS=ON \
-    -DCMAKE_BUILD_TYPE=Release
+    -DGGML_CUDA_ENABLE_UNIFIED_MEMORY=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_HIP_FLAGS="-mllvm --amdgpu-unroll-threshold-local=600"
 RUN cmake --build build --config Release --parallel
 
 WORKDIR /home/arch/llama.cpp.vulkan
 RUN cmake -B build \
-    -DLLAMA_CURL=ON \
     -DGGML_VULKAN=ON \
     -DCMAKE_BUILD_TYPE=Release
 RUN cmake --build build --config Release --parallel

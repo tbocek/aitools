@@ -5,7 +5,6 @@ trap cleanup SIGINT SIGTERM ERR EXIT
 
 # Global variables
 SERVICES=()
-DETACHED=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cleanup() {
@@ -18,9 +17,8 @@ usage() {
 Usage: $(basename "${BASH_SOURCE[0]}") [OPTIONS]
 Manage and run services in the Docker environment.
 OPTIONS:
-  -s SERVICE[:DEVICE] [ARGS]  Specify service with optional device and arguments
-  -d                          Run in detached mode
-  -h, --help                  Print this help and exit
+  -s SERVICE-BACKEND[:DEVICE]  Specify service with backend and optional device
+  -h, --help                   Print this help and exit
 AVAILABLE SERVICES:
   llama-rocm     Run LLaMA server with ROCM GPU acceleration
   llama-vulkan   Run LLaMA server with Vulkan GPU acceleration
@@ -30,8 +28,8 @@ AVAILABLE SERVICES:
   whisper-vulkan Run Whisper server with Vulkan GPU acceleration
   tts-rocm       Run Chatterbox-TTS-Server with ROCM GPU acceleration
 EXAMPLES:
-  $(basename "${BASH_SOURCE[0]}") -s "llama-rocm:1 --model model_name --ctx-size 2048" -s "sd-rocm:0"
-  $(basename "${BASH_SOURCE[0]}") -d -s "whisper-rocm:1" -s "tts-rocm:0"
+  $(basename "${BASH_SOURCE[0]}") -s "llama-rocm:1" -s "sd-rocm:0"
+  $(basename "${BASH_SOURCE[0]}") -s "whisper-rocm:1" -s "tts-rocm:0"
 EOF
   exit
 }
@@ -60,55 +58,39 @@ setup_colors() {
 
 parse_service_spec() {
   local service_spec="$1"
-  local service_name device args
-  
-  # Split on first space to separate service:device from args
-  if [[ "$service_spec" =~ ^([^[:space:]]+)[[:space:]]+(.*)$ ]]; then
-    service_name="${BASH_REMATCH[1]}"
-    args="${BASH_REMATCH[2]}"
-  else
-    service_name="$service_spec"
-    args=""
-  fi
-  
+  local service_name device service backend
+
   # Split service:device
-  if [[ "$service_name" =~ ^([^:]+):([0-9]+)$ ]]; then
-    service="${BASH_REMATCH[1]}"
+  if [[ "$service_spec" =~ ^([^:]+):([0-9]+)$ ]]; then
+    service_name="${BASH_REMATCH[1]}"
     device="${BASH_REMATCH[2]}"
   else
-    service="$service_name"
+    service_name="$service_spec"
     device=""
   fi
-  
+
+  # Split service-backend (e.g. llama-rocm -> llama + rocm)
+  if [[ "$service_name" =~ ^(.+)-(rocm|vulkan)$ ]]; then
+    service="${BASH_REMATCH[1]}"
+    backend="${BASH_REMATCH[2]}"
+  else
+    die "Invalid service: $service_name. Must end in -rocm or -vulkan. Use -h for help."
+  fi
+
   # Validate service name
   case "$service" in
-    llama-rocm|llama-vulkan|sd-rocm|sd-vulkan|whisper-rocm|whisper-vulkan|tts-rocm)
+    llama|sd|whisper|tts)
       ;;
     *)
-      die "Invalid service: $service. Use -h for help."
+      die "Invalid service: $service_name. Use -h for help."
       ;;
   esac
-  
+
   # Export service-specific environment variables
-  case "$service" in
-    llama-*)
-      [[ -n "$device" ]] && export LLAMA_DEVICE="$device"
-      [[ -n "$args" ]] && export LLAMA_ARGS="$args"
-      ;;
-    sd-*)
-      [[ -n "$device" ]] && export SD_DEVICE="$device"
-      [[ -n "$args" ]] && export SD_ARGS="$args"
-      ;;
-    whisper-*)
-      [[ -n "$device" ]] && export WHISPER_DEVICE="$device"
-      [[ -n "$args" ]] && export WHISPER_ARGS="$args"
-      ;;
-    tts-*)
-      [[ -n "$device" ]] && export TTS_DEVICE="$device"
-      [[ -n "$args" ]] && export TTS_ARGS="$args"
-      ;;
-  esac
-  
+  local prefix="${service^^}"
+  export "${prefix}_BACKEND=$backend"
+  [[ -n "$device" ]] && export "${prefix}_DEVICE=$device"
+
   SERVICES+=("$service")
 }
 
@@ -117,13 +99,10 @@ parse_params() {
   if [[ $# -eq 0 ]]; then
     usage
   fi
-  
+
   while [[ $# -gt 0 ]]; do
     case "${1}" in
     -h | --help) usage ;;
-    -d | --detach)
-      DETACHED=true
-      shift ;;
     -s)
       if [[ $# -lt 2 ]]; then
         err_msg "Option -s requires an argument"
@@ -133,15 +112,15 @@ parse_params() {
       shift 2 ;;
     -?*)
       err_msg "Unknown option: $1"
-      usage 
+      usage
       ;;
     *)
       err_msg "Unexpected argument: $1"
-      usage 
+      usage
       ;;
     esac
   done
-  
+
   # Validate required parameters
   [[ ${#SERVICES[@]} -eq 0 ]] && die "No service specified. Use -h for help."
   return 0
@@ -149,18 +128,12 @@ parse_params() {
 
 setup_colors
 parse_params "$@"
-  
+
 msg "${GREEN}Building services${NOFORMAT}"
 docker build . -f Dockerfile.arch -t arch
 
 msg "${GREEN}Starting services: ${SERVICES[*]}${NOFORMAT}"
-# Prepare docker-compose command
-compose_args=("up" "--build")
-if [[ "$DETACHED" == true ]]; then
-  compose_args+=("-d")
-else
-  compose_args+=("--abort-on-container-failure")
-fi
-compose_args+=("${SERVICES[@]}")
+docker-compose up --build -d "${SERVICES[@]}"
 
-docker-compose "${compose_args[@]}"
+msg "${GREEN}Following logs (Ctrl+C to detach)${NOFORMAT}"
+docker-compose logs -f "${SERVICES[@]}"
