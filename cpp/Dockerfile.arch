@@ -1,4 +1,4 @@
-FROM archlinux:latest AS initial
+FROM quay.io/archlinux/archlinux:latest as initial
 
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \

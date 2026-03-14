@@ -1,5 +1,5 @@
 # LLM Software & Hardware Guide - Self-Hosted Solutions
-(tb, 22.08.2025)
+(tb, 22.08.2025, update 17.10.2025)
 This guide compares popular self-hosted LLM software solutions and hardware options for running large language models locally.
 
 ## LLM Software - Self Hosted
@@ -15,7 +15,7 @@ LM Studio provides a user-friendly desktop GUI for running local language models
 **Hardware Support:** CPU, CUDA, Metal (Apple Silicon) - Uses llama.cpp and MLX backends so inherits their hardware support
 
 **Ollama**
-Ollama simplifies LLM deployment with Docker-like commands and is primarily command-line focused rather than GUI-focused. Originally built on llama.cpp, Ollama has developed its own engine for multimodal models that uses ggml directly to improve reliability and support future modalities. This architectural shift allows each model to be fully self-contained but may impact features like strict structured output that were previously provided by llama.cpp. For beginners, Ollama remains easier as it simplifies many technical aspects.
+Ollama simplifies LLM deployment with Docker-like commands and is primarily command-line focused. It uses llama.cpp for text-only models but has developed its own engine for multimodal models that uses ggml directly. This architectural shift allows each multimodal model to be fully self-contained. Ollama supports structured output through JSON schema enforcement. For beginners, Ollama remains easier as it simplifies many technical aspects.
 
 **Hardware Support:** [CPU, CUDA](https://markaicode.com/install-ollama-nvidia-gpu-cuda-support/), Metal (Apple Silicon), [ROCm](https://llm-tracker.info/howto/AMD-GPUs), [Intel GPUs via IPEX-LLM](https://github.com/NikolasEnt/ollama-webui-intel) - [ONNX backend has been requested](https://github.com/ollama/ollama/issues/6502) but not yet implemented
 
@@ -36,7 +36,7 @@ ONNXRuntime is Microsoft's cross-platform, high-performance ML inference engine 
 
 ### Key Technical Facts
 - **ggml foundation**: llama.cpp is built on ggml, a C++ tensor library that provides the computational foundation
-- **Architectural evolution**: Ollama has moved from using llama.cpp as a dependency to working directly with ggml for better multimodal support
+- **Architectural evolution**: Ollama uses llama.cpp for text models but developed its own ggml-based engine for improved multimodal support
 - **Performance focus**: vLLM prioritizes maximum throughput for production serving, while ONNXRuntime focuses on cross-platform optimization
 - **User experience spectrum**: Ranges from LM Studio's no-code GUI approach to llama.cpp's technical flexibility
 - **Open source status**: Most tools are open source except LM Studio (proprietary but free)
@@ -91,7 +91,9 @@ LLaMA 7B, Q4, NO FA (Flash Attention). PP vs TG: PP is fast, so focus on TG, whi
 | **RX 7900 XTX** | 24GB | [ROCm](https://github.com/ggml-org/llama.cpp/discussions/15021) | 3529 | 153 | [778 CHF](https://www.digitec.ch/de/s1/product/xfx-radeon-rx-7900-xtx-merc310-black-gaming-24-gb-grafikkarte-23471756) |
 | **A100** | 80GB | [Vulkan](https://github.com/ggml-org/llama.cpp/discussions/10879) | 3103 | 121 | [$2'700/month](https://cloudprice.net/vm/Standard_NC24ads_A100_v4) (2'160 CHF) |
 | **MI100** | 32GB | [ROCm](https://github.com/ggml-org/llama.cpp/discussions/15021) | 2732 | 110 | - |
-| **AIMAX395** | 128GB | [Vulkan](https://llm-tracker.info/AMD-Strix-Halo-(Ryzen-AI-Max+-395)-GPU-Performance) | 884 | 52 | [$2'000](https://frame.work/products/desktop-diy-amd-aimax300/configuration/new) (1'600 CHF)|
+| **H100**  | 96GB | [CUDA](https://github.com/ggml-org/llama.cpp/discussions/15013)| 9918 | 267 | [27'500 CHF](https://www.digitec.ch/de/s1/product/nvidia-h100-nvl-94-gb-grafikkarte-47130491)|
+| **DGX Spark**  | 128GB | [CUDA](https://github.com/ggml-org/llama.cpp/discussions/15013)| 3062 | 57 | [4'000 CHF](https://www.digitec.ch/de/s1/product/pny-workstation-nvidia-dgx-spark-prozessorfamilie-nvidia-4000-gb-128-gb-pc-59656752) |
+| **AIMAX395** | 128GB | [Vulkan](https://llm-tracker.info/AMD-Strix-Halo-(Ryzen-AI-Max+-395)-GPU-Performance) | 1288 | 54 | [$2'000](https://frame.work/products/desktop-diy-amd-aimax300/configuration/new) (1'600 CHF)|
 
 Performance with AMD Ryzen AI MAX+ 395 should increase with [latest ROCm updates](https://github.com/geerlingguy/beowulf-ai-cluster/issues/7), addressing [known issues](https://github.com/ROCm/ROCm/issues/4748) and [optimization problems](https://github.com/ROCm/ROCm/issues/4499). But will it reach Apple M3 Ultra performance? Maybe for PP, but I guess not for TG.
 
@@ -104,18 +106,20 @@ Memory bandwidth on M3 Ultra is **identical** across all RAM configurations: 96G
 
 **Cost implication**: No huge performance benefit paying for 512GB unless you need >250GB models. For running e.g., gpt-oss 120B with a few users concurrently, 512GB might make sense, on the other hand 512GB costs 2'400 CHF more than with 256GB.
 
-## Recommendations
-**Apple M3 Ultra 256GB** for 7300 CHF - Energy efficient with ease of use and unified memory advantage. No memory copying between CPU/GPU, excellent power efficiency, simple setup with MLX framework, quiet operation. Alternatively, to run larger MoE models, 512GB could make sense.
+## Recommendations for buying
+This recommendation targets a dedicated server build optimized for AI workloads.
 
-**RX 7900 XTX** for 778 CHF - Best price/performance ratio. Cheapest option with good performance, but only 24GB VRAM.
+1) **Apple M3 Ultra 256GB** for 7300 CHF - Energy efficient with ease of use and unified memory advantage. No memory copying between CPU/GPU, excellent power efficiency, simple setup with MLX framework, quiet operation. Alternatively, to run larger MoE models, 512GB could make sense.
 
-**RTX 5090** for 2124 CHF - Very fast with 32GB VRAM. High performance with reasonable memory, CUDA has good optimization.
+1) **RTX 6000** for 6783 CHF - Maximum raw performance but requires powerful host machine and high power consumption. Specialized for AI workloads.
 
-**RTX 6000** for 6783 CHF - Maximum raw performance but requires powerful host machine and high power consumption. Specialized for AI workloads.
+2) **RX 7900 XTX** for 778 CHF - Best budget option. Cheapest option with good performance, but only 24GB VRAM.
 
 **Resale considerations**: All hardware can be resold, while the RTX6000 is specialized for AI workloads, other hardware has multiple purposes (Gaming, CAD). Apple M3 Ultra can be used for any computing task.
 
-## Not Recommended
-**Azure A100**: Expensive at $2'700/month (2'160CHF/month), with data in the cloud. Only suitable for temporary/burst workloads.
+## Not Recommended for buying
+**H100**: Expensive at 27'000 CHF, while the RTX6000 seems to deliver similar performance for much less.
 
-**AMD Ryzen AI MAX+ 395**: Poor performance currently, may improve in future but unlikely to match Apple M3 Ultra efficiency for text generation.
+**AMD Ryzen AI MAX+ 395**, **DGX Spark**: Both have currently a low tg/s around 50-60. While pp is much faster with DGX Spark, which helps if you have lots of input, its also twice as expensive, with similar tg/s, which is in many application the drivinng factor. 
+
+This recommendation targets a dedicated server build optimized for AI workloads. For non-dedicated servers or development machines, the AMD Ryzen AI MAX+ 395 offers better value—the DGX Spark costs twice as much while only excelling at prompt processing. The Apple M3 Ultra 256GB is more versatile and can be used for both dev and dedicated server.
