@@ -12,9 +12,6 @@ services:
       - video
     security_opt:
       - seccomp=unconfined
-    environment:
-      - CUDA_VISIBLE_DEVICES=${LLAMA_DEVICE:-1}
-      - GGML_VK_VISIBLE_DEVICES=${LLAMA_DEVICE:-1}
     restart: unless-stopped
     ports:
       - "9001:9001"
@@ -35,9 +32,6 @@ services:
       - video
     security_opt:
       - seccomp=unconfined
-    environment:
-      - CUDA_VISIBLE_DEVICES=${SD_DEVICE:-1}
-      - GGML_VK_VISIBLE_DEVICES=${SD_DEVICE:-1}
     restart: unless-stopped
     ports:
       - "7860:7860"
@@ -46,3 +40,28 @@ services:
     command: >-
       bash -c "mkdir -p /home/arch/sd.cpp-webui.${SD_BACKEND:-vulkan}/models/{checkpoints,unet,vae,text_encoders,embeddings,loras,taesd,photomaker,upscale_models,controlnet}
       && /home/arch/sd.cpp-webui.${SD_BACKEND:-vulkan}/sdcpp_webui.sh --listen ${SD_ARGS:-}"
+  ace:
+    build:
+      context: .
+      dockerfile: Dockerfile.ace
+    image: ace:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    volumes:
+      - /mnt/models/ace:/mnt/models/ace
+    command: >-
+      bash -c "export PATH=\"/home/arch/.local/bin:$$PATH\" &&
+      if [ ! -f /mnt/models/ace/acestep-5Hz-lm-4B-Q8_0.gguf ]; then
+        echo 'Downloading ACE-Step models...' &&
+        hf download Serveurperso/ACE-Step-1.5-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf acestep-5Hz-lm-4B-Q8_0.gguf acestep-v15-turbo-Q8_0.gguf vae-BF16.gguf --local-dir /mnt/models/ace;
+      fi &&
+      /home/arch/acestep.cpp.${ACE_BACKEND:-vulkan}/build/ace-server --lm /mnt/models/ace/acestep-5Hz-lm-4B-Q8_0.gguf --embedding /mnt/models/ace/Qwen3-Embedding-0.6B-Q8_0.gguf --dit /mnt/models/ace/acestep-v15-turbo-Q8_0.gguf --vae /mnt/models/ace/vae-BF16.gguf --host 0.0.0.0 --port 8082"
