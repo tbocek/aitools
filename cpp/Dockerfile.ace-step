@@ -3,26 +3,14 @@ FROM arch:latest
 USER arch
 WORKDIR /home/arch
 
-# Base installed, lets get specific
-RUN yay -S --noconfirm \
-  vulkan-headers \
-  vulkan-icd-loader \
-  vulkan-radeon \
-  shaderc \
-  rocwmma \
-  rocm-hip-sdk \
-  && sudo pacman -Scc --noconfirm
+#https://github.com/ServeurpersoCom/acestep.cpp
+RUN git clone --recursive https://github.com/ServeurpersoCom/acestep.cpp && \
+    mv acestep.cpp acestep.cpp.rocm && \
+    cp -r acestep.cpp.rocm acestep.cpp.vulkan
 
 ENV PATH="/opt/rocm/bin:${PATH}" \
     HIP_PATH=/opt/rocm \
     ROCM_PATH=/opt/rocm
-
-#ACE-STEP.CPP
-#https://github.com/ServeurpersoCom/acestep.cpp
-
-RUN git clone --recursive https://github.com/ServeurpersoCom/acestep.cpp && \
-    mv acestep.cpp acestep.cpp.rocm && \
-    cp -r acestep.cpp.rocm acestep.cpp.vulkan
 
 WORKDIR /home/arch/acestep.cpp.rocm
 RUN git submodule update --init && \

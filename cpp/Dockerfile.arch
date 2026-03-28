@@ -1,22 +1,21 @@
-FROM quay.io/archlinux/archlinux:latest as initial
+FROM quay.io/archlinux/archlinux:latest
 
-RUN pacman -Syu --noconfirm && \
+RUN pacman -Sy --noconfirm && \
     pacman -S --noconfirm \
         git \
-        go \
-        libxml2 \
-        libxml2-legacy \
         base-devel \
+        cmake \
         ninja \
-        python3 \
-        linux-headers \
-        clang \
-        uv \
-        python-pip \
-        wget \
         curl \
-        cmake && \
-    pacman -Scc --noconfirm   
+        python3 \
+        uv \
+        vulkan-headers \
+        vulkan-icd-loader \
+        vulkan-radeon \
+        shaderc \
+        rocm-hip-sdk \
+        rocwmma && \
+    pacman -Scc --noconfirm
 
 # Create non-root user and add to video, render, and wheel groups
 RUN useradd -m -s /bin/bash arch && \
@@ -27,12 +26,3 @@ RUN useradd -m -s /bin/bash arch && \
 
 USER arch
 WORKDIR /home/arch
-
-# Install yay AUR helper
-RUN git clone https://aur.archlinux.org/yay.git && \
-    cd yay && makepkg -si --noconfirm && \
-    cd .. && rm -rf yay
-
-#squash base image
-FROM scratch
-COPY --from=initial / /
