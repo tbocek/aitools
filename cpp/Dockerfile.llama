@@ -1,9 +1,5 @@
 FROM arch:latest
 
-USER arch
-WORKDIR /home/arch
-
-
 #https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md
 RUN git clone https://github.com/ggml-org/llama.cpp
 
@@ -11,8 +7,7 @@ ENV PATH="/opt/rocm/bin:${PATH}" \
     HIP_PATH=/opt/rocm \
     ROCM_PATH=/opt/rocm
 
-WORKDIR /home/arch/llama.cpp
-RUN cmake -B build \
+RUN cd /home/arch/llama.cpp && cmake -B build \
     -DGGML_HIP=ON \
     -DGGML_NATIVE=ON \
     -DGGML_HIP_ROCWMMA_FATTN=ON \
@@ -22,6 +17,4 @@ RUN cmake -B build \
     -DGGML_VULKAN=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_HIP_FLAGS="-mllvm --amdgpu-unroll-threshold-local=600"
-RUN cmake --build build --config Release --parallel
-
-WORKDIR /home/arch
+RUN cd /home/arch/llama.cpp && cmake --build build --config Release --parallel

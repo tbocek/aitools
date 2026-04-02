@@ -70,4 +70,4 @@ services:
         echo 'Downloading ACE-Step models...' &&
         hf download Serveurperso/ACE-Step-1.5-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf acestep-5Hz-lm-4B-Q8_0.gguf acestep-v15-turbo-Q8_0.gguf vae-BF16.gguf --local-dir /mnt/models/ace;
       fi &&
-      /home/arch/acestep.cpp.${ACE_BACKEND:-vulkan}/build/ace-server --lm /mnt/models/ace/acestep-5Hz-lm-4B-Q8_0.gguf --embedding /mnt/models/ace/Qwen3-Embedding-0.6B-Q8_0.gguf --dit /mnt/models/ace/acestep-v15-turbo-Q8_0.gguf --vae /mnt/models/ace/vae-BF16.gguf --host 0.0.0.0 --port 8082"
+      /home/arch/acestep.cpp.${ACE_BACKEND:-vulkan}/build/ace-server --models /mnt/models/ace --host 0.0.0.0 --port 8082"
