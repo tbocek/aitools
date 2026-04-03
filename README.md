@@ -1,214 +1,38 @@
-# AI Tool Calling System
+# aitools
 
-A bash-based tool calling system that enables Language Learning Models (LLMs) to execute 
-local tools as needed. This system dynamically discovers tools, presents them to the AI, 
-and automatically executes them based on the AI's requests.
+Docker-based build system for running AI inference on AMD GPUs (gfx1151 / RDNA 3.5). Uses a multi-stage Dockerfile approach with an Arch Linux base image containing ROCm and Vulkan.
 
-## Features
+## Services
 
-- **Dynamic Tool Discovery**: Automatically discovers and registers tools (bash scripts)
-- **OpenAI-Compatible API**: Works with any OpenAI-compatible API endpoint (OpenAI, llama.cpp, etc.)
-- **Automatic Tool Execution**: Handles the complete tool-calling loop automatically
-- **Token Tracking**: Monitors token usage for prompt and completion
-- **Flexible Tool Framework**: Easy to add new tools by creating bash scripts
-- **Enhanced Security**: Tools are executed within a Docker container for improved isolation and security.
+All services are managed via `cpp/docker-compose.yml` and built with `cpp/run.sh`.
+
+### llama.cpp (`Dockerfile.llama`)
+LLM inference server with HIP (ROCm) and Vulkan backends. Serves an OpenAI-compatible API on port **9001**.
+
+### stable-diffusion.cpp (`Dockerfile.sd`)
+Image generation server built with both ROCm and Vulkan backends, using the [sd.cpp-webui](https://github.com/daniandtheweb/sd.cpp-webui) frontend on port **7860**.
+
+### ACE-Step (`Dockerfile.ace-step`)
+Music generation server using [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp) with ROCm and Vulkan backends on port **8082**.
+
+## Base Image (`Dockerfile.arch`)
+Arch Linux with ROCm HIP SDK, rocWMMA, Vulkan, cmake, ninja, and Python/uv. All service Dockerfiles build `FROM arch:latest`.
 
 ## Quick Start
 
 ```bash
-# Basic usage
-./tools.sh "What's the weather in Berlin?"
-
-# With custom tools folder
-./tools.sh -t /path/to/tools "Calculate 25 * 4"
-
-# Multiple tools with temperature 0.1
-./tools.sh -T 0.1 "What is 2+2. If you have the result of that, multiply with 5, after add 4.2. Finally divide the previous result by the temperature in C in Munich. Use this result to search the internet, but only show the first result"
-
-```
-Output of the last call above:
-```text
-Starting tool calling session...
-Tools folder: ./tools
-Found 3 tools
-Iteration 1/10
-Tokens: prompt=604, completion=36
-Processing 1 tool call(s)...
-Executing tool: calculator
-Tool result: 2+2 = 4...
-Iteration 2/10
-Tokens: prompt=731, completion=36
-Processing 1 tool call(s)...
-Executing tool: calculator
-Tool result: 4*5 = 20...
-Iteration 3/10
-Tokens: prompt=857, completion=39
-Processing 1 tool call(s)...
-Executing tool: calculator
-Tool result: 20+4.2 = 24.2...
-Iteration 4/10
-Tokens: prompt=987, completion=52
-Processing 1 tool call(s)...
-Executing tool: weather
-Tool result: Current Weather Report
-=====================
-Location: 48.1351°, 11.582°
-Station: Muenchen-Stadt (4....
-Iteration 5/10
-Tokens: prompt=1389, completion=42
-Processing 1 tool call(s)...
-Executing tool: calculator
-Tool result: 24.2/22.4 = 1.080357...
-Iteration 6/10
-Tokens: prompt=1535, completion=50
-Processing 1 tool call(s)...
-Executing tool: web_search
-Tool result: BEGIN_RESULTS
-URL: https://cloud.stc.com.sa/services/subscriptions/copy-of-co-location-134
-Content: ...
-Iteration 7/10
-Tokens: prompt=5688, completion=481
-Final response:
-Here is the first result of the web search for "1.080357":
-
-URL: [https://cloud.stc.com.sa/services/subscriptions/copy-of-co-location-134](https://cloud.stc.com.sa/services/subscriptions/copy-of-co-location-134)
-Content: STC Data Centers provide a variety of special services to host your IT infrastructure in a safe environment, ensuring availability and helping you further to develop your business. The STC Data Center conforms to international rules and regulations and applies only the best practices. The Data Centers main network has been set up using highly advanced network equipment. Moreover, our support team consists of network and security engineers and technician that are highly skilled and assure guaranteed service delivery. STC Data Centers have different levels of facility and design certifications to offer different options for our customers based on their business needs.
+cd cpp
+# Edit run.sh to select backends (LLAMA_DEVICE, SD_BACKEND, ACE_BACKEND)
+./run.sh
 ```
 
-## Installation
-
-1. Clone this repository
-2. Ensure you have the required dependencies:
-   - `bash` (version 4.0+)
-   - `curl`
-   - `jq`
-   - `docker` and `docker-compose` installed and running.
-   - An API key for an OpenAI-compatible service
-
-3. Set your API key:
-```bash
-export OPENAI_API_KEY="your-api-key-here"
-```
-
-## Usage
-
-```
-Usage: tools.sh [OPTIONS] "Your prompt here"
-
-OPTIONS:
-  -h, --help              Print help and exit
-  -t, --tools-folder      Folder containing tool scripts (default: ./tools)
-  -m, --max-iterations    Maximum tool calling iterations (default: 10)
-  -u, --url               API endpoint (default: https://ai.jos.li/v1/chat/completions)
-  -k, --key               API key (default: from OPENAI_API_KEY env var)
-  -M, --model             Model name (default: model-name)
-  -T, --temperature       Temperature for generation (default: 0.1)
-  -v, --verbose           Enable verbose output
-```
-
-## Creating Tools
-
-Tools are bash scripts with special metadata headers. Here's the structure:
-
-```bash
-#!/usr/bin/env bash
-set -Euo pipefail
-
-# Tool metadata
-TOOL_NAME="your_tool_name"
-TOOL_DESCRIPTION="What your tool does"
-TOOL_PARAMETERS='{
-  "type": "object",
-  "properties": {
-    "param1": {
-      "type": "string",
-      "description": "Description of parameter"
-    }
-  },
-  "required": ["param1"]
-}'
-
-usage() {
-  # ... your usage instructions here ...
-}
-
-# Handle metadata requests
-case "$1" in
-  --name) echo "$TOOL_NAME"; exit 0 ;;
-  --description) echo "$TOOL_DESCRIPTION"; exit 0 ;;
-  --parameters) echo "$TOOL_PARAMETERS"; exit 0 ;;
-esac
-
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --param1)
-      param1="$2"
-      shift 2
-      ;;
-  esac
-done
-
-# Tool logic here
-echo "Result of tool execution"
-```
-
-## Example Tools
-
-### Weather Tool (weather.sh)
-Fetches current weather data for given coordinates:
-```bash
-docker build tools -t tools
-docker run tools weather.sh --lat 52.52 --lon 13.41
-```
-
-### Calculator Tool (calculate.sh)
-Performs mathematical calculations:
-```bash
-docker build tools -t tools
-docker run tools calculate.sh --expression "sqrt(144)"
-```
-
-### Web Search Tool (web_search.sh)
-Performs web searches using DuckDuckGo and extracts content from results:
-```bash
-docker build tools -t tools
-docker run tools web_search.sh --query "current events" --num-results 5
-```
-
-## How It Works
-
-1. **Tool Discovery**: The system scans the tools folder for executable bash scripts.
-2. **Tool Registration**: Each tool's metadata is extracted and formatted for the AI.
-3. **API Request**: Your prompt is sent to the AI along with available tools.
-4. **Tool Execution**: When the AI requests a tool, the system executes it automatically *within a Docker container*.
-5. **Response Loop**: Tool results are sent back to the AI for further processing.
-6. **Final Answer**: The AI provides a final response incorporating tool results.
-
-## Security Considerations
-
-This system now leverages Docker to significantly enhance security. Each tool is executed in an 
-isolated container, preventing it from directly accessing the host system and mitigating 
-potential risks associated with running untrusted code.  This helps protect against 
-malicious code injection or unintended system modifications.  Ensure Docker is properly 
-configured and updated for optimal security.
-
-## Token Usage
-
-The system tracks token usage throughout the conversation:
-- Prompt tokens: Tokens used in requests to the AI
-- Completion tokens: Tokens generated by the AI
-- Total tokens: Sum of prompt and completion tokens
+This builds the base image, then brings up all services via docker-compose.
 
 ## Configuration
 
-### Environment Variables
-- `OPENAI_API_KEY`: Your API key (required if not using -k option)
-- `NO_COLOR`: Set to disable colored output
+Environment variables in `run.sh`:
+- `LLAMA_DEVICE` — `ROCM0` or `Vulkan0`
+- `SD_BACKEND` — `rocm` or `vulkan`
+- `ACE_BACKEND` — `rocm` or `vulkan`
 
-### Default Values
-- API URL: `https://ai.jos.li/v1/chat/completions`
-- Model: `model-name`
-- Temperature: `0.1`
-- Max iterations: `10`
-- Tools folder: `./tools`
+Models are expected at `/mnt/models` on the host (mounted into containers).
