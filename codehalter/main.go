@@ -277,9 +277,11 @@ func (a *agent) Prompt(ctx context.Context, req PromptRequest) (PromptResponse, 
 	}
 
 	// Plan and route to the right LLM.
+	// Planner stores its own messages (clarification, abort) in the session.
 	conn, err := a.planAndRoute(ctx, req.SessionId, userText)
 	if err != nil {
-		return a.replyError(ctx, req.SessionId, err.Error()), nil
+		a.sendUpdate(ctx, req.SessionId, AgentMessageChunk(TextBlock("❌ "+err.Error()+"\n")))
+		return PromptResponse{StopReason: StopReasonEndTurn}, nil
 	}
 
 	// Build context. AGENT.md on first message, project structure on every message.

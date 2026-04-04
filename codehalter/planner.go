@@ -65,6 +65,8 @@ func (a *agent) planAndRoute(ctx context.Context, sid SessionId, userText string
 		return fast, nil
 	}
 
+	sess := a.getSession(sid)
+
 	// If the request is unclear, ask the user.
 	if !plan.Clear && len(plan.Choices) > 0 {
 		question := plan.Question
@@ -78,9 +80,17 @@ func (a *agent) planAndRoute(ctx context.Context, sid SessionId, userText string
 		a.CompleteToolCall(ctx, sid, tcId, []ToolCallContent{TextContent("User chose: " + choice)})
 
 		if err != nil || choice == "abort" {
+			if sess != nil {
+				sess.AddAssistant(question + "\n(choices: " + strings.Join(plan.Choices, ", ") + ")\nUser aborted.")
+				_ = sess.Save()
+			}
 			return nil, fmt.Errorf("user aborted")
 		}
 
+		if sess != nil {
+			sess.AddAssistant(question + "\n(choices: " + strings.Join(plan.Choices, ", ") + ")\nUser chose: " + choice)
+			_ = sess.Save()
+		}
 		a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("Understood: "+choice+"\n")))
 	}
 
