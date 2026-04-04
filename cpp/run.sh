@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # ROCM0 for HIP/ROCm, Vulkan0 for Vulkan
-export LLAMA_DEVICE=Vulkan0
+export LLAMA_DEVICE=ROCM0
 # rocm or vulkan
 export SD_BACKEND=rocm
 export ACE_BACKEND=vulkan
