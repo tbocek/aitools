@@ -61,9 +61,12 @@ func (a *agent) compressHistory(ctx context.Context, sess *Session) {
 		return
 	}
 
-	conn := a.settings.LLM("fast")
+	conn := a.settings.LLM("summary")
 	if conn == nil {
-		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Cannot compress history: no 'fast' LLM connection")))
+		conn = a.settings.LLM("fast")
+	}
+	if conn == nil {
+		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Cannot compress history: no 'summary' or 'fast' LLM connection\n")))
 		return
 	}
 
@@ -146,13 +149,13 @@ func (a *agent) summarize(ctx context.Context, conn *LLMConnection, text string,
 func (a *agent) generateTitle(ctx context.Context, sess *Session, userText string) {
 	conn := a.settings.LLM("fast")
 	if conn == nil {
-		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Cannot generate title: no 'fast' LLM connection")))
+		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Cannot generate title: no 'fast' LLM connection\n")))
 		return
 	}
 	messages := []llmMessage{{Role: "user", Content: titlePrompt + "\n\n" + userText}}
 	title, err := a.llmSimple(ctx, conn, messages)
 	if err != nil {
-		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Title generation failed: "+err.Error())))
+		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Title generation failed: "+err.Error()+"\n")))
 		title = userText
 		if len(title) > titleFallbackLen {
 			title = title[:titleFallbackLen]
@@ -186,7 +189,7 @@ func (a *agent) retitle(ctx context.Context, sess *Session) {
 	messages := []llmMessage{{Role: "user", Content: retitlePrompt + latest.Content}}
 	title, err := a.llmSimple(ctx, conn, messages)
 	if err != nil {
-		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Retitle failed: "+err.Error())))
+		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Retitle failed: "+err.Error()+"\n")))
 		return
 	}
 	if title == "" {

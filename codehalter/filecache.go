@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,9 +15,8 @@ import (
 const (
 	maxPreviewLines = 50
 	maxPreviewBytes = maxPreviewLines * 200
-	chunkSize       = 10
 
-	fileSummaryPrompt = "Summarize each file below. Call the file_summary tool with one entry per file. Max 20 words per summary. Focus on what the code does, not the file type.\n\n"
+	fileSummaryPrompt = "Summarize this file in one sentence, max 20 words. Reply with only the summary, nothing else.\n\n"
 )
 
 type FileCache struct {
@@ -111,7 +109,24 @@ func hashFileQuick(path string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+var binaryExtensions = map[string]bool{
+	".br": true, ".gz": true, ".zst": true, ".xz": true, ".bz2": true,
+	".zip": true, ".tar": true, ".rar": true, ".7z": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".ico": true, ".svg": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+	".pdf": true, ".doc": true, ".docx": true,
+	".wasm": true, ".so": true, ".dylib": true, ".dll": true, ".exe": true,
+	".o": true, ".a": true, ".pyc": true, ".class": true,
+	".mp3": true, ".mp4": true, ".wav": true, ".ogg": true, ".webm": true,
+	".bin": true, ".dat": true, ".db": true, ".sqlite": true,
+}
+
 func isBinaryFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	if binaryExtensions[ext] {
+		return true
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return false
@@ -158,10 +173,13 @@ func readPreview(cwd, rel string) string {
 }
 
 // summarizeStaleFiles summarizes stale files in chunks and updates the cache.
-func (a *agent) summarizeStaleFiles(ctx context.Context, cwd string, cache *FileCache, staleFiles []string) error {
-	conn := a.settings.LLM("fast")
+func (a *agent) summarizeStaleFiles(ctx context.Context, cwd string, cache *FileCache, staleFiles []string, sid SessionId) error {
+	conn := a.settings.LLM("summary")
 	if conn == nil {
-		return fmt.Errorf("no 'fast' LLM connection configured")
+		conn = a.settings.LLM("fast") // fallback
+	}
+	if conn == nil {
+		return fmt.Errorf("no 'summary' or 'fast' LLM connection configured")
 	}
 
 	// Filter to text files only, mark binary.
@@ -182,87 +200,59 @@ func (a *agent) summarizeStaleFiles(ctx context.Context, cwd string, cache *File
 		return cache.Save(cwd)
 	}
 
-	// Process in chunks.
-	for i := 0; i < len(toSummarize); i += chunkSize {
-		end := i + chunkSize
-		if end > len(toSummarize) {
-			end = len(toSummarize)
-		}
-		chunk := toSummarize[i:end]
-
-		if err := a.summarizeChunk(ctx, cwd, cache, conn, chunk); err != nil {
-			return err
+	total := len(toSummarize)
+	ok, failed := 0, 0
+	for i, rel := range toSummarize {
+		a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(fmt.Sprintf("Indexing %d/%d: %s\n", i+1, total, rel))))
+		if a.summarizeFile(ctx, cwd, cache, conn, rel) == "ok" {
+			ok++
+		} else {
+			failed++
 		}
 	}
 
+	fmt.Fprintf(os.Stderr, "filecache: done. ok=%d failed=%d total=%d\n", ok, failed, total)
 	return cache.Save(cwd)
 }
 
-var fileSummaryTool = []map[string]any{{
-	"type": "function",
-	"function": map[string]any{
-		"name":        "file_summary",
-		"description": "Store file summaries",
-		"parameters": map[string]any{
-			"type":     "object",
-			"required": []string{"summaries"},
-			"properties": map[string]any{
-				"summaries": map[string]any{
-					"type": "array",
-					"items": map[string]any{
-						"type":     "object",
-						"required": []string{"file", "summary"},
-						"properties": map[string]any{
-							"file":    map[string]any{"type": "string"},
-							"summary": map[string]any{"type": "string"},
-						},
-					},
-				},
-			},
-		},
-	},
-}}
-
-func (a *agent) summarizeChunk(ctx context.Context, cwd string, cache *FileCache, conn *LLMConnection, files []string) error {
-	var prompt strings.Builder
-	prompt.WriteString(fileSummaryPrompt)
-
-	for _, rel := range files {
-		preview := readPreview(cwd, rel)
-		fmt.Fprintf(&prompt, "=== %s ===\n%s\n\n", rel, preview)
+// summarizeFile returns "ok" or "failed".
+func (a *agent) summarizeFile(ctx context.Context, cwd string, cache *FileCache, conn *LLMConnection, rel string) string {
+	preview := readPreview(cwd, rel)
+	if preview == "" {
+		return "failed"
 	}
 
-	messages := []llmMessage{{Role: "user", Content: prompt.String()}}
-	_, calls, err := a.llmWithTools(ctx, conn, messages, fileSummaryTool)
+	prompt := fileSummaryPrompt + fmt.Sprintf("=== %s ===\n%s", rel, preview)
+	messages := []llmMessage{{Role: "user", Content: prompt}}
+	text, err := a.llmSimple(ctx, conn, messages)
 	if err != nil {
-		return fmt.Errorf("indexing failed: %w", err)
+		fmt.Fprintf(os.Stderr, "filecache: error for %s: %v\n", rel, err)
+		return "failed"
 	}
 
-	// Parse the tool call arguments.
-	for _, tc := range calls {
-		if tc.Function.Name != "file_summary" {
-			continue
-		}
-		var result struct {
-			Summaries []struct {
-				File    string `json:"file"`
-				Summary string `json:"summary"`
-			} `json:"summaries"`
-		}
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &result); err != nil {
-			continue
-		}
-		for _, s := range result.Summaries {
-			if entry, ok := cache.Files[s.File]; ok {
-				entry.Summary = s.Summary
-				cache.Files[s.File] = entry
-			}
+	// Take first sentence or first non-empty line, cap at 200 chars.
+	text = strings.TrimSpace(text)
+	summary := text
+	if idx := strings.Index(summary, "."); idx > 0 {
+		summary = summary[:idx+1]
+	} else if idx := strings.Index(summary, "\n"); idx > 0 {
+		summary = summary[:idx]
+	}
+	summary = strings.TrimSpace(summary)
+	if len(summary) > 200 {
+		summary = summary[:200]
+	}
+
+	if summary != "" {
+		if entry, ok := cache.Files[rel]; ok {
+			entry.Summary = summary
+			cache.Files[rel] = entry
+			return "ok"
 		}
 	}
 
-	return nil
+	return "failed"
 }
-
 
 // buildProjectContext returns the project structure with summaries,
 // suitable for prepending to a prompt. Not stored in history.

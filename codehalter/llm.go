@@ -30,7 +30,6 @@ type toolCall struct {
 	} `json:"function"`
 }
 
-// SSE chunk from the OpenAI streaming API.
 type sseChunk struct {
 	Choices []struct {
 		Delta struct {
@@ -41,83 +40,11 @@ type sseChunk struct {
 	} `json:"choices"`
 }
 
-// llmSimple sends a streaming, no-tools LLM call. Used for titles, etc.
-func (a *agent) llmSimple(ctx context.Context, conn *LLMConnection, messages []llmMessage) (string, error) {
-	return a.llmRaw(ctx, conn, messages, nil)
-}
+// onToken is called for each text token. nil means discard.
+type onToken func(token string)
 
-// llmWithTools sends a streaming LLM call with custom tools. Returns text and tool calls.
-func (a *agent) llmWithTools(ctx context.Context, conn *LLMConnection, messages []llmMessage, tools []map[string]any) (string, []toolCall, error) {
-	reqBody := map[string]any{
-		"model":    conn.Model,
-		"stream":   true,
-		"messages": messages,
-		"tools":    tools,
-	}
-
-	body, _ := json.Marshal(reqBody)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", conn.URL, bytes.NewReader(body))
-	if err != nil {
-		return "", nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if conn.Token != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+conn.Token)
-	}
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return "", nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", nil, fmt.Errorf("LLM returned %d: %s", resp.StatusCode, b)
-	}
-
-	var fullText strings.Builder
-	var calls []toolCall
-
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk sseChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-
-		delta := chunk.Choices[0].Delta
-		if delta.Content != "" {
-			fullText.WriteString(delta.Content)
-			fmt.Fprint(os.Stderr, delta.Content)
-		}
-		for _, tc := range delta.ToolCalls {
-			if tc.ID != "" {
-				calls = append(calls, tc)
-			} else if len(calls) > 0 {
-				last := &calls[len(calls)-1]
-				last.Function.Arguments += tc.Function.Arguments
-			}
-		}
-	}
-	fmt.Fprintln(os.Stderr)
-
-	return fullText.String(), calls, nil
-}
-
-func (a *agent) llmRaw(ctx context.Context, conn *LLMConnection, messages []llmMessage, tools []map[string]any) (string, error) {
+// llmStream is the core LLM call. Streams SSE, collects text and tool calls.
+func (a *agent) llmStream(ctx context.Context, conn *LLMConnection, messages []llmMessage, tools []map[string]any, on onToken) (string, []toolCall, error) {
 	reqBody := map[string]any{
 		"model":    conn.Model,
 		"stream":   true,
@@ -130,70 +57,6 @@ func (a *agent) llmRaw(ctx context.Context, conn *LLMConnection, messages []llmM
 	body, _ := json.Marshal(reqBody)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", conn.URL, bytes.NewReader(body))
 	if err != nil {
-		return "", err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if conn.Token != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+conn.Token)
-	}
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("LLM returned %d: %s", resp.StatusCode, b)
-	}
-
-	var fullText strings.Builder
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk sseChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-		if chunk.Choices[0].Delta.Content != "" {
-			fullText.WriteString(chunk.Choices[0].Delta.Content)
-			fmt.Fprint(os.Stderr, chunk.Choices[0].Delta.Content)
-		}
-	}
-	fmt.Fprintln(os.Stderr)
-
-	return fullText.String(), nil
-}
-
-// llmRequest sends a request to the LLM and streams the response.
-// It returns the full text response, any tool calls, and an error.
-func (a *agent) llmRequest(ctx context.Context, sid SessionId, conn *LLMConnection, messages []llmMessage) (string, []toolCall, error) {
-	a.mu.Lock()
-	readOnly := a.mode == "discussion"
-	a.mu.Unlock()
-
-	reqBody := map[string]any{
-		"model":    conn.Model,
-		"stream":   true,
-		"messages": messages,
-		"tools":    llmToolDefinitions(readOnly),
-	}
-
-	body, _ := json.Marshal(reqBody)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", conn.URL, bytes.NewReader(body))
-	if err != nil {
 		return "", nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -238,18 +101,15 @@ func (a *agent) llmRequest(ctx context.Context, sid SessionId, conn *LLMConnecti
 
 		if delta.Content != "" {
 			fullText.WriteString(delta.Content)
-			if sid != "" {
-				a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(delta.Content)))
+			if on != nil {
+				on(delta.Content)
 			}
 		}
 
-		// Accumulate tool calls (streamed incrementally).
 		for _, tc := range delta.ToolCalls {
 			if tc.ID != "" {
-				// New tool call.
 				calls = append(calls, tc)
 			} else if len(calls) > 0 {
-				// Continuation of last tool call's arguments.
 				last := &calls[len(calls)-1]
 				last.Function.Arguments += tc.Function.Arguments
 			}
@@ -259,29 +119,50 @@ func (a *agent) llmRequest(ctx context.Context, sid SessionId, conn *LLMConnecti
 	return fullText.String(), calls, nil
 }
 
+// llmSimple sends a no-tools LLM call, logs to stderr.
+func (a *agent) llmSimple(ctx context.Context, conn *LLMConnection, messages []llmMessage) (string, error) {
+	text, _, err := a.llmStream(ctx, conn, messages, nil, func(token string) {
+		fmt.Fprint(os.Stderr, token)
+	})
+	fmt.Fprintln(os.Stderr)
+	return text, err
+}
+
+// llmRequest sends a request with tools, streams text to Zed.
+func (a *agent) llmRequest(ctx context.Context, sid SessionId, conn *LLMConnection, messages []llmMessage) (string, []toolCall, error) {
+	a.mu.Lock()
+	readOnly := a.mode == "discussion"
+	a.mu.Unlock()
+
+	return a.llmStream(ctx, conn, messages, llmToolDefinitions(readOnly), func(token string) {
+		if sid != "" {
+			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(token)))
+		}
+	})
+}
+
 const maxToolLoopIterations = 10
 
 // runToolLoop runs the agentic tool loop: send to LLM, execute tool calls, repeat.
 func (a *agent) runToolLoop(ctx context.Context, sid SessionId, conn *LLMConnection, messages []llmMessage) (string, error) {
+	var allText strings.Builder
 	for i := 0; i < maxToolLoopIterations; i++ {
 		text, calls, err := a.llmRequest(ctx, sid, conn, messages)
 		if err != nil {
-			return "", err
+			return allText.String(), err
 		}
+		allText.WriteString(text)
 
-		// No tool calls — we're done.
 		if len(calls) == 0 {
-			return text, nil
+			return allText.String(), nil
 		}
 
-		// Add assistant message with tool calls to history.
 		messages = append(messages, llmMessage{
 			Role:      "assistant",
 			Content:   text,
 			ToolCalls: calls,
 		})
 
-		// Execute each tool call.
 		for _, tc := range calls {
 			result := a.executeTool(ctx, sid, tc)
 			messages = append(messages, llmMessage{
@@ -291,6 +172,5 @@ func (a *agent) runToolLoop(ctx context.Context, sid SessionId, conn *LLMConnect
 			})
 		}
 	}
-	return "", fmt.Errorf("tool loop exceeded %d iterations", maxToolLoopIterations)
+	return allText.String(), fmt.Errorf("tool loop exceeded %d iterations", maxToolLoopIterations)
 }
-

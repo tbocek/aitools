@@ -81,7 +81,7 @@ func (a *agent) planAndRoute(ctx context.Context, sid SessionId, userText string
 			return nil, fmt.Errorf("user aborted")
 		}
 
-		a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("Understood: "+choice)))
+		a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("Understood: "+choice+"\n")))
 	}
 
 	// Show the plan.

@@ -22,6 +22,7 @@ type agent struct {
 	runners        []taskRunner
 	pendingRefs    []CodeRef
 	fileCache      FileCache
+	indexDone      chan struct{}
 }
 
 var _ Agent = (*agent)(nil)
@@ -73,22 +74,44 @@ func (a *agent) Authenticate(_ context.Context, _ AuthenticateRequest) (Authenti
 	return AuthenticateResponse{}, nil
 }
 
-func (a *agent) initSession(ctx context.Context, cwd string, s *Session) {
+func (a *agent) initSession(cwd string, s *Session) {
 	a.putSession(s)
 	if settings, err := loadSettings(cwd); err == nil {
 		a.settings = settings
 	}
 	a.discoverRunners(cwd)
-	a.refreshFileCache(ctx, cwd, s.ID)
 }
 
-func (a *agent) NewSession(ctx context.Context, req NewSessionRequest) (NewSessionResponse, error) {
+func (a *agent) startIndexing(sid SessionId, cwd string) {
+	a.indexDone = make(chan struct{})
+	go func() {
+		defer close(a.indexDone)
+		ctx := context.Background()
+
+		if a.settings.path != "" {
+			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("Using "+a.settings.path+"\n")))
+		} else {
+			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("⚠ No settings.toml found\n")))
+		}
+
+		a.refreshFileCache(ctx, cwd, sid)
+	}()
+}
+
+func (a *agent) waitForIndex() {
+	if a.indexDone != nil {
+		<-a.indexDone
+	}
+}
+
+func (a *agent) NewSession(_ context.Context, req NewSessionRequest) (NewSessionResponse, error) {
 	cwd := cwdOrDefault(req.Cwd)
 	s, err := newSession(cwd)
 	if err != nil {
 		return NewSessionResponse{}, err
 	}
-	a.initSession(ctx, cwd, s)
+	a.initSession(cwd, s)
+	a.startIndexing(s.ID, cwd)
 	return NewSessionResponse{SessionId: s.ID, Modes: modeState(a.mode)}, nil
 }
 
@@ -98,8 +121,9 @@ func (a *agent) LoadSession(ctx context.Context, req LoadSessionRequest) (LoadSe
 	if err != nil {
 		return LoadSessionResponse{}, fmt.Errorf("loading session: %w", err)
 	}
-	a.initSession(ctx, cwd, s)
+	a.initSession(cwd, s)
 	a.replayHistory(ctx, req.SessionId, s)
+	a.startIndexing(s.ID, cwd)
 	return LoadSessionResponse{Modes: modeState(a.mode)}, nil
 }
 
@@ -172,11 +196,11 @@ func (a *agent) refreshFileCache(ctx context.Context, cwd string, sid SessionId)
 	a.fileCache = loadFileCache(cwd)
 	stale := updateFileCache(cwd, &a.fileCache)
 	if len(stale) > 0 {
-		a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(fmt.Sprintf("Indexing %d files...", len(stale)))))
-		if err := a.summarizeStaleFiles(ctx, cwd, &a.fileCache, stale); err != nil {
-			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("❌ "+err.Error())))
+		a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(fmt.Sprintf("Indexing %d files...\n", len(stale)))))
+		if err := a.summarizeStaleFiles(ctx, cwd, &a.fileCache, stale, sid); err != nil {
+			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("❌ "+err.Error()+"\n")))
 		} else {
-			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(fmt.Sprintf("Indexed %d files.", len(stale)))))
+			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(fmt.Sprintf("Indexed %d files.\n", len(stale)))))
 		}
 	}
 }
@@ -187,18 +211,24 @@ func (a *agent) systemPrompt(sid SessionId) (string, error) {
 		return "", fmt.Errorf("no session found")
 	}
 
-	content, err := os.ReadFile(filepath.Join(sess.Cwd, "AGENT.md"))
-	if err != nil {
-		return "", fmt.Errorf("AGENT.md not found in project root — create one with your system prompt")
-	}
-
 	a.mu.Lock()
 	mode := a.mode
 	a.mu.Unlock()
 
 	var b strings.Builder
-	b.Write(content)
-	b.WriteString("\n\n")
+
+	// Try AGENT.md, then AGENTS.md.
+	content, err := os.ReadFile(filepath.Join(sess.Cwd, "AGENT.md"))
+	if err != nil {
+		content, err = os.ReadFile(filepath.Join(sess.Cwd, "AGENTS.md"))
+	}
+	if err != nil {
+		b.WriteString("⚠ No AGENT.md found — no system prompt context will be used.\n\n")
+	} else {
+		b.Write(content)
+		b.WriteString("\n\n")
+	}
+
 	b.WriteString("Project directory: " + sess.Cwd + "\n")
 	b.WriteString("Current mode: " + mode + "\n\n")
 	b.WriteString(buildProjectContext(sess.Cwd, &a.fileCache))
@@ -207,7 +237,11 @@ func (a *agent) systemPrompt(sid SessionId) (string, error) {
 }
 
 func (a *agent) replyError(ctx context.Context, sid SessionId, msg string) PromptResponse {
-	a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("❌ Error: "+msg)))
+	a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("❌ Error: "+msg+"\n")))
+	if sess := a.getSession(sid); sess != nil {
+		sess.AddAssistant("❌ " + msg)
+		_ = sess.Save()
+	}
 	return PromptResponse{StopReason: StopReasonEndTurn}
 }
 
@@ -218,6 +252,8 @@ func (a *agent) Prompt(ctx context.Context, req PromptRequest) (PromptResponse, 
 	a.allowWrites = ""
 	a.mu.Unlock()
 	defer cancel()
+
+	a.waitForIndex()
 
 	// Extract user text.
 	var userText string
@@ -237,7 +273,7 @@ func (a *agent) Prompt(ctx context.Context, req PromptRequest) (PromptResponse, 
 
 	// Generate title for new sessions.
 	if isFirstMessage {
-		go a.generateTitle(ctx, sess, userText)
+		go a.generateTitle(context.Background(), sess, userText)
 	}
 
 	// Plan and route to the right LLM.
