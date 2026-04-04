@@ -42,12 +42,16 @@ type sseChunk struct {
 
 // llmRequest sends a request to the LLM and streams the response.
 // It returns the full text response, any tool calls, and an error.
-func (a *agent) llmRequest(ctx context.Context, conn *LLMConnection, messages []llmMessage) (string, []toolCall, error) {
+func (a *agent) llmRequest(ctx context.Context, sid SessionId, conn *LLMConnection, messages []llmMessage) (string, []toolCall, error) {
+	a.mu.Lock()
+	readOnly := a.mode == "discussion"
+	a.mu.Unlock()
+
 	reqBody := map[string]any{
 		"model":    conn.Model,
 		"stream":   true,
 		"messages": messages,
-		"tools":    llmToolDefinitions(),
+		"tools":    llmToolDefinitions(readOnly),
 	}
 
 	body, _ := json.Marshal(reqBody)
@@ -95,9 +99,11 @@ func (a *agent) llmRequest(ctx context.Context, conn *LLMConnection, messages []
 
 		delta := chunk.Choices[0].Delta
 
-		// Accumulate text content.
 		if delta.Content != "" {
 			fullText.WriteString(delta.Content)
+			if sid != "" {
+				a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(delta.Content)))
+			}
 		}
 
 		// Accumulate tool calls (streamed incrementally).
@@ -121,14 +127,9 @@ const maxToolLoopIterations = 10
 // runToolLoop runs the agentic tool loop: send to LLM, execute tool calls, repeat.
 func (a *agent) runToolLoop(ctx context.Context, sid SessionId, conn *LLMConnection, messages []llmMessage) (string, error) {
 	for i := 0; i < maxToolLoopIterations; i++ {
-		text, calls, err := a.llmRequest(ctx, conn, messages)
+		text, calls, err := a.llmRequest(ctx, sid, conn, messages)
 		if err != nil {
 			return "", err
-		}
-
-		// Stream text to Zed.
-		if text != "" {
-			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(text)))
 		}
 
 		// No tool calls — we're done.

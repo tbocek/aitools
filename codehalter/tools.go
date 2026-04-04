@@ -35,8 +35,9 @@ func (a *agent) resolvePath(sid SessionId, path string) (string, error) {
 // ---------------------------------------------------------------------------
 
 type Tool struct {
-	Def     map[string]any
-	Execute func(ctx context.Context, a *agent, sid SessionId, args map[string]string) string
+	Def      map[string]any
+	ReadOnly bool // safe to use in discussion mode
+	Execute  func(ctx context.Context, a *agent, sid SessionId, args map[string]string) string
 }
 
 var registeredTools []Tool
@@ -45,10 +46,13 @@ func RegisterTool(t Tool) {
 	registeredTools = append(registeredTools, t)
 }
 
-func llmToolDefinitions() []map[string]any {
-	defs := make([]map[string]any, len(registeredTools))
-	for i, t := range registeredTools {
-		defs[i] = t.Def
+func llmToolDefinitions(readOnly bool) []map[string]any {
+	var defs []map[string]any
+	for _, t := range registeredTools {
+		if readOnly && !t.ReadOnly {
+			continue
+		}
+		defs = append(defs, t.Def)
 	}
 	return defs
 }
@@ -57,9 +61,16 @@ func (a *agent) executeTool(ctx context.Context, sid SessionId, tc toolCall) str
 	var args map[string]string
 	_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 
+	a.mu.Lock()
+	mode := a.mode
+	a.mu.Unlock()
+
 	for _, t := range registeredTools {
 		fn, _ := t.Def["function"].(map[string]any)
 		if fn["name"] == tc.Function.Name {
+			if mode == "discussion" && !t.ReadOnly {
+				return fmt.Sprintf("tool %s is not available in discussion mode", tc.Function.Name)
+			}
 			return t.Execute(ctx, a, sid, args)
 		}
 	}

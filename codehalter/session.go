@@ -19,11 +19,12 @@ type Message struct {
 }
 
 type Session struct {
-	ID        SessionId `toml:"id"`
-	Cwd       string    `toml:"cwd"`
-	Title     string    `toml:"title"`
-	CreatedAt time.Time `toml:"created_at"`
-	Messages  []Message `toml:"messages"`
+	ID        SessionId      `toml:"id"`
+	Cwd       string         `toml:"cwd"`
+	Title     string         `toml:"title"`
+	CreatedAt time.Time      `toml:"created_at"`
+	History   []HistoryLevel `toml:"history"`
+	Messages  []Message      `toml:"messages"`
 	filePath  string
 }
 
@@ -63,13 +64,6 @@ func newSession(cwd string) (*Session, error) {
 
 func (s *Session) AddUser(text string) {
 	s.Messages = append(s.Messages, Message{Role: "user", Content: text})
-	if s.Title == "" {
-		t := text
-		if len(t) > 80 {
-			t = t[:80] + "…"
-		}
-		s.Title = strings.ReplaceAll(t, "\n", " ")
-	}
 }
 
 func (s *Session) AddAssistant(text string) {

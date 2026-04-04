@@ -3,7 +3,7 @@ package main
 import "context"
 
 func init() {
-	RegisterTool(Tool{Def: map[string]any{
+	RegisterTool(Tool{ReadOnly: true, Def: map[string]any{
 		"type": "function",
 		"function": map[string]any{
 			"name":        "ask_user",

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -16,7 +18,9 @@ type agent struct {
 	sessions map[SessionId]*Session
 	mode           string
 	settings       Settings
-	allowWrites    string // "", "turn", "session"
+	allowWrites    string // "", "turn"
+	runners        []taskRunner
+	pendingRefs    []CodeRef
 }
 
 var _ Agent = (*agent)(nil)
@@ -78,6 +82,7 @@ func (a *agent) NewSession(_ context.Context, req NewSessionRequest) (NewSession
 	if settings, err := loadSettings(cwd); err == nil {
 		a.settings = settings
 	}
+	a.discoverRunners(cwd)
 	return NewSessionResponse{SessionId: s.ID, Modes: modeState(a.mode)}, nil
 }
 
@@ -91,6 +96,7 @@ func (a *agent) LoadSession(ctx context.Context, req LoadSessionRequest) (LoadSe
 	if settings, err := loadSettings(cwd); err == nil {
 		a.settings = settings
 	}
+	a.discoverRunners(cwd)
 
 	// Replay conversation history. Alternate chunk types create message
 	// boundaries in Zed; insert empty spacers between consecutive same-type messages.
@@ -160,6 +166,38 @@ func (a *agent) Cancel(_ context.Context, _ CancelNotification) {
 	}
 }
 
+func (a *agent) systemPrompt(sid SessionId) (string, error) {
+	sess := a.getSession(sid)
+	if sess == nil {
+		return "", fmt.Errorf("no session found")
+	}
+
+	content, err := os.ReadFile(filepath.Join(sess.Cwd, "AGENT.md"))
+	if err != nil {
+		return "", fmt.Errorf("AGENT.md not found in project root — create one with your system prompt")
+	}
+
+	a.mu.Lock()
+	mode := a.mode
+	a.mu.Unlock()
+
+	var b strings.Builder
+	b.Write(content)
+	b.WriteString("\n\n")
+	b.WriteString("Project directory: " + sess.Cwd + "\n")
+	b.WriteString("Current mode: " + mode + "\n\n")
+
+	files := listProjectFiles(sess.Cwd)
+	if len(files) > 0 {
+		b.WriteString("Project structure:\n")
+		for _, f := range files {
+			b.WriteString("  " + f + "\n")
+		}
+	}
+
+	return b.String(), nil
+}
+
 func (a *agent) replyError(ctx context.Context, sid SessionId, msg string) PromptResponse {
 	a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("❌ Error: "+msg)))
 	return PromptResponse{StopReason: StopReasonEndTurn}
@@ -183,6 +221,7 @@ func (a *agent) Prompt(ctx context.Context, req PromptRequest) (PromptResponse, 
 
 	// Store user message.
 	sess := a.getSession(req.SessionId)
+	isFirstMessage := sess != nil && len(sess.Messages) == 0 && len(sess.History) == 0
 	if sess != nil {
 		sess.AddUser(userText)
 		_ = sess.Save()
@@ -193,7 +232,28 @@ func (a *agent) Prompt(ctx context.Context, req PromptRequest) (PromptResponse, 
 		return a.replyError(ctx, req.SessionId, "no 'fast' connection in .codehalter/settings.toml"), nil
 	}
 
-	messages := []llmMessage{{Role: "user", Content: userText}}
+	// Generate title for new sessions.
+	if isFirstMessage {
+		go a.generateTitle(ctx, sess, userText)
+	}
+
+	// Build context for the first message.
+	content := userText
+	if isFirstMessage {
+		sysPrompt, err := a.systemPrompt(req.SessionId)
+		if err != nil {
+			return a.replyError(ctx, req.SessionId, err.Error()), nil
+		}
+		content = sysPrompt + "\n---\n" + userText
+	}
+
+	// Build message history for the LLM.
+	var messages []llmMessage
+	if sess != nil {
+		messages = a.buildLLMHistory(sess, userText)
+	}
+	messages = append(messages, llmMessage{Role: "user", Content: content})
+
 	response, err := a.runToolLoop(ctx, req.SessionId, conn, messages)
 	if err != nil {
 		return a.replyError(ctx, req.SessionId, err.Error()), nil
@@ -202,6 +262,7 @@ func (a *agent) Prompt(ctx context.Context, req PromptRequest) (PromptResponse, 
 	if sess != nil && response != "" {
 		sess.AddAssistant(response)
 		_ = sess.Save()
+		a.compressHistory(ctx, sess)
 	}
 
 	return PromptResponse{StopReason: StopReasonEndTurn}, nil
