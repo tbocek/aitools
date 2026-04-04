@@ -10,12 +10,18 @@ import (
 )
 
 const (
-	rawBufferTokens   = 10000
-	summaryBudget     = 5000
-	charsPerToken     = 4
-	summarizePrompt   = "Summarize this conversation concisely. Preserve key decisions and file paths. Do NOT include source code verbatim — instead reference the file path and describe what was changed. Drop pleasantries and redundant detail."
-	titlePrompt       = "Generate a very short title (max 6 words) for this conversation. Reply with only the title, nothing else."
-	retitlePrompt     = "Generate a very short title (max 6 words) for this conversation based on the summary below. Reply with only the title, nothing else.\n\n"
+	rawBufferTokens    = 10000
+	summaryBudget      = 5000
+	charsPerToken      = 4
+	roleTokenOverhead  = 4
+	summaryWordRatio   = 3.0 / 4.0
+	maxTitleLen        = 60
+	titleFallbackLen   = 50
+	wholeFileEndLine   = 999999
+
+	summarizePrompt = "Summarize this conversation concisely. Preserve key decisions and file paths. Do NOT include source code verbatim — instead reference the file path and describe what was changed. Drop pleasantries and redundant detail."
+	titlePrompt     = "Generate a very short title (max 6 words) for this conversation. Reply with only the title, nothing else."
+	retitlePrompt   = "Generate a very short title (max 6 words) for this conversation based on the summary below. Reply with only the title, nothing else.\n\n"
 )
 
 // CodeRef tracks a file region referenced in a history summary.
@@ -42,7 +48,7 @@ func estimateTokens(s string) int {
 func estimateMessagesTokens(msgs []Message) int {
 	total := 0
 	for _, m := range msgs {
-		total += estimateTokens(m.Content) + 4 // role overhead
+		total += estimateTokens(m.Content) + roleTokenOverhead // role overhead
 	}
 	return total
 }
@@ -57,6 +63,7 @@ func (a *agent) compressHistory(ctx context.Context, sess *Session) {
 
 	conn := a.settings.LLM("fast")
 	if conn == nil {
+		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Cannot compress history: no 'fast' LLM connection")))
 		return
 	}
 
@@ -119,11 +126,11 @@ func (a *agent) compressHistory(ctx context.Context, sess *Session) {
 
 // summarize calls the LLM to compress text into roughly targetTokens.
 func (a *agent) summarize(ctx context.Context, conn *LLMConnection, text string, targetTokens int) string {
-	prompt := fmt.Sprintf("%s\n\nTarget length: ~%d words.\n\n---\n%s", summarizePrompt, targetTokens*3/4, text)
+	prompt := fmt.Sprintf("%s\n\nTarget length: ~%d words.\n\n---\n%s", summarizePrompt, int(float64(targetTokens)*summaryWordRatio), text)
 	messages := []llmMessage{{Role: "user", Content: prompt}}
 
 	// Non-streaming request for summarization.
-	response, _, err := a.llmRequest(ctx, "", conn, messages)
+	response, err := a.llmSimple(ctx, conn, messages)
 	if err != nil {
 		// If summarization fails, just truncate.
 		chars := targetTokens * charsPerToken
@@ -139,21 +146,28 @@ func (a *agent) summarize(ctx context.Context, conn *LLMConnection, text string,
 func (a *agent) generateTitle(ctx context.Context, sess *Session, userText string) {
 	conn := a.settings.LLM("fast")
 	if conn == nil {
+		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Cannot generate title: no 'fast' LLM connection")))
 		return
 	}
 	messages := []llmMessage{{Role: "user", Content: titlePrompt + "\n\n" + userText}}
-	title, _, err := a.llmRequest(ctx, "", conn, messages)
-	if err != nil || title == "" {
-		// Fallback to truncated user text.
+	title, err := a.llmSimple(ctx, conn, messages)
+	if err != nil {
+		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Title generation failed: "+err.Error())))
 		title = userText
-		if len(title) > 50 {
-			title = title[:50]
+		if len(title) > titleFallbackLen {
+			title = title[:titleFallbackLen]
+		}
+	}
+	if title == "" {
+		title = userText
+		if len(title) > titleFallbackLen {
+			title = title[:titleFallbackLen]
 		}
 	}
 	title = strings.TrimSpace(title)
 	title = strings.Trim(title, "\"'")
-	if len(title) > 60 {
-		title = title[:60]
+	if len(title) > maxTitleLen {
+		title = title[:maxTitleLen]
 	}
 	sess.Title = title
 	_ = sess.Save()
@@ -166,19 +180,22 @@ func (a *agent) retitle(ctx context.Context, sess *Session) {
 	}
 	conn := a.settings.LLM("fast")
 	if conn == nil {
-		return
+		return // already warned in compressHistory
 	}
-	// Use the most recent summary.
 	latest := sess.History[len(sess.History)-1]
 	messages := []llmMessage{{Role: "user", Content: retitlePrompt + latest.Content}}
-	title, _, err := a.llmRequest(ctx, "", conn, messages)
-	if err != nil || title == "" {
+	title, err := a.llmSimple(ctx, conn, messages)
+	if err != nil {
+		a.sendUpdate(ctx, sess.ID, AgentMessageChunk(TextBlock("⚠ Retitle failed: "+err.Error())))
+		return
+	}
+	if title == "" {
 		return
 	}
 	title = strings.TrimSpace(title)
 	title = strings.Trim(title, "\"'")
-	if len(title) > 60 {
-		title = title[:60]
+	if len(title) > maxTitleLen {
+		title = title[:maxTitleLen]
 	}
 	sess.Title = title
 	_ = sess.Save()
@@ -205,7 +222,7 @@ func hashLines(path string, startLine, endLine int) string {
 			break
 		}
 	}
-	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+	return fmt.Sprintf("%x", h.Sum(nil))[:hashTruncLen]
 }
 
 // MakeCodeRef creates a CodeRef for a file region with the current hash.
@@ -223,7 +240,7 @@ func MakeFileRef(path string) CodeRef {
 	return CodeRef{
 		Path:      path,
 		StartLine: 1,
-		EndLine:   999999,
+		EndLine:   wholeFileEndLine,
 		Hash:      hashFile(path),
 	}
 }
@@ -234,7 +251,7 @@ func hashFile(path string) string {
 		return ""
 	}
 	h := sha256.Sum256(data)
-	return fmt.Sprintf("%x", h[:])[:16]
+	return fmt.Sprintf("%x", h[:])[:hashTruncLen]
 }
 
 // checkInvalidRefs checks all code refs across history levels and returns
@@ -244,7 +261,7 @@ func checkInvalidRefs(history []HistoryLevel) []string {
 	for _, level := range history {
 		for _, ref := range level.Refs {
 			var currentHash string
-			if ref.EndLine >= 999999 {
+			if ref.EndLine >= wholeFileEndLine {
 				currentHash = hashFile(ref.Path)
 			} else {
 				currentHash = hashLines(ref.Path, ref.StartLine, ref.EndLine)

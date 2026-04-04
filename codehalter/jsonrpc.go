@@ -11,6 +11,11 @@ import (
 	"sync"
 )
 
+const (
+	initialBufSize = 64 * 1024        // 64KB
+	maxBufSize     = 16 * 1024 * 1024 // 16MB
+)
+
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 message types
 // ---------------------------------------------------------------------------
@@ -174,8 +179,8 @@ func (c *Connection) serve() {
 	defer close(c.done)
 
 	scanner := bufio.NewScanner(c.r)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 16*1024*1024)
+	buf := make([]byte, 0, initialBufSize)
+	scanner.Buffer(buf, maxBufSize)
 
 	ctx := context.Background()
 

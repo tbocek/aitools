@@ -21,6 +21,7 @@ type agent struct {
 	allowWrites    string // "", "turn"
 	runners        []taskRunner
 	pendingRefs    []CodeRef
+	fileCache      FileCache
 }
 
 var _ Agent = (*agent)(nil)
@@ -72,17 +73,22 @@ func (a *agent) Authenticate(_ context.Context, _ AuthenticateRequest) (Authenti
 	return AuthenticateResponse{}, nil
 }
 
-func (a *agent) NewSession(_ context.Context, req NewSessionRequest) (NewSessionResponse, error) {
-	cwd := cwdOrDefault(req.Cwd)
-	s, err := newSession(cwd)
-	if err != nil {
-		return NewSessionResponse{}, err
-	}
+func (a *agent) initSession(ctx context.Context, cwd string, s *Session) {
 	a.putSession(s)
 	if settings, err := loadSettings(cwd); err == nil {
 		a.settings = settings
 	}
 	a.discoverRunners(cwd)
+	a.refreshFileCache(ctx, cwd, s.ID)
+}
+
+func (a *agent) NewSession(ctx context.Context, req NewSessionRequest) (NewSessionResponse, error) {
+	cwd := cwdOrDefault(req.Cwd)
+	s, err := newSession(cwd)
+	if err != nil {
+		return NewSessionResponse{}, err
+	}
+	a.initSession(ctx, cwd, s)
 	return NewSessionResponse{SessionId: s.ID, Modes: modeState(a.mode)}, nil
 }
 
@@ -92,32 +98,28 @@ func (a *agent) LoadSession(ctx context.Context, req LoadSessionRequest) (LoadSe
 	if err != nil {
 		return LoadSessionResponse{}, fmt.Errorf("loading session: %w", err)
 	}
-	a.putSession(s)
-	if settings, err := loadSettings(cwd); err == nil {
-		a.settings = settings
-	}
-	a.discoverRunners(cwd)
+	a.initSession(ctx, cwd, s)
+	a.replayHistory(ctx, req.SessionId, s)
+	return LoadSessionResponse{Modes: modeState(a.mode)}, nil
+}
 
-	// Replay conversation history. Alternate chunk types create message
-	// boundaries in Zed; insert empty spacers between consecutive same-type messages.
+func (a *agent) replayHistory(ctx context.Context, sid SessionId, s *Session) {
 	lastRole := ""
 	for _, m := range s.Messages {
 		if m.Role == lastRole {
 			if m.Role == "user" {
-				a.sendUpdate(ctx, req.SessionId, AgentMessageChunk(TextBlock("")))
+				a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("")))
 			} else {
-				a.sendUpdate(ctx, req.SessionId, UserMessageChunk(TextBlock("")))
+				a.sendUpdate(ctx, sid, UserMessageChunk(TextBlock("")))
 			}
 		}
 		if m.Role == "user" {
-			a.sendUpdate(ctx, req.SessionId, UserMessageChunk(TextBlock(m.Content)))
+			a.sendUpdate(ctx, sid, UserMessageChunk(TextBlock(m.Content)))
 		} else {
-			a.sendUpdate(ctx, req.SessionId, AgentMessageChunk(TextBlock(m.Content)))
+			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(m.Content)))
 		}
 		lastRole = m.Role
 	}
-
-	return LoadSessionResponse{Modes: modeState(a.mode)}, nil
 }
 
 func (a *agent) ListSessions(_ context.Context, req ListSessionsRequest) (ListSessionsResponse, error) {
@@ -166,6 +168,19 @@ func (a *agent) Cancel(_ context.Context, _ CancelNotification) {
 	}
 }
 
+func (a *agent) refreshFileCache(ctx context.Context, cwd string, sid SessionId) {
+	a.fileCache = loadFileCache(cwd)
+	stale := updateFileCache(cwd, &a.fileCache)
+	if len(stale) > 0 {
+		a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(fmt.Sprintf("Indexing %d files...", len(stale)))))
+		if err := a.summarizeStaleFiles(ctx, cwd, &a.fileCache, stale); err != nil {
+			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock("❌ "+err.Error())))
+		} else {
+			a.sendUpdate(ctx, sid, AgentMessageChunk(TextBlock(fmt.Sprintf("Indexed %d files.", len(stale)))))
+		}
+	}
+}
+
 func (a *agent) systemPrompt(sid SessionId) (string, error) {
 	sess := a.getSession(sid)
 	if sess == nil {
@@ -186,14 +201,7 @@ func (a *agent) systemPrompt(sid SessionId) (string, error) {
 	b.WriteString("\n\n")
 	b.WriteString("Project directory: " + sess.Cwd + "\n")
 	b.WriteString("Current mode: " + mode + "\n\n")
-
-	files := listProjectFiles(sess.Cwd)
-	if len(files) > 0 {
-		b.WriteString("Project structure:\n")
-		for _, f := range files {
-			b.WriteString("  " + f + "\n")
-		}
-	}
+	b.WriteString(buildProjectContext(sess.Cwd, &a.fileCache))
 
 	return b.String(), nil
 }
@@ -227,17 +235,19 @@ func (a *agent) Prompt(ctx context.Context, req PromptRequest) (PromptResponse, 
 		_ = sess.Save()
 	}
 
-	conn := a.settings.LLM("fast")
-	if conn == nil {
-		return a.replyError(ctx, req.SessionId, "no 'fast' connection in .codehalter/settings.toml"), nil
-	}
-
 	// Generate title for new sessions.
 	if isFirstMessage {
 		go a.generateTitle(ctx, sess, userText)
 	}
 
-	// Build context for the first message.
+	// Plan and route to the right LLM.
+	conn, err := a.planAndRoute(ctx, req.SessionId, userText)
+	if err != nil {
+		return a.replyError(ctx, req.SessionId, err.Error()), nil
+	}
+
+	// Build context. AGENT.md on first message, project structure on every message.
+	// Neither is stored in session history.
 	content := userText
 	if isFirstMessage {
 		sysPrompt, err := a.systemPrompt(req.SessionId)
@@ -245,6 +255,11 @@ func (a *agent) Prompt(ctx context.Context, req PromptRequest) (PromptResponse, 
 			return a.replyError(ctx, req.SessionId, err.Error()), nil
 		}
 		content = sysPrompt + "\n---\n" + userText
+	} else if sess != nil {
+		projCtx := buildProjectContext(sess.Cwd, &a.fileCache)
+		if projCtx != "" {
+			content = projCtx + "\n---\n" + userText
+		}
 	}
 
 	// Build message history for the LLM.

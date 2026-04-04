@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -38,6 +39,142 @@ type sseChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+}
+
+// llmSimple sends a streaming, no-tools LLM call. Used for titles, etc.
+func (a *agent) llmSimple(ctx context.Context, conn *LLMConnection, messages []llmMessage) (string, error) {
+	return a.llmRaw(ctx, conn, messages, nil)
+}
+
+// llmWithTools sends a streaming LLM call with custom tools. Returns text and tool calls.
+func (a *agent) llmWithTools(ctx context.Context, conn *LLMConnection, messages []llmMessage, tools []map[string]any) (string, []toolCall, error) {
+	reqBody := map[string]any{
+		"model":    conn.Model,
+		"stream":   true,
+		"messages": messages,
+		"tools":    tools,
+	}
+
+	body, _ := json.Marshal(reqBody)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", conn.URL, bytes.NewReader(body))
+	if err != nil {
+		return "", nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if conn.Token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+conn.Token)
+	}
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("LLM returned %d: %s", resp.StatusCode, b)
+	}
+
+	var fullText strings.Builder
+	var calls []toolCall
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk sseChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		delta := chunk.Choices[0].Delta
+		if delta.Content != "" {
+			fullText.WriteString(delta.Content)
+			fmt.Fprint(os.Stderr, delta.Content)
+		}
+		for _, tc := range delta.ToolCalls {
+			if tc.ID != "" {
+				calls = append(calls, tc)
+			} else if len(calls) > 0 {
+				last := &calls[len(calls)-1]
+				last.Function.Arguments += tc.Function.Arguments
+			}
+		}
+	}
+	fmt.Fprintln(os.Stderr)
+
+	return fullText.String(), calls, nil
+}
+
+func (a *agent) llmRaw(ctx context.Context, conn *LLMConnection, messages []llmMessage, tools []map[string]any) (string, error) {
+	reqBody := map[string]any{
+		"model":    conn.Model,
+		"stream":   true,
+		"messages": messages,
+	}
+	if tools != nil {
+		reqBody["tools"] = tools
+	}
+
+	body, _ := json.Marshal(reqBody)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", conn.URL, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if conn.Token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+conn.Token)
+	}
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("LLM returned %d: %s", resp.StatusCode, b)
+	}
+
+	var fullText strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk sseChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		if chunk.Choices[0].Delta.Content != "" {
+			fullText.WriteString(chunk.Choices[0].Delta.Content)
+			fmt.Fprint(os.Stderr, chunk.Choices[0].Delta.Content)
+		}
+	}
+	fmt.Fprintln(os.Stderr)
+
+	return fullText.String(), nil
 }
 
 // llmRequest sends a request to the LLM and streams the response.

@@ -73,6 +73,21 @@ func (a *AgentSideConnection) requestPermission(ctx context.Context, sid Session
 	return resp.Outcome.OptionId, nil
 }
 
+// AskChoice shows up to 2 choices (green) + abort (red). Returns the chosen optionId.
+func (a *AgentSideConnection) AskChoice(ctx context.Context, sid SessionId, toolCallId string, choices []string) (string, error) {
+	var options []permissionOption
+	for _, c := range choices {
+		options = append(options, permissionOption{OptionId: c, Name: c, Kind: "allow_once"})
+	}
+	options = append(options, permissionOption{OptionId: "abort", Name: "Abort", Kind: "reject_once"})
+
+	choice, err := a.requestPermission(ctx, sid, toolCallId, options)
+	if err != nil {
+		return "abort", err
+	}
+	return choice, nil
+}
+
 func (a *AgentSideConnection) AskWritePermission(ctx context.Context, sid SessionId, toolCallId string) (string, error) {
 	choice, err := a.requestPermission(ctx, sid, toolCallId, []permissionOption{
 		{OptionId: "allow_once", Name: "Allow once", Kind: "allow_once"},
