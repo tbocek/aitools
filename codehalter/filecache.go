@@ -16,7 +16,6 @@ import (
 const (
 	maxPreviewLines = 50
 	maxPreviewBytes = maxPreviewLines * 200
-	hashTruncLen    = 16
 	chunkSize       = 10
 
 	fileSummaryPrompt = "Summarize each file below. Call the file_summary tool with one entry per file. Max 20 words per summary. Focus on what the code does, not the file type.\n\n"
@@ -109,7 +108,7 @@ func hashFileQuick(path string) string {
 			break
 		}
 	}
-	return fmt.Sprintf("%x", h.Sum(nil))[:hashTruncLen]
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func isBinaryFile(path string) bool {

@@ -222,7 +222,7 @@ func hashLines(path string, startLine, endLine int) string {
 			break
 		}
 	}
-	return fmt.Sprintf("%x", h.Sum(nil))[:hashTruncLen]
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // MakeCodeRef creates a CodeRef for a file region with the current hash.
@@ -251,7 +251,7 @@ func hashFile(path string) string {
 		return ""
 	}
 	h := sha256.Sum256(data)
-	return fmt.Sprintf("%x", h[:])[:hashTruncLen]
+	return fmt.Sprintf("%x", h[:])
 }
 
 // checkInvalidRefs checks all code refs across history levels and returns

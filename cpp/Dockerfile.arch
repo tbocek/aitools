@@ -1,4 +1,4 @@
-FROM quay.io/archlinux/archlinux:latest
+FROM quay.io/archlinux/archlinux:base-20260404.0.511250
 
 RUN pacman -Sy --noconfirm && \
     pacman -S --noconfirm \
