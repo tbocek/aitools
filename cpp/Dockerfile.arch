@@ -1,4 +1,4 @@
-FROM quay.io/archlinux/archlinux:base-20260404.0.511250
+FROM quay.io/archlinux/archlinux:base-20260416.0.516196
 
 RUN pacman -Sy --noconfirm && \
     pacman -S --noconfirm \
@@ -12,6 +12,7 @@ RUN pacman -Sy --noconfirm && \
         vulkan-headers \
         vulkan-icd-loader \
         vulkan-radeon \
+        spirv-headers \
         shaderc \
         rocm-hip-sdk \
         rocwmma && \
