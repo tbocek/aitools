@@ -17,5 +17,5 @@ RUN cd /home/arch/llama.cpp && cmake -B build \
     -DGGML_CUDA_ENABLE_UNIFIED_MEMORY=ON \
     -DGGML_VULKAN=ON \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_HIP_FLAGS="-mllvm --amdgpu-unroll-threshold-local=600"
-RUN cd /home/arch/llama.cpp && cmake --build build --config Release --parallel
+    -DCMAKE_HIP_FLAGS="-mllvm --amdgpu-unroll-threshold-local=600" \
+    && cmake --build build --config Release --parallel

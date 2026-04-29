@@ -9,6 +9,7 @@ RUN pacman -Sy --noconfirm && \
         curl \
         python3 \
         uv \
+        python-huggingface-hub \
         vulkan-headers \
         vulkan-icd-loader \
         vulkan-radeon \
