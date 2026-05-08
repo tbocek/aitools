@@ -12,20 +12,24 @@ SD_BACKEND=rocm
 no_cache_arch=''
 no_cache_llama=''
 skip_build=false
+sd_args=''
 
 while :; do
     case "${1-}" in
     -h | --help)
-        echo "Usage: $(basename "$0") [-h] [--no-cache] [--no-cache-llama] [--skip-build]"
+        echo "Usage: $(basename "$0") [-h] [--no-cache] [--no-cache-llama] [--skip-build] [--sd-args ARGS]"
         echo ""
         echo "  --no-cache          Rebuild all images without Docker cache"
         echo "  --no-cache-llama    Rebuild only llama image without Docker cache"
         echo "  --skip-build        Skip building entirely"
+        echo "  --sd-args ARGS      Extra args passed verbatim to sd-server"
+        echo "                      (e.g. \"--diffusion-model /mnt/models/sd/foo.safetensors --vae /mnt/models/sd/bar.safetensors\")"
         echo "  -h, --help          Print this help and exit"
         exit 0 ;;
     --no-cache) no_cache_arch='--no-cache'; no_cache_llama='--no-cache' ;;
     --no-cache-llama) no_cache_llama='--no-cache' ;;
     --skip-build) skip_build=true ;;
+    --sd-args) sd_args="${2-}"; shift ;;
     -?*) echo "Unknown option: $1" >&2; exit 1 ;;
     *) break ;;
     esac
@@ -35,35 +39,48 @@ done
 export LLAMA_DEVICE
 export SD_DEVICE
 export SD_BACKEND
+export SD_ARGS="$sd_args"
 
 # Download missing models from HuggingFace in the background
 download_models() {
     current_url=""
+    current_mmproj_url=""
+
+    download_file() {
+        local url="$1"
+        local dest="$2"
+        [[ -f "$dest" ]] && return 0
+        echo "Downloading $(basename "$dest")..."
+        curl -L --fail -C - -o "${dest}.part" "$url"
+        mv "${dest}.part" "$dest"
+    }
 
     while IFS= read -r line; do
         # Reset on new section
         if [[ "$line" =~ ^\[ ]]; then
             current_url=""
+            current_mmproj_url=""
         fi
 
-        # Capture URL
+        # Capture URLs
         if [[ "$line" =~ ^#\ url\ =\ (.*) ]]; then
             current_url="${BASH_REMATCH[1]}"
             continue
         fi
+        if [[ "$line" =~ ^#\ mmproj-url\ =\ (.*) ]]; then
+            current_mmproj_url="${BASH_REMATCH[1]}"
+            continue
+        fi
 
         # Capture model or mmproj path
-        if [[ "$line" =~ (model|mmproj)\ =\ /mnt/models/(.+) ]]; then
+        if [[ "$line" =~ ^(model|mmproj)\ =\ /mnt/models/(.+) ]]; then
+            kind="${BASH_REMATCH[1]}"
             filename="${BASH_REMATCH[2]}"
-            [[ -z "$current_url" ]] && continue
-
-            # Extract repo_id and repo_path from URL
-            repo_id=$(echo "$current_url" | sed -E 's|https://huggingface.co/([^/]+/[^/]+)/.*|\1|')
-            repo_base_path=$(echo "$current_url" | sed -E 's|.*/resolve/main/||')
-            subdir=$(dirname "$repo_base_path")
 
             # ---- SHARDED GGUF HANDLING ----
             if [[ "$filename" =~ -([0-9]+)-of-([0-9]+)\.gguf$ ]]; then
+                [[ -z "$current_url" ]] && continue
+                url_dir="${current_url%/*}"
                 total="${BASH_REMATCH[2]}"
                 base=$(echo "$filename" | sed -E 's/-[0-9]+-of-[0-9]+\.gguf//')
 
@@ -71,25 +88,19 @@ download_models() {
 
                 for i in $(seq -f "%05g" 1 "$total"); do
                     shard="${base}-${i}-of-${total}.gguf"
-
-                    test -f "${MODELS_DIR}/${shard}" || {
-                        echo "Downloading ${shard}..."
-                        huggingface-cli download "$repo_id" \
-                            "${subdir}/${shard}" \
-                            --local-dir "$MODELS_DIR" \
-                            --local-dir-use-symlinks False
-                    }
+                    download_file "${url_dir}/${shard}" "${MODELS_DIR}/${shard}"
                 done
 
             # ---- SINGLE FILE (GGUF or mmproj) ----
             else
-                test -f "${MODELS_DIR}/${filename}" || {
-                    echo "Downloading ${filename}..."
-                    huggingface-cli download "$repo_id" \
-                        "${subdir}/${filename}" \
-                        --local-dir "$MODELS_DIR" \
-                        --local-dir-use-symlinks False
-                }
+                if [[ "$kind" == "mmproj" && -n "$current_mmproj_url" ]]; then
+                    file_url="$current_mmproj_url"
+                elif [[ -n "$current_url" ]]; then
+                    file_url="${current_url%/*}/${filename}"
+                else
+                    continue
+                fi
+                download_file "$file_url" "${MODELS_DIR}/${filename}"
             fi
         fi
 

@@ -40,12 +40,12 @@ services:
       - GGML_VK_VISIBLE_DEVICES=${SD_DEVICE:-0}
     restart: unless-stopped
     ports:
-      - "7860:7860"
+      - "1234:1234"
     volumes:
-      - /mnt/models/sd:/home/arch/sd.cpp-webui.${SD_BACKEND:-rocm}/models
+      - /mnt/models/sd:/mnt/models/sd
     command: >-
-      bash -c "mkdir -p /home/arch/sd.cpp-webui.${SD_BACKEND:-rocm}/models/{checkpoints,unet,vae,text_encoders,embeddings,loras,taesd,photomaker,upscale_models,controlnet}
-      && /home/arch/sd.cpp-webui.${SD_BACKEND:-rocm}/sdcpp_webui.sh --listen ${SD_ARGS:-}"
+      bash -c "/home/arch/stable-diffusion.cpp.${SD_BACKEND:-rocm}/build/bin/sd-server
+      --listen-ip 0.0.0.0 --listen-port 1234 ${SD_ARGS:-}"
   ace:
     build:
       context: .

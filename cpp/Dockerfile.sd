@@ -1,10 +1,22 @@
 FROM arch:latest
 
-#https://github.com/leejet/stable-diffusion.cpp   
+# Node + pnpm needed by -DSD_SERVER_BUILD_FRONTEND=ON to build the embedded webui
+USER root
+RUN pacman -Sy --noconfirm && \
+    pacman -S --noconfirm nodejs pnpm && \
+    pacman -Scc --noconfirm
+USER arch
+
+#https://github.com/leejet/stable-diffusion.cpp
 RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp && \
-    mv stable-diffusion.cpp stable-diffusion.cpp.rocm && \
+    sed -i 's/\.u8string()/.string()/g' stable-diffusion.cpp/examples/server/runtime.cpp
+
+RUN cd /home/arch/stable-diffusion.cpp/examples/server/frontend && \
+    pnpm install
+
+RUN mv stable-diffusion.cpp stable-diffusion.cpp.rocm && \
     cp -r stable-diffusion.cpp.rocm stable-diffusion.cpp.vulkan
-    
+
 ENV PATH="/opt/rocm/bin:${PATH}" \
     HIP_PATH=/opt/rocm \
     ROCM_PATH=/opt/rocm
@@ -13,6 +25,7 @@ RUN cd /home/arch/stable-diffusion.cpp.rocm && cmake -B build -G "Ninja" \
     -DCMAKE_C_COMPILER=/opt/rocm/lib/llvm/bin/clang \
     -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
     -DSD_HIPBLAS=ON \
+    -DSD_SERVER_BUILD_FRONTEND=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DAMDGPU_TARGETS=gfx1151 \
     -DGPU_TARGETS=gfx1151 \
@@ -21,35 +34,6 @@ RUN cd /home/arch/stable-diffusion.cpp.rocm && cmake -B build -G "Ninja" \
 RUN cd /home/arch/stable-diffusion.cpp.rocm && cmake --build build --config Release --parallel
 
 RUN cd /home/arch/stable-diffusion.cpp.vulkan && cmake -B build -G "Ninja" \
-    -DSD_VULKAN=ON
+    -DSD_VULKAN=ON \
+    -DSD_SERVER_BUILD_FRONTEND=ON
 RUN cd /home/arch/stable-diffusion.cpp.vulkan && cmake --build build --config Release --parallel
-
-#https://github.com/daniandtheweb/sd.cpp-webui
-RUN cd /home/arch && git clone https://github.com/daniandtheweb/sd.cpp-webui.git && \
-    mv sd.cpp-webui sd.cpp-webui.rocm && \
-    cp -r sd.cpp-webui.rocm sd.cpp-webui.vulkan
-
-RUN cd /home/arch && \
-    cp stable-diffusion.cpp.rocm/build/bin/sd-cli sd.cpp-webui.rocm && \
-    cp stable-diffusion.cpp.rocm/build/bin/sd-server sd.cpp-webui.rocm && \
-    cp stable-diffusion.cpp.vulkan/build/bin/sd-cli sd.cpp-webui.vulkan && \
-    cp stable-diffusion.cpp.vulkan/build/bin/sd-server sd.cpp-webui.vulkan
-
-# Create model subdirectories expected by sd.cpp-webui config
-RUN cd /home/arch && for dir in sd.cpp-webui.rocm sd.cpp-webui.vulkan; do \
-    mkdir -p $dir/models/{checkpoints,unet,vae,text_encoders,embeddings,loras,taesd,photomaker,upscale_models,controlnet}; \
-    done
-
-RUN cd /home/arch/sd.cpp-webui.rocm && \
-    chmod a+x sdcpp_webui.sh && \
-    uv venv --python 3.13 --seed venv && \
-    source venv/bin/activate && \
-    uv pip install -r requirements.txt && \
-    uv pip install requests
-
-RUN cd /home/arch/sd.cpp-webui.vulkan && \
-    chmod a+x sdcpp_webui.sh && \
-    uv venv --python 3.13 --seed venv && \
-    source venv/bin/activate && \
-    uv pip install -r requirements.txt && \
-    uv pip install requests
