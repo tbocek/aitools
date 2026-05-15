@@ -5,9 +5,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(dirname "$0")"
 MODELS_DIR="/mnt/models"
 # ROCM0 for HIP/ROCm, Vulkan0 for Vulkan
-LLAMA_DEVICE=ROCM0
-SD_DEVICE=0
-SD_BACKEND=rocm
+LLAMA_DEVICE=Vulkan0
+SD_DEVICE=ROCM0
 
 no_cache_arch=''
 no_cache_llama=''
@@ -37,9 +36,22 @@ while :; do
 done
 
 export LLAMA_DEVICE
-export SD_DEVICE
-export SD_BACKEND
 export SD_ARGS="$sd_args"
+
+# sd-server has no --device flag; parse SD_DEVICE (e.g. ROCM0, Vulkan0) and
+# hide the unwanted backend via env vars. Empty string disables: ggml-vulkan
+# parses GGML_VK_VISIBLE_DEVICES as unsigned and throws on -1; HIP runtime
+# treats empty visibility list as zero devices.
+if [[ "$SD_DEVICE" =~ ^[Vv]ulkan([0-9]+)$ ]]; then
+    export SD_HIP_VISIBLE=""
+    export SD_VK_VISIBLE="${BASH_REMATCH[1]}"
+elif [[ "$SD_DEVICE" =~ ^ROCM([0-9]+)$ ]]; then
+    export SD_HIP_VISIBLE="${BASH_REMATCH[1]}"
+    export SD_VK_VISIBLE=""
+else
+    echo "SD_DEVICE must be ROCMn or Vulkann, got: $SD_DEVICE" >&2
+    exit 1
+fi
 
 # Download missing models from HuggingFace in the background
 download_models() {
@@ -109,15 +121,16 @@ download_models() {
 
 mkdir -p "${MODELS_DIR}"
 cp "$SCRIPT_DIR/config.ini" "${MODELS_DIR}/config.ini"
-mkdir -p "${MODELS_DIR}/sd/{checkpoints,unet,vae,text_encoders,embeddings,loras,taesd,photomaker,upscale_models,controlnet}" 2>/dev/null || true
 
 download_models &
 DOWNLOAD_PID=$!
 
 if [ "$skip_build" = false ]; then
-    docker build $no_cache_arch -t arch:latest -f "$SCRIPT_DIR/Dockerfile.arch" "$SCRIPT_DIR"
-    docker compose build $no_cache_llama llama sd
+    buildx_args="--output type=docker,compression=zstd,compression-level=3"
+    docker buildx build $no_cache_arch  $buildx_args -t arch:latest  -f "$SCRIPT_DIR/Dockerfile.arch"  "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t sd:latest    -f "$SCRIPT_DIR/Dockerfile.sd"    "$SCRIPT_DIR"
 fi
-docker compose up -d llama sd
+docker compose up -d llama #sd
 
 wait "$DOWNLOAD_PID"

@@ -14,26 +14,19 @@ RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp && \
 RUN cd /home/arch/stable-diffusion.cpp/examples/server/frontend && \
     pnpm install
 
-RUN mv stable-diffusion.cpp stable-diffusion.cpp.rocm && \
-    cp -r stable-diffusion.cpp.rocm stable-diffusion.cpp.vulkan
-
 ENV PATH="/opt/rocm/bin:${PATH}" \
     HIP_PATH=/opt/rocm \
     ROCM_PATH=/opt/rocm
 
-RUN cd /home/arch/stable-diffusion.cpp.rocm && cmake -B build -G "Ninja" \
+RUN cd /home/arch/stable-diffusion.cpp && cmake -B build -G "Ninja" \
     -DCMAKE_C_COMPILER=/opt/rocm/lib/llvm/bin/clang \
     -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
     -DSD_HIPBLAS=ON \
+    -DSD_VULKAN=ON \
     -DSD_SERVER_BUILD_FRONTEND=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DAMDGPU_TARGETS=gfx1151 \
     -DGPU_TARGETS=gfx1151 \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-RUN cd /home/arch/stable-diffusion.cpp.rocm && cmake --build build --config Release --parallel
-
-RUN cd /home/arch/stable-diffusion.cpp.vulkan && cmake -B build -G "Ninja" \
-    -DSD_VULKAN=ON \
-    -DSD_SERVER_BUILD_FRONTEND=ON
-RUN cd /home/arch/stable-diffusion.cpp.vulkan && cmake --build build --config Release --parallel
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON && \
+    cmake --build build --config Release --parallel

@@ -18,7 +18,14 @@ services:
     volumes:
       - /mnt/models:/mnt/models
       - /tmp:/tmp
-    command: /home/arch/llama.cpp/build/bin/llama-server --device ${LLAMA_DEVICE:-ROCM0} --models-preset /mnt/models/config.ini --models-max 1 --parallel 1 --host 0.0.0.0 --port 9001
+    command: >-
+      /home/arch/llama.cpp/build/bin/llama-server 
+      --device ${LLAMA_DEVICE:-ROCM0} 
+      --models-preset /mnt/models/config.ini 
+      --models-max 1 
+      --parallel 1 
+      --host 0.0.0.0 
+      --port 9001
   sd:
     build:
       context: .
@@ -34,18 +41,22 @@ services:
       - seccomp=unconfined
     ipc: host
     environment:
-      - CUDA_VISIBLE_DEVICES=${SD_DEVICE:-0}
-      - HIP_VISIBLE_DEVICES=${SD_DEVICE:-0}
-      - ROCR_VISIBLE_DEVICES=${SD_DEVICE:-0}
-      - GGML_VK_VISIBLE_DEVICES=${SD_DEVICE:-0}
+      - HIP_VISIBLE_DEVICES=${SD_HIP_VISIBLE-0}
+      - GGML_VK_VISIBLE_DEVICES=${SD_VK_VISIBLE-}
     restart: unless-stopped
     ports:
       - "1234:1234"
     volumes:
       - /mnt/models/sd:/mnt/models/sd
     command: >-
-      bash -c "/home/arch/stable-diffusion.cpp.${SD_BACKEND:-rocm}/build/bin/sd-server
-      --listen-ip 0.0.0.0 --listen-port 1234 ${SD_ARGS:-}"
+      /home/arch/stable-diffusion.cpp/build/bin/sd-server
+      --listen-ip 0.0.0.0
+      --listen-port 1234
+      --diffusion-fa
+      --steps 10
+      --cfg-scale 1.0
+      --sampling-method euler
+      ${SD_ARGS:-}
   ace:
     build:
       context: .
