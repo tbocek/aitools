@@ -19,10 +19,11 @@ services:
       - /mnt/models:/mnt/models
       - /tmp:/tmp
     command: >-
-      /home/arch/llama.cpp/build/bin/llama-server 
-      --device ${LLAMA_DEVICE:-ROCM0} 
-      --models-preset /mnt/models/config.ini 
-      --host 0.0.0.0 
+      /home/arch/llama.cpp/build/bin/llama-server
+      --device ${LLAMA_DEVICE:-ROCM0}
+      --models-preset /mnt/models/config.ini
+      --models-max 1
+      --host 0.0.0.0
       --port 9001
   sd:
     build:
