@@ -15,8 +15,7 @@ RUN pacman -Sy --noconfirm && \
         vulkan-radeon \
         spirv-headers \
         shaderc \
-        rocm-hip-sdk \
-        rocwmma && \
+        rocm-hip-sdk && \
     pacman -Scc --noconfirm
 
 # Create non-root user and add to video, render, and wheel groups
