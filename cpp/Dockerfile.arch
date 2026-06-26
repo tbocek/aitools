@@ -10,6 +10,8 @@ RUN pacman -Sy --noconfirm && \
         curl \
         python3 \
         uv \
+        nodejs \
+        npm \
         vulkan-headers \
         vulkan-icd-loader \
         vulkan-radeon \

@@ -2,6 +2,7 @@ FROM arch:latest
 
 #https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md
 RUN git clone https://github.com/ggml-org/llama.cpp
+RUN cd llama.cpp/tools/ui && npm ci && npm run build
 
 ENV PATH="/opt/rocm/bin:${PATH}" \
     HIP_PATH=/opt/rocm \
@@ -15,6 +16,8 @@ RUN cd /home/arch/llama.cpp && cmake -B build \
     -DGGML_CUDA_FA_ALL_QUANTS=ON \
     -DGGML_CUDA_ENABLE_UNIFIED_MEMORY=ON \
     -DGGML_VULKAN=ON \
+    -DLLAMA_BUILD_WEBUI=ON \
+    -DLLAMA_USE_PREBUILT_WEBUI=OFF \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_HIP_FLAGS="-mllvm --amdgpu-unroll-threshold-local=600" \
     && cmake --build build --config Release --parallel
