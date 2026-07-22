@@ -52,6 +52,7 @@ services:
       --listen-ip 0.0.0.0
       --listen-port 1234
       --diffusion-fa
+      --offload-to-cpu
       --steps 10
       --cfg-scale 1.0
       --sampling-method euler

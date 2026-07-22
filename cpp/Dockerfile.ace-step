@@ -5,16 +5,16 @@ RUN git clone --recursive https://github.com/ServeurpersoCom/acestep.cpp && \
     mv acestep.cpp acestep.cpp.rocm && \
     cp -r acestep.cpp.rocm acestep.cpp.vulkan
 
-ENV PATH="/opt/rocm/bin:${PATH}" \
-    HIP_PATH=/opt/rocm \
-    ROCM_PATH=/opt/rocm
+ENV ROCM_PATH=/opt/rocm/core \
+    HIP_PATH=/opt/rocm/core \
+    PATH="/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:${PATH}" \
+    ROCBLAS_USE_HIPBLASLT=1
 
 RUN cd /home/arch/acestep.cpp.rocm && git submodule update --init && \
     cmake -B build \
     -DGGML_HIP=ON \
     -DAMDGPU_TARGETS=gfx1151 \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_HIP_FLAGS="-mllvm --amdgpu-unroll-threshold-local=600"
+    -DCMAKE_BUILD_TYPE=Release
 RUN cd /home/arch/acestep.cpp.rocm && cmake --build build --config Release --parallel
 
 RUN cd /home/arch/acestep.cpp.vulkan && git submodule update --init && \

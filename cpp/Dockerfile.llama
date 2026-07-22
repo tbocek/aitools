@@ -4,9 +4,9 @@ FROM arch:latest
 RUN git clone https://github.com/ggml-org/llama.cpp
 RUN cd llama.cpp/tools/ui && npm ci && npm run build
 
-ENV PATH="/opt/rocm/bin:${PATH}" \
-    HIP_PATH=/opt/rocm \
-    ROCM_PATH=/opt/rocm \
+ENV ROCM_PATH=/opt/rocm/core \
+    HIP_PATH=/opt/rocm/core \
+    PATH="/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:${PATH}" \
     ROCBLAS_USE_HIPBLASLT=1
 
 RUN cd /home/arch/llama.cpp && cmake -B build \
@@ -14,10 +14,8 @@ RUN cd /home/arch/llama.cpp && cmake -B build \
     -DGGML_NATIVE=ON \
     -DAMDGPU_TARGETS=gfx1151 \
     -DGGML_CUDA_FA_ALL_QUANTS=ON \
-    -DGGML_CUDA_ENABLE_UNIFIED_MEMORY=ON \
     -DGGML_VULKAN=ON \
     -DLLAMA_BUILD_WEBUI=ON \
     -DLLAMA_USE_PREBUILT_WEBUI=OFF \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_HIP_FLAGS="-mllvm --amdgpu-unroll-threshold-local=600" \
     && cmake --build build --config Release --parallel

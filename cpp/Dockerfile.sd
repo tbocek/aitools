@@ -1,32 +1,24 @@
 FROM arch:latest
 
-# Node + pnpm needed by -DSD_SERVER_BUILD_FRONTEND=ON to build the embedded webui
-USER root
-RUN pacman -Sy --noconfirm && \
-    pacman -S --noconfirm nodejs pnpm && \
-    pacman -Scc --noconfirm
-USER arch
-
 #https://github.com/leejet/stable-diffusion.cpp
-RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp && \
-    sed -i 's/\.u8string()/.string()/g' stable-diffusion.cpp/examples/server/runtime.cpp
+RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp 
+RUN cd /home/arch/stable-diffusion.cpp/examples/server/frontend && pnpm install
 
-RUN cd /home/arch/stable-diffusion.cpp/examples/server/frontend && \
-    pnpm install
-
-ENV PATH="/opt/rocm/bin:${PATH}" \
-    HIP_PATH=/opt/rocm \
-    ROCM_PATH=/opt/rocm
+ENV ROCM_PATH=/opt/rocm/core \
+    HIP_PATH=/opt/rocm/core \
+    PATH="/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:${PATH}" \
+    ROCBLAS_USE_HIPBLASLT=1
 
 RUN cd /home/arch/stable-diffusion.cpp && cmake -B build -G "Ninja" \
-    -DCMAKE_C_COMPILER=/opt/rocm/lib/llvm/bin/clang \
-    -DCMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
+    -DCMAKE_C_COMPILER=/opt/rocm/core/lib/llvm/bin/clang \
+    -DCMAKE_CXX_COMPILER=/opt/rocm/core/lib/llvm/bin/clang++ \
+    -DCMAKE_INSTALL_RPATH="/opt/rocm/core/lib/llvm/lib;/opt/rocm/core/lib" \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DSD_HIPBLAS=ON \
     -DSD_VULKAN=ON \
     -DSD_SERVER_BUILD_FRONTEND=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DAMDGPU_TARGETS=gfx1151 \
     -DGPU_TARGETS=gfx1151 \
-    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON && \
     cmake --build build --config Release --parallel
