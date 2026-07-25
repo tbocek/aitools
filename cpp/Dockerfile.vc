@@ -1,0 +1,15 @@
+FROM arch:latest
+
+#https://github.com/w-okada/voice-changer
+RUN sudo pacman -Sy --noconfirm && \
+    sudo pacman -S --noconfirm ffmpeg libsndfile portaudio && \
+    sudo pacman -Scc --noconfirm
+
+RUN git clone https://github.com/w-okada/voice-changer
+RUN cd /home/arch/voice-changer/server && \
+    uv venv --python 3.10 && \
+    uv pip install -r requirements.txt && \
+    uv pip install -U onnxruntime
+
+ENV PATH="/home/arch/voice-changer/server/.venv/bin:${PATH}"
+WORKDIR /home/arch/voice-changer/server

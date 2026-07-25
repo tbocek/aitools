@@ -56,7 +56,6 @@ fi
 # Download missing models from HuggingFace in the background
 download_models() {
     current_url=""
-    current_mmproj_url=""
 
     download_file() {
         local url="$1"
@@ -71,49 +70,41 @@ download_models() {
         # Reset on new section
         if [[ "$line" =~ ^\[ ]]; then
             current_url=""
-            current_mmproj_url=""
         fi
 
-        # Capture URLs
+        # A "# url" comment applies to the next /mnt/models path, whatever its key
         if [[ "$line" =~ ^#\ url\ =\ (.*) ]]; then
             current_url="${BASH_REMATCH[1]}"
             continue
         fi
-        if [[ "$line" =~ ^#\ mmproj-url\ =\ (.*) ]]; then
-            current_mmproj_url="${BASH_REMATCH[1]}"
-            continue
-        fi
 
-        # Capture model or mmproj path
-        if [[ "$line" =~ ^(model|mmproj)\ =\ /mnt/models/(.+) ]]; then
-            kind="${BASH_REMATCH[1]}"
-            filename="${BASH_REMATCH[2]}"
+        # Any key pointing into /mnt/models (model, mmproj, spec-draft-model, ...)
+        if [[ "$line" =~ ^[a-z-]+\ =\ /mnt/models/(.+) ]]; then
+            filename="${BASH_REMATCH[1]}"
+            [[ -z "$current_url" ]] && continue
+            remote="${current_url##*/}"
 
             # ---- SHARDED GGUF HANDLING ----
             if [[ "$filename" =~ -([0-9]+)-of-([0-9]+)\.gguf$ ]]; then
-                [[ -z "$current_url" ]] && continue
                 url_dir="${current_url%/*}"
                 total="${BASH_REMATCH[2]}"
                 base=$(echo "$filename" | sed -E 's/-[0-9]+-of-[0-9]+\.gguf//')
+                remote_base=$(echo "$remote" | sed -E 's/-[0-9]+-of-[0-9]+\.gguf//')
 
                 echo "Detected sharded GGUF ($total parts): $base"
 
                 for i in $(seq -f "%05g" 1 "$total"); do
-                    shard="${base}-${i}-of-${total}.gguf"
-                    download_file "${url_dir}/${shard}" "${MODELS_DIR}/${shard}"
+                    shard="${remote_base}-${i}-of-${total}.gguf"
+                    download_file "${url_dir}/${shard}" "${MODELS_DIR}/${base}-${i}-of-${total}.gguf"
                 done
 
-            # ---- SINGLE FILE (GGUF or mmproj) ----
+            # ---- SINGLE FILE ----
             else
-                if [[ "$kind" == "mmproj" && -n "$current_mmproj_url" ]]; then
-                    file_url="$current_mmproj_url"
-                elif [[ -n "$current_url" ]]; then
-                    file_url="${current_url%/*}/${filename}"
-                else
-                    continue
-                fi
-                download_file "$file_url" "${MODELS_DIR}/${filename}"
+                download_file "$current_url" "${MODELS_DIR}/${filename}"
             fi
+
+            # Consumed: don't let this url leak onto the next path in the section
+            current_url=""
         fi
 
     done < "$SCRIPT_DIR/config.ini"
@@ -130,7 +121,8 @@ if [ "$skip_build" = false ]; then
     docker buildx build $no_cache_arch  $buildx_args -t arch:latest  -f "$SCRIPT_DIR/Dockerfile.arch"  "$SCRIPT_DIR"
     docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
     docker buildx build $no_cache_llama $buildx_args -t sd:latest    -f "$SCRIPT_DIR/Dockerfile.sd"    "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t vc:latest    -f "$SCRIPT_DIR/Dockerfile.vc"    "$SCRIPT_DIR"
 fi
-docker compose up -d llama #sd
+docker compose up -d llama vc
 
 wait "$DOWNLOAD_PID"

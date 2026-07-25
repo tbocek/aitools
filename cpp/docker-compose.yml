@@ -82,3 +82,46 @@ services:
         hf download Serveurperso/ACE-Step-1.5-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf acestep-5Hz-lm-4B-Q8_0.gguf acestep-v15-turbo-Q8_0.gguf vae-BF16.gguf --local-dir /mnt/models/ace;
       fi &&
       /home/arch/acestep.cpp.${ACE_BACKEND:-vulkan}/build/ace-server --models /mnt/models/ace --host 0.0.0.0 --port 8082"
+      svan:
+          build:
+            context: .
+            dockerfile: Dockerfile.streamvoiceanon
+          image: svan:latest
+          devices:
+            - /dev/kfd
+            - /dev/dri
+          group_add:
+            - render
+            - video
+          security_opt:
+            - seccomp=unconfined
+          ipc: host
+          environment:
+            - DISPLAY=${DISPLAY}
+            - PULSE_SERVER=unix:/run/user/1000/pulse/native
+          volumes:
+            - /mnt/models/svan:/mnt/models/svan
+            - /tmp/.X11-unix:/tmp/.X11-unix
+            - ${XDG_RUNTIME_DIR}/pulse:/run/user/1000/pulse
+          command: >-
+            bash -c "if [ ! -d /mnt/models/svan/ckpt ]; then
+              echo 'Downloading StreamVoiceAnon models...' &&
+              hf download Plachta/StreamVoiceAnon --local-dir /mnt/models/svan/ckpt;
+            fi &&
+            ln -sfn /mnt/models/svan/ckpt pretrained_checkpoints &&
+            python evaluations/real-time-gui.py"
+  vc:
+    build:
+      context: .
+      dockerfile: Dockerfile.vc
+    image: vc:latest
+    restart: unless-stopped
+    ports:
+      - "18888:18888"
+    volumes:
+      - /mnt/models/vc:/mnt/models/vc
+    command: >-
+      python MMVCServerSIO.py
+      --host 0.0.0.0
+      --port 18888
+      --model_dir /mnt/models/vc
