@@ -123,6 +123,6 @@ if [ "$skip_build" = false ]; then
     docker buildx build $no_cache_llama $buildx_args -t sd:latest    -f "$SCRIPT_DIR/Dockerfile.sd"    "$SCRIPT_DIR"
     docker buildx build $no_cache_llama $buildx_args -t vc:latest    -f "$SCRIPT_DIR/Dockerfile.vc"    "$SCRIPT_DIR"
 fi
-docker compose up -d llama vc
+docker compose up -d llama #vc
 
 wait "$DOWNLOAD_PID"
