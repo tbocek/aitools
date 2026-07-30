@@ -138,7 +138,7 @@ setup_virtual_mic() {
 
 # Create bind-mount dirs up front: docker would create missing ones as root,
 # but the containers run as uid 1000 and could not write into them.
-mkdir -p "${MODELS_DIR}"/{sd,ace,vc}
+mkdir -p "${MODELS_DIR}"/{sd,ace,vc} "${MODELS_DIR}"/applio/{models,logs}
 cp "$SCRIPT_DIR/config.ini" "${MODELS_DIR}/config.ini"
 
 download_models &
@@ -150,8 +150,9 @@ if [ "$skip_build" = false ]; then
     #docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
     #docker buildx build $no_cache_llama $buildx_args -t sd:latest    -f "$SCRIPT_DIR/Dockerfile.sd"    "$SCRIPT_DIR"
     docker buildx build $no_cache_llama $buildx_args -t vc:latest    -f "$SCRIPT_DIR/Dockerfile.vc"    "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t vc2:latest   -f "$SCRIPT_DIR/Dockerfile.vc2"   "$SCRIPT_DIR"
 fi
 setup_virtual_mic
-docker compose up -d vc
+docker compose up -d vc vc2
 
 wait "$DOWNLOAD_PID"

@@ -136,3 +136,42 @@ services:
       --host 0.0.0.0
       --port 18888
       --model_dir model_dir
+  vc2:
+    build:
+      context: .
+      dockerfile: Dockerfile.vc2
+    image: vc2:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped
+    ports:
+      - "6969:6969"
+    environment:
+      # Applio's realtime tab drives PortAudio server-side (sounddevice), unlike
+      # w-okada which captures in the browser. Without a sound server the device
+      # dropdowns are empty, so hand it the host's pipewire-pulse socket.
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+    volumes:
+      # Applio downloads ~1.9GB of pretraineds/embedders/predictors on first
+      # start; without these mounts that happens again on every recreate.
+      # logs/ is also where trained models and indexes end up.
+      - /mnt/models/applio/models:/home/arch/Applio/rvc/models
+      - /mnt/models/applio/logs:/home/arch/Applio/logs
+      # Same path inside and out, so the symlinks in logs/ resolve either side.
+      - /mnt/models/vc:/mnt/models/vc:ro
+      # uid 1000 both on the host and in the arch image, so the socket and
+      # cookie land where libpulse already looks for them.
+      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
+      - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
+    # -u: gradio/tqdm output is block-buffered through docker's pipe, so without
+    # it "docker compose logs vc2" stays empty until the buffer flushes.
+    command: >-
+      python -u app.py
+      --server-name 0.0.0.0
+      --port 6969
