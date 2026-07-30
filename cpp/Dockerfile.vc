@@ -9,7 +9,27 @@ RUN git clone https://github.com/w-okada/voice-changer
 RUN cd /home/arch/voice-changer/server && \
     uv venv --python 3.10 && \
     uv pip install -r requirements.txt && \
-    uv pip install -U onnxruntime
+    uv pip install -U onnxruntime && \
+    # missing from requirements.txt, but imported unconditionally at runtime
+    uv pip install fairseq pyworld && \
+    # requirements.txt pins torch 2.0.1+cu117 (a CUDA build: hip=None, never sees
+    # the GPU). TheRock publishes ROCm wheels built for gfx1151 (Strix Halo),
+    # which the arch base already carries as rocm-gfx1151-bin.
+    # Pin both to the SAME nightly: torchaudio's _torchaudio.abi3.so links against
+    # the exact torch it was built for, and a mismatch fails at import with
+    # "undefined symbol: torch_library_impl" (torchfcpe pulls in torchaudio).
+    uv pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
+        "torch==2.9.1+rocm7.13.0a20260513" \
+        "torchaudio==2.9.0+rocm7.13.0a20260513" && \
+    # keep last: numpy 2.x breaks the C ABI of the pinned scipy/librosa wheels,
+    # and uv venv does not seed setuptools (librosa needs pkg_resources)
+    uv pip install "numpy<2" "setuptools<81"
+
+# Restore torch<2.6 torch.load semantics; see the module for why. Must be imported
+# before anything loads a checkpoint, so it goes on line 1 of the entry point.
+COPY torch_load_compat.py /home/arch/voice-changer/server/torch_load_compat.py
+RUN sed -i '1i import torch_load_compat  # noqa: F401  (must precede model loading)' \
+        /home/arch/voice-changer/server/MMVCServerSIO.py
 
 ENV PATH="/home/arch/voice-changer/server/.venv/bin:${PATH}"
 WORKDIR /home/arch/voice-changer/server

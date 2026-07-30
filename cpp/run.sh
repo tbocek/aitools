@@ -110,7 +110,35 @@ download_models() {
     done < "$SCRIPT_DIR/config.ini"
 }
 
-mkdir -p "${MODELS_DIR}"
+# Expose the voice changer output as a virtual mic for other apps (Discord,
+# OBS, Zoom, ...): the browser plays the converted audio into the VoiceChanger
+# null sink, and VoiceChangerMic republishes its monitor as a real capture
+# device -- most apps hide raw ".monitor" sources, hence the remap.
+setup_virtual_mic() {
+    command -v pactl >/dev/null 2>&1 || { echo "pactl not found, skipping virtual mic"; return 0; }
+    pactl info >/dev/null 2>&1     || { echo "no PipeWire/Pulse session, skipping virtual mic"; return 0; }
+
+    if ! pactl list short sinks | awk '{print $2}' | grep -qx VoiceChanger; then
+        pactl load-module module-null-sink \
+            media.class=Audio/Sink \
+            sink_name=VoiceChanger \
+            channel_map=stereo \
+            sink_properties=device.description=VoiceChanger >/dev/null
+        echo "Created virtual sink: VoiceChanger"
+    fi
+
+    if ! pactl list short sources | awk '{print $2}' | grep -qx VoiceChangerMic; then
+        pactl load-module module-remap-source \
+            master=VoiceChanger.monitor \
+            source_name=VoiceChangerMic \
+            source_properties=device.description=VoiceChangerMic >/dev/null
+        echo "Created virtual mic: VoiceChangerMic"
+    fi
+}
+
+# Create bind-mount dirs up front: docker would create missing ones as root,
+# but the containers run as uid 1000 and could not write into them.
+mkdir -p "${MODELS_DIR}"/{sd,ace,vc}
 cp "$SCRIPT_DIR/config.ini" "${MODELS_DIR}/config.ini"
 
 download_models &
@@ -119,10 +147,11 @@ DOWNLOAD_PID=$!
 if [ "$skip_build" = false ]; then
     buildx_args="--output type=docker,compression=zstd,compression-level=3"
     docker buildx build $no_cache_arch  $buildx_args -t arch:latest  -f "$SCRIPT_DIR/Dockerfile.arch"  "$SCRIPT_DIR"
-    docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
-    docker buildx build $no_cache_llama $buildx_args -t sd:latest    -f "$SCRIPT_DIR/Dockerfile.sd"    "$SCRIPT_DIR"
+    #docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
+    #docker buildx build $no_cache_llama $buildx_args -t sd:latest    -f "$SCRIPT_DIR/Dockerfile.sd"    "$SCRIPT_DIR"
     docker buildx build $no_cache_llama $buildx_args -t vc:latest    -f "$SCRIPT_DIR/Dockerfile.vc"    "$SCRIPT_DIR"
 fi
-docker compose up -d llama #vc
+setup_virtual_mic
+docker compose up -d vc
 
 wait "$DOWNLOAD_PID"

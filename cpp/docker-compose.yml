@@ -115,13 +115,24 @@ services:
       context: .
       dockerfile: Dockerfile.vc
     image: vc:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
     restart: unless-stopped
     ports:
       - "18888:18888"
     volumes:
-      - /mnt/models/vc:/mnt/models/vc
+      # model_dir must stay RELATIVE: the app mounts static files at
+      # f"/{model_dir}", so an absolute path yields a broken "//mnt/..." route
+      # and every model icon 404s.
+      - /mnt/models/vc:/home/arch/voice-changer/server/model_dir
     command: >-
       python MMVCServerSIO.py
       --host 0.0.0.0
       --port 18888
-      --model_dir /mnt/models/vc
+      --model_dir model_dir
