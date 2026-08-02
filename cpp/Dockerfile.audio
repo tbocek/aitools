@@ -1,0 +1,73 @@
+FROM arch:latest
+
+#https://github.com/0xShug0/audio.cpp
+# portaudio/alsa are for the WebUI's realtime pipeline (sounddevice), same
+# bridge as Dockerfile.vc2: Arch's portaudio only has the ALSA/OSS host APIs,
+# so audio reaches the pipewire-pulse socket through the ALSA pulse plugin.
+RUN sudo pacman -Sy --noconfirm && \
+    sudo pacman -S --noconfirm ffmpeg libsndfile portaudio alsa-plugins alsa-lib && \
+    sudo pacman -Scc --noconfirm
+
+RUN git clone https://github.com/0xShug0/audio.cpp
+
+# Same ROCm-from-AUR layout as Dockerfile.llama (rocm-gfx1151-bin in arch:latest).
+ENV ROCM_PATH=/opt/rocm/core \
+    HIP_PATH=/opt/rocm/core \
+    PATH="/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:${PATH}" \
+    ROCBLAS_USE_HIPBLASLT=1
+
+# HIP + Vulkan in one binary, like the llama build: the backend is picked at
+# runtime ("hip" / "vulkan" in the server config), so A/B-ing the two on
+# gfx1151 needs no rebuild. ENGINE_ENABLE_CUDA_GRAPHS=OFF is the project's own
+# guidance for UMA iGPUs (Strix Halo): each cached graph reserves its own
+# buffers out of shared memory and warmup can OOM.
+RUN cd /home/arch/audio.cpp && cmake -S . -B build \
+    -DENGINE_ENABLE_HIP=ON \
+    -DGPU_TARGETS=gfx1151 \
+    -DENGINE_ENABLE_VULKAN=ON \
+    -DENGINE_ENABLE_CUDA_GRAPHS=OFF \
+    -DCMAKE_C_COMPILER=/opt/rocm/core/lib/llvm/bin/clang \
+    -DCMAKE_CXX_COMPILER=/opt/rocm/core/lib/llvm/bin/clang++ \
+    -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --config Release --parallel
+
+# WebUI venv. requirements.txt pins torch==2.12.1 from PyPI -- the CUDA build,
+# ~3GB for a GPU stack the C++ engine never uses (torch is only there for
+# silero VAD in the realtime pipeline). Strip the pins and take CPU wheels.
+RUN cd /home/arch/audio.cpp && \
+    uv venv --python 3.12 && \
+    sed -i -E '/^(torch|torchaudio)==/d' webui/requirements.txt && \
+    uv pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio && \
+    uv pip install -r webui/requirements.txt
+
+# Two webui.py fixes, each with a guard so the build fails loudly if upstream
+# rewrites the line:
+# 1. The webui only knows cuda|cpu|metal server backends; a plain HIP build/bin
+#    is classified "cpu" from its CMakeCache (GGML_CUDA=OFF) and the server
+#    would be told "cpu", leaving the GPU idle. The server itself accepts
+#    "hip" (app/cli/args.cpp maps hip|rocm), so allow an env override:
+#    AUDIOCPP_SERVER_BACKEND=hip|vulkan|cpu set in docker-compose.
+# 2. Gradio binds 127.0.0.1, unreachable from outside the container.
+RUN cd /home/arch/audio.cpp/webui && \
+    sed -i 's/^SERVER_BACKEND = "cuda" if BACKEND == "gpu" else BACKEND$/SERVER_BACKEND = os.environ.get("AUDIOCPP_SERVER_BACKEND") or ("cuda" if BACKEND == "gpu" else BACKEND)/' webui.py && \
+    grep -q 'AUDIOCPP_SERVER_BACKEND' webui.py && \
+    sed -i 's/demo.launch(server_name="127.0.0.1", server_port=7860/demo.launch(server_name="0.0.0.0", server_port=7860/' webui.py && \
+    grep -q 'server_name="0.0.0.0"' webui.py
+
+# Same named-PCM routing as Dockerfile.vc2: "VoiceChanger" pins a stream to the
+# null sink whose monitor is the VoiceChangerMic capture device (OBS/Discord),
+# while "pulse"/"default" stay on the speakers.
+RUN printf '%s\n' \
+        'pcm.!default { type pulse }' \
+        'ctl.!default { type pulse }' \
+        'pcm.VoiceChanger {' \
+        '    type pulse' \
+        '    device "VoiceChanger"' \
+        '    hint { show on  description "VoiceChanger" }' \
+        '}' \
+    | sudo tee /etc/asound.conf >/dev/null
+
+ENV PATH="/home/arch/audio.cpp/.venv/bin:${PATH}" \
+    AUDIOCPP_PYTHON=/home/arch/audio.cpp/.venv/bin/python
+WORKDIR /home/arch/audio.cpp
+EXPOSE 7860

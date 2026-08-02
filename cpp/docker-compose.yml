@@ -60,7 +60,7 @@ services:
   ace:
     build:
       context: .
-      dockerfile: Dockerfile.ace-step
+      dockerfile: Dockerfile.acestep
     image: ace:latest
     devices:
       - /dev/kfd
@@ -175,3 +175,97 @@ services:
       python -u app.py
       --server-name 0.0.0.0
       --port 6969
+  audio:
+    build:
+      context: .
+      dockerfile: Dockerfile.audio
+    image: audio:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    environment:
+      # The webui classifies the plain HIP build/bin as "cpu" (from CMakeCache)
+      # and would tell the server "cpu"; this override (added by Dockerfile.vc3)
+      # makes it hand the server the HIP backend instead. Switch to "vulkan"
+      # or "cpu" here to A/B backends without a rebuild.
+      - AUDIOCPP_BACKEND=cpu
+      - AUDIOCPP_SERVER_BACKEND=hip
+      - AUDIOCPP_NO_BROWSER=1
+      # WebUI realtime pipeline drives sounddevice server-side, same as vc2.
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+    volumes:
+      # MODELS_ROOT is <repo>/models; GGUF packages land here via the WebUI's
+      # download manager, so persist them across recreates.
+      - /mnt/models/audiocpp:/home/arch/audio.cpp/models
+      # Existing RVC voices: the rvc family loads user .pth checkpoints and
+      # FAISS indexes directly via voice_model_path / retrieval_index_path.
+      - /mnt/models/vc:/mnt/models/vc:ro
+      # "Built-in voice" dropdown = *.wav in this dir (plus a prompt_text
+      # transcript index). Mounted so reference voices survive recreates;
+      # drop any wav in here and hit the refresh arrow next to the dropdown.
+      - /mnt/models/audiocpp/voices:/home/arch/audio.cpp/webui/voice
+      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
+      - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
+    command: >-
+      python -u webui/webui.py
+  vc3:
+    build:
+      context: .
+      dockerfile: Dockerfile.vc3
+    image: vc3:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped
+    environment:
+      # run_rt.py calls torch.set_num_threads(1) but the JIT ASR / vocoder ops
+      # still fan out over the OpenMP pool, which defaults to all 32 cores and
+      # pins ~22 of them continuously -- even converting silence. 4 threads
+      # keeps chunk compute well inside the 160ms budget (measured 22-54ms with
+      # the full pool; the model is 18M params, it does not need the machine).
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+      # run_rt.py opens ONE duplex stream: capture stays on the default source
+      # (the mic -- PULSE_SINK does not touch capture), playback lands on the
+      # VoiceChanger null sink, so VoiceChangerMic carries the converted voice
+      # for OBS/Discord. No monitor stream exists here, so unlike Applio this
+      # routing has no self-monitoring side effect.
+      - PULSE_SINK=VoiceChanger
+    volumes:
+      # initialization.py downloads ~2GB into these two repo-relative dirs
+      # (VC safetensors + vocos, and the ASR JIT + WavLM speaker encoder).
+      - /mnt/models/meanvc2/ckpts:/home/arch/MeanVC2/ckpts
+      - /mnt/models/meanvc2/preprocess_ckpts:/home/arch/MeanVC2/preprocess/ckpts
+      # CC0 reference voices shared with the audio.cpp webui; any wav works as
+      # the target speaker (zero-shot).
+      - /mnt/models/audiocpp/voices:/voices:ro
+      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
+      - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
+    # --model 120ms = better quality (~200ms pipeline latency); switch to 40ms
+    # for the 110ms path. --device cuda maps to the iGPU via ROCm torch, but
+    # upstream tuned this for CPU (18M params) and CPU is immune to GPU
+    # contention from OBS encoding -- keep cpu unless it overruns.
+    command: >-
+      bash -c "if [ ! -f ckpts/pretrained_models/meanvc2_120ms_40ms.safetensors ]; then
+        echo 'Downloading MeanVC2 models...' &&
+        python initialization.py --task all;
+      fi &&
+      python -u runtime/run_rt.py
+      --mode realtime
+      --model 120ms
+      --device cpu
+      --target-spk /voices/cv-us-male-60s.wav"

@@ -1,0 +1,47 @@
+FROM arch:latest
+
+#https://github.com/ASLP-lab/MeanVC2 (Apache-2.0)
+# Streaming zero-shot VC: mic -> FastU2++ ASR -> DiT mean-flow -> Vocos, 18M
+# params, designed for CPU realtime (RTF < 0.633 on one core). runtime/run_rt.py
+# drives a duplex sounddevice stream at 16kHz mono.
+RUN sudo pacman -Sy --noconfirm && \
+    sudo pacman -S --noconfirm ffmpeg libsndfile portaudio alsa-plugins alsa-lib && \
+    sudo pacman -Scc --noconfirm
+
+RUN git clone https://github.com/ASLP-lab/MeanVC2
+
+RUN cd /home/arch/MeanVC2 && \
+    # Upstream pins python 3.11 + torch 2.5.1+cu121. TheRock publishes gfx1151
+    # wheels only for cp310/cp312/cp314, so 3.12 it is; ROCm torch replaces the
+    # CUDA pin so --device cuda maps onto the iGPU via HIP if wanted (the
+    # service default stays cpu, matching upstream and immune to GPU contention
+    # from OBS/other containers).
+    uv venv --python 3.12 && \
+    uv pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
+        "torch==2.9.1+rocm7.13.0a20260513" \
+        "torchaudio==2.9.0+rocm7.13.0a20260513" && \
+    # requirements.txt is mostly training/eval baggage: fairseq (broken build on
+    # py>=3.11), funasr, wandb, kaldiio, pedalboard are never imported by the
+    # realtime path. Install only what runtime/run_rt.py + runtime/src actually
+    # import: DiT (einops, x-transformers), speaker encoder (s3prl vendored
+    # WavLM -- no fairseq), audio IO, and huggingface-hub for initialization.py.
+    uv pip install \
+        "numpy>=1.26,<2.1" \
+        soundfile sounddevice safetensors einops x-transformers s3prl \
+        librosa soxr scipy tqdm PyYAML omegaconf huggingface-hub
+
+# Same named-PCM routing as vc2/audio: playback lands on the VoiceChanger null
+# sink (via PULSE_SINK in docker-compose), whose monitor is VoiceChangerMic --
+# the capture device OBS/Discord record. Capture side stays on the default mic.
+RUN printf '%s\n' \
+        'pcm.!default { type pulse }' \
+        'ctl.!default { type pulse }' \
+        'pcm.VoiceChanger {' \
+        '    type pulse' \
+        '    device "VoiceChanger"' \
+        '    hint { show on  description "VoiceChanger" }' \
+        '}' \
+    | sudo tee /etc/asound.conf >/dev/null
+
+ENV PATH="/home/arch/MeanVC2/.venv/bin:${PATH}"
+WORKDIR /home/arch/MeanVC2

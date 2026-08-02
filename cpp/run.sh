@@ -5,7 +5,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(dirname "$0")"
 MODELS_DIR="/mnt/models"
 # ROCM0 for HIP/ROCm, Vulkan0 for Vulkan
-LLAMA_DEVICE=Vulkan0
+LLAMA_DEVICE=ROCM0
 SD_DEVICE=ROCM0
 
 no_cache_arch=''
@@ -138,7 +138,7 @@ setup_virtual_mic() {
 
 # Create bind-mount dirs up front: docker would create missing ones as root,
 # but the containers run as uid 1000 and could not write into them.
-mkdir -p "${MODELS_DIR}"/{sd,ace,vc} "${MODELS_DIR}"/applio/{models,logs}
+mkdir -p "${MODELS_DIR}"/{sd,ace,vc,audiocpp,meanvc2} "${MODELS_DIR}"/applio/{models,logs}
 cp "$SCRIPT_DIR/config.ini" "${MODELS_DIR}/config.ini"
 
 download_models &
@@ -147,12 +147,14 @@ DOWNLOAD_PID=$!
 if [ "$skip_build" = false ]; then
     buildx_args="--output type=docker,compression=zstd,compression-level=3"
     docker buildx build $no_cache_arch  $buildx_args -t arch:latest  -f "$SCRIPT_DIR/Dockerfile.arch"  "$SCRIPT_DIR"
-    #docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
     #docker buildx build $no_cache_llama $buildx_args -t sd:latest    -f "$SCRIPT_DIR/Dockerfile.sd"    "$SCRIPT_DIR"
-    docker buildx build $no_cache_llama $buildx_args -t vc:latest    -f "$SCRIPT_DIR/Dockerfile.vc"    "$SCRIPT_DIR"
-    docker buildx build $no_cache_llama $buildx_args -t vc2:latest   -f "$SCRIPT_DIR/Dockerfile.vc2"   "$SCRIPT_DIR"
+    #docker buildx build $no_cache_llama $buildx_args -t vc:latest    -f "$SCRIPT_DIR/Dockerfile.vc"    "$SCRIPT_DIR"
+    #docker buildx build $no_cache_llama $buildx_args -t vc2:latest   -f "$SCRIPT_DIR/Dockerfile.vc2"   "$SCRIPT_DIR"
+    #docker buildx build $no_cache_llama $buildx_args -t audio:latest -f "$SCRIPT_DIR/Dockerfile.audio"   "$SCRIPT_DIR"
+    #docker buildx build $no_cache_llama $buildx_args -t vc3:latest   -f "$SCRIPT_DIR/Dockerfile.vc3"   "$SCRIPT_DIR"
 fi
 setup_virtual_mic
-docker compose up -d vc vc2
+docker compose up -d llama
 
 wait "$DOWNLOAD_PID"
