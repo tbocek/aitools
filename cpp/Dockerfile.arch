@@ -1,5 +1,5 @@
 #versions shown: https://quay.io/repository/archlinux/archlinux?tab=tags
-FROM quay.io/archlinux/archlinux:base-20260721.0.559293
+FROM quay.io/archlinux/archlinux:base-20260804.0.568110
 
 RUN pacman -Sy --noconfirm && \
     pacman -S --noconfirm \
