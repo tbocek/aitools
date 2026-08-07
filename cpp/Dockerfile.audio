@@ -54,6 +54,32 @@ RUN cd /home/arch/audio.cpp/webui && \
     sed -i 's/demo.launch(server_name="127.0.0.1", server_port=7860/demo.launch(server_name="0.0.0.0", server_port=7860/' webui.py && \
     grep -q 'server_name="0.0.0.0"' webui.py
 
+# 3. Chatterbox's S3 tokenizer builds one ggml graph over the entire source clip
+#    (a 33 min input asked for a 187 GB buffer -> OOM). The webui already ships a
+#    generic low-energy-point chunker but only enables it for families whose
+#    profile carries vc_chunk_seconds (vevo2). Enable it for chatterbox too:
+#    15s chunks. Two independent ceilings, measured 2026-08-06:
+#    - memory: a HIP per-allocation cap, not total memory -- a 171s chunk asks
+#      for a 37.9 GB single buffer and fails with 124 GB GTT free.
+#    - quality: the decoder drifts WITHIN a segment (TTS-derived, trained on
+#      short utterances). On a 48s segment the tail diverged 1.7x more from
+#      its standalone conversion than the head (1.45 vs 0.87 log-spec dist)
+#      and spectral centroid sank 154->123 (audibly muffled). 15s matches the
+#      author's vevo2 choice and is also faster (attention is superlinear).
+#    Refs capped at 10s since every chunk resends the voice prompt.
+RUN cd /home/arch/audio.cpp/webui && \
+    python3 - <<'PY'
+p = 'webui.py'
+s = open(p).read()
+anchor = '    "chatterbox": {\n'
+assert s.count(anchor) == 1, f"chatterbox profile anchor count: {s.count(anchor)}"
+add = (anchor +
+       '        "vc_chunk_seconds": 15,\n'
+       '        "vc_min_chunk_seconds": 6,\n'
+       '        "vc_ref_max_seconds": 10,\n')
+open(p, 'w').write(s.replace(anchor, add))
+PY
+
 # Same named-PCM routing as Dockerfile.vc2: "VoiceChanger" pins a stream to the
 # null sink whose monitor is the VoiceChangerMic capture device (OBS/Discord),
 # while "pulse"/"default" stay on the speakers.

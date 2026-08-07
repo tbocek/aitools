@@ -9,6 +9,9 @@ ENV ROCM_PATH=/opt/rocm/core \
     PATH="/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:${PATH}" \
     ROCBLAS_USE_HIPBLASLT=1
 
+# Tests/examples off + single target: only llama-server and the libs it needs
+# (the ggml HIP/Vulkan kernels still dominate compile time -- those are
+# dependencies of the server, not skippable).
 RUN cd /home/arch/llama.cpp && cmake -B build \
     -DGGML_HIP=ON \
     -DGGML_NATIVE=ON \
@@ -17,5 +20,7 @@ RUN cd /home/arch/llama.cpp && cmake -B build \
     -DGGML_VULKAN=ON \
     -DLLAMA_BUILD_WEBUI=ON \
     -DLLAMA_USE_PREBUILT_WEBUI=OFF \
+    -DLLAMA_BUILD_TESTS=OFF \
+    -DLLAMA_BUILD_EXAMPLES=OFF \
     -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build --config Release --parallel
+    && cmake --build build --config Release --parallel --target llama-server
