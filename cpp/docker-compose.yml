@@ -21,6 +21,7 @@ services:
     command: >-
       /home/arch/llama.cpp/build/bin/llama-server
       --device ${LLAMA_DEVICE:-ROCM0}
+      --device-draft ${LLAMA_DEVICE:-ROCM0}
       --models-preset /mnt/models/config.ini
       --models-max 1
       --host 0.0.0.0
