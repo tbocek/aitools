@@ -6,6 +6,11 @@ package main
 // entry under a user instruction; the global context box (prefilled from the
 // cut page's context) carries goals like "open with an intro".
 //
+// The preview plays the CUT: it skips what step 4 removed instead of running on
+// into it, and when it reaches a line that has not been spoken yet it holds the
+// picture, speaks the line, and carries on. Waiting is the point -- a preview
+// that runs a clip mute is a preview of a video nobody is going to make.
+//
 // Emotions are taken from how the moment was actually spoken -- the generator
 // sees the original lines and the events -- and then heightened; the user has
 // the last word per entry. Quotable original lines are reused verbatim -- as
@@ -18,13 +23,14 @@ package main
 // (AUDIOCPP_SERVER or AUTOCUT_TTS_URL, default 127.0.0.1:8765) and never starts
 // one itself.
 // Synthesized lines are cached by hash of (voice, text, emotion). Two pitch
-// knobs, doing different jobs: step 5's moves the reference before it is
-// cloned, which changes who is speaking, and this page's moves the finished
-// audio as a rubberband post-process at playback and at render.
+// knobs, both on the voice step beside the voice, doing different jobs: the reference
+// pitch moves the wav before it is cloned, which changes who is speaking, and
+// the output pitch moves the finished audio as a rubberband post-process at
+// playback and at render.
 //
 // step5/narration.json      entries
 // step5/voice_ref_base.wav  the reference as chosen or cut
-// step5/voice_ref.wav       ...shifted by step 5's pitch: what the server gets
+// step5/voice_ref.wav       ...shifted by the reference pitch: the server's input
 // step5/tts/<hash>.wav      synthesis cache
 
 import (
@@ -84,12 +90,16 @@ type narrator struct {
 	player         *Player // video preview
 	voice          *Player // narration audio rides along on this one
 	playSeg        int     // entry currently voiced, -1 none
-	jumped         int     // entry we last skipped a gap to, -1 none
+	jumped         int     // clip we last skipped a gap to, -1 none
 	playVideoStart float64 // session start of the video loaded in the preview
-	hints          *gtk.TextView
-	list           *gtk.ListBox
-	rows           []*narrRow
-	building       bool // guards feedback loops while (re)building rows
+	synthing       bool    // a playback-triggered synthesis is in flight
+	held           bool    // the preview is paused by us, not by the user
+	// wavs the server refused: stalling on them again would pause at every clip
+	synthFail map[string]bool
+	hints     *gtk.TextView
+	list      *gtk.ListBox
+	rows      []*narrRow
+	building  bool // guards feedback loops while (re)building rows
 }
 
 type narrRow struct {
@@ -139,10 +149,13 @@ func (n *narrator) pullRows() {
 // ---- page ------------------------------------------------------------------
 
 func (a *App) buildStep5() gtk.Widgetter {
-	n := &narrator{a: a, playSeg: -1, jumped: -1}
+	n := &narrator{a: a, playSeg: -1, jumped: -1, synthFail: map[string]bool{}}
 	a.narr5 = n
 	if p, err := NewPlayer(); err == nil {
 		n.player = p
+		// the picture is what "playing" means here; the narration track follows
+		// it, so only this one draws the run bar's button
+		p.OnState = a.updateRunControls
 	}
 	if p, err := NewPlayer(); err == nil {
 		n.voice = p
@@ -162,9 +175,11 @@ func (a *App) buildStep5() gtk.Widgetter {
 	left := gtk.NewScrolledWindow()
 	left.SetChild(n.list)
 	left.SetVExpand(true)
-	// wide enough that a narration line wraps into about three, which is what
-	// the entry boxes below are sized to show without scrolling
-	left.SetSizeRequest(780, -1)
+	// a floor, not the width: the divider below opens this column at 790, which
+	// is wide enough that a narration line wraps into about three. As a minimum
+	// 780 was the widest thing in the app, and every other page inherited it --
+	// the cost of asking for a comfortable size instead of setting one.
+	left.SetSizeRequest(360, -1)
 
 	// right side: video + controls + global context
 	vframe := gtk.NewFrame("")
@@ -172,7 +187,9 @@ func (a *App) buildStep5() gtk.Widgetter {
 		n.player.Picture.SetVExpand(true)
 		vframe.SetChild(n.player.Picture)
 		click := gtk.NewGestureClick()
-		click.ConnectReleased(func(cnt int, x, y float64) { n.player.Toggle() })
+		// held goes with it: a pause the user asked for is theirs to undo, and a
+		// synthesis finishing must not start the video back up behind them
+		click.ConnectReleased(func(cnt int, x, y float64) { n.toggle() })
 		n.player.Picture.AddController(click)
 		glib.TimeoutAdd(100, n.followPlayback)
 	}
@@ -181,12 +198,8 @@ func (a *App) buildStep5() gtk.Widgetter {
 	vframe.SetMarginBottom(4)
 
 	toggle := gtk.NewButtonWithLabel("⏯")
-	toggle.SetTooltipText("play / pause")
-	toggle.ConnectClicked(func() {
-		if n.player != nil {
-			n.player.Toggle()
-		}
-	})
+	toggle.SetTooltipText("play / pause — same as ▶ below")
+	toggle.ConnectClicked(n.toggle)
 	gen := gtk.NewButtonWithLabel("Generate narration")
 	gen.AddCSSClass("suggested-action")
 	gen.ConnectClicked(func() { a.generateNarration() })
@@ -212,13 +225,28 @@ func (a *App) buildStep5() gtk.Widgetter {
 	hintScroll.SetSizeRequest(-1, 80)
 	hintScroll.AddCSSClass("frame")
 
-	right := gtk.NewBox(gtk.OrientationVertical, 8)
+	preview := gtk.NewBox(gtk.OrientationVertical, 8)
+	preview.Append(vframe)
+	preview.Append(ctl)
+
+	words := gtk.NewBox(gtk.OrientationVertical, 8)
+	words.Append(hintLbl)
+	words.Append(hintScroll)
+	words.Append(a.promptEditor("narrate", "System prompt"))
+	// one scrollbar for the writing half; the prompt gets its full height from
+	// this viewport, so the whole thing is there to read and edit
+	wordScroll := gtk.NewScrolledWindow()
+	wordScroll.SetChild(words)
+	wordScroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
+
+	// the preview and the prompt both want the column, and which one matters
+	// depends on whether you are watching or rewriting -- so it is a divider
+	right := gtk.NewPaned(gtk.OrientationVertical)
 	right.SetMarginEnd(12)
 	right.SetMarginBottom(8)
-	right.Append(vframe)
-	right.Append(ctl)
-	right.Append(hintLbl)
-	right.Append(hintScroll)
+	right.SetStartChild(preview)
+	right.SetEndChild(wordScroll)
+	right.SetPosition(420)
 
 	pane := gtk.NewPaned(gtk.OrientationHorizontal)
 	pane.SetStartChild(left)
@@ -228,15 +256,6 @@ func (a *App) buildStep5() gtk.Widgetter {
 	n.load()
 	n.rebuildRows()
 	return pane
-}
-
-// pitchValue is the output pitch, which lives on step 5 next to the reference
-// pitch -- both belong to the voice, not to the writing.
-func (a *App) pitchValue() float64 {
-	if a.voice5 == nil || a.voice5.out == nil {
-		return 1.0
-	}
-	return a.voice5.out.Value()
 }
 
 func (a *App) narrateHints() string {
@@ -334,16 +353,102 @@ func (n *narrator) seekTo(t float64) {
 	if v == nil {
 		return
 	}
+	n.playSeg = -1 // re-trigger the voice on the next tick
+	// Already in this file: seek inside it. Reloading the uri tears the pipeline
+	// down and builds it again for a jump of a few seconds, and playback only
+	// picks up when the fresh preroll reports back on the bus -- a seek just
+	// keeps playing, which is what skipping a gap should feel like.
+	if n.player.loaded == v.path {
+		n.player.SeekTo(t - v.start)
+		return
+	}
 	was := n.player.playing
 	n.player.PlaySegment(v.path, t-v.start, -1, was)
 	n.playVideoStart = v.start
-	n.playSeg = -1 // re-trigger the voice on the next tick
+}
+
+// The run bar drives the preview through these; see transport in pipeline.go.
+// Both players move together: the picture leads and the narration rides along.
+func (n *narrator) playing() bool { return n.player != nil && n.player.Playing() }
+func (n *narrator) cued() bool    { return n.player != nil && n.player.Cued() }
+
+func (n *narrator) toggle() {
+	if n.player == nil {
+		return
+	}
+	// held goes with it: a pause the user asked for is theirs to undo, and a
+	// synthesis finishing must not start the video back up behind them
+	n.held = false
+	n.player.Toggle()
+	if n.player.Playing() {
+		// forget which line was voiced, or the tick would wait for the picture
+		// to reach the NEXT one before speaking again -- a resume in the middle
+		// of a line would play it mute
+		n.playSeg = -1
+		return
+	}
+	if n.voice != nil {
+		n.voice.Pause()
+	}
+}
+
+func (n *narrator) stop() {
+	if n.player != nil {
+		n.player.Stop()
+	}
+	if n.voice != nil {
+		n.voice.Stop()
+	}
+	n.playSeg, n.jumped, n.held = -1, -1, false
 }
 
 // ---- playback with voice ----------------------------------------------------
 
-// followPlayback rides the preview clock: when it enters an entry that has
-// already been synthesized, that audio plays along.
+// clips is what the preview follows: the cut from step 4, or the narration
+// entries when step 4 has not been built this session. They are the same list --
+// narration is written one entry per clip -- but the cut exists first, and the
+// preview has to respect it before a word has been written.
+func (n *narrator) clips() []cutSeg {
+	if n.a.ed != nil && len(n.a.ed.segs) > 0 {
+		return n.a.ed.segs
+	}
+	segs := make([]cutSeg, len(n.entries))
+	for i, e := range n.entries {
+		segs[i] = cutSeg{S: e.S, E: e.E}
+	}
+	return segs
+}
+
+// gapAt places a session time against the cut: the clip covering t, and the
+// first clip starting after it. cur < 0 with next >= 0 is a hole the edit
+// removed; both < 0 is past the end of the cut.
+func gapAt(segs []cutSeg, t float64) (cur, next int) {
+	next = -1
+	for i, s := range segs {
+		if t >= s.S && t < s.E {
+			return i, -1
+		}
+		if s.S > t {
+			return -1, i
+		}
+	}
+	return -1, next
+}
+
+// entryAt finds the narration line covering a session time. It is looked up by
+// time rather than by clip index so that a cut edited after narrating speaks
+// the right line, or none, instead of an off-by-one one.
+func (n *narrator) entryAt(t float64) int {
+	for i, e := range n.entries {
+		if t >= e.S && t < e.E {
+			return i
+		}
+	}
+	return -1
+}
+
+// followPlayback rides the preview clock: it skips what the edit removed, and
+// keeps the narration audio alongside the picture.
 func (n *narrator) followPlayback() bool {
 	if n.player == nil || !n.player.playing {
 		if n.voice != nil && n.voice.playing {
@@ -356,54 +461,100 @@ func (n *narrator) followPlayback() bool {
 		return true
 	}
 	t := n.playVideoStart + pos
-	cur := -1
-	for i, e := range n.entries {
-		if t >= e.S && t < e.E {
-			cur = i
-			break
-		}
-	}
-	// The preview plays the CUT, not the source: the stretch between two
-	// entries is material the edit removed, so skip it instead of playing
-	// through it. Re-entry is guarded twice over -- seekTo drops
-	// player.playing until the new position prerolls, which stops the tick
-	// above from arriving meanwhile, and jumped covers the case where the
-	// seek cannot happen at all (no video covers that session time).
-	if cur < 0 && len(n.entries) > 0 {
-		next := -1
-		for i, e := range n.entries {
-			if e.S > t {
-				next = i
-				break
-			}
-		}
+	segs := n.clips()
+	cur, next := gapAt(segs, t)
+	// The preview plays the CUT, not the source: the stretch between two clips
+	// is material the edit removed, so skip it instead of playing through it.
+	// Re-entry is guarded twice over -- seekTo drops player.playing until the
+	// new position prerolls, which stops the tick above from arriving
+	// meanwhile, and jumped covers the case where the seek cannot happen at all
+	// (no video covers that session time).
+	if cur < 0 && len(segs) > 0 {
 		switch {
-		case next < 0: // past the last entry: the cut is over
+		case next < 0: // past the last clip: the cut is over
 			n.player.Pause()
 			if n.voice != nil {
 				n.voice.Pause()
 			}
-			n.playSeg, n.jumped = -1, -1
+			n.playSeg, n.jumped, n.held = -1, -1, false
 		case next != n.jumped:
 			n.jumped = next
-			n.seekTo(n.entries[next].S)
+			n.seekTo(segs[next].S)
 		}
 		return true
 	}
 	n.jumped = -1
-	if cur == n.playSeg {
+
+	ei := n.entryAt(t)
+	if ei == n.playSeg {
 		return true
 	}
-	n.playSeg = cur
-	if cur < 0 || n.voice == nil {
+	if ei < 0 || n.voice == nil {
+		n.playSeg = ei
 		return true
 	}
-	e := n.entries[cur]
+	e := n.entries[ei]
 	wav := n.a.ttsWav(e)
-	if exists(wav) {
-		n.voice.PlaySegment(n.a.pitchedWav(wav), t-e.S, -1, true)
+	switch {
+	case exists(wav):
+		n.playSeg = ei
+		n.voice.PlaySegment(wav, t-e.S, -1, true)
+	case n.synthFail[wav]:
+		n.playSeg = ei // the server already refused this line; run the clip mute
+	default:
+		n.holdForSynth(ei) // playSeg stays put: the voice starts when we resume
 	}
 	return true
+}
+
+// holdForSynth stops the preview on a line that has not been spoken yet, speaks
+// it, and picks the video up where it stopped. Running the clip mute and
+// catching the voice on some later pass would preview a cut nobody is going to
+// watch; a few seconds of waiting is the honest version.
+func (n *narrator) holdForSynth(i int) {
+	n.player.Pause()
+	if n.voice != nil {
+		n.voice.Pause()
+	}
+	n.held = true
+	if n.synthing {
+		return // already on it; this tick only caught us still paused
+	}
+	n.pullRows() // speak what is in the box, not what was last saved
+	if i >= len(n.entries) {
+		return
+	}
+	e := n.entries[i]
+	wav := n.a.ttsWav(e)
+	n.a.setStatus(fmt.Sprintf("synthesizing line %d — the video waits for it"+
+		" (the first line after a cold start also loads the model)", i+1))
+	n.synthWait(i, e, wav)
+}
+
+// synthWait does the waiting part off the GUI thread: the tick that got us here
+// only knows the line is missing, and the server call that fills it in would
+// otherwise stutter the picture from inside the tick.
+func (n *narrator) synthWait(i int, e narrEntry, wav string) {
+	n.synthing = true
+	n.a.snapSources()
+	go func() {
+		err := n.a.synthesize(e)
+		glib.IdleAdd(func() {
+			n.synthing = false
+			if err != nil {
+				n.synthFail[wav] = true
+				n.a.logf("synthesis failed: %v", err)
+				n.a.setStatus(fmt.Sprintf("line %d failed -- see log; playing on without it", i+1))
+			} else {
+				n.a.setStatus(fmt.Sprintf("line %d ready", i+1))
+			}
+			// only if the pause was ours: a pause the user asked for stays
+			if n.held && n.player != nil && !n.player.playing {
+				n.held = false
+				n.player.Toggle()
+			}
+		})
+	}()
 }
 
 func (a *App) firstAudioPath() string {
@@ -411,14 +562,14 @@ func (a *App) firstAudioPath() string {
 	if len(auds) == 0 {
 		return ""
 	}
-	return filepath.Join(a.root, auds[0])
+	return a.srcPath(auds[0])
 }
 
 func (a *App) sessionZero() float64 {
 	zero := math.MaxFloat64
 	vids, auds := a.snappedSources()
 	for _, r := range append(append([]string{}, vids...), auds...) {
-		if s, err := sourceStart(filepath.Join(a.root, r)); err == nil {
+		if s, err := sourceStart(a.srcPath(r)); err == nil {
 			zero = math.Min(zero, s)
 		}
 	}
@@ -433,12 +584,12 @@ func (a *App) generateNarration() {
 		return
 	}
 	if a.ed == nil || len(a.ed.segs) == 0 {
-		a.setStatus("no cut yet — build one on step 4 first")
+		a.setStatus("no cut yet — build one on the Cut step first")
 		return
 	}
 	session, err := os.ReadFile(filepath.Join(a.outDir, "step3", "session.tsv"))
 	if err != nil {
-		a.setStatus("run step 3 first — no session timeline")
+		a.setStatus("run Transcript first — no session timeline")
 		return
 	}
 	segs := append([]cutSeg(nil), a.ed.segs...)
@@ -499,7 +650,7 @@ func (a *App) writeNarration(session string, segs []cutSeg, hints string) ([]nar
 			}
 		}
 	}
-	system := narrSystem
+	system := a.prompt("narrate")
 	if hints != "" {
 		system += "\nEditor's goals and context -- honor them:\n" + hints
 	}
@@ -731,11 +882,11 @@ func (a *App) ensureTTSServer() error {
 }
 
 // ttsWav is the cache location for one entry's synthesis. The voice, pitch
-// included, is part of the key: changing either in step 5 must not serve the
+// included, is part of the key: changing either must not serve the
 // old speaker from cache, and must not throw away the old speaker's lines
 // either -- switch back and they are all still there.
 func (a *App) ttsWav(e narrEntry) string {
-	// the default voice keeps the key it had before step 5 existed, so a project
+	// the default voice keeps the key it had before the voice picker existed, so a project
 	// narrated back then does not re-speak every line the first time it opens
 	key := e.Text + "|" + e.Emotion
 	if v := a.voiceKey(); v != ownVoice {
@@ -743,26 +894,6 @@ func (a *App) ttsWav(e narrEntry) string {
 	}
 	h := sha1.Sum([]byte(key))
 	return filepath.Join(a.outDir, "step5", "tts", fmt.Sprintf("%x.wav", h[:8]))
-}
-
-// pitchedWav applies the pitch slider via rubberband, cached per pitch value.
-func (a *App) pitchedWav(wav string) string {
-	p := math.Float64frombits(a.pitchNow.Load())
-	if p == 0 {
-		p = 1.0
-	}
-	if math.Abs(p-1.0) < 0.011 {
-		return wav
-	}
-	out := strings.TrimSuffix(wav, ".wav") + fmt.Sprintf("_p%.2f.wav", p)
-	if !exists(out) {
-		if err := a.runCmd("ffmpeg", "-v", "error", "-y", "-i", wav,
-			"-af", fmt.Sprintf("rubberband=pitch=%.3f", p), out); err != nil {
-			a.logf("pitch: %v", err)
-			return wav
-		}
-	}
-	return out
 }
 
 // synthesize speaks one entry through the resident server into the cache.
@@ -824,7 +955,7 @@ func (a *App) speakEntry(i int) {
 		glib.IdleAdd(func() {
 			a.setStatus(fmt.Sprintf("entry %d", i+1))
 			if n.voice != nil {
-				n.voice.PlaySegment(a.pitchedWav(wav), 0, -1, true)
+				n.voice.PlaySegment(wav, 0, -1, true)
 			}
 		})
 	}()
@@ -911,9 +1042,9 @@ func (a *App) ensureVoiceBase() error {
 		return os.Rename(a.refPath(), ref)
 	}
 	if id := a.voiceID(); id != ownVoice {
-		src := filepath.Join(voicesDir(), id+".wav")
+		src := filepath.Join(a.voicesDir(), id+".wav")
 		if !exists(src) {
-			return fmt.Errorf("voice %q is no longer in %s -- pick another in step 5", id, voicesDir())
+			return fmt.Errorf("voice %q is no longer in %s -- pick another on the Narration Voice step", id, a.voicesDir())
 		}
 		os.MkdirAll(filepath.Dir(ref), 0o755)
 		return a.runCmd("ffmpeg", "-v", "error", "-y", "-i", src,

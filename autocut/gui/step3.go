@@ -1,10 +1,13 @@
 package main
 
-// Step 3: Transcript. Turn raw ASR into publishable, grounded text.
+// Transcript: turn raw ASR into publishable, grounded text.
 //
 // Timestamps are the contract: every source's absolute start comes from its
 // filename (YYYYMMDD-HHMMSS) or mtime minus duration, so alignment is a
-// lookup, not a step (see align.go for the dormant content-based fallback).
+// lookup, not a step. A content-based LLM aligner used to sit in align.go for
+// the case where metadata lies; it was never wired to anything and is gone --
+// git has it if copied files or hand-set recorder clocks ever make it worth
+// reviving.
 //
 // The LLM fixes transcript lines in blocks, grounded in what the event log
 // says was on screen and what the other sources heard at the same moment --
@@ -19,9 +22,10 @@ package main
 //   session.tsv / session.txt                      everything -- commentary,
 //        game audio, events -- interleaved on one global timeline; this is
 //        what the cut step reads.
+//
+// The page is step23.go -- the describer (step2.go) and this share it.
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -31,12 +35,9 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/diamondburned/gotk4/pkg/glib/v2"
-	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
-const fixBlock = 25 // transcript lines per LLM request
+const fixBlock = 25 // transcript lines per fixer request
 
 const fixSystem = `You clean up ASR transcript lines from a gaming session for use as
 subtitles and as source material for a video edit. You get the lines as TSV
@@ -145,176 +146,6 @@ func sourceStart(path string) (float64, error) {
 	return float64(fi.ModTime().Unix()) - dur, nil
 }
 
-// ---- page ------------------------------------------------------------------
-
-func (a *App) buildStep3() gtk.Widgetter {
-	expl := gtk.NewLabel("Fixes every transcript with the LLM, grounded in the event logs and in " +
-		"what the other recordings heard at the same moment (offsets come from the file " +
-		"timestamps). Produces per-video subtitles and one merged session timeline for the " +
-		"cut step. Timestamps and speakers are never altered.")
-	expl.SetXAlign(0)
-	expl.SetWrap(true)
-	expl.AddCSSClass("dim-label")
-
-	hintLbl := gtk.NewLabel("Notes for the fixer (optional) — names, game vocabulary, corrections, " +
-		"e.g. \"proper nouns are spelled …; SPEAKER_00 in the voice track is <name>\"")
-	hintLbl.SetXAlign(0)
-	hintLbl.SetWrap(true)
-	a.s3hints = gtk.NewTextView()
-	a.s3hints.SetWrapMode(gtk.WrapWord)
-	a.s3hints.SetTopMargin(4)
-	a.s3hints.SetLeftMargin(6)
-	a.s3hints.SetRightMargin(6)
-	hintScroll := gtk.NewScrolledWindow()
-	hintScroll.SetChild(a.s3hints)
-	hintScroll.SetSizeRequest(-1, 70)
-	hintScroll.AddCSSClass("frame")
-
-	a.s3info = gtk.NewLabel("")
-	a.s3info.SetXAlign(0)
-	a.s3info.SetWrap(true)
-
-	a.s3out = gtk.NewLabel("")
-	a.s3out.SetXAlign(0)
-	a.s3out.SetYAlign(0)
-	a.s3out.AddCSSClass("monospace")
-	outScroll := gtk.NewScrolledWindow()
-	outScroll.SetChild(a.s3out)
-	outScroll.SetPropagateNaturalHeight(true)
-	outScroll.SetMaxContentHeight(200)
-	outScroll.SetVExpand(true)
-
-	outLbl := gtk.NewLabel("Outputs")
-	outLbl.SetXAlign(0)
-	outLbl.AddCSSClass("heading")
-	open := gtk.NewButtonWithLabel("Open step3 folder")
-	open.ConnectClicked(func() { a.openFolder(filepath.Join(a.outDir, "step3")) })
-	outHead := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	outHead.Append(outLbl)
-	outHead.Append(open)
-
-	box := gtk.NewBox(gtk.OrientationVertical, 12)
-	box.SetMarginTop(16)
-	box.SetMarginStart(16)
-	box.SetMarginEnd(16)
-	box.SetMarginBottom(8)
-	box.Append(expl)
-	box.Append(hintLbl)
-	box.Append(hintScroll)
-	box.Append(a.s3info)
-	box.Append(outHead)
-	box.Append(outScroll)
-	a.updateStep3Info()
-	return box
-}
-
-func (a *App) transcriptHints() string {
-	if a.s3hints == nil {
-		return ""
-	}
-	buf := a.s3hints.Buffer()
-	return strings.TrimSpace(buf.Text(buf.StartIter(), buf.EndIter(), false))
-}
-
-func (a *App) updateStep3Info() {
-	if a.s3out == nil {
-		return
-	}
-	s3 := filepath.Join(a.outDir, "step3")
-	a.s3out.SetText(describeOutputs(s3))
-
-	var lines []string
-	if a.vidList != nil {
-		for _, v := range a.vidList.selected() {
-			base := baseName(v)
-			if exists(filepath.Join(s3, base, "subtitles.srt")) {
-				lines = append(lines, base+": subtitles ready")
-			} else {
-				lines = append(lines, base+": not fixed yet")
-			}
-		}
-		for _, aud := range a.audList.selected() {
-			base := baseName(aud)
-			if exists(filepath.Join(s3, base, "commentary.fixed.tsv")) {
-				lines = append(lines, base+": commentary fixed")
-			} else {
-				lines = append(lines, base+": not fixed yet")
-			}
-		}
-	}
-	if exists(filepath.Join(s3, "session.tsv")) {
-		lines = append(lines, "session timeline ready")
-	}
-	if len(lines) == 0 {
-		lines = append(lines, "step 3 has not run yet")
-	}
-	a.s3info.SetText(strings.Join(lines, "\n"))
-}
-
-// ---- run --------------------------------------------------------------------
-
-func (a *App) step3Clicked() {
-	if a.running {
-		return
-	}
-	vids := a.vidList.selected()
-	auds := a.audList.selected()
-	if len(vids) == 0 || len(auds) == 0 {
-		a.setStatus("select at least one video and one voice recording on step 1")
-		return
-	}
-	abs := func(rels []string) []string {
-		out := make([]string, len(rels))
-		for i, r := range rels {
-			out[i] = filepath.Join(a.root, r)
-		}
-		return out
-	}
-	for _, v := range vids {
-		if !exists(filepath.Join(a.outDir, "step2", baseName(v), "events.tsv")) {
-			a.setStatus("run step 2 first — no event log for " + baseName(v))
-			return
-		}
-	}
-	a.saveProjectTo(filepath.Join(a.root, "project.json"))
-	a.startStep3(abs(vids), abs(auds), a.transcriptHints())
-}
-
-func (a *App) startStep3(videos, audios []string, hints string) {
-	a.running = true
-	a.stopFlag.Store(false)
-	a.pauseFlag.Store(false)
-	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.progMu.Lock()
-	a.progParts = [2]float64{}
-	a.progTexts = [2]string{}
-	a.progMu.Unlock()
-	a.updateRunControls()
-	a.setStatus("step 3 running…")
-	a.logExp.SetExpanded(true)
-	go func() {
-		err := a.step3(videos, audios, hints)
-		glib.IdleAdd(func() {
-			a.running = false
-			a.updateRunControls()
-			switch {
-			case errors.Is(err, errStopped):
-				a.progress.SetText("stopped")
-				a.setStatus("step 3 stopped")
-			case err != nil:
-				a.logf("step 3 FAILED: %v", err)
-				a.progress.SetText("failed — see log")
-				a.setStatus("step 3 failed")
-			default:
-				a.progress.SetFraction(1)
-				a.setStatus("step 3 done")
-			}
-			a.updateStep3Info()
-			a.updateGates()
-		})
-	}()
-}
-
 // one source with everything known about its place in the world
 type src struct {
 	path, base string
@@ -325,7 +156,9 @@ type src struct {
 	events     []tsvRow // videos only
 }
 
-func (a *App) step3(videos, audios []string, hints string) error {
+// step3 fixes every checked source's transcript and writes the merged session
+// timeline. span is this job's share of the progress bar; see step2.
+func (a *App) step3(videos, audios []string, span float64) error {
 	s3 := filepath.Join(a.outDir, "step3")
 	if err := os.MkdirAll(s3, 0o755); err != nil {
 		return err
@@ -406,7 +239,7 @@ func (a *App) step3(videos, audios []string, hints string) error {
 	}
 	done := 0
 	for _, s := range srcs {
-		fixed, err := a.fixRows(s, ctxFor, hints, &done, total)
+		fixed, err := a.fixRows(s, ctxFor, &done, total, span)
 		if err != nil {
 			return err
 		}
@@ -465,6 +298,7 @@ func (a *App) step3(videos, audios []string, hints string) error {
 	if err := os.WriteFile(filepath.Join(s3, "session.txt"), []byte(stx.String()), 0o644); err != nil {
 		return err
 	}
+	a.prog(trackFix, span, "transcript done")
 	a.logfIdle(">>> session timeline: %d rows across %d source(s)", len(rows), len(srcs))
 	return nil
 }
@@ -482,19 +316,16 @@ func contains(list []string, s string) bool {
 // strict: same line count, byte-identical start/end/speaker; a block failing
 // twice keeps its original lines, loudly.
 func (a *App) fixRows(s *src, ctxFor func(*src, float64, float64) string,
-	hints string, done *int, total int) ([]seg4, error) {
+	done *int, total int, span float64) ([]seg4, error) {
 
-	system := fixSystem
-	if hints != "" {
-		system += "\nEditor's notes -- trust them:\n" + hints
-	}
+	system := a.prompt("fix")
 	var out []seg4
 	nblocks := (len(s.rows) + fixBlock - 1) / fixBlock
 	for b := 0; b < nblocks; b++ {
 		if err := a.checkpoint(); err != nil {
 			return nil, err
 		}
-		a.prog(trackSTT, float64(*done)/float64(total),
+		a.prog(trackFix, span*float64(*done)/float64(total),
 			"[%s] fixing block %d/%d", s.base, b+1, nblocks)
 		*done++
 

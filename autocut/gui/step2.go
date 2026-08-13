@@ -1,29 +1,27 @@
 package main
 
-// Step 2: describe. Every checked video's stored frames (step1/frames/<v>/)
-// go to the vision LLM in small batches together with the game-audio words
-// heard in those seconds; a rolling "state of the game" plus the last events
-// make each batch a description of what is HAPPENING, not stills.
+// Describe: every checked video's stored frames (step1/frames/<v>/) go to the
+// vision LLM in small batches together with the game-audio words heard in
+// those seconds; a rolling "state of the game" plus the last events make each
+// batch a description of what is HAPPENING, not stills.
 // Output: step2/<video>/events.tsv, resumable per chunk.
-// Alignment against the voice recordings is step 3's job (step3.go).
+//
+// The page is step23.go -- this half and the fixer (step3.go) share it.
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/diamondburned/gotk4/pkg/glib/v2"
-	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
-const framesPerReq = 4
+const framesPerReq = 4 // frames per vision request
 
 // The primer stays empty of game knowledge on purpose: whatever is specific
-// about this footage belongs in the user's notes box, which is appended here.
+// about this footage goes into the prompt box on the page, which replaces this
+// wholesale rather than being appended to it.
 const describeSystem = `You describe screen-recorded footage for a video editor.
 You get consecutive frames covering a few seconds, the words heard in the
 recording's own audio during them, and the running state from the previous
@@ -57,103 +55,6 @@ func loadTSVRows(path string) []tsvRow {
 		out = append(out, r)
 	}
 	return out
-}
-
-// ---- page ------------------------------------------------------------------
-
-func (a *App) buildStep2() gtk.Widgetter {
-	a.s2info = gtk.NewLabel("")
-	a.s2info.SetXAlign(0)
-	a.s2info.SetWrap(true)
-
-	a.s2out = gtk.NewLabel("")
-	a.s2out.SetXAlign(0)
-	a.s2out.SetYAlign(0)
-	a.s2out.AddCSSClass("monospace")
-	outScroll := gtk.NewScrolledWindow()
-	outScroll.SetChild(a.s2out)
-	outScroll.SetPropagateNaturalHeight(true)
-	outScroll.SetMaxContentHeight(200)
-	outScroll.SetVExpand(true)
-
-	outLbl := gtk.NewLabel("Outputs")
-	outLbl.SetXAlign(0)
-	outLbl.AddCSSClass("heading")
-	open := gtk.NewButtonWithLabel("Open step2 folder")
-	open.ConnectClicked(func() { a.openFolder(filepath.Join(a.outDir, "step2")) })
-	outHead := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	outHead.Append(outLbl)
-	outHead.Append(open)
-
-	expl := gtk.NewLabel("Describe walks the stored frames of every checked video with the vision " +
-		"model — each request carries the running state and the last events, so it describes " +
-		"what is happening, not stills — and builds one event log per video. " +
-		"Press ▶ to run; resumes per chunk.")
-	expl.SetXAlign(0)
-	expl.SetWrap(true)
-	expl.AddCSSClass("dim-label")
-
-	hintLbl := gtk.NewLabel("Context for the vision model (optional) — what should it know about " +
-		"this footage? What it is, what the recurring on-screen elements mean, what to ignore.")
-	hintLbl.SetXAlign(0)
-	hintLbl.SetWrap(true)
-	a.s2hints = gtk.NewTextView()
-	a.s2hints.SetWrapMode(gtk.WrapWord)
-	a.s2hints.SetTopMargin(4)
-	a.s2hints.SetLeftMargin(6)
-	a.s2hints.SetRightMargin(6)
-	hintScroll := gtk.NewScrolledWindow()
-	hintScroll.SetChild(a.s2hints)
-	hintScroll.SetSizeRequest(-1, 70)
-	hintScroll.AddCSSClass("frame") // border, so it reads as an input field
-
-	box := gtk.NewBox(gtk.OrientationVertical, 12)
-	box.SetMarginTop(16)
-	box.SetMarginStart(16)
-	box.SetMarginEnd(16)
-	box.SetMarginBottom(8)
-	box.Append(expl)
-	box.Append(hintLbl)
-	box.Append(hintScroll)
-	box.Append(a.s2info)
-	box.Append(outHead)
-	box.Append(outScroll)
-	a.updateStep2Info()
-	return box
-}
-
-func (a *App) describeHints() string {
-	if a.s2hints == nil {
-		return ""
-	}
-	buf := a.s2hints.Buffer()
-	return strings.TrimSpace(buf.Text(buf.StartIter(), buf.EndIter(), false))
-}
-
-func (a *App) updateStep2Info() {
-	if a.s2out == nil {
-		return
-	}
-	s2 := filepath.Join(a.outDir, "step2")
-	a.s2out.SetText(describeOutputs(s2))
-
-	var lines []string
-	if a.vidList != nil {
-		for _, v := range a.vidList.selected() {
-			base := baseName(v)
-			line := base + ": "
-			if b, err := os.ReadFile(filepath.Join(s2, base, "events.tsv")); err == nil {
-				line += fmt.Sprintf("%d chunks described", strings.Count(string(b), "\n"))
-			} else {
-				line += "not described yet"
-			}
-			lines = append(lines, line)
-		}
-	}
-	if len(lines) == 0 {
-		lines = append(lines, "step 2 has not run yet")
-	}
-	a.s2info.SetText(strings.Join(lines, "\n"))
 }
 
 // ---- run --------------------------------------------------------------------
@@ -201,69 +102,10 @@ func (a *App) planVideo(video, s2 string) (*videoPlan, error) {
 	return p, nil
 }
 
-func (a *App) step2Clicked() {
-	if a.running {
-		return
-	}
-	vids := a.vidList.selected()
-	auds := a.audList.selected()
-	if len(vids) == 0 || len(auds) == 0 {
-		a.setStatus("select at least one video and one voice recording on step 1")
-		return
-	}
-	abs := func(rels []string) []string {
-		out := make([]string, len(rels))
-		for i, r := range rels {
-			out[i] = filepath.Join(a.root, r)
-		}
-		return out
-	}
-	for _, f := range append(abs(vids), abs(auds)...) {
-		if !exists(filepath.Join(a.outDir, "step1", baseName(f), "transcript.tsv")) {
-			a.setStatus("run step 1 first — transcript missing for " + baseName(f))
-			return
-		}
-	}
-	a.saveProjectTo(filepath.Join(a.root, "project.json"))
-	a.startStep2(abs(vids), abs(auds), a.describeHints())
-}
-
-func (a *App) startStep2(videos, audios []string, hints string) {
-	a.running = true
-	a.stopFlag.Store(false)
-	a.pauseFlag.Store(false)
-	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.progMu.Lock()
-	a.progParts = [2]float64{}
-	a.progTexts = [2]string{}
-	a.progMu.Unlock()
-	a.updateRunControls()
-	a.setStatus("step 2 running…")
-	a.logExp.SetExpanded(true)
-	go func() {
-		err := a.step2(videos, audios, hints)
-		glib.IdleAdd(func() {
-			a.running = false
-			a.updateRunControls()
-			switch {
-			case errors.Is(err, errStopped):
-				a.progress.SetText("stopped — progress is kept")
-				a.setStatus("step 2 stopped")
-			case err != nil:
-				a.logf("step 2 FAILED: %v", err)
-				a.progress.SetText("failed — see log")
-				a.setStatus("step 2 failed")
-			default:
-				a.progress.SetFraction(1)
-				a.setStatus("step 2 done")
-			}
-			a.updateStep2Info()
-			a.updateGates()
-		})
-	}()
-}
-
-func (a *App) step2(videos, audios []string, hints string) error {
+// step2 describes every checked video. span is how much of the progress bar
+// this job owns -- all of it when Describe runs on its own, half when the
+// fixer runs after it on the same page.
+func (a *App) step2(videos []string, span float64) error {
 	s2 := filepath.Join(a.outDir, "step2")
 	if err := os.MkdirAll(s2, 0o755); err != nil {
 		return err
@@ -278,21 +120,23 @@ func (a *App) step2(videos, audios []string, hints string) error {
 		plans = append(plans, p)
 		total += p.chunks
 	}
-	// this step ONLY describes; alignment is its own later step that reads
-	// these event logs
+	// this step ONLY describes; the fixer reads these event logs afterwards
 	done := 0
 	for _, p := range plans {
-		if err := a.describeVideo(p, hints, done, total); err != nil {
+		if err := a.describeVideo(p, done, total, span); err != nil {
 			return err
 		}
 		done += p.chunks
 	}
+	// chunks that resume skip their progress call, so a video that was already
+	// described would leave the bar where it started -- claim the share here
+	a.prog(trackDescribe, span, "described")
 	return nil
 }
 
 // ---- describe ---------------------------------------------------------------
 
-func (a *App) describeVideo(p *videoPlan, hints string, chunkOff, chunkTotal int) error {
+func (a *App) describeVideo(p *videoPlan, chunkOff, chunkTotal int, span float64) error {
 	if err := os.MkdirAll(p.dir, 0o755); err != nil {
 		return err
 	}
@@ -360,7 +204,7 @@ func (a *App) describeVideo(p *videoPlan, hints string, chunkOff, chunkTotal int
 		if done[key] {
 			continue
 		}
-		a.prog(trackSTT, float64(chunkOff+c)/float64(chunkTotal),
+		a.prog(trackDescribe, span*float64(chunkOff+c)/float64(chunkTotal),
 			"[%s] describing %d/%d (t=%.0fs)", p.base, c+1, p.chunks, t0)
 
 		heard := ""
@@ -391,12 +235,8 @@ func (a *App) describeVideo(p *videoPlan, hints string, chunkOff, chunkTotal int
 			}
 			content = append(content, part)
 		}
-		system := describeSystem
-		if hints != "" {
-			system += "\nEditor's notes about this footage -- trust them:\n" + hints
-		}
 		reply, err := a.llmChatRetry([]map[string]any{
-			msg("system", system), msg("user", content),
+			msg("system", a.prompt("describe")), msg("user", content),
 		}, false)
 		if err != nil {
 			if errors.Is(err, errStopped) {

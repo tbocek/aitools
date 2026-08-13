@@ -34,15 +34,12 @@ import (
 
 var errStopped = errors.New("stopped by user")
 
+// Where the local audio.cpp stack lives, what it runs on and what language it
+// expects are settings now, not constants -- see appConf in setup.go. What
+// stays here is what is measured rather than chosen: change these and the
+// models misbehave, which is not a preference anyone can hold.
 const (
-	dockerImage = "audio:latest"
-	modelsDir   = "/mnt/models/audiocpp"
-	acppCLI     = "/home/arch/audio.cpp/build/bin/audiocpp_cli"
-	asrGGUF     = "models/Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf"
-	diarGGUF    = "models/Sortformer-Diar-4spk-v1-GGUF/sortformer-diar-4spk-v1-q8_0.gguf"
-	sampleRate  = 16000
-	backend     = "hip"
-	asrLanguage = "en"
+	sampleRate = 16000 // what the ASR and diarization models are trained on
 
 	// Sortformer refuses requests past its encoder position table (measured:
 	// 90 s passes, 150 s does not), and its slot names mean nothing across
@@ -90,6 +87,11 @@ func (a *App) checkpoint() error {
 const (
 	trackSTT    = 0
 	trackFrames = 1
+	// the same two tracks under the names the Describe + Transcript step uses
+	// them for: its two jobs run one after the other, but each still owns half
+	// the bar and its own message
+	trackDescribe = trackSTT
+	trackFix      = trackFrames
 )
 
 func (a *App) prog(track int, f float64, format string, args ...any) {
@@ -112,19 +114,60 @@ func (a *App) prog(track int, f float64, format string, args ...any) {
 	})
 }
 
-// playClicked runs whatever step is on screen, or resumes a paused run.
+// transport is what a page offers the run bar when it plays media rather than
+// running a pipeline. With it, ▶ and ⏹ mean the same thing on every step: ▶
+// starts what the page does and then pauses and resumes it, ⏹ ends it. Without
+// it a page's playback was reachable only through the page's own buttons --
+// which is why ⏸ and ⏹ sat there doing nothing on the voice step.
+type transport interface {
+	playing() bool // running right now
+	cued() bool    // loaded but paused, so ▶ means resume rather than start over
+	toggle()
+	stop()
+}
+
+// pageTransport is the visible page's playback, if that page has any.
+func (a *App) pageTransport() transport {
+	switch a.stack.VisibleChildName() {
+	case "voice":
+		if a.voice5 != nil {
+			return a.voice5
+		}
+	case "step4":
+		if a.ed != nil {
+			return a.ed
+		}
+	case "narrate":
+		if a.narr5 != nil {
+			return a.narr5
+		}
+	case "produce":
+		if a.prod != nil {
+			return a.prod
+		}
+	}
+	return nil
+}
+
+// playClicked runs whatever step is on screen, pauses it, or resumes it.
 func (a *App) playClicked() {
-	fmt.Fprintf(os.Stderr, "PLAY clicked: page=%s running=%v paused=%v\n",
-		a.stack.VisibleChildName(), a.running, a.pauseFlag.Load())
 	if a.running {
+		// while a run is under way ▶ is the pause button, and says so
 		if a.pauseFlag.Load() {
 			a.pauseFlag.Store(false)
 			a.setStatus("resumed")
-			a.updateRunControls()
 		} else {
-			// never ignore a click silently -- say why nothing starts
-			a.setStatus("a run is already active — stop it first (⏹)")
+			a.pauseFlag.Store(true)
+			a.setStatus("pausing after the current stage…")
 		}
+		a.updateRunControls()
+		return
+	}
+	// playback beats the page's action: once something is playing, the button
+	// belongs to it until it is stopped or reaches the end
+	if t := a.pageTransport(); t != nil && (t.playing() || t.cued()) {
+		t.toggle()
+		a.updateRunControls()
 		return
 	}
 	a.logf(">>> play: %s", a.stack.VisibleChildName())
@@ -132,10 +175,14 @@ func (a *App) playClicked() {
 	switch a.stack.VisibleChildName() {
 	case "step1":
 		a.step1Clicked()
-	case "step2":
-		a.step2Clicked()
-	case "step3":
-		a.step3Clicked()
+	case "voice":
+		// the voice page runs nothing -- ▶ there means what the page's own
+		// button means, a sample in the selected voice
+		if a.voice5 != nil {
+			a.voice5.playSample()
+		}
+	case "understand":
+		a.understandRun(true, true)
 	case "step4":
 		// per the spec: with a selection pending, play ADDS it; on an empty
 		// cut it asks for the first suggestion; otherwise it explains itself
@@ -146,11 +193,6 @@ func (a *App) playClicked() {
 			a.suggestClicked()
 		default:
 			a.setStatus("drag a region and ▶ adds it; Suggest only fills an empty cut")
-		}
-	case "voice":
-		// on the voice page ▶ means what it says on the page's own button
-		if a.voice5 != nil {
-			a.voice5.playSample()
 		}
 	case "narrate":
 		if a.narr5 != nil && len(a.narr5.entries) == 0 {
@@ -163,15 +205,12 @@ func (a *App) playClicked() {
 	}
 }
 
-func (a *App) pauseClicked() {
-	if a.running && !a.pauseFlag.Load() {
-		a.pauseFlag.Store(true)
-		a.setStatus("pausing after the current stage…")
+func (a *App) stopClicked() {
+	if t := a.pageTransport(); t != nil && (t.playing() || t.cued()) {
+		t.stop()
+		a.setStatus("playback stopped")
 		a.updateRunControls()
 	}
-}
-
-func (a *App) stopClicked() {
 	if !a.running {
 		return
 	}
@@ -190,11 +229,20 @@ func (a *App) stopClicked() {
 	a.setStatus("stopping…")
 }
 
+// updateRunControls draws the two buttons from whatever is actually under way:
+// a run, this page's playback, or nothing. ▶ is a toggle rather than a separate
+// pair, because a dedicated ⏸ was dead on every page whose ▶ is not a run.
 func (a *App) updateRunControls() {
-	running := a.running
-	a.playBtn.SetSensitive(!running || a.pauseFlag.Load())
-	a.pauseBtn.SetSensitive(running && !a.pauseFlag.Load())
-	a.stopBtn.SetSensitive(running)
+	t := a.pageTransport()
+	busy := (a.running && !a.pauseFlag.Load()) || (t != nil && t.playing())
+	if busy {
+		a.playBtn.SetIconName("media-playback-pause-symbolic")
+		a.playBtn.SetTooltipText("Pause")
+	} else {
+		a.playBtn.SetIconName("media-playback-start-symbolic")
+		a.playBtn.SetTooltipText("Run this step — or resume what is paused")
+	}
+	a.stopBtn.SetSensitive(a.running || busy || (t != nil && t.cued()))
 }
 
 // ---- process plumbing ------------------------------------------------------
@@ -276,15 +324,16 @@ func (a *App) ffmpegProgress(dur float64, cb func(float64), args ...string) erro
 // acpp runs audiocpp_cli inside the audio container, with the same mounts as
 // the pipeline scripts: models shared with the WebUI, a.root as /work.
 func (a *App) acpp(args ...string) error {
+	c := a.readConf()
 	full := append([]string{
 		"run", "--rm",
 		"--device", "/dev/kfd", "--device", "/dev/dri",
 		"--group-add", "render", "--group-add", "video",
 		"--security-opt", "seccomp=unconfined",
-		"-v", modelsDir + ":/home/arch/audio.cpp/models",
+		"-v", c.Models + ":/home/arch/audio.cpp/models",
 		"-v", a.outDir + ":/work",
 		"-w", "/home/arch/audio.cpp",
-		dockerImage, acppCLI,
+		c.Image, c.CLI,
 	}, args...)
 	return a.runCmd("docker", full...)
 }
@@ -389,7 +438,7 @@ func (a *App) startStep1(videos, audios []string, interval float64, scaleName, s
 				a.setStatus("step 1 done")
 			}
 			a.updateStep1Info()
-			a.updateStep2Info()
+			a.und.refresh() // the next step's input counts just changed
 			a.updateGates()
 		})
 	}()
@@ -399,23 +448,25 @@ func (a *App) startStep1(videos, audios []string, interval float64, scaleName, s
 // and pull any missing GGUF through the model manager (stdlib-only, runs in
 // the container, same shared models mount as the WebUI).
 func (a *App) ensureModels() error {
-	if err := a.runCmd("docker", "image", "inspect", dockerImage); err != nil {
-		return fmt.Errorf("docker image %s missing -- build it with: cd ../cpp && ./run.sh", dockerImage)
+	c := a.readConf()
+	if err := a.runCmd("docker", "image", "inspect", c.Image); err != nil {
+		return fmt.Errorf("docker image %s missing -- build it with: cd ../cpp && ./run.sh "+
+			"(or point the settings dialog at the image you have)", c.Image)
 	}
 	needs := []struct{ gguf, pkg string }{
-		{asrGGUF, "parakeet_tdt_q8_0"},
-		{diarGGUF, "sortformer_diar_4spk_v1_q8_0"},
+		{c.ASRGGUF, "parakeet_tdt_q8_0"},
+		{c.DiarGGUF, "sortformer_diar_4spk_v1_q8_0"},
 	}
 	for _, n := range needs {
-		host := filepath.Join(modelsDir, strings.TrimPrefix(n.gguf, "models/"))
+		host := filepath.Join(c.Models, strings.TrimPrefix(n.gguf, "models/"))
 		if exists(host) {
 			continue
 		}
 		a.logfIdle(">>> downloading model %s", n.pkg)
 		a.prog(trackSTT, 0.01, "downloading %s…", n.pkg)
 		if err := a.runCmd("docker", "run", "--rm",
-			"-v", modelsDir+":/home/arch/audio.cpp/models",
-			"-w", "/home/arch/audio.cpp", dockerImage,
+			"-v", c.Models+":/home/arch/audio.cpp/models",
+			"-w", "/home/arch/audio.cpp", c.Image,
 			"python3", "tools/model_manager_v2.py", "install", n.pkg,
 			"--models-root", "models"); err != nil {
 			return fmt.Errorf("model download %s: %w", n.pkg, err)
@@ -432,26 +483,41 @@ func (a *App) step1(videos, audios []string, interval float64, scaleName, scaleV
 	if err := a.ensureModels(); err != nil {
 		return err
 	}
-	// progress plan: every input is one unit of work, a frame pass is 0.4.
-	// STT (GPU, via the container) and frame extraction (CPU ffmpeg) do not
-	// contend, so they run as parallel tracks.
+	// progress plan: half the bar each. This step is two jobs -- speech
+	// recognition (GPU, via the container) and frame extraction (CPU ffmpeg) --
+	// which do not contend, so they run as parallel tracks. Weighting them by
+	// file count instead gave whichever job had more inputs most of the bar,
+	// and the bar then crossed that job's share and sat still through the other.
 	inputs := append(append([]string{}, videos...), audios...)
-	unit := 1.0 / (float64(len(inputs)) + 0.4*float64(len(videos)))
+	var unit, funit float64
+	if len(inputs) > 0 {
+		unit = 0.5 / float64(len(inputs))
+	} else {
+		a.prog(trackSTT, 0.5, "") // a job with nothing to do is done, or its
+	}
+	if len(videos) > 0 {
+		funit = 0.5 / float64(len(videos))
+	} else {
+		a.prog(trackFrames, 0.5, "") // half would never fill and neither would the bar
+	}
 
 	var wg sync.WaitGroup
 	var framesErr error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if len(videos) == 0 {
+			return
+		}
 		fb := 0.0
 		for _, v := range videos {
 			if framesErr = a.checkpoint(); framesErr != nil {
 				return
 			}
-			if framesErr = a.extractFrames(v, interval, scaleName, scaleVF, s1, fb, 0.4*unit); framesErr != nil {
+			if framesErr = a.extractFrames(v, interval, scaleName, scaleVF, s1, fb, funit); framesErr != nil {
 				return
 			}
-			fb += 0.4 * unit
+			fb += funit
 		}
 		a.prog(trackFrames, fb, "frames done")
 	}()
@@ -530,11 +596,12 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 		a.logfIdle(">>> [%s] ASR (parakeet)", name)
 		// The empty --text is load-bearing: it is the only carrier of the
 		// language option, --language alone is silently dropped.
+		c := a.readConf()
 		if err := a.acpp("--task", "asr", "--family", "parakeet_tdt",
-			"--model", asrGGUF, "--backend", backend,
+			"--model", c.ASRGGUF, "--backend", c.Backend,
 			"--audio", "/work/"+rel+"/voice16k.wav",
 			"--session-option", "parakeet_tdt.offline_mode=long_form",
-			"--language", asrLanguage, "--text", "",
+			"--language", c.Language, "--text", "",
 			"--text-out", "/work/"+rel+"/transcript.txt",
 			"--words-out", "/work/"+rel+"/words.json"); err != nil {
 			return fmt.Errorf("ASR: %w", err)
@@ -568,8 +635,9 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 // 0 and writes no file at all, so a missing JSON means silence, not failure.
 func (a *App) diarWindow(wavRel, jsonRel, jsonHost string) ([]span, error) {
 	os.Remove(jsonHost)
+	c := a.readConf()
 	if err := a.acpp("--task", "diar", "--family", "sortformer_diar",
-		"--model", diarGGUF, "--backend", backend,
+		"--model", c.DiarGGUF, "--backend", c.Backend,
 		"--audio", "/work/"+wavRel,
 		"--session-option", "sortformer_diar.graph_capacity_mode=grow",
 		"--turns-out", "/work/"+jsonRel); err != nil {

@@ -143,7 +143,7 @@ func (ed *cutEditor) reload() error {
 	}
 	var all []st
 	for _, r := range append(append([]string{}, vids...), auds...) {
-		p := filepath.Join(a.root, r)
+		p := a.srcPath(r)
 		s, err := sourceStart(p)
 		if err != nil {
 			return fmt.Errorf("cannot place %s in time: %w", baseName(p), err)
@@ -593,6 +593,23 @@ func (ed *cutEditor) updateTotal() {
 
 // ---- drawing ---------------------------------------------------------------
 
+// plateText draws a label on its own dark ground, at the given baseline.
+//
+// The video name sits ON the thumbnails, and no single ink is readable there:
+// white vanishes into a bright frame, black into a dark one. Inverting what is
+// underneath (cairo's DIFFERENCE operator) sounds like the answer and is not --
+// mid-gray inverts to mid-gray, and a gameplay frame is mostly mid-gray. The
+// plate is what subtitles do, and it works on every frame.
+func plateText(cr *cairo.Context, x, y float64, s string) {
+	e := cr.TextExtents(s)
+	cr.SetSourceRGBA(0, 0, 0, 0.66)
+	cr.Rectangle(x-3, y-11, e.Width+6, 14)
+	cr.Fill()
+	cr.SetSourceRGB(1, 1, 1)
+	cr.MoveTo(x, y)
+	cr.ShowText(s)
+}
+
 func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int, isCut bool) {
 	th := float64(ed.thumbHt)
 	top := 0.0
@@ -648,10 +665,8 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int, isCut bool) {
 		cr.LineTo(v.pxOrigin, top+th+4)
 		cr.Stroke()
 		if !isCut {
-			cr.SetSourceRGB(0.9, 0.9, 0.9)
 			cr.SetFontSize(10)
-			cr.MoveTo(v.pxOrigin+4, top+12)
-			cr.ShowText(v.base)
+			plateText(cr, v.pxOrigin+4, top+12, v.base)
 		}
 	}
 
@@ -795,6 +810,22 @@ func (ed *cutEditor) thumb(path string) *gdkpixbuf.Pixbuf {
 	return pb
 }
 
+// The run bar drives the preview through these; see transport in pipeline.go.
+func (ed *cutEditor) playing() bool { return ed.player != nil && ed.player.Playing() }
+func (ed *cutEditor) cued() bool    { return ed.player != nil && ed.player.Cued() }
+
+func (ed *cutEditor) toggle() {
+	if ed.player != nil {
+		ed.player.Toggle()
+	}
+}
+
+func (ed *cutEditor) stop() {
+	if ed.player != nil {
+		ed.player.Stop()
+	}
+}
+
 // ---- page ------------------------------------------------------------------
 
 func (a *App) buildStep4() gtk.Widgetter {
@@ -802,6 +833,7 @@ func (a *App) buildStep4() gtk.Widgetter {
 	a.ed = ed
 	if p, err := NewPlayer(); err == nil {
 		ed.player = p // the preview above the tracks; independent of Review's
+		p.OnState = a.updateRunControls
 		glib.TimeoutAdd(100, ed.followPlayback)
 	} else {
 		a.logf("cut preview player: %v", err)
@@ -842,12 +874,8 @@ func (a *App) buildStep4() gtk.Widgetter {
 	thumbPlus.ConnectClicked(func() { ed.setThumbH(ed.thumbHt * 4 / 3) })
 
 	toggle := gtk.NewButtonWithLabel("⏯")
-	toggle.SetTooltipText("play / pause the preview")
-	toggle.ConnectClicked(func() {
-		if ed.player != nil {
-			ed.player.Toggle()
-		}
-	})
+	toggle.SetTooltipText("play / pause the preview — same as ▶ below")
+	toggle.ConnectClicked(ed.toggle)
 	prev5 := gtk.NewButtonWithLabel("‹‹f")
 	prev5.SetTooltipText("back 5 frames (pauses)")
 	prev5.ConnectClicked(func() { ed.frameStep(-5) })
@@ -893,6 +921,12 @@ func (a *App) buildStep4() gtk.Widgetter {
 	hintBox := gtk.NewBox(gtk.OrientationVertical, 4)
 	hintBox.Append(hintLbl)
 	hintBox.Append(hintScroll)
+	hintBox.Append(a.promptEditor("cut", "System prompt"))
+	// one scrollbar for the whole upper half: the prompt inside is given its
+	// full height by this viewport, so it never scrolls against this one
+	hintPane := gtk.NewScrolledWindow()
+	hintPane.SetChild(hintBox)
+	hintPane.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 
 	bar := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	bar.Append(toggle)
@@ -982,9 +1016,16 @@ func (a *App) buildStep4() gtk.Widgetter {
 	bottom.SetMarginStart(12)
 	bottom.SetMarginEnd(12)
 	bottom.SetMarginBottom(8)
+	// the prompt and the timeline both want this page's height, and which one
+	// matters depends on whether you are cutting or tuning what Suggest is told
+	// -- so the divider is the user's, not a fixed split
+	split := gtk.NewPaned(gtk.OrientationVertical)
+	split.SetStartChild(hintPane)
+	split.SetEndChild(ed.scroll)
+	split.SetPosition(300)
+	split.SetVExpand(true)
 	bottom.Append(bar)
-	bottom.Append(hintBox)
-	bottom.Append(ed.scroll)
+	bottom.Append(split)
 
 	// Ctrl+Z and Del on the page. Bubble phase on purpose: the notes box and
 	// the target entry see the key first and keep their own editing behaviour.
@@ -1008,7 +1049,7 @@ func (a *App) buildStep4() gtk.Widgetter {
 		ed.player.Picture.SetSizeRequest(-1, 160)
 		// clicking the video itself also toggles; the ⏯ button lives in the bar
 		click := gtk.NewGestureClick()
-		click.ConnectReleased(func(n int, x, y float64) { ed.player.Toggle() })
+		click.ConnectReleased(func(n int, x, y float64) { ed.toggle() })
 		ed.player.Picture.AddController(click)
 		// a frame + breathing room, so the video is not glued to its neighbors
 		vframe := gtk.NewFrame("")
@@ -1157,11 +1198,12 @@ func (a *App) suggestClicked() {
 	}
 	session, err := os.ReadFile(filepath.Join(a.outDir, "step3", "session.txt"))
 	if err != nil {
-		a.setStatus("run step 3 first — no session timeline")
+		a.setStatus("run Transcript first — no session timeline")
 		return
 	}
 	target := 300.0
 	fmt.Sscanf(a.ed.target.Text(), "%f", &target)
+	hints := a.cutHints() // read here: the box is the GUI thread's, the run is not
 
 	a.running = true
 	a.stopFlag.Store(false)
@@ -1181,7 +1223,7 @@ func (a *App) suggestClicked() {
 		return true
 	})
 	go func() {
-		segs, err := a.suggestCut(string(session), target)
+		segs, err := a.suggestCut(string(session), target, hints)
 		glib.IdleAdd(func() {
 			a.running = false
 			a.updateRunControls()
@@ -1214,10 +1256,10 @@ func (a *App) suggestClicked() {
 	}()
 }
 
-func (a *App) suggestCut(session string, target float64) ([]cutSeg, error) {
-	system := suggestSystem
-	if h := a.cutHints(); h != "" {
-		system += "\nEditor's notes about this session -- trust them and let them guide what matters:\n" + h
+func (a *App) suggestCut(session string, target float64, hints string) ([]cutSeg, error) {
+	system := a.prompt("cut")
+	if hints != "" {
+		system += "\nEditor's notes about this session -- trust them and let them guide what matters:\n" + hints
 	}
 	user := fmt.Sprintf("TARGET LENGTH: %.0f seconds.\n\nSESSION TIMELINE:\n%s", target, session)
 	msgs := []map[string]any{msg("system", system), msg("user", user)}

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -63,7 +64,7 @@ func TestVoiceRoundTrip(t *testing.T) {
 	// a real wav through the real conversion path; ffmpeg is a hard dependency
 	// of the pipeline anyway
 	src := sineWav(t, 220)
-	v := voiceOpt{id: "cv-xx-female-30s", name: prettyVoice("cv-xx-female-30s.wav"), path: src}
+	v := voiceOpt{id: "cv-xx-female-30s", name: "cv-xx-female-30s.wav", path: src}
 	if err := a.setVoice(v); err != nil {
 		t.Fatalf("setVoice: %v", err)
 	}
@@ -179,7 +180,7 @@ func TestVoicePitchLive(t *testing.T) {
 		outDir:  filepath.Join(root, "out", "test", "pitchlive"),
 		curCmds: map[*exec.Cmd]bool{},
 	}
-	src := filepath.Join(voicesDir(), "audio-sample-tbocek.wav")
+	src := filepath.Join(a.voicesDir(), "audio-sample-tbocek.wav")
 	if !exists(src) {
 		t.Skipf("no reference wav at %s", src)
 	}
@@ -286,14 +287,142 @@ func TestTTSWavKeyedOnVoice(t *testing.T) {
 	}
 }
 
-func TestPrettyVoice(t *testing.T) {
+// The imported id becomes a file name in the sample cache and the contents of
+// voice.txt, so anything that could steer a write out of the folder has to be
+// gone before it gets there.
+func TestSanitizeVoiceID(t *testing.T) {
 	for in, want := range map[string]string{
-		"cv-gb-female-30s.wav":    "gb · female · 30s",
-		"cv-us-male-teen.wav":     "us · male · teen",
-		"audio-sample-tbocek.wav": "audio · sample · tbocek",
+		"cv-gb-female-30s":  "cv-gb-female-30s",
+		"my recording":      "my-recording",
+		"../../etc/passwd":  "etc-passwd",
+		"Tom's take #2":     "Tom-s-take--2",
+		"jan2_2026-08-08":   "jan2_2026-08-08",
+		"...":               "voice",
+		"":                  "voice",
+		"/absolute/path/wv": "absolute-path-wv",
 	} {
-		if got := prettyVoice(in); got != want {
-			t.Errorf("prettyVoice(%q) = %q, want %q", in, got, want)
+		got := sanitizeVoiceID(in)
+		if got != want {
+			t.Errorf("sanitizeVoiceID(%q) = %q, want %q", in, got, want)
 		}
+		if strings.ContainsAny(got, `/\`) || got == "." || got == ".." {
+			t.Errorf("sanitizeVoiceID(%q) = %q, which is not a plain file name", in, got)
+		}
+	}
+}
+
+// An import must never land on a name already in use: the id is what every
+// project's voice.txt points at, so overwriting one would silently change the
+// speaker in a project that was never opened.
+func TestImportVoiceKeepsNamesDistinct(t *testing.T) {
+	root, models := t.TempDir(), t.TempDir()
+	a := &App{root: root, outDir: t.TempDir(), curCmds: map[*exec.Cmd]bool{}}
+	if err := os.WriteFile(a.confPath(),
+		[]byte("AUDIOCPP_MODELS="+strconv.Quote(models)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	src := sineWav(t, 330)
+	first, err := a.importVoice(src)
+	if err != nil {
+		t.Fatalf("importVoice: %v", err)
+	}
+	second, err := a.importVoice(src)
+	if err != nil {
+		t.Fatalf("importVoice (again): %v", err)
+	}
+	if first.id == second.id {
+		t.Fatalf("both imports claimed the id %q", first.id)
+	}
+	if !exists(first.path) || !exists(second.path) {
+		t.Fatal("an imported voice is missing from the voices folder")
+	}
+	names := map[string]bool{}
+	for _, v := range a.listVoices() {
+		names[v.id] = true
+	}
+	if !names[first.id] || !names[second.id] {
+		t.Fatalf("imported voices are not listed: %v", names)
+	}
+}
+
+// toneFile writes a one-second tone under a name of the caller's choosing --
+// what a folder import cares about is which files it picks up, not how they
+// sound.
+func toneFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := exec.Command("ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+		"-i", "sine=frequency=330:duration=1", p).Run(); err != nil {
+		t.Skipf("no usable ffmpeg: %v", err)
+	}
+	return p
+}
+
+// A folder import has three ways to go wrong that a mouse would find slowly: it
+// takes files it was not pointed at, it takes the same folder twice and buries
+// the list in duplicates, or it is aimed at the voices folder and copies it onto
+// itself.
+func TestImportVoiceDir(t *testing.T) {
+	root, models := t.TempDir(), t.TempDir()
+	a := &App{root: root, outDir: t.TempDir(), curCmds: map[*exec.Cmd]bool{}}
+	if err := os.WriteFile(a.confPath(),
+		[]byte("AUDIOCPP_MODELS="+strconv.Quote(models)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	src := t.TempDir()
+	toneFile(t, src, "alice.wav")
+	toneFile(t, src, "bob.flac")
+	if err := os.WriteFile(filepath.Join(src, "notes.txt"), []byte("not a voice"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(src, "rejects")
+	if err := os.Mkdir(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	toneFile(t, deep, "carol.wav")
+
+	res, err := a.importVoiceDir(src)
+	if err != nil {
+		t.Fatalf("importVoiceDir: %v", err)
+	}
+	if len(res.added) != 2 || res.skipped != 0 || res.failed != 0 {
+		t.Fatalf("first import: %+v (%s), want the two recordings and nothing else",
+			res.added, res.summary())
+	}
+	got := map[string]bool{}
+	for _, v := range a.listVoices() {
+		got[v.id] = true
+	}
+	if !got["alice"] || !got["bob"] {
+		t.Fatalf("the folder's recordings are not listed: %v", got)
+	}
+	if got["carol"] {
+		t.Fatal("a sub-folder was walked into — pointing this at a music library would import the lot")
+	}
+	if got["notes"] {
+		t.Fatal("a text file was handed to ffmpeg and listed as a voice")
+	}
+
+	// the same folder again: nothing new, and nothing doubled
+	res, err = a.importVoiceDir(src)
+	if err != nil {
+		t.Fatalf("importVoiceDir (again): %v", err)
+	}
+	if len(res.added) != 0 || res.skipped != 2 {
+		t.Fatalf("re-import: %s — re-adding a folder must not duplicate what is in it", res.summary())
+	}
+	if n := len(a.listVoices()); n != 3 { // own + alice + bob
+		t.Fatalf("%d rows after re-importing the same folder, want 3", n)
+	}
+
+	// aimed at the voices folder itself, which would copy every voice beside
+	// itself as "-2" on each attempt
+	if _, err := a.importVoiceDir(a.voicesDir()); err == nil {
+		t.Fatal("importing the voices folder into itself was allowed")
+	}
+	if _, err := a.importVoiceDir(t.TempDir()); err == nil {
+		t.Fatal("a folder with nothing usable in it reported success")
 	}
 }

@@ -205,6 +205,23 @@ func (p *producer) syncExt() {
 	}
 }
 
+// The run bar drives the preview through these; see transport in pipeline.go.
+// ▶ still renders when nothing is cued -- producing is what this page does.
+func (p *producer) playing() bool { return p.player != nil && p.player.Playing() }
+func (p *producer) cued() bool    { return p.player != nil && p.player.Cued() }
+
+func (p *producer) toggle() {
+	if p.player != nil {
+		p.player.Toggle()
+	}
+}
+
+func (p *producer) stop() {
+	if p.player != nil {
+		p.player.Stop()
+	}
+}
+
 // ---- page -------------------------------------------------------------------
 
 func (a *App) buildStep6() gtk.Widgetter {
@@ -298,12 +315,8 @@ func (a *App) buildStep6() gtk.Widgetter {
 	render.AddCSSClass("suggested-action")
 	render.ConnectClicked(func() { a.produceClicked() })
 	toggle := gtk.NewButtonWithLabel("⏯")
-	toggle.SetTooltipText("play / pause the preview")
-	toggle.ConnectClicked(func() {
-		if p.player != nil {
-			p.player.Toggle()
-		}
-	})
+	toggle.SetTooltipText("play / pause the preview — same as ▶ below")
+	toggle.ConnectClicked(p.toggle)
 	load := gtk.NewButtonWithLabel("Preview result")
 	load.ConnectClicked(func() {
 		if !exists(p.outFile) {
@@ -372,7 +385,7 @@ func (a *App) updateStep6Info() {
 	segs := a.produceSegs()
 	entries := a.produceEntries()
 	if len(segs) == 0 {
-		p.info.SetText("No cut yet — build one on step 4.")
+		p.info.SetText("No cut yet — build one on the Cut step.")
 		return
 	}
 	total, voiced := 0.0, 0
@@ -452,7 +465,7 @@ func (a *App) sessionVideos(vids, auds []string) ([]tlVideo, error) {
 	}
 	var all []st
 	for _, r := range append(append([]string{}, vids...), auds...) {
-		p := filepath.Join(a.root, r)
+		p := a.srcPath(r)
 		s, err := sourceStart(p)
 		if err != nil {
 			return nil, fmt.Errorf("cannot place %s in time: %w", baseName(p), err)
@@ -499,7 +512,7 @@ func (a *App) produceClicked() {
 	}
 	segs := a.produceSegs()
 	if len(segs) == 0 {
-		a.setStatus("no cut yet — build one on step 4 first")
+		a.setStatus("no cut yet — build one on the Cut step first")
 		return
 	}
 	entries := a.produceEntries()
@@ -607,7 +620,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		default:
 			c.text = strings.TrimSpace(e.Text)
 			if c.text != "" {
-				wav := a.pitchedWav(a.ttsWav(*e))
+				wav := a.ttsWav(*e)
 				if !exists(wav) {
 					a.logfIdle("clip %d: no synthesis for its line — it keeps its own audio", i+1)
 				} else {

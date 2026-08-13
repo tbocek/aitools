@@ -131,9 +131,68 @@ func TestEndpointsLive(t *testing.T) {
 	})
 }
 
+// TestFFmpegCheck runs the settings dialog's local-tools check against the
+// ffmpeg this machine has. Nothing remote is contacted. A failure here is not a
+// false alarm: the pipeline uses rubberband, libass and libx264 unconditionally,
+// so a build without them cannot render, and finding that out from a test beats
+// finding it out ten minutes into a render.
+func TestFFmpegCheck(t *testing.T) {
+	got, err := testFFmpeg()
+	if err != nil {
+		t.Fatalf("ffmpeg check: %v", err)
+	}
+	t.Log(got)
+}
+
+// TestFFMissing pins the parser both ways: a check that never reports anything
+// missing would pass on every build, including the ones this is meant to catch.
+func TestFFMissing(t *testing.T) {
+	ff, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("no ffmpeg on PATH")
+	}
+	m := ffMissing(ff, "-filters", []string{"amix", "no_such_filter_exists"})
+	if len(m) != 1 || m[0] != "no_such_filter_exists" {
+		t.Errorf("ffMissing = %v, want only the made-up name", m)
+	}
+	// a binary that will not run tells us nothing, so it must report everything
+	// missing rather than pass by silence
+	if m := ffMissing(filepath.Join(t.TempDir(), "ffmpeg"), "-filters",
+		[]string{"amix", "loudnorm"}); len(m) != 2 {
+		t.Errorf("unrunnable binary reported %v missing, want both", m)
+	}
+}
+
+// TestConfDefaults pins that a machine with no llm.conf, or one written before
+// the audio.cpp settings existed, still runs: every one of those settings used
+// to be a compiled-in constant, and a blank line must mean that constant rather
+// than an empty flag handed to docker.
+func TestConfDefaults(t *testing.T) {
+	a := &App{root: t.TempDir()} // no llm.conf at all
+	c := a.readConf()
+	if c.Image != defImage || c.CLI != defCLI || c.Models != defModels ||
+		c.ASRGGUF != defASRGGUF || c.DiarGGUF != defDiarGGUF ||
+		c.Backend != defBackend || c.Language != defLanguage {
+		t.Errorf("a missing config did not fall back to the built-ins: %+v", c)
+	}
+	// an old config: the LLM keys only
+	if err := os.WriteFile(a.confPath(), []byte("LLM_SERVER=\"https://x\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := a.readConf(); c.Server != "https://x" || c.Backend != defBackend {
+		t.Errorf("a pre-existing config lost its defaults: %+v", c)
+	}
+	// ...and a blank value is the same as no value, not an empty argument
+	if err := os.WriteFile(a.confPath(), []byte("AUDIOCPP_BACKEND=\"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := a.readConf(); c.Backend != defBackend {
+		t.Errorf("a cleared backend came back as %q, want the default", c.Backend)
+	}
+}
+
 // TestConfRoundTrip guards the config format: the GUI must not write something
-// bash cannot read back, and adding the TTS endpoint must not disturb the three
-// LLM keys.
+// bash cannot read back, and adding a setting must not disturb the LLM keys.
 func TestConfRoundTrip(t *testing.T) {
 	a := &App{root: t.TempDir()}
 	want := appConf{
@@ -141,6 +200,14 @@ func TestConfRoundTrip(t *testing.T) {
 		Model:  "Qwen3.6 (27B; 128k ctx; Q4_K_XL; visual)", // spaces, parens, semicolons
 		Key:    "sk-not-a-real-key",
 		TTS:    "http://127.0.0.1:8765",
+		// the other machine this is all for: NVIDIA, German, other paths
+		Image:    "audio:v2",
+		CLI:      "/opt/audio.cpp/bin/audiocpp_cli",
+		Models:   "/srv/models",
+		ASRGGUF:  "models/parakeet/other.gguf",
+		DiarGGUF: "models/sortformer/other.gguf",
+		Backend:  "cuda",
+		Language: "de",
 	}
 	if err := a.writeConf(want); err != nil {
 		t.Fatal(err)
@@ -163,11 +230,11 @@ func TestConfRoundTrip(t *testing.T) {
 	// id is full of parens and semicolons, and anything that quotes it wrongly
 	// leaves the GUI working while a shell chokes on it
 	out, err := exec.Command("bash", "-c",
-		"source "+a.confPath()+`; printf '%s|%s|%s' "$LLM_MODEL" "$LLM_SERVER" "$AUDIOCPP_SERVER"`).CombinedOutput()
+		"source "+a.confPath()+`; printf '%s|%s|%s|%s' "$LLM_MODEL" "$LLM_SERVER" "$AUDIOCPP_SERVER" "$AUDIOCPP_BACKEND"`).CombinedOutput()
 	if err != nil {
 		t.Fatalf("bash could not source the config: %v\n%s", err, out)
 	}
-	if got, want := string(out), want.Model+"|"+want.Server+"|"+want.TTS; got != want {
+	if got, want := string(out), want.Model+"|"+want.Server+"|"+want.TTS+"|"+want.Backend; got != want {
 		t.Errorf("bash reads back %q, want %q", got, want)
 	}
 

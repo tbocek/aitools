@@ -24,6 +24,14 @@ type Player struct {
 	pb      gst.Element
 	Picture *gtk.Picture
 
+	// OnState is called whenever playback starts or stops, including the stream
+	// ending on its own -- the run bar draws ▶ or ⏸ from this, and the end of a
+	// clip is a change it has no other way to hear about. Called on the GTK
+	// thread: every state change here happens either on it or on the bus watch,
+	// which dispatches there.
+	OnState func()
+
+	loaded  string // file currently cued, so a caller can seek instead of reload
 	playing bool
 	// pending segment, applied once the new uri has prerolled
 	pendStart, pendStop int64 // nanoseconds; pendStart < 0 = nothing pending
@@ -78,13 +86,13 @@ func NewPlayer() (*Player, error) {
 				}
 				if p.pendPlay {
 					p.pb.SetState(gst.StatePlaying)
-					p.playing = true
+					p.setPlaying(true)
 				}
 			}
 		case gst.MessageEOS:
 			// freeze on the last frame instead of tearing the stream down
 			p.pb.SetState(gst.StatePaused)
-			p.playing = false
+			p.setPlaying(false)
 		case gst.MessageError:
 			errMsg, _ := msg.ParseError()
 			fmt.Println("gst error:", errMsg)
@@ -99,6 +107,7 @@ func NewPlayer() (*Player, error) {
 func (p *Player) PlaySegment(file string, start, stop float64, play bool) {
 	p.pb.SetState(gst.StateReady)
 	p.pb.SetObjectProperty("uri", "file://"+file)
+	p.loaded = file
 	p.pendStart = int64(start * 1e9)
 	p.pendStop = -1
 	if stop > 0 {
@@ -107,8 +116,26 @@ func (p *Player) PlaySegment(file string, start, stop float64, play bool) {
 	p.pendPlay = play
 	// preroll paused; the bus watch seeks (and maybe plays) on AsyncDone
 	p.pb.SetState(gst.StatePaused)
-	p.playing = false
+	p.setPlaying(false)
 }
+
+// setPlaying records the state and tells whoever is drawing a transport button
+// that it changed. Nothing else may write p.playing.
+func (p *Player) setPlaying(v bool) {
+	if p.playing == v {
+		return
+	}
+	p.playing = v
+	if p.OnState != nil {
+		p.OnState()
+	}
+}
+
+// Playing reports whether the stream is running right now; Cued reports that
+// something is loaded and paused, i.e. that ▶ should resume it rather than
+// start whatever the page does when idle.
+func (p *Player) Playing() bool { return p.playing }
+func (p *Player) Cued() bool    { return p.loaded != "" && !p.playing }
 
 func (p *Player) Toggle() {
 	if p.playing {
@@ -116,17 +143,20 @@ func (p *Player) Toggle() {
 	} else {
 		p.pb.SetState(gst.StatePlaying)
 	}
-	p.playing = !p.playing
+	p.setPlaying(!p.playing)
 }
 
+// Stop tears the stream down and forgets the file, so the next ▶ is a fresh
+// start rather than a resume of something the user already ended.
 func (p *Player) Stop() {
 	p.pb.SetState(gst.StateReady)
-	p.playing = false
+	p.loaded = ""
+	p.setPlaying(false)
 }
 
 func (p *Player) Pause() {
 	p.pb.SetState(gst.StatePaused)
-	p.playing = false
+	p.setPlaying(false)
 }
 
 // SeekTo jumps within the currently loaded file; while paused the new frame

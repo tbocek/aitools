@@ -1,13 +1,18 @@
 package main
 
-// Step 5: the voice every narrated line is spoken in. IndexTTS2 keeps timbre
-// and emotion apart -- the speaker comes from a reference wav, the emotion from
-// each line's own text -- so picking a voice is exactly picking which wav to
-// clone, and step 6's per-line emotion goes on working unchanged.
+// The voice every narrated line is spoken in, on a step of its own because
+// ▶ here plays a sample instead of running anything, which is not what the run
+// bar's play button means anywhere else. IndexTTS2 keeps timbre and emotion apart --
+// the speaker comes from a reference wav, the emotion from each line's own
+// text -- so picking a voice is exactly picking which wav to clone, and the
+// narrate step's per-line emotion goes on working unchanged.
 //
 // Two sources: the recording's own dominant speaker, cut from step 1's
-// diarization (the pipeline's default), or any of the CC0 reference wavs that
-// ship beside audio.cpp's models. The pick is installed as step5/voice_ref.wav
+// diarization (the pipeline's default), or a wav in the voices folder -- the
+// CC0 references that ship beside audio.cpp's models, plus anything added with
+// "Add sample…", which converts and copies it in. The list shows file names
+// because that is what they are: a row can be opened, replaced or deleted in
+// the folder the button beside it opens. The pick is installed as step5/voice_ref.wav
 // because that is the file the TTS server is handed, and the output folder is
 // the one mounted into the server at its own absolute path -- the voices folder
 // sits at a different path inside the container, so aiming the server straight
@@ -16,7 +21,7 @@ package main
 // The pitch slider post-processes the reference before the model ever sees it,
 // which is the difference between a new speaker and a familiar one transposed:
 // IndexTTS2 takes its timbre from this file, so a shifted reference is cloned
-// as a shifted voice, and step 6 narrates in it without knowing anything
+// as a shifted voice, and the narrate step speaks in it without knowing anything
 // changed. The unshifted recording is kept beside it as voice_ref_base.wav, so
 // moving the slider costs one ffmpeg pass rather than re-cutting the
 // diarization.
@@ -26,6 +31,7 @@ package main
 // you switch back.
 
 import (
+	"context"
 	"crypto/sha1"
 	"fmt"
 	"math"
@@ -35,8 +41,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
+	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
 // ownVoice is the id of "clone me", the default the pipeline had before this
@@ -61,10 +69,9 @@ type voicePicker struct {
 	list    *gtk.ListBox
 	filter  *gtk.SearchEntry
 	sample  *gtk.Entry
-	play    *gtk.Button
 	cur     *gtk.Label
+	ownLbl  *gtk.Label // the "my own voice" row, renamed when step 1's pick changes
 	pitch   *gtk.Scale // semitones on the reference: a different speaker
-	out     *gtk.Scale // rubberband over the finished audio: the same one, moved
 	voices  []voiceOpt
 	player  *Player
 	busy    bool // one synthesis at a time; the button says so
@@ -73,12 +80,14 @@ type voicePicker struct {
 }
 
 // voicesDir is where audio.cpp keeps its CC0 reference wavs -- the same folder
-// the WebUI lists in its "Built-in voice" dropdown.
-func voicesDir() string { return filepath.Join(modelsDir, "voices") }
+// the WebUI lists in its "Built-in voice" dropdown, under the configured models
+// root.
+func (a *App) voicesDir() string { return filepath.Join(a.readConf().Models, "voices") }
 
-func listVoices() []voiceOpt {
-	out := []voiceOpt{{id: ownVoice, name: "My own voice — cut from the recording"}}
-	ents, _ := os.ReadDir(voicesDir())
+func (a *App) listVoices() []voiceOpt {
+	out := []voiceOpt{{id: ownVoice, name: a.ownVoiceName()}}
+	dir := a.voicesDir()
+	ents, _ := os.ReadDir(dir)
 	var names []string
 	for _, e := range ents {
 		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".wav") {
@@ -87,20 +96,36 @@ func listVoices() []voiceOpt {
 	}
 	sort.Strings(names)
 	for _, n := range names {
+		// the file name, not a prettified version of it: these are files on
+		// disk that can be opened, replaced and added to, and a row that reads
+		// "gb · female · 30s" cannot be looked up in a folder
 		out = append(out, voiceOpt{
 			id:   strings.TrimSuffix(n, filepath.Ext(n)),
-			name: prettyVoice(n),
-			path: filepath.Join(voicesDir(), n),
+			name: n,
+			path: filepath.Join(dir, n),
 		})
 	}
 	return out
 }
 
-// prettyVoice turns cv-gb-female-30s.wav into "gb · female · 30s", which scans
-// better than a file name does in a list of eighty.
-func prettyVoice(file string) string {
-	s := strings.TrimSuffix(file, filepath.Ext(file))
-	return strings.ReplaceAll(strings.TrimPrefix(s, "cv-"), "-", " · ")
+// ownVoiceFile is the recording "my own voice" would actually be cut from: the
+// first checked voice recording on step 1, or "" before anything is checked.
+// Which file that is decides who speaks the narration, so the row names it
+// rather than leaving it to be inferred.
+func (a *App) ownVoiceFile() string {
+	if a.audList != nil {
+		if sel := a.audList.selected(); len(sel) > 0 {
+			return filepath.Base(sel[0])
+		}
+	}
+	return ""
+}
+
+func (a *App) ownVoiceName() string {
+	if f := a.ownVoiceFile(); f != "" {
+		return "My own voice — " + f
+	}
+	return "My own voice — cut from the recording"
 }
 
 // ---- the chosen voice -------------------------------------------------------
@@ -150,6 +175,137 @@ func (a *App) setVoice(v voiceOpt) error {
 	}
 	a.voiceSel = v.id
 	return nil
+}
+
+// importVoice adds a recording to the voices folder as the mono PCM wav the
+// model wants -- so any audio file works, not just the ones already in the
+// right format. It lands beside the built-in voices rather than in the project
+// because the id the caches and voice.txt use is the file's base name, which
+// only keeps resolving while the file stays somewhere the list looks; a voice
+// added here is therefore available to every project, and to the WebUI.
+// Safe off the GUI thread -- ffmpeg and files only.
+func (a *App) importVoice(src string) (voiceOpt, error) {
+	dir := a.voicesDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return voiceOpt{}, fmt.Errorf("%s is not writable: %w", dir, err)
+	}
+	base := sanitizeVoiceID(strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)))
+	id, dst := base, filepath.Join(dir, base+".wav")
+	// never overwrite: a name already taken belongs to another voice, and every
+	// project pointing at it would start speaking in this one instead
+	for i := 2; exists(dst); i++ {
+		id = fmt.Sprintf("%s-%d", base, i)
+		dst = filepath.Join(dir, id+".wav")
+	}
+	if err := a.runCmd("ffmpeg", "-v", "error", "-y", "-i", src,
+		"-ac", "1", "-c:a", "pcm_s16le", dst); err != nil {
+		return voiceOpt{}, err
+	}
+	return voiceOpt{id: id, name: filepath.Base(dst), path: dst}, nil
+}
+
+// voiceImport is what a folder import did, in enough detail to say it in one
+// line without the caller counting anything itself.
+type voiceImport struct {
+	added   []voiceOpt
+	skipped int // a wav of that name is in the voices folder already
+	failed  int // ffmpeg refused it; the log says why
+}
+
+func (r voiceImport) summary() string {
+	parts := []string{fmt.Sprintf("%d added", len(r.added))}
+	if r.skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d already there", r.skipped))
+	}
+	if r.failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d could not be converted — see log", r.failed))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// importVoiceDir adds every recording sitting directly in dir, because samples
+// arrive as a folder far more often than one at a time.
+//
+// Sub-folders are left alone: aiming this at a music library by accident should
+// cost one folder, not a tree. A name already in the voices folder is skipped
+// rather than copied beside itself as "-2" -- re-adding a folder is the likely
+// mistake, and answering it with thirty duplicates is worse than answering it
+// with nothing. Picking one file by hand still suffixes: that is a deliberate
+// act on a particular recording.
+// Safe off the GUI thread -- ffmpeg and files only.
+func (a *App) importVoiceDir(dir string) (voiceImport, error) {
+	var res voiceImport
+	if sameDir(dir, a.voicesDir()) {
+		return res, fmt.Errorf("that is the voices folder itself — everything in it is listed already")
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return res, err
+	}
+	var names []string
+	for _, e := range ents {
+		if !e.IsDir() && mediaExt[strings.ToLower(filepath.Ext(e.Name()))] {
+			names = append(names, e.Name())
+		}
+	}
+	if len(names) == 0 {
+		return res, fmt.Errorf("no audio or video files directly in %s", dir)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		src := filepath.Join(dir, n)
+		if a.voiceTaken(src) {
+			res.skipped++
+			continue
+		}
+		v, err := a.importVoice(src)
+		if err != nil {
+			a.logfIdle("add voice %s: %v", n, err)
+			res.failed++
+			continue
+		}
+		// one line each: converting a folder of samples takes long enough that
+		// a still status bar looks like a hang
+		a.logfIdle("added voice %s", v.name)
+		res.added = append(res.added, v)
+	}
+	return res, nil
+}
+
+// voiceTaken reports whether src would land on a wav that is there already.
+func (a *App) voiceTaken(src string) bool {
+	id := sanitizeVoiceID(strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)))
+	return exists(filepath.Join(a.voicesDir(), id+".wav"))
+}
+
+// sameDir compares by inode rather than by string, so a symlink or a trailing
+// slash cannot make the voices folder look like somewhere else.
+func sameDir(x, y string) bool {
+	fx, err := os.Stat(x)
+	if err != nil {
+		return false
+	}
+	fy, err := os.Stat(y)
+	return err == nil && os.SameFile(fx, fy)
+}
+
+// sanitizeVoiceID keeps the id usable as a file name: it is pasted into the
+// sample cache's names and read back out of voice.txt, so a slash in it would
+// write somewhere else entirely.
+func sanitizeVoiceID(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '-', r == '_', r == '.':
+			return r
+		}
+		return '-'
+	}, s)
+	if s = strings.Trim(s, "-._"); s == "" {
+		return "voice"
+	}
+	return s
 }
 
 // ---- the reference pitch ----------------------------------------------------
@@ -240,19 +396,13 @@ func (a *App) buildStep5Voice() gtk.Widgetter {
 	a.voice5 = vp
 	if p, err := NewPlayer(); err == nil {
 		vp.player = p
+		p.OnState = a.updateRunControls
 	}
-	vp.voices = listVoices()
+	vp.voices = vp.a.listVoices()
 
 	vp.list = gtk.NewListBox()
 	vp.list.SetSelectionMode(gtk.SelectionSingle)
-	for _, v := range vp.voices {
-		l := gtk.NewLabel(v.name)
-		l.SetXAlign(0)
-		l.SetMarginTop(5)
-		l.SetMarginBottom(5)
-		l.SetMarginStart(8)
-		vp.list.Append(l)
-	}
+	vp.fillRows()
 	// selecting IS choosing: this is the step whose whole job is that choice,
 	// and switching costs nothing now that the cache knows about voices.
 	vp.list.ConnectRowSelected(func(row *gtk.ListBoxRow) {
@@ -281,20 +431,35 @@ func (a *App) buildStep5Voice() gtk.Widgetter {
 	scroll.SetChild(vp.list)
 	scroll.SetVExpand(true)
 
+	add := flexButton("Add file…", "Copy one recording into the voices folder and use it")
+	add.ConnectClicked(vp.addVoiceDialog)
+	addDir := flexButton("Add folder…",
+		"Copy every recording in a folder into the voices folder — sub-folders are left alone")
+	addDir.ConnectClicked(vp.addVoiceDirDialog)
+	openDir := gtk.NewButtonFromIconName("folder-open-symbolic")
+	openDir.SetTooltipText("Open the voices folder")
+	openDir.ConnectClicked(func() { a.openFolder(a.voicesDir()) })
+	addRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
+	add.SetHExpand(true)
+	addDir.SetHExpand(true)
+	addRow.Append(add)
+	addRow.Append(addDir)
+	addRow.Append(openDir)
+
 	leftBox := gtk.NewBox(gtk.OrientationVertical, 6)
 	leftBox.SetMarginStart(10)
 	leftBox.SetMarginTop(10)
 	leftBox.SetMarginBottom(10)
-	leftBox.SetSizeRequest(300, -1)
+	leftBox.SetMarginEnd(10)
 	leftBox.Append(vp.filter)
 	leftBox.Append(scroll)
+	leftBox.Append(addRow)
 
 	// right: what the choice means, and the way to hear it
-	head := gtk.NewLabel("Every line in step 6 is spoken by cloning one reference " +
-		"recording. Pick it here and listen before you narrate — the emotion of " +
-		"each line stays per-line either way. Reference pitch moves the recording " +
-		"before it is cloned, which makes a different speaker; output pitch moves " +
-		"the finished narration, which is that speaker transposed.")
+	head := gtk.NewLabel("Every narrated line is spoken by cloning one of these " +
+		"recordings. Pitch moves the recording before it is cloned, so the model " +
+		"hears a different speaker — the narration is then spoken that way rather " +
+		"than shifted afterwards.")
 	head.SetWrap(true)
 	head.SetXAlign(0)
 	head.AddCSSClass("dim-label")
@@ -306,28 +471,18 @@ func (a *App) buildStep5Voice() gtk.Widgetter {
 	vp.sample = gtk.NewEntry()
 	vp.sample.SetText(sampleDefault)
 	vp.sample.SetHExpand(true)
+	vp.sample.SetTooltipText("Enter — or ▶ in the run bar — speaks this in the selected voice")
 	vp.sample.ConnectActivate(func() { vp.playSample() })
 
-	vp.play = gtk.NewButtonWithLabel("▶ Play sample")
-	vp.play.SetTooltipText("Speak the sample text in the selected voice")
-	vp.play.ConnectClicked(func() { vp.playSample() })
-
-	stopBtn := gtk.NewButtonWithLabel("⏹")
-	stopBtn.SetTooltipText("Stop the sample")
-	stopBtn.ConnectClicked(func() {
-		if vp.player != nil {
-			vp.player.Stop()
-		}
-	})
-
+	// no transport of its own: ▶ in the run bar runs the step you are looking
+	// at, and on this step that is the sample. A second pair of buttons meant
+	// two of everything, one of which is easy to overlook.
 	row := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	row.Append(vp.sample)
-	row.Append(vp.play)
-	row.Append(stopBtn)
 
 	// the reference is shifted, not the narration: this changes who is speaking
-	// in step 6, so it belongs next to the choice of voice rather than next to
-	// the render
+	// in the finished video, so it belongs next to the choice of voice rather
+	// than next to the render
 	vp.pitch = gtk.NewScaleWithRange(gtk.OrientationHorizontal, -pitchRange, pitchRange, 0.5)
 	vp.pitch.SetDrawValue(true)
 	vp.pitch.SetHExpand(true)
@@ -351,36 +506,25 @@ func (a *App) buildStep5Voice() gtk.Widgetter {
 			return false
 		})
 	})
-	pitchRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	pitchRow.Append(gtk.NewLabel("reference pitch:"))
-	pitchRow.Append(vp.pitch)
+	pitchLbl := gtk.NewLabel("pitch:")
+	pitchLbl.SetXAlign(0)
 
-	// the second knob moves the finished audio instead of the reference: the
-	// same speaker, nudged, and free -- no resynthesis. It lives here rather
-	// than on the narrate page because both answer "how does this voice sound".
-	vp.out = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0.8, 1.2, 0.02)
-	vp.out.SetValue(1.0)
-	vp.out.SetDrawValue(true)
-	vp.out.SetHExpand(true)
-	vp.out.AddMark(1.0, gtk.PosBottom, "1.0")
-	vp.out.SetTooltipText("Nudge the synthesized narration at playback and render — " +
-		"the same speaker, transposed, with nothing to re-speak")
-	// synthesis and rendering run off the GUI thread and must not read the
-	// widget; they read this copy, which only the GUI thread writes
-	a.pitchNow.Store(math.Float64bits(1.0))
-	vp.out.ConnectValueChanged(func() { a.pitchNow.Store(math.Float64bits(vp.out.Value())) })
-	outRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	outRow.Append(gtk.NewLabel("output pitch:"))
-	outRow.Append(vp.out)
+	// there used to be a second slider here that moved the finished narration
+	// instead of the reference. It was free where this one costs a re-speak, but
+	// it post-processed generated speech without preserving formants and stacked
+	// with the tempo fit in produce -- two passes over exactly the lines already
+	// struggling to fit their slot. One knob, applied where the quality is.
+	knobs := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	knobs.Append(pitchLbl)
+	knobs.Append(vp.pitch)
 
-	note := gtk.NewLabel("Switching voices keeps what you already synthesized: " +
-		"each voice and reference pitch has its own cache, so going back is " +
-		"instant. Output pitch costs nothing either way — it is applied after.")
+	note := gtk.NewLabel("Switching voices keeps what you already synthesized — " +
+		"each voice and pitch has its own cache.")
 	note.SetWrap(true)
 	note.SetXAlign(0)
 	note.AddCSSClass("dim-label")
 
-	right := gtk.NewBox(gtk.OrientationVertical, 10)
+	right := gtk.NewBox(gtk.OrientationVertical, 8)
 	right.SetMarginStart(12)
 	right.SetMarginEnd(12)
 	right.SetMarginTop(10)
@@ -389,19 +533,179 @@ func (a *App) buildStep5Voice() gtk.Widgetter {
 	right.Append(head)
 	right.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
 	right.Append(vp.cur)
-	right.Append(gtk.NewLabel("")) // a little air before the controls
-	right.Append(pitchRow)
-	right.Append(outRow)
+	right.Append(knobs)
 	right.Append(row)
 	right.Append(note)
 
-	box := gtk.NewBox(gtk.OrientationHorizontal, 0)
-	box.Append(leftBox)
-	box.Append(gtk.NewSeparator(gtk.OrientationVertical))
-	box.Append(right)
+	// scrolled, because this column is the one that runs out of height first on
+	// a laptop screen, and a clipped slider cannot be dragged
+	rightScroll := gtk.NewScrolledWindow()
+	rightScroll.SetChild(right)
+	rightScroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
+	rightScroll.SetHExpand(true)
+
+	// a divider rather than a fixed 300px list: the file names decide how much
+	// width the list wants, and on a small screen that is width the knobs need
+	box := gtk.NewPaned(gtk.OrientationHorizontal)
+	box.SetStartChild(leftBox)
+	box.SetEndChild(rightScroll)
+	// see step 1: with shrink left on, a pane dragged past its minimum is
+	// clipped rather than resized, and the margin goes off the window with it
+	box.SetShrinkStartChild(false)
+	box.SetShrinkEndChild(false)
+	box.SetPosition(280)
 
 	vp.syncSelection()
 	return box
+}
+
+// flexButton is a button whose label may be ellipsized, so a row of them keeps
+// this column's minimum width small: an unellipsized label is a floor under the
+// whole pane, and this pane is one of the parts meant to give way first.
+func flexButton(text, tip string) *gtk.Button {
+	l := gtk.NewLabel(text)
+	l.SetEllipsize(pango.EllipsizeEnd)
+	b := gtk.NewButton()
+	b.SetChild(l)
+	b.SetTooltipText(tip)
+	return b
+}
+
+// fillRows builds one row per voice, remembering the "my own voice" label so
+// step 1 can rename it when the checked recording changes.
+func (vp *voicePicker) fillRows() {
+	for _, v := range vp.voices {
+		l := gtk.NewLabel(v.name)
+		l.SetXAlign(0)
+		l.SetMarginTop(5)
+		l.SetMarginBottom(5)
+		l.SetMarginStart(8)
+		l.SetEllipsize(pango.EllipsizeMiddle) // so the divider can be dragged in
+		l.SetTooltipText(v.name)
+		if v.id == ownVoice {
+			vp.ownLbl = l
+		}
+		vp.list.Append(l)
+	}
+}
+
+// reload rebuilds the list from the folder -- after an import, there is a file
+// in it that was not there when the page was built. sel names the voice to
+// leave selected, and choose says whether landing on it counts as picking it.
+// Importing one file picks it, which is what asking for that file meant.
+// Importing a folder must not: thirty arrivals have no claim on the project,
+// and re-picking the voice already in use is not free either -- for "own" it
+// deletes the reference cut from the recording.
+func (vp *voicePicker) reload(sel string, choose bool) {
+	vp.syncing = true
+	for {
+		row := vp.list.RowAtIndex(0)
+		if row == nil {
+			break
+		}
+		vp.list.Remove(row)
+	}
+	vp.ownLbl = nil
+	vp.voices = vp.a.listVoices()
+	vp.fillRows()
+	vp.syncing = !choose
+	for i, v := range vp.voices {
+		if v.id == sel {
+			if r := vp.list.RowAtIndex(i); r != nil {
+				vp.list.SelectRow(r)
+			}
+			if !choose {
+				vp.showCurrent(v) // nothing chose, so nothing else says what is current
+				vp.syncing = false
+			}
+			return
+		}
+	}
+	vp.syncing = false
+	vp.syncSelection()
+}
+
+// refreshOwn renames the first row when step 1's checked recording changes --
+// that recording is what "my own voice" clones, so the row has to keep up.
+func (vp *voicePicker) refreshOwn() {
+	if len(vp.voices) == 0 || vp.voices[0].id != ownVoice {
+		return
+	}
+	vp.voices[0].name = vp.a.ownVoiceName()
+	if vp.ownLbl != nil {
+		vp.ownLbl.SetText(vp.voices[0].name)
+		vp.ownLbl.SetTooltipText(vp.voices[0].name)
+	}
+	if vp.a.voiceID() == ownVoice {
+		vp.showCurrent(vp.voices[0])
+	}
+}
+
+// addVoiceDirDialog installs every recording in a folder -- the shape samples
+// usually come in, and thirty trips through a file chooser is not a workflow.
+// Same import and the same thread rule as addVoiceDialog.
+func (vp *voicePicker) addVoiceDirDialog() {
+	a := vp.a
+	d := gtk.NewFileDialog()
+	d.SetTitle("Choose a folder of voice samples")
+	d.SetInitialFolder(gio.NewFileForPath(a.inDir))
+	d.SelectFolder(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
+		f, err := d.SelectFolderFinish(res)
+		if err != nil || f == nil {
+			return // dismissed
+		}
+		dir := f.Path()
+		a.setStatus("adding samples from " + filepath.Base(dir) + "…")
+		go func() {
+			r, err := a.importVoiceDir(dir)
+			glib.IdleAdd(func() {
+				if err != nil {
+					a.logf("add folder: %v", err)
+					a.setStatus(err.Error())
+					return
+				}
+				// keep speaking in the voice we were already speaking in
+				vp.reload(a.voiceID(), false)
+				a.setStatus(r.summary())
+			})
+		}()
+	})
+}
+
+// addVoiceDialog picks a recording anywhere on disk and installs it. The
+// conversion runs off the GUI thread, since it is ffmpeg.
+func (vp *voicePicker) addVoiceDialog() {
+	a := vp.a
+	d := gtk.NewFileDialog()
+	d.SetTitle("Choose a voice sample")
+	d.SetInitialFolder(gio.NewFileForPath(a.inDir))
+	filt := gtk.NewFileFilter()
+	filt.SetName("Audio and video")
+	for e := range mediaExt {
+		filt.AddSuffix(strings.TrimPrefix(e, "."))
+	}
+	filters := gio.NewListStore(gtk.GTypeFileFilter)
+	filters.Append(filt.Object)
+	d.SetFilters(filters)
+	d.Open(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
+		f, err := d.OpenFinish(res)
+		if err != nil || f == nil {
+			return // dismissed
+		}
+		src := f.Path()
+		a.setStatus("adding " + filepath.Base(src) + "…")
+		go func() {
+			v, err := a.importVoice(src)
+			glib.IdleAdd(func() {
+				if err != nil {
+					a.logf("add voice: %v", err)
+					a.setStatus("could not add that sample — see log")
+					return
+				}
+				vp.reload(v.id, true)
+			})
+		}()
+	})
 }
 
 // syncSelection points the list at whatever the output folder says the voice
@@ -426,15 +730,19 @@ func (vp *voicePicker) syncSelection() {
 	}
 	// a voice.txt naming a wav that is no longer on disk: say so rather than
 	// silently speaking in something else
-	vp.cur.SetText(fmt.Sprintf("Voice %q is no longer in %s — pick another.", want, voicesDir()))
+	vp.cur.SetText(fmt.Sprintf("Voice %q is no longer in %s — pick another.", want, vp.a.voicesDir()))
 }
 
 func (vp *voicePicker) showCurrent(v voiceOpt) {
 	if v.id == ownVoice {
+		if f := vp.a.ownVoiceFile(); f != "" {
+			vp.cur.SetText("Voice: your own — the dominant speaker in " + f + ".")
+			return
+		}
 		vp.cur.SetText("Voice: your own, cut from the recording's dominant speaker.")
 		return
 	}
-	vp.cur.SetText(fmt.Sprintf("Voice: %s   (%s)", v.name, filepath.Base(v.path)))
+	vp.cur.SetText("Voice: " + v.name)
 }
 
 func (vp *voicePicker) current() (voiceOpt, bool) {
@@ -451,7 +759,7 @@ func (vp *voicePicker) current() (voiceOpt, bool) {
 
 // choose installs the voice off the GUI thread -- it shells out to ffmpeg -- and
 // reports either way, since a voice that silently failed to install would only
-// show up as the wrong speaker in step 6.
+// show up as the wrong speaker in the finished video.
 func (vp *voicePicker) choose(i int) {
 	if i < 0 || i >= len(vp.voices) {
 		return
@@ -470,7 +778,7 @@ func (vp *voicePicker) choose(i int) {
 				a.setStatus("voice: your own — it is re-cut from the recording on the next line spoken")
 				return
 			}
-			a.setStatus(fmt.Sprintf("voice: %s — ▶ Play sample to hear it", v.name))
+			a.setStatus(fmt.Sprintf("voice: %s — press ▶ to hear it", v.name))
 		})
 	}()
 }
@@ -488,12 +796,29 @@ func (vp *voicePicker) applyPitch(st float64) {
 		}
 		glib.IdleAdd(func() {
 			if st == 0 {
-				a.setStatus("voice as recorded — ▶ Play sample to hear it")
+				a.setStatus("voice as recorded — press ▶ to hear it")
 				return
 			}
-			a.setStatus(fmt.Sprintf("voice shifted %+.1f semitones — ▶ Play sample to hear it", st))
+			a.setStatus(fmt.Sprintf("voice shifted %+.1f semitones — press ▶ to hear it", st))
 		})
 	}()
+}
+
+// The run bar drives the sample through these: ▶ plays it, then pauses and
+// resumes it, ⏹ ends it. See transport in pipeline.go.
+func (vp *voicePicker) playing() bool { return vp.player != nil && vp.player.Playing() }
+func (vp *voicePicker) cued() bool    { return vp.player != nil && vp.player.Cued() }
+
+func (vp *voicePicker) toggle() {
+	if vp.player != nil {
+		vp.player.Toggle()
+	}
+}
+
+func (vp *voicePicker) stop() {
+	if vp.player != nil {
+		vp.player.Stop()
+	}
 }
 
 // playSample speaks the sample text in the selected voice. The first one after
@@ -516,8 +841,6 @@ func (vp *voicePicker) playSample() {
 		return
 	}
 	vp.busy = true
-	vp.play.SetSensitive(false)
-	vp.play.SetLabel("… speaking")
 	a.setStatus("synthesizing the sample…")
 	a.snapSources() // ensureVoiceRef reads the checked recording for "own"
 	go func() {
@@ -530,15 +853,13 @@ func (vp *voicePicker) playSample() {
 		}
 		glib.IdleAdd(func() {
 			vp.busy = false
-			vp.play.SetSensitive(true)
-			vp.play.SetLabel("▶ Play sample")
 			if err != nil {
 				a.logf("sample: %v", err)
 				a.setStatus("could not speak the sample — see log")
 				return
 			}
 			if vp.player != nil {
-				vp.player.PlaySegment(a.pitchedWav(out), 0, -1, true)
+				vp.player.PlaySegment(out, 0, -1, true)
 			}
 			a.setStatus(fmt.Sprintf("sample in %s", v.name))
 		})

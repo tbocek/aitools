@@ -19,6 +19,7 @@ func TestStep6Render(t *testing.T) {
 	root := "/home/draft/git/aitools/autocut"
 	a := &App{
 		root:    root,
+		inDir:   root,
 		outDir:  filepath.Join(root, "out", "test"),
 		curCmds: map[*exec.Cmd]bool{},
 	}
@@ -68,6 +69,7 @@ func TestStep6Narrated(t *testing.T) {
 	root := "/home/draft/git/aitools/autocut"
 	a := &App{
 		root:    root,
+		inDir:   root,
 		outDir:  filepath.Join(root, "out", "test"),
 		curCmds: map[*exec.Cmd]bool{},
 	}
