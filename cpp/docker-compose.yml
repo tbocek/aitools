@@ -177,6 +177,10 @@ services:
       --server-name 0.0.0.0
       --port 6969
   audio:
+    # audiocpp_server plus the WebUI on top of it, one container. The WebUI on
+    # its own only starts a server when someone clicks Load in the browser, so
+    # nothing would answer 8765 until a human showed up; AUDIOCPP_SERVER points
+    # it at the one started here instead of managing its own.
     build:
       context: .
       dockerfile: Dockerfile.audio
@@ -192,14 +196,14 @@ services:
     restart: unless-stopped
     ports:
       - "7860:7860"
+      # loopback only: this speaks for the GPU, nothing on the LAN needs it
+      - "127.0.0.1:8765:8080"
     environment:
-      # The webui classifies the plain HIP build/bin as "cpu" (from CMakeCache)
-      # and would tell the server "cpu"; this override (added by Dockerfile.vc3)
-      # makes it hand the server the HIP backend instead. Switch to "vulkan"
-      # or "cpu" here to A/B backends without a rebuild.
+      # backend for the server below comes from audiocpp-server.json; these two
+      # only steer a WebUI-managed server, which AUDIOCPP_SERVER prevents.
       - AUDIOCPP_BACKEND=cpu
-      - AUDIOCPP_SERVER_BACKEND=hip
       - AUDIOCPP_NO_BROWSER=1
+      - AUDIOCPP_SERVER=http://127.0.0.1:8080
       # WebUI realtime pipeline drives sounddevice server-side, same as vc2.
       - PULSE_SERVER=unix:/run/user/1000/pulse/native
     volumes:
@@ -215,8 +219,17 @@ services:
       - /mnt/models/audiocpp/voices:/home/arch/audio.cpp/webui/voice
       - /run/user/1000/pulse/native:/run/user/1000/pulse/native
       - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
+      # Same path inside and out. voice_ref and the output wav travel as paths,
+      # not uploads, so the server has to resolve them exactly as autocut wrote
+      # them -- a /work-style mount would break the moment either side looked.
+      - ${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}:${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}
+      - ./audiocpp-server.json:/etc/audiocpp-server.json:ro
+    # server first, then the WebUI against it -- the wait is so the WebUI does
+    # not probe a port that has not been bound yet on a cold start.
     command: >-
-      python -u webui/webui.py
+      bash -c "build/bin/audiocpp_server --config /etc/audiocpp-server.json &
+      until curl -sf http://127.0.0.1:8080/health >/dev/null; do sleep 0.5; done &&
+      exec python -u webui/webui.py"
   vc3:
     build:
       context: .

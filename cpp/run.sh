@@ -147,14 +147,14 @@ DOWNLOAD_PID=$!
 if [ "$skip_build" = false ]; then
     buildx_args="--output type=docker,compression=zstd,compression-level=3"
     docker buildx build $no_cache_arch  $buildx_args -t arch:latest  -f "$SCRIPT_DIR/Dockerfile.arch"  "$SCRIPT_DIR"
-    docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
+    #docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
     #docker buildx build $no_cache_llama $buildx_args -t sd:latest    -f "$SCRIPT_DIR/Dockerfile.sd"    "$SCRIPT_DIR"
     #docker buildx build $no_cache_llama $buildx_args -t vc:latest    -f "$SCRIPT_DIR/Dockerfile.vc"    "$SCRIPT_DIR"
     #docker buildx build $no_cache_llama $buildx_args -t vc2:latest   -f "$SCRIPT_DIR/Dockerfile.vc2"   "$SCRIPT_DIR"
-    #docker buildx build $no_cache_llama $buildx_args -t audio:latest -f "$SCRIPT_DIR/Dockerfile.audio"   "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t audio:latest -f "$SCRIPT_DIR/Dockerfile.audio"   "$SCRIPT_DIR"
     #docker buildx build $no_cache_llama $buildx_args -t vc3:latest   -f "$SCRIPT_DIR/Dockerfile.vc3"   "$SCRIPT_DIR"
 fi
 setup_virtual_mic
-docker compose up -d llama
+docker compose up -d audio
 
 wait "$DOWNLOAD_PID"

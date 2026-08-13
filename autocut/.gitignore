@@ -1,0 +1,8 @@
+# media and generated artifacts stay out of git -- gui/ is the project
+input_audio/
+input_video/
+out/
+llm.conf
+gui/autocut-gui
+step1/
+project*.json
