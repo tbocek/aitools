@@ -174,11 +174,12 @@ func (a *App) narratorFile(n int) string {
 	return ""
 }
 
+// narratorVoiceName is what the picker lists a slot as. Slot 1 is "Narrator 1"
+// like the other three: it is a tag on the Inputs step, and whoever is running
+// the app need not be the one wearing it. Its id stays "own" -- that spelling
+// is in every synthesis cache key written before the tags existed.
 func (a *App) narratorVoiceName(n int) string {
-	who := "My own voice"
-	if n > 1 {
-		who = fmt.Sprintf("Narrator %d", n)
-	}
+	who := fmt.Sprintf("Narrator %d", n)
 	if f := a.narratorFile(n); f != "" {
 		return who + " — " + f
 	}
@@ -797,10 +798,7 @@ func (vp *voicePicker) syncSelection() {
 
 func (vp *voicePicker) showCurrent(v voiceOpt) {
 	if n := narratorSlot(v.id); n > 0 {
-		who := "your own"
-		if n > 1 {
-			who = fmt.Sprintf("narrator %d", n)
-		}
+		who := fmt.Sprintf("narrator %d", n)
 		if f := vp.a.narratorFile(n); f != "" {
 			vp.cur.SetText("Voice: " + who + " — the dominant speaker in " + f + ".")
 			return
@@ -841,10 +839,7 @@ func (vp *voicePicker) choose(i int) {
 		glib.IdleAdd(func() {
 			vp.showCurrent(v)
 			if n := narratorSlot(v.id); n > 0 {
-				who := "your own"
-				if n > 1 {
-					who = fmt.Sprintf("narrator %d's", n)
-				}
+				who := fmt.Sprintf("narrator %d's", n)
 				a.setStatus("voice: " + who + " — it is re-cut from the recording on the next line spoken")
 				return
 			}

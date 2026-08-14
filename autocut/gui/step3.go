@@ -1170,10 +1170,17 @@ func (a *App) buildStep3() gtk.Widgetter {
 	promptBox.Append(prompt)
 	promptBox.Append(audit)
 	// one scrollbar for the prompt column: the editor inside is given its full
-	// height by this viewport, so it never scrolls against this one
+	// height by this viewport, so it never scrolls against this one.
+	//
+	// Not an overlay scrollbar, though it is the default: an overlay is drawn on
+	// top of whatever is under it, and what is under it here is the right-hand
+	// border of a framed box. A slider sitting on a box's own border, and with
+	// no border of its own, is what a column of these looks wrong as. Given its
+	// own gutter it is beside the boxes instead of on them.
 	promptPane := gtk.NewScrolledWindow()
 	promptPane.SetChild(promptBox)
 	promptPane.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
+	promptPane.SetOverlayScrolling(false)
 
 	// The bar in groups rather than as one row of twenty equal buttons. Twenty
 	// things spaced identically is twenty things to read every time, and the

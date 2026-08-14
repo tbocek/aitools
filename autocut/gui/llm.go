@@ -7,12 +7,14 @@ package main
 // per request on the same prompt).
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -42,6 +44,21 @@ func msg(role string, content any) map[string]any {
 
 // llmChat posts a chat completion; thinking selects the parameter set.
 func (a *App) llmChat(msgs []map[string]any, thinking bool) (string, error) {
+	return a.llmChatOn(msgs, thinking, nil)
+}
+
+// llmChatOn is llmChat with the reply readable while it is still being written.
+// Pass an onText and the request is streamed: onText is called with everything
+// received so far, every time more arrives, on the calling goroutine. Pass nil
+// and this is exactly the old single-response call.
+//
+// The point of it is the bar. A narration is one request that thinks for a
+// minute and then writes nine clips, and from the outside that is a spinner and
+// a promise; streamed, the clips can be counted as they close (see
+// narrEntriesDone), and the same bar that counts the speaking counts the
+// writing. Nothing else changes: a caller with no callback is not streamed, so
+// the steps that ask for one JSON object and parse it whole are untouched.
+func (a *App) llmChatOn(msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
 	c := a.readConf()
 	if c.Server == "" || c.Model == "" {
 		return "", fmt.Errorf("no LLM configured -- use the gear button")
@@ -64,6 +81,9 @@ func (a *App) llmChat(msgs []map[string]any, thinking bool) (string, error) {
 		body["chat_template_kwargs"] = map[string]any{
 			"preserve_thinking": true, "enable_thinking": false,
 		}
+	}
+	if onText != nil {
+		body["stream"] = true
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -89,6 +109,11 @@ func (a *App) llmChat(msgs []map[string]any, thinking bool) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	// only if the server actually streamed: one that ignores the flag, or that
+	// answers an error as plain JSON, falls through to the decode below
+	if onText != nil && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		return a.readChatStream(resp.Body, onText)
+	}
 	var out struct {
 		Choices []struct {
 			Message struct {
@@ -106,13 +131,58 @@ func (a *App) llmChat(msgs []map[string]any, thinking bool) (string, error) {
 	return out.Choices[0].Message.Content, nil
 }
 
+// readChatStream assembles a server-sent-event reply, handing the caller the
+// text so far as each piece lands. Read with a bufio.Reader rather than a
+// Scanner: one event carrying a long chunk is a line of any length, and a
+// Scanner would stop dead at its 64 kB limit halfway through a narration.
+func (a *App) readChatStream(r io.Reader, onText func(string)) (string, error) {
+	br := bufio.NewReader(r)
+	var b strings.Builder
+	for {
+		line, err := br.ReadString('\n')
+		if s := strings.TrimSpace(line); strings.HasPrefix(s, "data:") {
+			payload := strings.TrimSpace(strings.TrimPrefix(s, "data:"))
+			if payload == "[DONE]" {
+				return b.String(), nil
+			}
+			var ch struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			// a chunk that will not parse is a chunk, not the reply: keep reading
+			if json.Unmarshal([]byte(payload), &ch) == nil && len(ch.Choices) > 0 {
+				if d := ch.Choices[0].Delta.Content; d != "" {
+					b.WriteString(d)
+					onText(b.String())
+				}
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return b.String(), nil // a stream that ends without [DONE] still said what it said
+			}
+			if a.stopFlag.Load() {
+				return "", errStopped
+			}
+			return "", err // a half-written JSON reply is worth less than the error
+		}
+	}
+}
+
 // llmChatRetry absorbs one transport hiccup, which a multi-hour pass will hit
 // -- but never retries a user stop.
 func (a *App) llmChatRetry(msgs []map[string]any, thinking bool) (string, error) {
-	reply, err := a.llmChat(msgs, thinking)
+	return a.llmChatRetryOn(msgs, thinking, nil)
+}
+
+func (a *App) llmChatRetryOn(msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
+	reply, err := a.llmChatOn(msgs, thinking, onText)
 	if err == nil || errors.Is(err, errStopped) {
 		return reply, err
 	}
 	time.Sleep(2 * time.Second)
-	return a.llmChat(msgs, thinking)
+	return a.llmChatOn(msgs, thinking, onText)
 }

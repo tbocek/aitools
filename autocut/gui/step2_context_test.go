@@ -13,16 +13,16 @@ import (
 // rows named for what they are, so a failure message says which line moved
 func ctxRows() []tsvRow {
 	return []tsvRow{
-		{0.5, 1.5, "way before"},     // 8.5 s before the chunk
-		{2.0, 3.0, "far before"},     // 7.0 s before
-		{6.0, 7.0, "near before"},    // 3.0 s before
-		{9.5, 10.5, "straddles in"},  // starts before the chunk, ends inside
-		{11.4, 12.0, "during one"},   //
-		{14.8, 15.6, "during two"},   //
-		{17.1, 18.0, "near after"},   // 1.1 s after the last frame
-		{21.0, 22.0, "far after"},    // 5.0 s after
-		{25.5, 26.0, "way after"},    // 9.5 s after
-		{26.5, 27.0, "just too far"}, // 10.5 s after -- outside the window
+		{s: 0.5, e: 1.5, text: "way before"},     // 8.5 s before the chunk
+		{s: 2.0, e: 3.0, text: "far before"},     // 7.0 s before
+		{s: 6.0, e: 7.0, text: "near before"},    // 3.0 s before
+		{s: 9.5, e: 10.5, text: "straddles in"},  // starts before the chunk, ends inside
+		{s: 11.4, e: 12.0, text: "during one"},   //
+		{s: 14.8, e: 15.6, text: "during two"},   //
+		{s: 17.1, e: 18.0, text: "near after"},   // 1.1 s after the last frame
+		{s: 21.0, e: 22.0, text: "far after"},    // 5.0 s after
+		{s: 25.5, e: 26.0, text: "way after"},    // 9.5 s after
+		{s: 26.5, e: 27.0, text: "just too far"}, // 10.5 s after -- outside the window
 	}
 }
 
@@ -53,21 +53,21 @@ func TestElectSpeechPicksTheNearestFewEitherSide(t *testing.T) {
 func TestElectSpeechAppliesBothCapsIndependently(t *testing.T) {
 	// count binds: five lines within the window, two survive
 	dense := []tsvRow{
-		{5.0, 5.5, "a"}, {6.0, 6.5, "b"}, {7.0, 7.5, "c"},
-		{8.0, 8.5, "d"}, {9.0, 9.5, "e"},
+		{s: 5.0, e: 5.5, text: "a"}, {s: 6.0, e: 6.5, text: "b"}, {s: 7.0, e: 7.5, text: "c"},
+		{s: 8.0, e: 8.5, text: "d"}, {s: 9.0, e: 9.5, text: "e"},
 	}
 	before, _, _ := electSpeech(dense, 10, 16)
 	if got := texts(before); got != "d|e" {
 		t.Errorf("count cap: before = %q, want the two nearest", got)
 	}
 	// window binds: only one line is close enough, so only one comes along
-	sparse := []tsvRow{{10.0, 11.0, "ancient"}, {80.0, 81.0, "old"}, {95.0, 97.0, "recent"}}
+	sparse := []tsvRow{{s: 10.0, e: 11.0, text: "ancient"}, {s: 80.0, e: 81.0, text: "old"}, {s: 95.0, e: 97.0, text: "recent"}}
 	before, _, _ = electSpeech(sparse, 100, 106)
 	if got := texts(before); got != "recent" {
 		t.Errorf("window cap: before = %q, want only the one inside 10 s", got)
 	}
 	// and the window is inclusive at exactly 10 s, exclusive past it
-	edge := []tsvRow{{89.0, 90.0, "exactly ten"}, {88.0, 89.5, "ten and a half"}}
+	edge := []tsvRow{{s: 89.0, e: 90.0, text: "exactly ten"}, {s: 88.0, e: 89.5, text: "ten and a half"}}
 	before, _, _ = electSpeech(edge, 100, 106)
 	if got := texts(before); got != "exactly ten" {
 		t.Errorf("edge: before = %q, want 10.0 s kept and 10.5 s dropped", got)
@@ -124,10 +124,10 @@ func ownAudio(rows []tsvRow) []speechSrc {
 // only do if the line says.
 func TestSpeechBlockRendersAllThreeSections(t *testing.T) {
 	rows := []tsvRow{
-		{3.8, 5.0, "so the trick with these panels is"},
-		{11.4, 12.0, "you pull the left one first"},
-		{14.8, 15.6, "and the latch releases"},
-		{17.1, 18.0, "now the same on the other side"},
+		{s: 3.8, e: 5.0, text: "so the trick with these panels is"},
+		{s: 11.4, e: 12.0, text: "you pull the left one first"},
+		{s: 14.8, e: 15.6, text: "and the latch releases"},
+		{s: 17.1, e: 18.0, text: "now the same on the other side"},
 	}
 	want := `--- context before (do not describe) ---
 [-6.2s] clip.mkv: "so the trick with these panels is"
@@ -149,16 +149,16 @@ func TestSpeechBlockRendersAllThreeSections(t *testing.T) {
 func TestSpeechBlockMergesEverySourceInTimeOrder(t *testing.T) {
 	srcs := []speechSrc{
 		{label: "clip.mkv", rows: []tsvRow{
-			{11.0, 11.4, "game one"},
-			{14.0, 14.4, "game two"},
-			{4.0, 4.5, "game before A"}, // both inside the window: the two nearest
-			{6.0, 6.5, "game before B"}, // survive, and they are these two
-			{1.0, 1.5, "game before C"}, // furthest, so dropped by the count cap
+			{s: 11.0, e: 11.4, text: "game one"},
+			{s: 14.0, e: 14.4, text: "game two"},
+			{s: 4.0, e: 4.5, text: "game before A"}, // both inside the window: the two nearest
+			{s: 6.0, e: 6.5, text: "game before B"}, // survive, and they are these two
+			{s: 1.0, e: 1.5, text: "game before C"}, // furthest, so dropped by the count cap
 		}},
 		{label: "mic.flac", rows: []tsvRow{
-			{12.0, 12.4, "mic one"},
-			{15.0, 15.4, "mic two"},
-			{5.0, 5.5, "mic before"}, // its own budget, untouched by clip.mkv's
+			{s: 12.0, e: 12.4, text: "mic one"},
+			{s: 15.0, e: 15.4, text: "mic two"},
+			{s: 5.0, e: 5.5, text: "mic before"}, // its own budget, untouched by clip.mkv's
 		}},
 	}
 	got := speechBlock(srcs, 10, 16)
@@ -195,7 +195,7 @@ func TestSpeechBlockSaysNothingRatherThanSayingNothing(t *testing.T) {
 		t.Errorf("empty block is\n%s\nwant\n%s", got, want)
 	}
 	// and a transcript that exists but is nowhere near this chunk reads the same
-	far := []tsvRow{{0, 1, "long gone"}, {600, 601, "much later"}}
+	far := []tsvRow{{s: 0, e: 1, text: "long gone"}, {s: 600, e: 601, text: "much later"}}
 	if got := speechBlock(ownAudio(far), 300, 306); got != want {
 		t.Errorf("out-of-range block is\n%s\nwant\n%s", got, want)
 	}
@@ -212,9 +212,9 @@ func TestSpeechBlockSaysNothingRatherThanSayingNothing(t *testing.T) {
 // where the pauses were.
 func TestSpeechBlockPassesTextThroughUnchanged(t *testing.T) {
 	rows := []tsvRow{
-		{11.0, 11.5, "  no wait  "},
-		{11.5, 12.0, `he said "left" i think`},
-		{12.0, 12.5, "uh"},
+		{s: 11.0, e: 11.5, text: "  no wait  "},
+		{s: 11.5, e: 12.0, text: `he said "left" i think`},
+		{s: 12.0, e: 12.5, text: "uh"},
 	}
 	got := speechBlock(ownAudio(rows), 10, 16)
 	for _, want := range []string{

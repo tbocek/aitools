@@ -7,6 +7,7 @@ package main
 // for keeping named variants.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
+	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
@@ -171,14 +173,87 @@ func (a *App) projectSources(p Project) []sourceItem {
 	return out
 }
 
-func (a *App) saveProjectTo(path string) {
-	p := a.currentProject()
-	b, _ := json.MarshalIndent(p, "", "  ")
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
-		a.logf("save project: %v", err)
+// ---- saving, and then saving itself -----------------------------------------
+
+// projectJSON is the project as it would be written right now. It is also how
+// the autosave decides there is anything to write: the bytes are the state, so
+// comparing them catches every field of every page without a single page
+// having to remember to say it changed. Nothing else could -- the settings are
+// spread over five pages, two text buffers, a list and a dozen widgets, and a
+// notify-me hook on each of them is a hook somebody will forget on the next
+// one, silently, with the symptom appearing a session later as lost work.
+func (a *App) projectJSON() []byte {
+	b, err := json.MarshalIndent(a.currentProject(), "", "  ")
+	if err != nil {
+		return nil // cannot happen with these types; not worth a wrong write
+	}
+	return append(b, '\n')
+}
+
+func (a *App) writeProject(path string, b []byte) error {
+	return os.WriteFile(path, b, 0o644)
+}
+
+// projectFiles is where a save goes. root/project.json is the working copy the
+// next launch opens, and is always written; a file named through Save Project
+// (or opened through Load Project) is written as well, because the moment the
+// user names a file, that file is the project as far as they are concerned.
+func (a *App) projectFiles() []string {
+	work := filepath.Join(a.root, "project.json")
+	if a.projPath == "" || a.projPath == work {
+		return []string{work}
+	}
+	return []string{work, a.projPath}
+}
+
+// saveProjectNow writes every target and remembers what it wrote. Quiet: it is
+// what the ticker and the step runners call, and a status line per autosave
+// would push the message the user is actually waiting on off the bar.
+func (a *App) saveProjectNow() {
+	b := a.projectJSON()
+	if b == nil {
 		return
 	}
+	// before the writes, not after: a target that cannot be written must not be
+	// retried every tick for the rest of the session, and the log line below
+	// says it once per change either way.
+	a.projSaved = b
+	for _, p := range a.projectFiles() {
+		if err := a.writeProject(p, b); err != nil {
+			a.logf("save project: %v", err)
+		}
+	}
+}
+
+// saveProjectTo is the explicit save behind the button: it names the file the
+// autosave follows from here on, and says so.
+func (a *App) saveProjectTo(path string) {
+	a.projPath = path
+	a.saveProjectNow()
 	a.setStatus("project saved: " + path)
+}
+
+// autosaveTick is how often the project is compared with what is on disk.
+// Long enough that typing a prompt is not a write per keystroke, short enough
+// that closing the window after a change loses nothing anyone would notice.
+const autosaveTick = 2000
+
+// startAutosave keeps the file up to date without a button. Save Project stays
+// -- it is how a variant gets a name -- but it stopped being the thing that
+// decides whether tonight's work exists in the morning.
+//
+// A ticker rather than a debounce on every setter, for the reason projectJSON
+// gives. The tick costs one marshal of a few kB; the compare is what makes it
+// free in practice, since a session spends most of its time not changing
+// anything, and an unchanged project writes nothing at all.
+func (a *App) startAutosave() {
+	a.projSaved = a.projectJSON() // what the startup load already put in memory
+	glib.TimeoutAdd(autosaveTick, func() bool {
+		if b := a.projectJSON(); b != nil && !bytes.Equal(b, a.projSaved) {
+			a.saveProjectNow()
+		}
+		return true
+	})
 }
 
 func (a *App) loadProjectFrom(path string) {
@@ -215,6 +290,10 @@ func (a *App) loadProjectFrom(path string) {
 	a.migrateHints(p)
 	a.applyProdSettings(p.Produce)
 	a.setOutDir(a.fromRoot(p.OutDir))
+	// what is open is what the autosave keeps: opening a variant and then
+	// editing it must not quietly write the edits into the working copy alone
+	a.projPath = path
+	a.projSaved = a.projectJSON()
 	a.setStatus("project loaded: " + path)
 }
 

@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
+	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
 // promptDef is one editable prompt. A blurb explaining what changing it would
@@ -150,33 +151,6 @@ func (a *App) promptEditor(key, title, tip string) gtk.Widgetter {
 	}
 	a.promptViews[key] = tv
 
-	// asks for the whole prompt and settles for less: where the page has room
-	// the text is all there to read and edit, and where it has not the box still
-	// opens at a size you can work in rather than a six-line slot.
-	//
-	// vexpand on top of that is what makes a taller window a taller box. Without
-	// it the box stops at the height of its text and the window's extra height
-	// piles up as blank page below it -- growing the window then bought nothing
-	// on the one page whose whole content is text. It propagates up through the
-	// widgets this returns, so a page only has to put this somewhere that can
-	// grow; two of these side by side split what is going spare.
-	//
-	// The minimum stays small, and deliberately so. Natural height is what makes
-	// the box open big; minimum is the floor a divider or a short window can
-	// squeeze it to, and it is the one number that can push things off the page.
-	// It was 240 here, which on the two-prompt page meant the pair could not fit
-	// in a short window at all: the divider stayed where it was, the top box kept
-	// a height it no longer had room for, and its own heading and Reset button
-	// went off the top. Four lines is a box you can still see what you are doing
-	// in, and small enough that no window is too short for two of them.
-	scroll := gtk.NewScrolledWindow()
-	scroll.SetChild(tv)
-	scroll.SetPropagateNaturalHeight(true)
-	scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic) // wrapped text has no width to scroll
-	scroll.SetSizeRequest(-1, 72)
-	scroll.SetVExpand(true)
-	scroll.AddCSSClass("frame")
-
 	reset := gtk.NewButtonWithLabel("Reset to default")
 	reset.AddCSSClass("flat")
 	reset.SetTooltipText("Put the built-in prompt back")
@@ -185,7 +159,12 @@ func (a *App) promptEditor(key, title, tip string) gtk.Widgetter {
 	lbl := gtk.NewLabel(title)
 	lbl.SetXAlign(0)
 	lbl.SetHExpand(true)
-	lbl.SetWrap(true)
+	// Ellipsized, not wrapped. The heading row is one line high everywhere --
+	// that is the premise the alignment in editorBody rests on -- and a title
+	// that wraps in a column dragged narrow would make one page's rows taller
+	// than another's. These titles are a word or two and the tooltip has the
+	// rest, so there is nothing here worth a second line.
+	lbl.SetEllipsize(pango.EllipsizeEnd)
 	lbl.AddCSSClass("heading")
 	if tip != "" {
 		lbl.SetTooltipText(tip)
@@ -195,6 +174,54 @@ func (a *App) promptEditor(key, title, tip string) gtk.Widgetter {
 	head.Append(lbl)
 	head.Append(mark)
 	head.Append(reset)
+
+	return a.editorBody(head, tv)
+}
+
+// editorBody is the one shape a text box on a step page has: a heading row,
+// then the box under it, framed, scrolling and floored at four lines.
+//
+// It is one function because the boxes are seen side by side. The prompts and
+// the context were built separately and drifted: the context box had no natural
+// height and no floor, so a drag or a short window squeezed the two halves of
+// the Describe page differently -- and, more visibly, a heading row carrying a
+// Reset button is a good deal taller than one carrying a bare label, so the box
+// under it started a dozen pixels lower than the box beside it. Two boxes of
+// the same kind, misaligned by exactly the height of a button.
+//
+// The size group is what settles the second one: every heading row on every
+// page joins it, so all of them are given the tallest one's height and every
+// box under them starts at the same y, button or no button. It spans pages
+// rather than a page, which costs nothing -- every row in it is either a label
+// or a label and a button -- and means a new step gets the alignment by calling
+// this rather than by remembering to.
+//
+// About the floor. Natural height is what makes the box open big where the page
+// has room; the minimum is what a divider or a short window may squeeze it to,
+// and it is the one number here that can push things off the page. It was 240
+// once, which on the two-prompt page meant the pair could not fit a short
+// window at all: the divider stayed where it was, the top box kept a height it
+// no longer had room for, and its heading and Reset button went off the top.
+// Four lines is a box you can still work in, and small enough that no window is
+// too short for two of them.
+func (a *App) editorBody(head *gtk.Box, tv *gtk.TextView) *gtk.Box {
+	if a.headGroup == nil {
+		a.headGroup = gtk.NewSizeGroup(gtk.SizeGroupVertical)
+	}
+	a.headGroup.AddWidget(head)
+
+	// vexpand is what makes a taller window a taller box. Without it the box
+	// stops at the height of its text and the window's extra height piles up as
+	// blank page below it -- growing the window then bought nothing on the one
+	// page whose whole content is text. It propagates up through what this
+	// returns, so a page only has to put the box somewhere that can grow.
+	scroll := gtk.NewScrolledWindow()
+	scroll.SetChild(tv)
+	scroll.SetPropagateNaturalHeight(true)
+	scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic) // wrapped text has no width to scroll
+	scroll.SetSizeRequest(-1, 72)
+	scroll.SetVExpand(true)
+	scroll.AddCSSClass("frame")
 
 	body := gtk.NewBox(gtk.OrientationVertical, 4)
 	body.SetMarginTop(4)

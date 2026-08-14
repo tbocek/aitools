@@ -53,17 +53,24 @@ func (a *App) buildUnderstand() gtk.Widgetter {
 	// One line, not a listing. The names and the per-source arithmetic go to
 	// the log when the run starts -- that is scrollable and this is not, and a
 	// block of grey text above the prompts only pushed them off the screen.
+	//
+	// The same row as Cut's and Narrate's, down to the word and the margins: an
+	// "Inputs:" in heading weight and the line in plain text beside it. This one
+	// was a bare line of grey with no label, which on three pages that answer the
+	// same question three ways is one page you have to stop and read.
 	u.inputs = gtk.NewLabel("")
 	u.inputs.SetXAlign(0)
-	u.inputs.SetEllipsize(pango.EllipsizeEnd)
-	u.inputs.AddCSSClass("dim-label")
+	u.inputs.SetHExpand(true)
+	u.inputs.SetEllipsize(pango.EllipsizeEnd) // never a floor under the window
+	inLbl := gtk.NewLabel("Inputs:")
+	inLbl.AddCSSClass("heading")
+	inRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	inRow.SetMarginStart(12)
+	inRow.SetMarginEnd(12)
+	inRow.SetMarginTop(6)
+	inRow.Append(inLbl)
+	inRow.Append(u.inputs)
 
-	box := gtk.NewBox(gtk.OrientationVertical, 12)
-	box.SetMarginTop(16)
-	box.SetMarginStart(16)
-	box.SetMarginEnd(16)
-	box.SetMarginBottom(8)
-	box.Append(u.inputs)
 	// The titles used to be numbered and to spell out the whole batching scheme,
 	// which made the two headings longer than some of the lines in the prompts
 	// under them. The tab already says where in the run this is, and the counts
@@ -110,9 +117,14 @@ func (a *App) buildUnderstand() gtk.Widgetter {
 	// nothing to it and is worth a great deal to a system prompt. Dragging the
 	// handle is what makes it wider, and that drag is exactly what makes
 	// Describe and Transcript narrower, which is what it is for.
+	//
+	// Both sides stand the same distance off the handle. The prompts had nothing
+	// on that edge, so their frame ran into the divider and stopped reading as a
+	// frame on the side where it is compared with the context box's.
 	ctxPane := a.contextEditor()
 	gtk.BaseWidget(ctxPane).SetSizeRequest(280, -1)
 	gtk.BaseWidget(ctxPane).SetMarginStart(12)
+	split.SetMarginEnd(12)
 	outer := gtk.NewPaned(gtk.OrientationHorizontal)
 	outer.SetStartChild(split)
 	outer.SetEndChild(ctxPane)
@@ -121,7 +133,11 @@ func (a *App) buildUnderstand() gtk.Widgetter {
 	outer.SetShrinkStartChild(false)
 	outer.SetShrinkEndChild(false)
 	outer.SetVExpand(true)
-	box.Append(outer)
+	// 12 from the window's edges, like the columns on Cut and Narrate, so the
+	// boxes line up with the Inputs row above them and with the same boxes one
+	// tab over. It was 16 here and nowhere else.
+	outer.SetMarginStart(12)
+	outer.SetMarginEnd(12)
 
 	// The two folders this page writes, and no path above them: the output
 	// folder is Inputs' setting, said in full there, and repeating it on every
@@ -150,6 +166,8 @@ func (a *App) buildUnderstand() gtk.Widgetter {
 	outLbl.AddCSSClass("heading")
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	outRow.SetHAlign(gtk.AlignEnd)
+	outRow.SetMarginEnd(12)
+	outRow.SetMarginBottom(6)
 	outRow.Append(outLbl)
 	outRow.Append(openD)
 	outRow.Append(gtk.NewLabel("Describe:"))
@@ -157,16 +175,22 @@ func (a *App) buildUnderstand() gtk.Widgetter {
 	outRow.Append(openF)
 	outRow.Append(gtk.NewLabel("Transcript:"))
 	outRow.Append(u.s3out)
-	box.Append(outRow)
 
-	u.refresh()
+	// Inputs at the top, work in the middle, Outputs at the bottom -- the three
+	// rows in the order and the spacing every other step has.
+	//
 	// No scrollbar on the page itself. It had one because two whole system
 	// prompts are taller than any window -- but a page that scrolls around a
 	// divider makes the divider meaningless: the paned would be handed the full
 	// natural height of both prompts and there would be no spare room to drag.
 	// The scrolling belongs to the two halves, which already have it.
-	box.SetVExpand(true)
-	return box
+	page := gtk.NewBox(gtk.OrientationVertical, 4)
+	page.Append(inRow)
+	page.Append(outer)
+	page.Append(outRow)
+
+	u.refresh()
+	return page
 }
 
 // ---- what will be sent -------------------------------------------------------
@@ -272,7 +296,7 @@ func (a *App) understandRun() {
 			return
 		}
 	}
-	a.saveProjectTo(filepath.Join(a.root, "project.json"))
+	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
 	a.startUnderstand(vids, auds)
 }
 

@@ -78,8 +78,9 @@ func TestThePickerOffersExactlyTheTaggedNarrators(t *testing.T) {
 		}
 	}
 	// and each row names the file it clones, because that is the thing being
-	// chosen -- "My own voice" alone says nothing about who that is
-	if got := a.narratorVoiceName(1); got != "My own voice — me.flac" {
+	// chosen -- a slot number alone says nothing about who that is. Slot 1 is a
+	// tag like the rest: it is whoever the Inputs step says, not "me".
+	if got := a.narratorVoiceName(1); got != "Narrator 1 — me.flac" {
 		t.Errorf("slot 1 reads %q", got)
 	}
 	if got := a.narratorVoiceName(3); got != "Narrator 3 — mate.flac" {
@@ -206,5 +207,58 @@ func TestNarrateIsOneButton(t *testing.T) {
 	}
 	if !strings.Contains(string(bar), "a.narrateRun()") {
 		t.Error("the run bar's ▶ no longer starts the narration step")
+	}
+}
+
+// TestTheBarPulsesOnlyWhileNothingCanBeCounted: this step is one unmeasurable
+// call followed by n measurable ones. The pulse was stopped by the end of the
+// RUN rather than the end of the writing, so the whole synthesis -- the half
+// that knows exactly how far along it is, and says so in the text on the bar --
+// was shown as a block sliding back and forth. A bar that reads "speaking 4/9"
+// while animating like it has no idea is worse than either alone.
+func TestTheBarPulsesOnlyWhileNothingCanBeCounted(t *testing.T) {
+	page, err := os.ReadFile("step4.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := string(regexp.MustCompile(`(?s)func \(a \*App\) narrateRun\(\).*?\n}\n`).Find(page))
+	if run == "" {
+		t.Fatal("narrateRun is gone")
+	}
+	if !strings.Contains(run, "if !a.running || !writing {") {
+		t.Error("the pulse outlives the writing stage, so it animates over the counted one")
+	}
+	if !strings.Contains(run, "writing = false") {
+		t.Error("nothing ever ends the pulse: the bar pulses to the end of the run")
+	}
+	// and the count covers every line, cached or not -- otherwise the bar
+	// stands still through a narration that was already spoken
+	prog := strings.Index(run, `a.prog(trackSTT`)
+	cache := strings.Index(run, "exists(a.ttsWav(e))")
+	if prog < 0 || cache < 0 {
+		t.Fatal("the speaking loop no longer reads the way this test assumes")
+	}
+	if prog > cache {
+		t.Error("a cached line moves neither the bar nor its count")
+	}
+	// the two tracks are summed, so last step's leftovers would be added to
+	// every reading this one takes
+	if !strings.Contains(run, "a.progParts = [2]float64{}") {
+		t.Error("the bar is not reset at the start of the run")
+	}
+	// ...and once the writing IS being counted, the pulse has to stop on its
+	// own: Pulse and SetFraction drive the same needle, so a pulse still
+	// running would wipe out every reading the stream produces
+	if !strings.Contains(run, "counted := a.progParts[trackSTT] > 0") {
+		t.Error("the pulse ignores the streamed clip count and animates over it")
+	}
+	// the two halves share the bar rather than each owning all of it: the
+	// speaking used to start again from zero after the writing filled it
+	if !strings.Contains(run, "speakBase+speakSpan*") {
+		t.Error("the speaking does not continue where the writing stopped")
+	}
+	// and the writing is only measurable because the reply is streamed
+	if !strings.Contains(string(page), "a.llmChatRetryOn(msgs, true, onText)") {
+		t.Error("the narration request is not streamed, so there is nothing to count until it is over")
 	}
 }

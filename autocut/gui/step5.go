@@ -543,7 +543,7 @@ func (a *App) produceClicked() {
 	entries := a.produceEntries()
 	st := a.prodSettings()
 	vids, auds := a.snapSources()
-	a.saveProjectTo(filepath.Join(a.root, "project.json"))
+	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
 
 	a.running = true
 	a.stopFlag.Store(false)

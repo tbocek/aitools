@@ -64,7 +64,13 @@ STATE: the running state after these seconds, max 50 words: where this is, what 
 
 type tsvRow struct {
 	s, e float64
+	spk  string // SPEAKER_nn, or EVENT for a line describing the screen
 	text string
+	// which recording this came off, as the merged timeline names it (blank in
+	// a single recording's own transcript). It decides whether the viewer will
+	// ever hear the line: the render takes its audio from the footage, so a
+	// line off a separate microphone is in the transcript and not in the video.
+	src string
 }
 
 // How much speech rides along with a chunk of frames, and how far from it a
@@ -177,6 +183,18 @@ func speechBlock(srcs []speechSrc, chunkStart, chunkEnd float64) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// loadTSVRows reads either of the two timeline files this app writes: a single
+// recording's transcript (start, end, speaker, text) and the merged session
+// timeline (start, end, RECORDING, speaker, text), which also carries the EVENT
+// lines describing the screen.
+//
+// It used to take column 4 as the text, which is the text in the four-column
+// file and the SPEAKER/EVENT label in the five-column one. Nothing crashed:
+// step 4 built every narration request out of a column of the words
+// "SPEAKER_00" and "EVENT", so the model was asked to narrate clips it had been
+// told nothing about, and wrote what such a session usually contains -- which
+// is how a line about digging up something shiny ends up over a clip where
+// nobody has picked up a pickaxe yet.
 func loadTSVRows(path string) []tsvRow {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -191,7 +209,14 @@ func loadTSVRows(path string) []tsvRow {
 		var r tsvRow
 		fmt.Sscanf(f[0], "%f", &r.s)
 		fmt.Sscanf(f[1], "%f", &r.e)
-		r.text = f[3]
+		// the merged file has the recording's name in between; everything after
+		// the speaker is the line itself, so a tab in it keeps the whole line
+		// rather than its tail
+		if len(f) > 4 {
+			r.src, r.spk, r.text = f[2], f[3], strings.Join(f[4:], "\t")
+		} else {
+			r.spk, r.text = f[2], strings.Join(f[3:], "\t")
+		}
 		out = append(out, r)
 	}
 	return out

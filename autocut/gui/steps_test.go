@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 // The tab row and the gates are two lists that have to agree. When they drift,
 // a finished step is barred or an unfinished one opens onto an empty page, and
@@ -61,6 +65,44 @@ func TestEveryTabExplainsItself(t *testing.T) {
 			t.Errorf("tab %d (%s): help is %d chars against a %d-char tip -- "+
 				"the ⓘ popover is where the paragraph went, not a second tooltip",
 				i, s.name, len(s.help), len(s.tip))
+		}
+	}
+}
+
+// Every page that reads something says so the same way. "What does this step
+// get?" is asked once per tab and answered in the same place, in the same
+// words, at the same indent -- Describe answered it with an unlabelled line of
+// grey text set 4 px further in than the identical row on Cut and Narrate,
+// which is enough to make a reader stop and check they are on the page they
+// think they are. Source-level: nothing at run time can tell that three rows
+// are meant to be one row.
+func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
+	// the row, line for line, as all three build it
+	same := []string{
+		`inLbl := gtk.NewLabel("Inputs:")`,
+		`inLbl.AddCSSClass("heading")`,
+		`inRow := gtk.NewBox(gtk.OrientationHorizontal, 8)`,
+		`inRow.SetMarginStart(12)`,
+		`inRow.SetMarginEnd(12)`,
+		`inRow.SetMarginTop(6)`,
+		`inRow.Append(inLbl)`,
+		`.SetEllipsize(pango.EllipsizeEnd)`, // never a floor under the window
+	}
+	for _, f := range []string{"step2.go", "step3.go", "step4.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		for _, want := range same {
+			if !strings.Contains(src, want) {
+				t.Errorf("%s's Inputs row is missing %s", f, want)
+			}
+		}
+		// and it is the page's own text that is dimmed nowhere: the heading
+		// carries the weight, the reading itself is plain, as on Inputs
+		if strings.Contains(src, `inputs.AddCSSClass("dim-label")`) {
+			t.Errorf("%s dims its Inputs line where the other pages do not", f)
 		}
 	}
 }

@@ -80,6 +80,77 @@ func TestEveryPromptIsExposed(t *testing.T) {
 	}
 }
 
+// TestEveryTextBoxIsTheSameBox guards the shape, not the wording. The prompts
+// and the session context are the same object to a reader -- a heading and a
+// box of text, side by side on the Describe page -- and they were built by two
+// functions that drifted: one box had a frame, a floor and a natural height,
+// the other had a frame and nothing else, and one heading row carried a button
+// while the other carried a label, so the two boxes started a button's height
+// apart. Source-level, because nothing at run time notices a page looking
+// wrong; the only thing that does is the person using it.
+func TestEveryTextBoxIsTheSameBox(t *testing.T) {
+	src := map[string]string{}
+	for _, f := range []string{"prompts.go", "context.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src[f] = string(b)
+	}
+
+	body := regexp.MustCompile(`(?s)func \(a \*App\) editorBody\(.*?\n}\n`).FindString(src["prompts.go"])
+	if body == "" {
+		t.Fatal("editorBody is gone -- the two boxes are being built separately again")
+	}
+	for what, must := range map[string]string{
+		"a border":                     `AddCSSClass("frame")`,
+		"the whole text asked for":     "SetPropagateNaturalHeight(true)",
+		"a four-line floor":            "SetSizeRequest(-1, 72)",
+		"a taller window a taller box": "SetVExpand(true)",
+		"heading rows of one height":   "headGroup",
+	} {
+		if !strings.Contains(body, must) {
+			t.Errorf("the shared box no longer gives %s (%s):\n%s", what, must, body)
+		}
+	}
+
+	// ...and both boxes still come out of it, rather than growing their own
+	// scroller again alongside it
+	for _, fn := range []struct{ file, name string }{
+		{"prompts.go", "promptEditor"}, {"context.go", "contextEditor"},
+	} {
+		f := regexp.MustCompile(`(?s)func \(a \*App\) ` + fn.name + `\(.*?\n}\n`).FindString(src[fn.file])
+		if f == "" {
+			t.Fatalf("%s is gone", fn.name)
+		}
+		if !strings.Contains(f, "a.editorBody(head, tv)") {
+			t.Errorf("%s builds its own box instead of the shared one", fn.name)
+		}
+		if strings.Contains(f, "NewScrolledWindow()") {
+			t.Errorf("%s grew a second scroller: whichever of the two is edited next, "+
+				"the pair stops matching", fn.name)
+		}
+	}
+}
+
+// TestThePromptColumnsKeepTheirSliderOffTheBoxes: the Cut and Narrate pages put
+// their prompt in a viewport of its own, so the column has a scrollbar that
+// belongs to no box. Left as an overlay it is drawn on top of the framed box
+// under it -- a slider with no border of its own, sitting on somebody else's.
+func TestThePromptColumnsKeepTheirSliderOffTheBoxes(t *testing.T) {
+	for _, c := range []struct{ file, viewport string }{
+		{"step3.go", "promptPane"}, {"step4.go", "wordScroll"},
+	} {
+		b, err := os.ReadFile(c.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), c.viewport+".SetOverlayScrolling(false)") {
+			t.Errorf("%s's prompt column (%s) scrolls over its own boxes", c.file, c.viewport)
+		}
+	}
+}
+
 func keysOf(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

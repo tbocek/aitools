@@ -260,6 +260,10 @@ type App struct {
 	promptMu    sync.Mutex
 	promptTxt   map[string]string
 	promptViews map[string]*gtk.TextView
+	// every text box's heading row, so a row with a Reset button and a row with
+	// a bare label are the same height and the boxes under them line up
+	// (editorBody). GUI thread only, like the views.
+	headGroup *gtk.SizeGroup
 	// what the editor says about THIS session, typed on Describe and read by
 	// every step (context.go). Under promptMu for the same reason as the
 	// prompts: the box belongs to the GUI thread, the string is what a runner
@@ -267,6 +271,12 @@ type App struct {
 	// whereas a prompt is stored only when it differs from the built-in.
 	ctxTxt  string
 	ctxView *gtk.TextView
+
+	// the project file, and what was last written to it. projPath is the named
+	// file Save/Load last used -- the working copy at root/project.json is
+	// written whatever it says. Both are the GUI thread's (project.go).
+	projPath  string
+	projSaved []byte
 
 	// one progress bar fed by both tracks: summed fractions, joined texts
 	progMu    sync.Mutex
@@ -605,9 +615,17 @@ func (a *App) build(app *gtk.Application) {
 	a.win.SetDefaultSize(1240, 740)
 
 	head := gtk.NewHeaderBar()
-	loadP := gtk.NewButtonWithLabel("Load Project")
+	// Symbols, like everything else in this bar. Two spelled-out labels took
+	// more of the title bar than the four icon buttons at the other end put
+	// together, for the two things pressed least often in the app -- and they
+	// were the only words up there, so they read as the important ones. The
+	// tooltip says what the icon means, which is the deal every other button
+	// here already makes.
+	loadP := gtk.NewButtonFromIconName("document-open-symbolic")
+	loadP.SetTooltipText("Load a project — sources, prompts and settings")
 	loadP.ConnectClicked(a.loadProjectDialog)
-	saveP := gtk.NewButtonWithLabel("Save Project")
+	saveP := gtk.NewButtonFromIconName("document-save-symbolic")
+	saveP.SetTooltipText("Save this project to a file")
 	saveP.ConnectClicked(a.saveProjectDialog)
 	head.PackStart(loadP)
 	head.PackStart(saveP)
@@ -778,6 +796,7 @@ func (a *App) build(app *gtk.Application) {
 	a.updateGates()
 	a.updateStep3Info()
 	a.updateStep5Info()
+	a.startAutosave() // from here on the project file follows the window
 	a.win.SetVisible(true)
 }
 

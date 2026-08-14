@@ -205,3 +205,99 @@ func TestOldProjectsBecomeSourcesWithTheirRoles(t *testing.T) {
 		}
 	}
 }
+
+// ---- autosave ---------------------------------------------------------------
+
+// Where a save lands. The working copy is what the next launch opens, so it is
+// written whatever else happens; a file the user named through Save Project is
+// written too, because from the moment they name it, that file is the project
+// as far as they are concerned. The failure this pins is the quiet one: edits
+// after a Save As going only into root/project.json, so the named file the user
+// believes they are working in is a session behind.
+func TestASaveGoesToTheWorkingCopyAndTheNamedFile(t *testing.T) {
+	root := t.TempDir()
+	a := &App{root: root}
+	work := filepath.Join(root, "project.json")
+
+	if got := a.projectFiles(); len(got) != 1 || got[0] != work {
+		t.Errorf("with nothing named, a save goes to %v, want just the working copy", got)
+	}
+	a.projPath = work // the startup load names the working copy itself
+	if got := a.projectFiles(); len(got) != 1 || got[0] != work {
+		t.Errorf("after loading the working copy, a save goes to %v -- it must not be written twice", got)
+	}
+	named := filepath.Join(root, "before-the-recut.json")
+	a.projPath = named
+	got := a.projectFiles()
+	if len(got) != 2 || got[0] != work || got[1] != named {
+		t.Errorf("after Save As, a save goes to %v, want both %s and %s", got, work, named)
+	}
+}
+
+// The autosave writes bytes to a path and notices when they stop matching what
+// it last wrote. Those two are all the ticker is; currentProject needs a built
+// window, so this covers the half that can be tested without one.
+func TestTheAutosaveWritesAndThenKnowsItIsUpToDate(t *testing.T) {
+	root := t.TempDir()
+	a := &App{root: root}
+	p := filepath.Join(root, "project.json")
+	if err := a.writeProject(p, []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || string(b) != "{}\n" {
+		t.Fatalf("read back %q, %v", b, err)
+	}
+	// a write into a folder that is not there fails rather than panicking: the
+	// ticker calls this every couple of seconds, and a project saved to a
+	// removed drive must cost one log line, not the session
+	if err := a.writeProject(filepath.Join(root, "gone", "project.json"), b); err == nil {
+		t.Error("writing into a missing folder reported success")
+	}
+}
+
+// Narrate writes step4/ and nothing else, and no test writes into the live
+// session. Both halves of "there is a step5/ folder and I never opened
+// Produce": the renumbering that made Narrate step 4 left the old name in
+// places that read either way, and the render smoke test rendered a smoke.mp4
+// straight into the user's own out/test/step5 on every `go test ./...`,
+// clearing its clips on the way past.
+func TestOnlyProduceWritesTheProduceFolder(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f == "step5.go" || f == "main.go" || strings.HasSuffix(f, "_test.go") {
+			continue // main.go defines it; step5.go is the step that owns it
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "produceDir()") {
+			t.Errorf("%s names produceDir() -- a step5/ folder now appears for a user who never opened Produce", f)
+		}
+		if strings.Contains(string(b), `"step5"`) && f != "pipeline.go" {
+			t.Errorf("%s names the step5 folder literally", f)
+		}
+	}
+	// ...the narration's own files are all under step4...
+	b, err := os.ReadFile("step4.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "step5") {
+		t.Error("step4.go still mentions step5 -- narration used to be written there")
+	}
+	// ...and the one test that renders for real reads the session but writes
+	// into its own folder. A test that leaves files in someone's project is a
+	// bug report from a user who did nothing wrong.
+	b, err = os.ReadFile("step5_render_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(b), "\tredirectOutput(t, a"); n < 2 {
+		t.Errorf("%d of the render tests redirect their output -- the rest write into the live out/test", n)
+	}
+}

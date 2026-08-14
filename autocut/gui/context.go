@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
+	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
 // sessionCtx is the box's text, callable from a runner's goroutine.
@@ -70,9 +71,10 @@ func (a *App) ctxBlock() string {
 //
 // Deliberately not a promptEditor -- there is no built-in text and so nothing
 // to reset to, and no "edited" marker to earn, since every session's context is
-// edited by definition -- but the same box otherwise: same font, same frame,
-// same heading weight. It holds the same kind of thing as the two prompts
-// beside it, and looking different only asks the question why.
+// edited by definition -- but literally the same box otherwise (editorBody):
+// same font, same frame, same floor, same heading height. It holds the same
+// kind of thing as the two prompts beside it, and looking different only asks
+// the question why.
 func (a *App) contextEditor() gtk.Widgetter {
 	tv := gtk.NewTextView()
 	tv.SetWrapMode(gtk.WrapWord)
@@ -87,12 +89,6 @@ func (a *App) contextEditor() gtk.Widgetter {
 	})
 	a.ctxView = tv
 
-	scroll := gtk.NewScrolledWindow()
-	scroll.SetChild(tv)
-	scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
-	scroll.SetVExpand(true)
-	scroll.AddCSSClass("frame")
-
 	// A heading and nothing else, like the two prompts. What to write here was
 	// three lines of grey prose under it, which is a paragraph of instructions
 	// standing between you and the box on every visit after the first -- it is
@@ -100,17 +96,20 @@ func (a *App) contextEditor() gtk.Widgetter {
 	lbl := gtk.NewLabel("User Context")
 	lbl.SetXAlign(0)
 	lbl.SetHExpand(true)
+	lbl.SetEllipsize(pango.EllipsizeEnd) // one line, like every other heading row
 	lbl.AddCSSClass("heading")
 	lbl.SetTooltipText("Who is in this session, what they were doing, how names are " +
 		"spelled, what to make sure ends up in the video.\n\nSent with every request " +
 		"this project makes: the frame describer, the transcript fixer, the cut and " +
 		"its audit, and the narration. Left empty, nothing is sent.")
 
-	body := gtk.NewBox(gtk.OrientationVertical, 4)
-	body.SetMarginTop(4)
-	body.Append(lbl)
-	body.Append(scroll)
-	return body
+	// through editorBody, like every prompt box: same frame, same floor, same
+	// heading height. Its row is a label where theirs is a label and a button,
+	// and building the two boxes separately is how the one on the right ended up
+	// starting a button's height above the one on the left.
+	head := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	head.Append(lbl)
+	return a.editorBody(head, tv)
 }
 
 // logCtx says, in the log, that this step's requests carried the context. A

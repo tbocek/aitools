@@ -14,8 +14,15 @@ package main
 //
 // Emotions are taken from how the moment was actually spoken -- the generator
 // sees the original lines and the events -- and then heightened; the user has
-// the last word per entry. Quotable original lines are reused verbatim -- as
-// narration text, spoken by the clone like everything else.
+// the last word per entry.
+//
+// The narration is mixed OVER the clip's own audio rather than replacing it
+// (step 5 ducks the original to a fifth and leaves it there), which is the fact
+// the prompt is written around: whatever was said in the clip is still audible,
+// so narration that quotes it, or says it again in other words, is heard twice.
+// The prompt used to ask for exactly that -- "reuse quotable lines VERBATIM" --
+// and the result was a narrator reading the transcript back over the people
+// saying it.
 //
 // Voice on the fly: audio.cpp's own audiocpp_server keeps IndexTTS2 loaded, so
 // per-line synthesis skips the model reload. This is the same HTTP API the
@@ -59,16 +66,41 @@ const (
 )
 
 // One paragraph or bullet per line, unwrapped: see describeSystem.
-const narrSystem = `You write the narration for a highlight video cut from a longer session recording. You get the chosen clips with everything known about each: what is on screen and what was actually said around that moment.
+//
+// Short on purpose, and numbered. This ran on a 27B model that had been given
+// eight hundred words of nuance and answered with captions -- terse, formal,
+// referring to things it had been told not to name. A small model reads a long
+// rule list as a list of prohibitions and writes the safest thing that breaks
+// none of them, which is nothing anybody would watch. Rules it can hold, and
+// one worked example of the voice, do more than any amount of explaining: the
+// example below is the single most load-bearing part of this prompt.
+const narrSystem = `You are the narrator of a YouTube gaming video. Clips have been cut out of a longer session and you write the voice-over for each one. You were there; this happened to you.
+
+Your voice: first person, present tense, contractions, short sentences. Funny, self-aware, happy to be the idiot in the story. You are talking to one person watching, not to an audience.
+
+Each clip's block lists what happened over it, in order. The offset is seconds from that clip's start:
+  [+12s] ON SCREEN: what the picture showed
+  [+12s] HEARD SPEAKER_00: a line the video itself plays out loud
+  [+12s] SAID SPEAKER_00 (not in the video's audio): a line only you can deliver
 
 Rules:
-- One entry per clip, exactly the clip's start/end.
-- First person, the recording person's voice and personality. Clear about what is happening -- narration may explain better than the original did.
-- Reuse the speaker's own quotable lines VERBATIM when they fall in a clip; never paraphrase a good line.
-- Clips where nothing was said get narration built from what happens on screen ("fill the gaps").
-- Max 2.5 words per second of clip length; breathing room matters.
-- emotion: a short delivery phrase for the TTS ("excited, amazed", "tense whisper", "calm, storytelling"). Derive it from how the moment was actually spoken and what happens, then heighten it a little.
-- The request may open with a block headed ABOUT THIS SESSION: the editor's own notes on who is in it, what it was for and how names are spelled. Honor them, and take names and spellings from there rather than from the ASR.
+1. One entry per clip, with that clip's exact start and end.
+2. Never repeat a HEARD line: the viewer hears it from the person who said it. Set it up before it, or react after it.
+3. Do quote a "(not in the video's audio)" line, in your own voice, as you saying it. Those are your best moments and nobody hears them unless you say them.
+4. Do not describe the picture. Say what you were trying to do, what it cost you, what you thought of it.
+5. Use only what this clip's block says happened. Invent no names, places or outcomes.
+6. Stay under the clip's word budget. Well under is good. Silence is part of this.
+7. Start in the middle. Never open with "So", "Alright", "Okay", "In this clip".
+8. Where a block gives you nothing, say something short and general, and invent nothing.
+9. If the request opens with ABOUT THIS SESSION, its names, spellings and facts beat anything else.
+
+Example of a clip block and the line it should get:
+  [+2s] ON SCREEN: A gorilla clings to a branch above a group around a wooden chest.
+  [+9s] SAID SPEAKER_00 (not in the video's audio): Open up, FBI.
+  [+14s] HEARD SPEAKER_01: I left my black light in the basement.
+  -> "Nobody can get this chest open, so obviously I try knocking. Open up, FBI. Turns out chests don't respect the badge."
+
+emotion is how the TTS should read the line: "excited", "deadpan", "panicking, laughing", "quiet, storytelling".
 
 Return strict JSON, nothing else:
 {"entries":[{"start":<sec>,"end":<sec>,"text":"...","emotion":"..."}]}`
@@ -261,10 +293,14 @@ func (a *App) buildStep4() gtk.Widgetter {
 	words.Append(a.promptEditor("narrate", "Narration prompt",
 		"The rules, plus what this session was and what matters in it"))
 	// one scrollbar for the writing half; the prompt gets its full height from
-	// this viewport, so the whole thing is there to read and edit
+	// this viewport, so the whole thing is there to read and edit. Its own
+	// gutter rather than an overlay, for the reason step 3 gives: an overlay
+	// slider is drawn over the framed box's border, which is where the column
+	// stops looking like the same box as the one on the page beside it.
 	wordScroll := gtk.NewScrolledWindow()
 	wordScroll.SetChild(words)
 	wordScroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
+	wordScroll.SetOverlayScrolling(false)
 
 	// the preview and the prompt both want the column, and which one matters
 	// depends on whether you are watching or rewriting -- so it is a divider
@@ -788,11 +824,13 @@ func (n *narrator) holdForSynth(i int) {
 // otherwise stutter the picture from inside the tick.
 func (n *narrator) synthWait(i int, e narrEntry, wav string) {
 	n.synthing = true
+	n.syncSpeakIcons() // the wait is part of the audition; its row says so
 	n.a.snapSources()
 	go func() {
 		err := n.a.synthesize(e)
 		glib.IdleAdd(func() {
 			n.synthing = false
+			n.syncSpeakIcons()
 			if err != nil {
 				n.synthFail[wav] = true
 				n.a.logf("synthesis failed: %v", err)
@@ -911,7 +949,7 @@ func (a *App) narrateRun() {
 		a.setStatus("the narration matches the cut and every line is spoken — edit a line, change the voice, or leave a ✎ note")
 		return
 	}
-	a.saveProjectTo(filepath.Join(a.root, "project.json"))
+	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
 
 	a.running = true
 	a.stopFlag.Store(false)
@@ -919,12 +957,32 @@ func (a *App) narrateRun() {
 	a.runCtx, a.runCancel = context.WithCancel(context.Background())
 	a.updateRunControls()
 	a.logExp.SetExpanded(true)
-	if why != "" {
+	// this run's bar is this run's: the two tracks are summed, so a fraction
+	// left behind by the previous step would be added to every reading here
+	a.progParts = [2]float64{}
+	a.progTexts = [2]string{}
+	// True only while the model is writing. The pulse used to stop when the run
+	// did, which is the wrong end of it: the writing is one call with nothing to
+	// measure, but the speaking that follows it is n lines and counts them, and
+	// a bar still pulsing over that reading turned a real "speaking 4/9" into a
+	// block sliding back and forth. It is read and written on the GUI thread
+	// only -- the timeout below and the idle callback that clears it.
+	writing := why != ""
+	if writing {
 		a.logf(">>> narrate: %s — writing %d clip(s), %d with a note, one thinking call (a minute or two), then speaking them",
 			why, len(segs), kept)
-		a.progress.SetText("writing narration…")
+		a.progress.SetText("thinking about the narration…")
 		glib.TimeoutAdd(150, func() bool {
-			if !a.running {
+			if !a.running || !writing {
+				return false
+			}
+			// the reply is streamed, so the moment the first clip closes there is
+			// something real to show and the pulse has to get out of its way --
+			// Pulse and SetFraction are the same needle
+			a.progMu.Lock()
+			counted := a.progParts[trackSTT] > 0
+			a.progMu.Unlock()
+			if counted {
 				return false
 			}
 			a.progress.Pulse()
@@ -933,6 +991,13 @@ func (a *App) narrateRun() {
 	} else {
 		a.logf(">>> narrate: the narration matches the cut; speaking the %d line(s) not in the cache",
 			n.unspoken())
+	}
+
+	// where the speaking half of the bar starts. With writing to do it is the
+	// second half of the run; without, the speaking is the whole run.
+	speakBase, speakSpan := 0.0, 1.0
+	if writing {
+		speakBase, speakSpan = narrWriteShare, 1-narrWriteShare
 	}
 
 	go func() {
@@ -946,8 +1011,13 @@ func (a *App) narrateRun() {
 			speak = entries
 			// the written lines have to be on the page before they are spoken:
 			// the run bar's ⏹ mid-synthesis must not leave the text nowhere
+			// whatever the streamed count reached, the writing is now finished:
+			// the bar starts the speaking half from a full half, not from
+			// wherever a clip that closed oddly left it
+			a.prog(trackSTT, narrWriteShare, "narration written")
 			done := make(chan struct{})
 			glib.IdleAdd(func() {
+				writing = false // hands the bar to the count below
 				n.entries = entries
 				n.rewrite = false
 				n.save()
@@ -967,11 +1037,16 @@ func (a *App) narrateRun() {
 				failed = err
 				break
 			}
+			// before the cache check, not after: a line already spoken is a line
+			// this run is done with, and skipping the reading for it left the bar
+			// sitting at whatever the last synthesized line put there while the
+			// loop ran through the rest of a cached narration.
+			a.prog(trackSTT, speakBase+speakSpan*float64(i)/float64(len(speak)),
+				"speaking %d/%d", i+1, len(speak))
 			if strings.TrimSpace(e.Text) == "" || exists(a.ttsWav(e)) {
 				cached++
 				continue
 			}
-			a.prog(trackSTT, float64(i)/float64(len(speak)), "speaking %d/%d", i+1, len(speak))
 			if err := a.synthesize(e); err != nil {
 				failed = err
 				break
@@ -1015,31 +1090,153 @@ func (a *App) narrateDone(err error, stage string) {
 // other, so the lines only fit together if they are written together. notes is
 // per clip and may be empty; a note is the editor's word on that clip and goes
 // in with it.
-func (a *App) writeNarration(segs []cutSeg, notes []string) ([]narrEntry, error) {
-	rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv"))
-	var clips strings.Builder
+// clipBriefs is everything the writer is told about the clips: for each one its
+// length, its word budget, any standing ✎ note, and the session timeline over
+// it -- what was said and what was on screen, in order.
+//
+// Every line is stamped with where inside the clip it falls, because "when" is
+// half of what makes a narration line wrong. A clip whose first forty seconds
+// are a fall and a ghost, and whose last two are a pickaxe finally coming out,
+// reads as a clip about digging if the order and the offsets are stripped off,
+// and the line written for it then talks about digging over forty seconds of
+// something else.
+// heardSources names the recordings whose audio the finished video carries:
+// the footage, and only the footage. encodeClip takes each clip's sound from
+// the video it was cut from and mixes the narration over it -- a separate
+// microphone recording is transcribed, aligned and then never heard again.
+//
+// A simplification worth knowing about: where two captures overlap, a line is
+// marked heard if it is on either of them, though a clip only carries the one
+// it was cut from. Erring this way costs a quotable line; erring the other way
+// puts the narration on top of the person saying it.
+func (a *App) heardSources() map[string]bool {
+	m := map[string]bool{}
+	for _, p := range a.selVid {
+		m[baseName(p)] = true
+	}
+	return m
+}
+
+// clipBriefs writes each clip's block. heard maps a recording's name to whether
+// the video will carry its sound; an empty map means "no idea", and then every
+// line is treated as heard, which is the assumption that cannot embarrass the
+// narration.
+func clipBriefs(segs []cutSeg, notes []string, rows []tsvRow, heard map[string]bool) string {
+	var b strings.Builder
 	for i, s := range segs {
-		fmt.Fprintf(&clips, "\nCLIP %d: %.1f–%.1f (%.0f s, narration budget ~%d words)\n",
+		fmt.Fprintf(&b, "\nCLIP %d: %.1f–%.1f (%.0f s, narration budget ~%d words)\n",
 			i+1, s.S, s.E, s.E-s.S, int((s.E-s.S)*2.5))
 		if i < len(notes) && notes[i] != "" {
-			fmt.Fprintf(&clips, "  EDITOR'S NOTE for this clip -- follow it: %s\n", notes[i])
+			fmt.Fprintf(&b, "  EDITOR'S NOTE for this clip -- follow it: %s\n", notes[i])
 		}
+		n := 0
 		for _, r := range rows {
-			if r.e > s.S-4 && r.s < s.E+4 {
-				fmt.Fprintf(&clips, "  %s\n", r.text)
+			if r.e <= s.S-4 || r.s >= s.E+4 {
+				continue
+			}
+			who := "HEARD " + r.spk
+			switch {
+			case r.spk == "EVENT":
+				who = "ON SCREEN"
+			case len(heard) == 0 || r.src == "" || heard[r.src]:
+				// the viewer will hear this one under the narration
+			default:
+				who = "SAID " + r.spk + " (not in the video's audio)"
+			}
+			// seconds from the clip's own start, so the narration can follow the
+			// clip instead of arriving at it; a line just outside the clip goes
+			// negative or past the end, which is exactly what it is
+			fmt.Fprintf(&b, "  [%+.0fs] %s: %s\n", r.s-s.S, who, r.text)
+			n++
+		}
+		if n == 0 {
+			b.WriteString("  (nothing recorded over this clip -- say something general, and invent nothing)\n")
+		}
+	}
+	return b.String()
+}
+
+// narrWriteShare is how much of the run bar the writing owns when there is
+// writing to do. The speaking takes the rest, so the one bar goes forward from
+// the first clip written to the last line spoken.
+const narrWriteShare = 0.5
+
+// narrEntriesDone counts the clips finished in a reply that is still arriving:
+// the objects inside "entries" whose braces have closed. Only what is complete
+// counts, so the reading never claims a clip the model is still writing.
+//
+// It starts at the LAST "entries": [ in the text, because everything before
+// the answer is the model thinking, out loud, about the answer -- braces,
+// quotes, the word entries and all. Requiring the key's punctuation is what
+// keeps a mention of it in that thinking from starting the count early; a
+// worked example in there would still fool it, and the cost of that is one
+// reading of a progress bar, which is the right price for not parsing prose.
+func narrEntriesDone(s string) int {
+	i := -1
+	for at := 0; ; {
+		j := strings.Index(s[at:], `"entries"`)
+		if j < 0 {
+			break
+		}
+		j += at
+		at = j + 1
+		rest := strings.TrimLeft(s[j+len(`"entries"`):], " \t\r\n")
+		if !strings.HasPrefix(rest, ":") {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimLeft(rest[1:], " \t\r\n"), "[") {
+			i = j
+		}
+	}
+	if i < 0 {
+		return 0
+	}
+	depth, n := 0, 0
+	inStr, esc := false, false
+	for _, r := range s[i:] {
+		switch {
+		case esc:
+			esc = false
+		case inStr && r == '\\':
+			esc = true
+		case r == '"':
+			inStr = !inStr
+		case inStr: // braces inside a line of narration are just text
+		case r == '{':
+			depth++
+		case r == '}':
+			if depth--; depth == 0 {
+				n++
 			}
 		}
 	}
+	return n
+}
+
+func (a *App) writeNarration(segs []cutSeg, notes []string) ([]narrEntry, error) {
+	rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv"))
 	// the box on the page is the whole system message: what used to be a
 	// separate context field is part of it now (see buildStep4)
 	system := a.prompt("narrate")
-	user := a.ctxBlock() + fmt.Sprintf("THE CLIPS AND WHAT IS KNOWN ABOUT EACH:%s", clips.String())
+	user := a.ctxBlock() + "THE CLIPS AND WHAT IS KNOWN ABOUT EACH:" +
+		clipBriefs(segs, notes, rows, a.heardSources())
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
+	// the bar, while the one long call runs: clips counted as they close. Only
+	// ever forward -- a retry starts the count again, and a bar that fell back
+	// to 1/9 would read as work being undone rather than redone.
+	best := 0
+	onText := func(s string) {
+		if d := narrEntriesDone(s); d > best {
+			best = d
+			a.prog(trackSTT, narrWriteShare*math.Min(1, float64(best)/float64(len(segs))),
+				"writing narration %d/%d", best, len(segs))
+		}
+	}
 	for try := 0; try < 3; try++ {
 		if err := a.checkpoint(); err != nil {
 			return nil, err
 		}
-		reply, err := a.llmChatRetry(msgs, true)
+		reply, err := a.llmChatRetryOn(msgs, true, onText)
 		if err != nil {
 			return nil, err
 		}
@@ -1237,12 +1434,21 @@ func (a *App) speak(text, emotion, out string) error {
 	return os.WriteFile(out, data, 0o644)
 }
 
-// syncSpeakIcons draws the per-line buttons: the line that is sounding shows
-// the ⏸ that will stop it, every other line the ▶ that starts it.
+// syncSpeakIcons draws the per-line buttons: the row that is running shows the
+// ⏸ that will stop it, every other row the ▶ that starts it.
+//
+// Running is three states, not one. The voice is sounding on that row; or the
+// row is auditioning and its picture is rolling, which happens a moment before
+// any sound does -- the audio pipeline only reports playing once it has
+// prerolled; or the audition is stopped waiting for a line that has never been
+// spoken, which is seconds, or a cold model load. Drawing only the first left
+// the button the user had just pressed sitting on ▶ through all of it, which
+// reads as a click that did nothing.
 func (n *narrator) syncSpeakIcons() {
-	playing := n.voice != nil && n.voice.Playing()
+	sounding := n.voice != nil && n.voice.Playing()
+	rolling := n.soloPic && n.player != nil && n.player.Playing()
 	for i, r := range n.rows {
-		setPlayIcon(r.speak, playing && i == n.speaking,
+		setPlayIcon(r.speak, (sounding && i == n.speaking) || (i == n.solo && (rolling || n.synthing)),
 			"play this clip with its line spoken over it", "pause this clip")
 	}
 }
@@ -1261,6 +1467,13 @@ func (a *App) speakEntry(i int) {
 		return
 	}
 	e := n.entries[i]
+	// this line has never been spoken and the server is on it: with the picture
+	// the video is stopped waiting, without it there is nothing to play yet.
+	// Either way a second click can only start the same synthesis twice.
+	if n.solo == i && n.synthing {
+		a.setStatus(fmt.Sprintf("still speaking line %d for the first time — ⏹ gives up on it", i+1))
+		return
+	}
 	if n.solo == i && n.soloPic && n.player != nil {
 		if n.player.Playing() {
 			n.player.Pause()
@@ -1306,6 +1519,11 @@ func (a *App) speakEntry(i int) {
 // is the tick's job, and it stops the video to wait rather than speaking late.
 func (a *App) speakAlone(i int, e narrEntry) {
 	n := a.narr5
+	// claimed before the request goes out, not after it comes back: the row is
+	// this button's from the click, and the wait for a first synthesis is the
+	// part of it the user is most likely to press again
+	n.speaking, n.solo, n.soloPic, n.synthing = i, i, false, true
+	n.syncSpeakIcons()
 	a.snapSources()
 	go func() {
 		wav := a.ttsWav(e)
@@ -1313,17 +1531,21 @@ func (a *App) speakAlone(i int, e narrEntry) {
 			glib.IdleAdd(func() { a.setStatus("synthesizing… (first line after a cold start also loads the model)") })
 			if err := a.synthesize(e); err != nil {
 				a.logfIdle("synthesis failed: %v", err)
-				glib.IdleAdd(func() { a.setStatus("synthesis failed — see log") })
+				glib.IdleAdd(func() {
+					n.synthing, n.solo = false, -1
+					n.syncSpeakIcons()
+					a.setStatus("synthesis failed — see log")
+				})
 				return
 			}
 		}
 		glib.IdleAdd(func() {
+			n.synthing = false
 			a.setStatus(fmt.Sprintf("entry %d — no recording covers this clip, so the line plays on its own", i+1))
 			if n.voice != nil {
-				n.speaking, n.solo, n.soloPic = i, i, false
 				n.voice.PlaySegment(wav, 0, -1, true)
-				n.syncSpeakIcons()
 			}
+			n.syncSpeakIcons()
 		})
 	}()
 }
