@@ -1,13 +1,16 @@
 package main
 
 // Step 1, natively: STT both inputs and dump frames at an interval, into
-// step1/. ffmpeg and the audio.cpp container are driven via os/exec; the
-// anchored diarization and the segment merge are real code here, not awk.
+// step1/. ffmpeg is driven via os/exec and the audio.cpp server over HTTP
+// (audiocpp.go); the anchored diarization and the segment merge are real code
+// here, not awk.
 //
 // step1/
 //   <input-basename>/  voice16k.wav, transcript.{txt,tsv,srt}, words.json,
 //                      turns.json  (per input, video and voice alike)
-//   frames/f%06d.jpg   frame n covers t = (n-1) * interval seconds
+//   frames/<input-basename>/2026-08-08_19-59-00.jpg   one per interval, named
+//                      for the wall-clock second it was shot in; frame n is
+//                      still exactly t = (n-1) * interval into the recording
 //   meta.env           chosen inputs + interval, read by the GUI and later steps
 //
 // Finished stages are skipped, so re-running resumes.
@@ -25,11 +28,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
+	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
 var errStopped = errors.New("stopped by user")
@@ -118,7 +123,7 @@ func (a *App) prog(track int, f float64, format string, args ...any) {
 // running a pipeline. With it, ▶ and ⏹ mean the same thing on every step: ▶
 // starts what the page does and then pauses and resumes it, ⏹ ends it. Without
 // it a page's playback was reachable only through the page's own buttons --
-// which is why ⏸ and ⏹ sat there doing nothing on the voice step.
+// which is why ⏸ and ⏹ sat there doing nothing while a voice sample played.
 type transport interface {
 	playing() bool // running right now
 	cued() bool    // loaded but paused, so ▶ means resume rather than start over
@@ -129,20 +134,31 @@ type transport interface {
 // pageTransport is the visible page's playback, if that page has any.
 func (a *App) pageTransport() transport {
 	switch a.stack.VisibleChildName() {
-	case "voice":
-		if a.voice5 != nil {
-			return a.voice5
-		}
-	case "step4":
-		if a.ed != nil {
+	case "step3":
+		// ▶ here is Suggest cut, the page's long job, and it stays that way
+		// until the preview is actually running. The player is loaded the
+		// moment you click the timeline -- that cues a frame to look at, it is
+		// not playback, and it used to mean ▶ played the video on a page whose
+		// cut was still empty. Once the preview HAS been started, the run bar
+		// is its transport until ⏹.
+		if a.ed != nil && (a.ed.playing() || a.ed.started) {
 			return a.ed
 		}
-	case "narrate":
-		if a.narr5 != nil {
+	case "step4":
+		// ▶ here is the step itself -- write the narration, then speak it -- and
+		// it stays that way until the preview is actually running: the voice
+		// sample has its own two buttons beside it, and a clip merely cued by
+		// clicking a line to look at it is not playback. Once the preview HAS
+		// been started, the run bar is its transport until ⏹ -- otherwise ⏸
+		// would have nothing to pause and ⏹ nothing to end.
+		if a.narr5 != nil && (a.narr5.playing() || a.narr5.started) {
 			return a.narr5
 		}
-	case "produce":
-		if a.prod != nil {
+	case "step5":
+		// same rule as narrate: the page's job owns ▶ until the result is
+		// actually playing, so a video watched once cannot leave ▶ meaning
+		// "watch it again" for the rest of the session
+		if a.prod != nil && (a.prod.playing() || a.prod.started) {
 			return a.prod
 		}
 	}
@@ -175,15 +191,9 @@ func (a *App) playClicked() {
 	switch a.stack.VisibleChildName() {
 	case "step1":
 		a.step1Clicked()
-	case "voice":
-		// the voice page runs nothing -- ▶ there means what the page's own
-		// button means, a sample in the selected voice
-		if a.voice5 != nil {
-			a.voice5.playSample()
-		}
-	case "understand":
-		a.understandRun(true, true)
-	case "step4":
+	case "step2":
+		a.understandRun()
+	case "step3":
 		// per the spec: with a selection pending, play ADDS it; on an empty
 		// cut it asks for the first suggestion; otherwise it explains itself
 		switch {
@@ -194,13 +204,13 @@ func (a *App) playClicked() {
 		default:
 			a.setStatus("drag a region and ▶ adds it; Suggest only fills an empty cut")
 		}
-	case "narrate":
-		if a.narr5 != nil && len(a.narr5.entries) == 0 {
-			a.generateNarration()
-		} else {
-			a.setStatus("narration exists — use Generate to redo, 🔊 per line, Synthesize all for the rest")
-		}
-	case "produce":
+	case "step4":
+		// the whole step in one press: write the narration if the cut has no
+		// narration or has moved under the one it has, then speak every line
+		// that is not already in the cache (narrateRun). It used to be only the
+		// speaking half, with the writing on a button beside the video.
+		a.narrateRun()
+	case "step5":
 		a.produceClicked()
 	}
 }
@@ -243,6 +253,53 @@ func (a *App) updateRunControls() {
 		a.playBtn.SetTooltipText("Run this step — or resume what is paused")
 	}
 	a.stopBtn.SetSensitive(a.running || busy || (t != nil && t.cued()))
+	a.syncPlayIcons()
+}
+
+// setPlayIcon draws one transport button from what its player is doing. Every
+// play button in the app is this one button in two states -- a ▶ that has
+// already started something is a lie, and a separate ⏸ beside it is a button
+// that is dead more often than not.
+func setPlayIcon(b *gtk.Button, playing bool, playTip, pauseTip string) {
+	if b == nil {
+		return
+	}
+	if playing {
+		b.SetIconName("media-playback-pause-symbolic")
+		b.SetTooltipText(pauseTip)
+	} else {
+		b.SetIconName("media-playback-start-symbolic")
+		b.SetTooltipText(playTip)
+	}
+}
+
+// syncPlayIcons redraws the pages' own play buttons. They hang off four
+// different players, all of which report here through Player.OnState, so this
+// runs on every start, pause and end-of-stream -- including the ones nobody
+// clicked for, like a clip simply finishing.
+func (a *App) syncPlayIcons() {
+	if a.ed != nil {
+		setPlayIcon(a.ed.playBtn, a.ed.playing(),
+			"play the preview from the playhead — same as ▶ below", "pause the preview")
+	}
+	if n := a.narr5; n != nil {
+		// the preview has no button of its own any more: the picture is its
+		// play/pause, and the run bar is the rest of its transport
+		n.syncSpeakIcons()
+	}
+	if vp := a.voice5; vp != nil {
+		setPlayIcon(vp.playBtn, vp.playing(),
+			"Speak the sample in the selected voice", "pause the sample")
+		if vp.stopBtn != nil {
+			// nothing loaded is nothing to stop: the sample's ⏹ is the one
+			// button on this page that the run bar's ⏹ no longer covers
+			vp.stopBtn.SetSensitive(vp.playing() || vp.cued())
+		}
+	}
+	if p := a.prod; p != nil {
+		setPlayIcon(p.playBtn, p.playing(),
+			"play the finished video — same as ▶ below", "pause the video")
+	}
 }
 
 // ---- process plumbing ------------------------------------------------------
@@ -321,23 +378,6 @@ func (a *App) ffmpegProgress(dur float64, cb func(float64), args ...string) erro
 	return nil
 }
 
-// acpp runs audiocpp_cli inside the audio container, with the same mounts as
-// the pipeline scripts: models shared with the WebUI, a.root as /work.
-func (a *App) acpp(args ...string) error {
-	c := a.readConf()
-	full := append([]string{
-		"run", "--rm",
-		"--device", "/dev/kfd", "--device", "/dev/dri",
-		"--group-add", "render", "--group-add", "video",
-		"--security-opt", "seccomp=unconfined",
-		"-v", c.Models + ":/home/arch/audio.cpp/models",
-		"-v", a.outDir + ":/work",
-		"-w", "/home/arch/audio.cpp",
-		c.Image, c.CLI,
-	}, args...)
-	return a.runCmd("docker", full...)
-}
-
 func ffprobeDur(f string) (float64, error) {
 	out, err := exec.Command("ffprobe", "-v", "error",
 		"-show_entries", "format=duration", "-of", "csv=p=0", f).Output()
@@ -386,8 +426,18 @@ func loadJSON(path string) (any, error) {
 
 // spans from a diarization JSON: sample counts -> seconds
 func loadSpans(path string) ([]span, error) {
-	v, err := loadJSON(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
+		return nil, err
+	}
+	return spansFrom(b)
+}
+
+// spansFrom is the same for an answer that never reached disk -- which is what
+// a window of the diarization scan is.
+func spansFrom(b []byte) ([]span, error) {
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
 		return nil, err
 	}
 	var out []span
@@ -419,12 +469,16 @@ func (a *App) startStep1(videos, audios []string, interval float64, scaleName, s
 	a.updateRunControls()
 	a.setStatus("step 1 running…")
 	a.logExp.SetExpanded(true)
+	// what went in, by name -- the page has room for a count and nothing more
+	a.logf(">>> step 1: %d input files", len(videos)+len(audios))
+	for _, f := range append(append([]string{}, videos...), audios...) {
+		a.logf("    %s", f)
+	}
 	go func() {
 		err := a.step1(videos, audios, interval, scaleName, scaleVF)
 		glib.IdleAdd(func() {
 			a.running = false
 			a.updateRunControls()
-			a.loadMeta()
 			switch {
 			case errors.Is(err, errStopped):
 				a.progress.SetText("stopped — finished stages are kept")
@@ -435,7 +489,9 @@ func (a *App) startStep1(videos, audios []string, interval float64, scaleName, s
 				a.setStatus("step 1 failed")
 			default:
 				a.progress.SetFraction(1)
-				a.setStatus("step 1 done")
+				a.logf(">>> step 1 wrote:")
+				n := a.logOutputs("step1", filepath.Join(a.outDir, "step1"))
+				a.setStatus(fmt.Sprintf("step 1 done — %d files in step1/", n))
 			}
 			a.updateStep1Info()
 			a.und.refresh() // the next step's input counts just changed
@@ -444,47 +500,18 @@ func (a *App) startStep1(videos, audios []string, interval float64, scaleName, s
 	}()
 }
 
-// ensureModels makes a fresh machine work: verify the container image exists
-// and pull any missing GGUF through the model manager (stdlib-only, runs in
-// the container, same shared models mount as the WebUI).
-func (a *App) ensureModels() error {
-	c := a.readConf()
-	if err := a.runCmd("docker", "image", "inspect", c.Image); err != nil {
-		return fmt.Errorf("docker image %s missing -- build it with: cd ../cpp && ./run.sh "+
-			"(or point the settings dialog at the image you have)", c.Image)
-	}
-	needs := []struct{ gguf, pkg string }{
-		{c.ASRGGUF, "parakeet_tdt_q8_0"},
-		{c.DiarGGUF, "sortformer_diar_4spk_v1_q8_0"},
-	}
-	for _, n := range needs {
-		host := filepath.Join(c.Models, strings.TrimPrefix(n.gguf, "models/"))
-		if exists(host) {
-			continue
-		}
-		a.logfIdle(">>> downloading model %s", n.pkg)
-		a.prog(trackSTT, 0.01, "downloading %s…", n.pkg)
-		if err := a.runCmd("docker", "run", "--rm",
-			"-v", c.Models+":/home/arch/audio.cpp/models",
-			"-w", "/home/arch/audio.cpp", c.Image,
-			"python3", "tools/model_manager_v2.py", "install", n.pkg,
-			"--models-root", "models"); err != nil {
-			return fmt.Errorf("model download %s: %w", n.pkg, err)
-		}
-	}
-	return nil
-}
-
 func (a *App) step1(videos, audios []string, interval float64, scaleName, scaleVF string) error {
 	s1 := filepath.Join(a.outDir, "step1")
 	if err := os.MkdirAll(s1, 0o755); err != nil {
 		return err
 	}
-	if err := a.ensureModels(); err != nil {
+	// the models are the server's to load, but that it HAS them is worth
+	// finding out now rather than after the frame extraction
+	if err := a.ensureAudioModels(); err != nil {
 		return err
 	}
 	// progress plan: half the bar each. This step is two jobs -- speech
-	// recognition (GPU, via the container) and frame extraction (CPU ffmpeg) --
+	// recognition (GPU, on the server) and frame extraction (CPU ffmpeg) --
 	// which do not contend, so they run as parallel tracks. Weighting them by
 	// file count instead gave whichever job had more inputs most of the bar,
 	// and the bar then crossed that job's share and sat still through the other.
@@ -549,11 +576,23 @@ func (a *App) step1(videos, audios []string, interval float64, scaleName, scaleV
 		return err
 	}
 
-	// primary pair for the single-source consumers (review page, align);
-	// the full ordered lists live in project.json
-	meta := fmt.Sprintf("VIDEO_FILE=%s\nAUDIO_FILE=%s\nVIDEO_BASE=%s\nAUDIO_BASE=%s\nINTERVAL=%g\nSCALE=%s\n",
-		videos[0], audios[0], baseName(videos[0]), baseName(audios[0]), interval, scaleName)
-	return os.WriteFile(filepath.Join(s1, "meta.env"), []byte(meta), 0o644)
+	// primary pair for the single-source consumers (review page, align); the
+	// full ordered lists live in project.json. Either half can be absent now:
+	// a session may be one screen recording that is both, or recordings with no
+	// footage at all. So each is written only if there is one -- and what says
+	// "step 1 has run" is that this file exists, not what is in it.
+	var lines []string
+	if len(videos) > 0 {
+		lines = append(lines, "VIDEO_FILE="+videos[0], "VIDEO_BASE="+baseName(videos[0]))
+	}
+	// the narrator, not the first recording: that tag is who this session speaks
+	// as, and untagged it falls back to exactly the file audios[0] used to be
+	if voice := a.narratorSource(1); voice != "" {
+		lines = append(lines, "AUDIO_FILE="+voice, "AUDIO_BASE="+baseName(voice))
+	}
+	lines = append(lines, fmt.Sprintf("INTERVAL=%g", interval), "SCALE="+scaleName)
+	return os.WriteFile(filepath.Join(s1, "meta.env"),
+		[]byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
 func baseName(p string) string {
@@ -568,7 +607,6 @@ func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 func (a *App) transcribe(input, s1 string, base, unit float64) error {
 	name := baseName(input)
 	out := filepath.Join(s1, name)
-	rel := "step1/" + name // container path under /work
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
@@ -593,18 +631,19 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 	}
 	if !exists(filepath.Join(out, "words.json")) {
 		a.prog(trackSTT, base+0.05*unit, "[%s] speech recognition…", name)
-		a.logfIdle(">>> [%s] ASR (parakeet)", name)
-		// The empty --text is load-bearing: it is the only carrier of the
-		// language option, --language alone is silently dropped.
-		c := a.readConf()
-		if err := a.acpp("--task", "asr", "--family", "parakeet_tdt",
-			"--model", c.ASRGGUF, "--backend", c.Backend,
-			"--audio", "/work/"+rel+"/voice16k.wav",
-			"--session-option", "parakeet_tdt.offline_mode=long_form",
-			"--language", c.Language, "--text", "",
-			"--text-out", "/work/"+rel+"/transcript.txt",
-			"--words-out", "/work/"+rel+"/words.json"); err != nil {
+		a.logfIdle(">>> [%s] ASR (%s)", name, a.readConf().ASRModel)
+		body, text, err := a.asrJSON(wav)
+		if err != nil {
 			return fmt.Errorf("ASR: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(out, "transcript.txt"),
+			[]byte(strings.TrimRight(text, "\n")+"\n"), 0o644); err != nil {
+			return err
+		}
+		// words.json last, and whole: it is this stage's resume marker, so it
+		// must not exist until the answer it stands for is on disk
+		if err := os.WriteFile(filepath.Join(out, "words.json"), body, 0o644); err != nil {
+			return err
 		}
 	} else {
 		a.logfIdle(">>> [%s] ASR already done", name)
@@ -614,7 +653,7 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 		return err
 	}
 	if !exists(filepath.Join(out, "turns.json")) {
-		if err := a.diarize(out, rel, dur, name, base, unit); err != nil {
+		if err := a.diarize(out, dur, name, base, unit); err != nil {
 			if errors.Is(err, errStopped) {
 				return err
 			}
@@ -631,25 +670,7 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 	return nil
 }
 
-// diarWindow runs one clip through sortformer. A window with no speech exits
-// 0 and writes no file at all, so a missing JSON means silence, not failure.
-func (a *App) diarWindow(wavRel, jsonRel, jsonHost string) ([]span, error) {
-	os.Remove(jsonHost)
-	c := a.readConf()
-	if err := a.acpp("--task", "diar", "--family", "sortformer_diar",
-		"--model", c.DiarGGUF, "--backend", c.Backend,
-		"--audio", "/work/"+wavRel,
-		"--session-option", "sortformer_diar.graph_capacity_mode=grow",
-		"--turns-out", "/work/"+jsonRel); err != nil {
-		return nil, err
-	}
-	if !exists(jsonHost) {
-		return nil, nil
-	}
-	return loadSpans(jsonHost)
-}
-
-func (a *App) diarize(out, rel string, dur float64, name string, base, unit float64) error {
+func (a *App) diarize(out string, dur float64, name string, base, unit float64) error {
 	dir := filepath.Join(out, "diar")
 	os.RemoveAll(dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -674,8 +695,7 @@ func (a *App) diarize(out, rel string, dur float64, name string, base, unit floa
 			"-c:a", "pcm_s16le", filepath.Join(dir, "s.wav")); err != nil {
 			return err
 		}
-		spans, err := a.diarWindow(rel+"/diar/s.wav", rel+"/diar/s.json",
-			filepath.Join(dir, "s.json"))
+		spans, err := a.diarSpans(filepath.Join(dir, "s.wav"))
 		if err != nil {
 			return err
 		}
@@ -811,8 +831,7 @@ func (a *App) diarize(out, rel string, dur float64, name string, base, unit floa
 			"-c:a", "pcm_s16le", filepath.Join(dir, "win.wav")); err != nil {
 			return err
 		}
-		spans, err := a.diarWindow(rel+"/diar/win.wav", rel+"/diar/win.json",
-			filepath.Join(dir, "win.json"))
+		spans, err := a.diarSpans(filepath.Join(dir, "win.wav"))
 		if err != nil {
 			return err
 		}
@@ -1064,6 +1083,14 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 	marker := filepath.Join(fdir, ".interval")
 	want := fmt.Sprintf("%g|%s", interval, scaleName)
 	if b, err := os.ReadFile(marker); err == nil && strings.TrimSpace(string(b)) == want {
+		// the pixels are already right; only a folder extracted before frames
+		// were named for their second has anything left to do, and that is a
+		// rename rather than the minutes of decoding a re-extract would cost
+		if n, err := stampFrames(fdir, video, interval); err != nil {
+			return err
+		} else if n > 0 {
+			a.logfIdle(">>> [%s] %d frames renamed to the second they were shot in", name, n)
+		}
 		a.logfIdle(">>> [%s] frames already extracted (%gs, %s), skipping", name, interval, scaleName)
 		a.prog(trackFrames, base+unit, "[%s] frames ready", name)
 		return nil
@@ -1173,10 +1200,81 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 			return errStopped
 		}
 	}
+	if _, err := stampFrames(fdir, video, interval); err != nil {
+		return err
+	}
 	if err := os.WriteFile(marker, []byte(want+"\n"), 0o644); err != nil {
 		return err
 	}
 	ents, _ := os.ReadDir(fdir)
 	a.logfIdle(">>> [%s] %d frames extracted", name, len(ents)-1)
 	return nil
+}
+
+// stampFrames renames ffmpeg's counting into the wall clock: every frame is
+// called the second it was shot in, so a folder of them reads against the
+// session timeline -- and against the recorders' own file names -- without
+// anyone doing arithmetic. An interval under a second puts several frames in
+// one second; those are numbered -1, -2 after the first.
+//
+// The name comes from the frame NUMBER, never from the position in the sorted
+// listing: a chunk that yields fewer frames than planned leaves a gap in the
+// numbering, and t = (n-1) * interval has to keep holding across it.
+//
+// Nothing numbered left in the folder means there is nothing to do, which is
+// the normal case on a re-run -- so this is also what renames a folder
+// extracted before frames were stamped, without decoding it again.
+func stampFrames(fdir, video string, interval float64) (int, error) {
+	ents, err := os.ReadDir(fdir)
+	if err != nil {
+		return 0, err
+	}
+	type frame struct {
+		n    int
+		name string
+	}
+	var fs []frame
+	for _, e := range ents {
+		n, ok := frameNum(e.Name())
+		if e.IsDir() || !ok {
+			continue
+		}
+		fs = append(fs, frame{n, e.Name()})
+	}
+	if len(fs) == 0 {
+		return 0, nil
+	}
+	start, err := sourceStart(video)
+	if err != nil {
+		return 0, err
+	}
+	if interval <= 0 {
+		// every-frame mode: the spacing is the video's own. Without a frame rate
+		// there is no time to name a frame after, so it keeps its number.
+		fps := ffprobeFPS(video)
+		if fps <= 0 {
+			return 0, nil
+		}
+		interval = 1 / fps
+	}
+	sort.Slice(fs, func(i, j int) bool { return fs[i].n < fs[j].n })
+	var seq stampSeq
+	for _, f := range fs {
+		to := seq.name(start+float64(f.n-1)*interval, ".jpg")
+		if err := os.Rename(filepath.Join(fdir, f.name), filepath.Join(fdir, to)); err != nil {
+			return 0, err
+		}
+	}
+	return len(fs), nil
+}
+
+// frameNum reads ffmpeg's f000001.jpg back. Frames are renamed the moment they
+// are extracted, so this only ever sees a folder mid-extraction -- or one made
+// before the frames carried their timestamp.
+func frameNum(name string) (int, bool) {
+	if !strings.HasPrefix(name, "f") || !strings.HasSuffix(name, ".jpg") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSuffix(name[1:], ".jpg"))
+	return n, err == nil && n >= 1
 }

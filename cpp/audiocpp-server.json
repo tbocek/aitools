@@ -4,6 +4,7 @@
   "backend": "hip",
   "device": 0,
   "lazy_load": true,
+  "voice_dir": "/home/arch/audio.cpp/models/voices",
   "models": [
     {
       "id": "index-tts2",
@@ -11,6 +12,26 @@
       "path": "/home/arch/audio.cpp/models/IndexTTS2-GGUF/index-tts2-q8_0.gguf",
       "task": "clon",
       "mode": "offline"
+    },
+    {
+      "id": "parakeet-tdt",
+      "family": "parakeet_tdt",
+      "path": "/home/arch/audio.cpp/models/Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf",
+      "task": "asr",
+      "mode": "offline",
+      "session_options": {
+        "parakeet_tdt.offline_mode": "long_form"
+      }
+    },
+    {
+      "id": "sortformer-diar",
+      "family": "sortformer_diar",
+      "path": "/home/arch/audio.cpp/models/Sortformer-Diar-4spk-v1-GGUF/sortformer-diar-4spk-v1-q8_0.gguf",
+      "task": "diar",
+      "mode": "offline",
+      "session_options": {
+        "sortformer_diar.graph_capacity_mode": "grow"
+      }
     }
   ]
 }

@@ -38,6 +38,7 @@ var promptDefs = []promptDef{
 	{"describe", strings.TrimSpace(describeSystem)},
 	{"fix", strings.TrimSpace(fixSystem)},
 	{"cut", strings.TrimSpace(suggestSystem)},
+	{"audit", strings.TrimSpace(auditSystem)},
 	{"narrate", strings.TrimSpace(narrSystem)},
 }
 
@@ -107,8 +108,11 @@ func (a *App) applyPrompts(m map[string]string) {
 // promptEditor is the box a step page shows -- title, then the box, and no
 // disclosure triangle: a prompt you cannot see is a prompt you forget you
 // changed, and not knowing what the model was told is how a baffling result
-// stays baffling. title says which job this prompt belongs to.
-func (a *App) promptEditor(key, title string) gtk.Widgetter {
+// stays baffling. title says which job this prompt belongs to; tip carries the
+// detail that would otherwise make the title a paragraph -- batch sizes and
+// what else rides along are compiled in and visible nowhere else, so they have
+// to be somewhere, just not somewhere that costs a line of the page.
+func (a *App) promptEditor(key, title, tip string) gtk.Widgetter {
 	d := promptDefFor(key)
 
 	tv := gtk.NewTextView()
@@ -148,12 +152,29 @@ func (a *App) promptEditor(key, title string) gtk.Widgetter {
 
 	// asks for the whole prompt and settles for less: where the page has room
 	// the text is all there to read and edit, and where it has not the box still
-	// opens at a size you can work in rather than a six-line slot
+	// opens at a size you can work in rather than a six-line slot.
+	//
+	// vexpand on top of that is what makes a taller window a taller box. Without
+	// it the box stops at the height of its text and the window's extra height
+	// piles up as blank page below it -- growing the window then bought nothing
+	// on the one page whose whole content is text. It propagates up through the
+	// widgets this returns, so a page only has to put this somewhere that can
+	// grow; two of these side by side split what is going spare.
+	//
+	// The minimum stays small, and deliberately so. Natural height is what makes
+	// the box open big; minimum is the floor a divider or a short window can
+	// squeeze it to, and it is the one number that can push things off the page.
+	// It was 240 here, which on the two-prompt page meant the pair could not fit
+	// in a short window at all: the divider stayed where it was, the top box kept
+	// a height it no longer had room for, and its own heading and Reset button
+	// went off the top. Four lines is a box you can still see what you are doing
+	// in, and small enough that no window is too short for two of them.
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetChild(tv)
 	scroll.SetPropagateNaturalHeight(true)
 	scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic) // wrapped text has no width to scroll
-	scroll.SetSizeRequest(-1, 240)
+	scroll.SetSizeRequest(-1, 72)
+	scroll.SetVExpand(true)
 	scroll.AddCSSClass("frame")
 
 	reset := gtk.NewButtonWithLabel("Reset to default")
@@ -166,6 +187,9 @@ func (a *App) promptEditor(key, title string) gtk.Widgetter {
 	lbl.SetHExpand(true)
 	lbl.SetWrap(true)
 	lbl.AddCSSClass("heading")
+	if tip != "" {
+		lbl.SetTooltipText(tip)
+	}
 
 	head := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	head.Append(lbl)

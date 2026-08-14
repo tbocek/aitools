@@ -1,24 +1,26 @@
 package main
 
-// Workflow console for the autocut pipeline. Six steps live in a sidebar, each
-// gated on the previous one's output, with a shared run bar and log at the
-// bottom: 1 inputs (sources, STT, frames), 2 the narration voice, 3 describe
-// the frames and fix the transcripts into one session timeline, 4 cut,
-// 5 narrate, 6 produce the upload.
+// Workflow console for the autocut pipeline. Five steps, one per tab in the
+// header bar, each gated on the previous one's output, with a shared run bar
+// and log at the bottom: 1 inputs (sources, STT, frames), 2 describe the frames
+// and fix the transcripts into one session timeline, 3 cut, 4 narrate -- the
+// voice on top and its lines below -- and 5 produce the upload.
 //
-// The voice has a step of its own because ▶ in the run bar starts the step on
-// screen, and the voice starts nothing -- it plays a sample. Sharing a page
-// with the sources made one button mean two things.
+// The voice had a step of its own, before the narration and two rows from it,
+// so the one thing you cannot judge about a voice -- how it reads THIS
+// narration -- came up before there was any. It is the top third of the narrate
+// page now, with its own ▶ and ⏹ for the sample so the run bar keeps meaning
+// "run the step on screen".
 //
-// The step numbers are the sidebar's, not the disk's: output folders keep the
-// names they were written under (step2/ = the event logs, step3/ = the fixed
-// transcripts even though one page now runs both, step5/ = voice + narration,
-// step6/ = the render), so a project made under an older numbering still opens.
+// One folder per step, stepN/, numbered by the tab it belongs to. Step 2 runs
+// two jobs and splits its folder between them by name, since a number would say
+// nothing: step2/describe/ = the event logs, step2/transcript/ = the fixed
+// transcripts, the subtitles and the session timeline.
 //
 //   cd autocut && ./gui/autocut-gui
 //
 // Everything is written under the output folder (default: the autocut
-// directory), one stepN/ per step, so a run can resume where it stopped.
+// directory), one folder per job, so a run can resume where it stopped.
 
 import (
 	"context"
@@ -27,7 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,49 +40,198 @@ import (
 	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
-var mediaExt = map[string]bool{
-	".flac": true, ".wav": true, ".mp3": true, ".m4a": true, ".aac": true,
-	".ogg": true, ".opus": true, ".wma": true, ".mp4": true, ".mkv": true,
-	".mov": true, ".webm": true, ".avi": true, ".ts": true,
+// steps is the pipeline in order, and the tab row is this table. The labels are
+// short because five of them sit side by side in the header bar, where the
+// width they ask for is a floor under the whole window -- what each step
+// actually does is on hover, which is where the sidebar's longer titles went.
+// wait is what the tab says instead while the step cannot be entered: it names
+// the step to finish rather than its number, since the numbering has moved
+// twice already and a hint pointing at the wrong tab is worse than none.
+//
+// help is the long form of tip, and it is the last of the paragraphs that used
+// to sit at the top of each page. A page explains itself once and is then
+// shorter by three lines forever: the paragraph is behind the ⓘ in the header
+// bar, which shows the open page's and only that.
+var steps = []struct{ name, label, tip, wait, help string }{
+	{"step1", "Inputs", "The sources, their transcripts and the frames", "",
+		"Add this session's files — footage, voice recordings, or one screen capture " +
+			"that is both. Each row says what its file is for: the camera means frames " +
+			"come out of it and it can be cut, and the microphone tags who is speaking, " +
+			"1 being the voice the narration is spoken in. Running the step transcribes " +
+			"everything in the list and pulls a frame out of the footage every few " +
+			"seconds — that is what the later steps read instead of the video."},
+	{"step2", "Describe", "Describe the frames and fix the transcripts into one session timeline",
+		"Finish Inputs first — this step needs its transcripts and frames",
+		"Two model jobs over what Inputs produced: the frames are described, and the raw " +
+			"transcripts are cleaned up and merged into one timeline covering the whole " +
+			"session. Both prompts are on the page — they are what the models are told, " +
+			"in full, and an edited one is kept in the project."},
+	{"step3", "Cut", "Choose the clips the video is made of",
+		"Finish Describe first — the cut works on the session timeline",
+		"Two tracks over the session: the source above, the cut below. Suggest cut " +
+			"asks the model to fill the target length from what Describe found; from then " +
+			"on the cut is yours — drag to select, add, remove, and Revert goes back to " +
+			"the suggestion. The scroll wheel zooms around the cursor."},
+	{"step4", "Narrate", "The narration, and the voice it is spoken in",
+		"Finish Cut first — narration is written for the cut's clips",
+		"One narration line per clip, written to fit the time the clip has. ▶ below is " +
+			"the whole step: it writes the narration when there is none or the cut has " +
+			"moved under it, then speaks every line that is not cached yet. The voice " +
+			"is cloned from a sample above; clicking the picture plays the cut, speaking " +
+			"each line as it reaches it and holding the picture where a line still has to " +
+			"be synthesized. ▶ on a single line plays that one clip with its line over " +
+			"it and stops at the end of it. ✎ on a clip leaves a note, and the next ▶ writes the " +
+			"narration again to honor it."},
+	{"step5", "Produce", "Render the video and write the upload text",
+		"Finish Cut first — there is no cut to produce a video from",
+		"▶ below renders the final video: every clip is cut from its own recording, " +
+			"the narration is laid over ducked game audio, and the whole thing is " +
+			"loudness-normalized to -14 LUFS for YouTube. Lines that have not been " +
+			"synthesized yet are spoken first."},
+}
+
+// stepLocked reports whether a tab's prerequisites are missing. Step 1 never
+// is, and an unknown name (there is none, but the lookup can fail) counts as
+// open rather than as locked -- refusing to show a page is the worse mistake.
+func (a *App) stepLocked(i int) bool {
+	if i < 0 || i >= len(steps) {
+		return false
+	}
+	switch steps[i].name {
+	case "step2":
+		return a.step2Locked
+	case "step3":
+		return a.step3Locked
+	case "step4":
+		// choosing a voice lives on this tab and therefore waits for a cut,
+		// which it does not need. That is deliberate: it belongs beside the lines
+		// it will speak, and hearing a sample before there is anything to narrate
+		// decides nothing you cannot decide again afterwards.
+		return a.step4Locked
+	case "step5":
+		return a.step5Locked
+	}
+	return false
+}
+
+func stepIndex(name string) int {
+	for i, s := range steps {
+		if s.name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// showStep moves to a page without going through the tab's click handler --
+// for the bounce off a locked tab, and for sending a page whose prerequisites
+// vanished back to the start.
+func (a *App) showStep(name string) {
+	a.tabGuard = true
+	for i, s := range steps {
+		a.tabs[i].SetActive(s.name == name)
+	}
+	a.tabGuard = false
+	a.stack.SetVisibleChildName(name)
+	a.updateRunControls() // ▶ ⏹ belong to the new page's playback now
+	a.syncHelp()          // and so does the ⓘ
+	// Cut's Inputs row lists what Suggest will be sent, and one of those things
+	// is the context box on Describe -- the page you have usually just come
+	// from. Refreshed on arrival rather than on every keystroke over there,
+	// which would re-read the session timeline as you type.
+	if name == "step3" && a.ed != nil {
+		a.ed.updateInputs()
+	}
+	// Narrate's row says the same thing about the narration, and one of the
+	// things it counts is the cut -- which is the page you have just come from
+	// and the one thing most likely to have changed under it.
+	if name == "step4" && a.narr5 != nil {
+		a.narr5.updateInputs()
+		a.narr5.updateOut()
+	}
+}
+
+// helpPopover is what the ⓘ in the header bar drops down: what the open page
+// does, and only that. It listed all five steps at once to begin with, which
+// made the paragraph you actually wanted something to go looking for in a
+// scrolling column of four you did not.
+//
+// The two labels are kept because the popover now follows the tabs; the table
+// they are filled from is a compile-time constant, so syncHelp is all there is.
+func (a *App) helpPopover() *gtk.Popover {
+	a.helpTitle = gtk.NewLabel("")
+	a.helpTitle.SetXAlign(0)
+	a.helpTitle.AddCSSClass("heading")
+	a.helpBody = gtk.NewLabel("")
+	a.helpBody.SetXAlign(0)
+	a.helpBody.SetWrap(true)
+	a.helpBody.SetMaxWidthChars(64) // wrapping needs a width to wrap at, or it never does
+	a.helpBody.AddCSSClass("dim-label")
+
+	box := gtk.NewBox(gtk.OrientationVertical, 4)
+	box.SetMarginTop(4)
+	box.SetMarginBottom(4)
+	box.SetMarginStart(4)
+	box.SetMarginEnd(4)
+	box.Append(a.helpTitle)
+	box.Append(a.helpBody)
+
+	p := gtk.NewPopover()
+	p.SetChild(box)
+	return p
+}
+
+// syncHelp points the ⓘ at the page that is open. Called from showStep, which
+// every page change goes through -- including the bounce off a locked tab,
+// where the help must stay on the page you did not leave.
+func (a *App) syncHelp() {
+	if a.helpTitle == nil {
+		return
+	}
+	i := stepIndex(a.stack.VisibleChildName())
+	if i < 0 {
+		return
+	}
+	a.helpTitle.SetText(steps[i].label)
+	a.helpBody.SetText(steps[i].help)
 }
 
 type App struct {
-	root     string // autocut directory (the scripts and project files live here)
-	inDir    string // holds input_video/ and input_audio/; default root, project-settable
-	outDir   string // where step outputs go; default root, project-settable
-	voiceDir string // where the voice transcript lives
-	videoDir string // where the video transcript / edl / clips live
-	source   string // the input video file
+	root   string // autocut directory (the scripts and project files live here)
+	vidDir string // where the last video came from; where a chooser opens
+	audDir string // same, for a recording -- neither is what the list is made of
+	outDir string // where step outputs go; default root, project-settable
 
-	win         *gtk.ApplicationWindow
-	stack       *gtk.Stack
-	side        *gtk.ListBox  // custom sidebar: rows can gray out with a hint
-	sideGuard   bool          // suppresses re-entrant selection while reverting
+	win   *gtk.ApplicationWindow
+	stack *gtk.Stack
+	// one tab per entry in steps, in that order; they gray out with a hint
+	tabs        []*gtk.ToggleButton
+	tabGuard    bool          // suppresses re-entrant toggles while reverting
 	step2Locked bool          // step 1 has not produced inputs for Describe yet
-	step4Locked bool          // no session timeline yet -- nothing to cut
-	narrLocked  bool          // no cut yet -- nothing to narrate
-	prodLocked  bool          // no cut yet -- nothing to produce
+	step3Locked bool          // no session timeline yet -- nothing to cut
+	step4Locked bool          // no cut yet -- nothing to narrate
+	step5Locked bool          // no cut yet -- nothing to produce
 	logExp      *gtk.Expander // collapsed until something actually runs
-	player      *Player       // the step 6 preview
+	helpTitle   *gtk.Label    // the ⓘ popover, refilled per page by syncHelp
+	helpBody    *gtk.Label
+	player      *Player // the step 5 preview
 	log         *gtk.TextView
 	status      *gtk.Label
 	running     bool
-	ttsNoted    string // the audio.cpp server already reported in the log
+	audioNoted  string // the audio.cpp server already reported in the log
 	ttsModel    string // the model id that server serves, asked for once
 
 	// step 1 page
-	vidList   *sourceList
-	audList   *sourceList
-	interval  *gtk.Scale
+	srcList   *sourceList // the session's files, and what each one is for
+	interval  *freqPick
 	scalePick *gtk.DropDown
-	inLabel   *gtk.Label
 	outLabel  *gtk.Label
 	s1out     *gtk.Label
 	und       *understander
 	ed        *cutEditor
 	voice5    *voicePicker
-	voiceSel  string  // the chosen voice id, cached from step5/voice.txt
-	pitchSel  float64 // semitones the reference is shifted by, from step5/pitch.txt
+	voiceSel  string  // the chosen voice id, cached from step4/voice.txt
+	pitchSel  float64 // semitones the reference is shifted by, from step4/pitch.txt
 	pitchRead bool    // ...and whether that file has been read yet (0 is a real value)
 	narr5     *narrator
 	prod      *producer
@@ -99,8 +250,9 @@ type App struct {
 	runCtx    context.Context // canceled by stop -- aborts in-flight LLM calls
 	runCancel context.CancelFunc
 	srcMu     sync.Mutex
-	selVid    []string // snapshot of the checked sources, taken on the GUI
-	selAud    []string // thread when a run starts
+	selVid    []string              // snapshot of the session's sources, taken on the GUI
+	selAud    []string              // thread when a run starts: the footage, then the rest
+	selNarr   [narratorSlots]string // ...and who was tagged as which narrator
 
 	// the editable system prompts. The views are the GUI thread's; promptTxt is
 	// the copy a runner reads, kept current by the buffers' changed handler --
@@ -108,6 +260,13 @@ type App struct {
 	promptMu    sync.Mutex
 	promptTxt   map[string]string
 	promptViews map[string]*gtk.TextView
+	// what the editor says about THIS session, typed on Describe and read by
+	// every step (context.go). Under promptMu for the same reason as the
+	// prompts: the box belongs to the GUI thread, the string is what a runner
+	// reads. Not in promptTxt -- it is not a prompt and it is stored in full,
+	// whereas a prompt is stored only when it differs from the built-in.
+	ctxTxt  string
+	ctxView *gtk.TextView
 
 	// one progress bar fed by both tracks: summed fractions, joined texts
 	progMu    sync.Mutex
@@ -126,7 +285,9 @@ var frameStopLabels = []string{"each", "0.1", "0.2", "0.5", "1s", "2s", "3s", "4
 // decides whether frames must be extracted again, so it has to stay put even
 // when the wording moves. 896w is the width the vision model gets fed.
 var scalePresets = []struct{ Name, Label, VF string }{
-	{"original", "Resize", ""},
+	// the label said "Resize", which on the closed button read as the
+	// control's caption and in the open list as a nonsense first choice
+	{"original", "Original", ""},
 	{"896w (LLM)", "896w (LLM)", "scale=896:-2"},
 	{"480p", "480p", "scale=-2:480"},
 	{"720p", "720p", "scale=-2:720"},
@@ -150,56 +311,106 @@ func (a *App) setFrameScale(name string) {
 	}
 }
 
-func (a *App) frameInterval() float64 {
-	i := int(math.Round(a.interval.Value()))
-	if i < 0 {
-		i = 0
-	}
-	if i >= len(frameStops) {
-		i = len(frameStops) - 1
-	}
-	return frameStops[i]
-}
+func (a *App) frameInterval() float64 { return frameStops[a.interval.i] }
 
-func (a *App) setFrameInterval(v float64) {
+func (a *App) setFrameInterval(v float64) { a.interval.set(nearestStop(v)) }
+
+// nearestStop maps seconds onto the stop table -- a project may store a value
+// from a build whose table was different, and typing is free-form.
+func nearestStop(v float64) int {
 	best, bd := 4, math.MaxFloat64 // default 1 s
 	for i, s := range frameStops {
 		if d := math.Abs(s - v); d < bd {
 			best, bd = i, d
 		}
 	}
-	a.interval.SetValue(float64(best))
+	return best
 }
 
-// srcPath resolves a source path -- always stored as input_video/x.mkv, i.e.
-// relative to the INPUT folder, which is the root only until someone moves it.
-func (a *App) srcPath(rel string) string { return filepath.Join(a.inDir, rel) }
-
-// setInDir repoints both source lists at a new folder. The lists start empty
-// rather than merged: a checkmark carried over to a same-named file in another
-// folder would be a guess about which recording is meant, and a wrong guess
-// there is silent -- the wrong video renders.
-func (a *App) setInDir(dir string) {
-	a.inDir = dir
-	if a.inLabel != nil {
-		a.inLabel.SetText(dir)
-	}
-	if a.vidList != nil {
-		a.vidList.setRoot(dir)
-	}
-	if a.audList != nil {
-		a.audList.setRoot(dir)
-	}
-	a.updateStep1Info()
-	a.updateGates()
+// freqPick is the frame-frequency stepper: one stop visible at a time, - / +
+// walking the table, and the text editable by hand. Hand-rolled rather than a
+// GtkSpinButton because the spin button re-reads its own display as a plain
+// number before every step -- and "each" and "1s" are not numbers, so every
+// click first corrupted the value it was about to step.
+type freqPick struct {
+	box   *gtk.Box
+	entry *gtk.Entry
+	i     int
 }
+
+func newFreqPick() *freqPick {
+	f := &freqPick{}
+	f.entry = gtk.NewEntry()
+	f.entry.SetWidthChars(4)
+	f.entry.SetMaxWidthChars(4)
+	f.entry.SetAlignment(0.5)
+	f.entry.SetTooltipText("Seconds between frames — type 0.1 to 5, or 'each' for every frame")
+	f.entry.ConnectActivate(f.parse)
+	// clicking elsewhere commits like Enter does: a half-typed value silently
+	// kept on screen would not be the value a run then uses
+	fc := gtk.NewEventControllerFocus()
+	fc.ConnectLeave(f.parse)
+	f.entry.AddController(fc)
+
+	minus := gtk.NewButtonFromIconName("list-remove-symbolic")
+	minus.ConnectClicked(func() { f.set(f.i - 1) })
+	plus := gtk.NewButtonFromIconName("list-add-symbolic")
+	plus.ConnectClicked(func() { f.set(f.i + 1) })
+
+	f.box = gtk.NewBox(gtk.OrientationHorizontal, 0)
+	f.box.AddCSSClass("linked") // one control, three parts
+	f.box.Append(f.entry)
+	f.box.Append(minus)
+	f.box.Append(plus)
+	f.set(4) // 1 s
+	return f
+}
+
+// set clamps to the table -- past either end the buttons simply stop moving.
+func (f *freqPick) set(i int) {
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(frameStops) {
+		i = len(frameStops) - 1
+	}
+	f.i = i
+	f.entry.SetText(frameStopLabels[i])
+}
+
+// parse commits a typed value: seconds with or without the s, or "each"/"0"
+// for every frame, landing on the nearest stop. Anything unreadable snaps the
+// display back to the value still in force.
+func (f *freqPick) parse() {
+	t := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(f.entry.Text())), "s")
+	if t == "each" {
+		f.set(0)
+		return
+	}
+	v, err := strconv.ParseFloat(t, 64)
+	if err != nil || v < 0 {
+		f.set(f.i)
+		return
+	}
+	f.set(nearestStop(v))
+}
+
+// The Describe page is one step and owns one folder, step2/. Inside it the two
+// jobs get a folder each, named after the job rather than after the order it
+// runs in -- there is nothing left on the tab bar to match a number to. They
+// stay two folders because the describer resumes per chunk and the fixer does
+// not.
+func (a *App) narrateDir() string    { return filepath.Join(a.outDir, "step4") }
+func (a *App) produceDir() string    { return filepath.Join(a.outDir, "step5") }
+func (a *App) understandDir() string { return filepath.Join(a.outDir, "step2") }
+func (a *App) describeDir() string   { return filepath.Join(a.understandDir(), "describe") }
+func (a *App) transcriptDir() string { return filepath.Join(a.understandDir(), "transcript") }
 
 func (a *App) setOutDir(dir string) {
 	a.outDir = dir
 	if a.outLabel != nil {
 		a.outLabel.SetText(dir)
 	}
-	a.loadMeta()
 	a.followOutDir()
 	// the voice belongs to the project, not to the session: drop the cached id
 	// and pitch so both are re-read from the folder we just moved to
@@ -219,8 +430,45 @@ func (a *App) setOutDir(dir string) {
 	// every page shows state derived from the output folder -- refresh all
 	a.updateStep1Info()
 	a.und.refresh()
-	a.updateStep6Info()
+	a.updateStep5Info()
 	a.updateGates()
+}
+
+// outDirRow builds the output-folder row: buttons lead, the path follows -- an
+// expanding path in the middle would push Choose to the far edge, away from
+// what it changes. Returns the row and the path label, which the caller owns
+// and has to keep in step with a.outDir (setOutDir does that for step 1's, and
+// understander.refresh for the Describe page's).
+//
+// One folder, several pages, but exactly one place it is set and shown: here.
+// The later pages open it and say how much is in their part of it; a path
+// repeated on every page that writes into it is a line of chrome per page for
+// something that changes once a project.
+func (a *App) outDirRow(caption string) (*gtk.Box, *gtk.Label) {
+	const tip = "Where every step writes"
+	btn := gtk.NewButtonWithLabel("Choose…")
+	btn.SetTooltipText(tip)
+	btn.ConnectClicked(a.chooseOutDirDialog)
+	openBtn := gtk.NewButtonFromIconName("folder-open-symbolic")
+	openBtn.SetTooltipText(tip)
+	openBtn.ConnectClicked(func() { a.openFolder(a.outDir) })
+	// Right-aligned, and the row it goes in is too: the Describe page reads its
+	// outputs off the right-hand end and so does the row this sits next to, and
+	// a reading you have to hunt for in a different place on each page is one
+	// you stop trusting. It no longer expands -- an expanding path stretched
+	// this row across the window and left the count marooned at the far edge.
+	lbl := gtk.NewLabel(a.outDir)
+	lbl.SetXAlign(1)
+	lbl.SetEllipsize(pango.EllipsizeStart) // the tail names the folder; the head is /home/…
+	lbl.SetSelectable(true)                // it is a path: it gets pasted into a terminal
+	row := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	row.Append(btn)
+	row.Append(openBtn)
+	if caption != "" {
+		row.Append(gtk.NewLabel(caption))
+	}
+	row.Append(lbl)
+	return row, lbl
 }
 
 func main() {
@@ -232,9 +480,9 @@ func main() {
 		wd = filepath.Dir(filepath.Dir(exe))
 	}
 	a.root = wd
-	a.inDir = wd
+	a.vidDir = filepath.Join(wd, "input_video")
+	a.audDir = filepath.Join(wd, "input_audio")
 	a.outDir = wd
-	a.loadMeta() // adopts step1/ dirs when step 1 has run before
 
 	app := gtk.NewApplication("li.jos.autocut", gio.ApplicationFlagsNone)
 	app.ConnectActivate(func() { a.build(app) })
@@ -243,7 +491,10 @@ func main() {
 
 // ---- state -----------------------------------------------------------------
 
-// loadMeta reads step1/meta.env and points the later stages at step1/'s dirs.
+// loadMeta reads step1/meta.env: the primary video and recording of the last
+// run, and the frame settings it ran with. Its existence is also the marker
+// that step 1 has run at all -- either of the two files may be missing from a
+// legitimate session, so the keys are not that marker.
 func (a *App) loadMeta() map[string]string {
 	m := map[string]string{}
 	b, err := os.ReadFile(filepath.Join(a.outDir, "step1", "meta.env"))
@@ -255,24 +506,28 @@ func (a *App) loadMeta() map[string]string {
 			m[k] = v
 		}
 	}
-	if m["AUDIO_BASE"] != "" && m["VIDEO_BASE"] != "" {
-		a.voiceDir = filepath.Join(a.outDir, "step1", m["AUDIO_BASE"])
-		a.videoDir = filepath.Join(a.outDir, "step1", m["VIDEO_BASE"])
-		a.source = m["VIDEO_FILE"]
-	}
 	return m
 }
 
-// snapSources caches the checked sources. Background runners must never touch
-// the list widgets -- GTK objects belong to the GUI thread -- so every run
-// takes this snapshot first and works from it.
+// snapSources caches the session's sources. Background runners must never touch
+// the list widget -- GTK objects belong to the GUI thread -- so every run takes
+// this snapshot first and works from it.
+//
+// The pair it hands back is the list split by role: the footage, then
+// everything else. Every source is in exactly one of the two, which is what
+// makes appending them the whole session -- the reason a video that is also a
+// voice is one row here and not one row in each of two lists.
 func (a *App) snapSources() (vids, auds []string) {
-	if a.vidList == nil || a.audList == nil {
+	if a.srcList == nil {
 		return a.snappedSources()
 	}
-	vids, auds = a.vidList.selected(), a.audList.selected()
+	vids, auds = a.srcList.split()
+	var narr [narratorSlots]string
+	for n := 1; n <= narratorSlots; n++ {
+		narr[n-1] = a.srcList.narratorPath(n)
+	}
 	a.srcMu.Lock()
-	a.selVid, a.selAud = vids, auds
+	a.selVid, a.selAud, a.selNarr = vids, auds, narr
 	a.srcMu.Unlock()
 	return
 }
@@ -283,16 +538,33 @@ func (a *App) snappedSources() (vids, auds []string) {
 	return a.selVid, a.selAud
 }
 
-func listMedia(dir string) []string {
-	ents, _ := os.ReadDir(dir)
-	var out []string
-	for _, e := range ents {
-		if !e.IsDir() && mediaExt[strings.ToLower(filepath.Ext(e.Name()))] {
-			out = append(out, e.Name())
-		}
+// narratorPath is the recording tagged with slot n, from the snapshot -- so a
+// runner can ask who narrator 2 is without touching a widget.
+func (a *App) narratorPath(n int) string {
+	if n < 1 || n > narratorSlots {
+		return ""
 	}
-	sort.Strings(out)
-	return out
+	a.srcMu.Lock()
+	defer a.srcMu.Unlock()
+	return a.selNarr[n-1]
+}
+
+// voiceSource is the recording the narration is cloned from: narrator 1, or --
+// for a session nobody has tagged -- the same guess the pipeline made before
+// the tags existed, the first recording, and failing that the first source at
+// all, which is the single-video session.
+func (a *App) voiceSource() string {
+	if p := a.narratorPath(1); p != "" {
+		return p
+	}
+	vids, auds := a.snappedSources()
+	if len(auds) > 0 {
+		return auds[0]
+	}
+	if len(vids) > 0 {
+		return vids[0]
+	}
+	return ""
 }
 
 // ---- UI --------------------------------------------------------------------
@@ -311,9 +583,22 @@ func (a *App) build(app *gtk.Application) {
 		os.Exit(1)
 	}
 	a.player.OnState = a.updateRunControls
+	a.player.OnError = a.playerErr("the preview")
 
 	a.win = gtk.NewApplicationWindow(app)
 	a.win.SetTitle("autocut")
+	// the few styles of our own: the no-timestamp flag on a source row, and the
+	// settings dialog's test verdicts. Plain GTK only promises the semantic
+	// warning/success classes on a handful of widgets, so the colors are stated
+	// here rather than hoped for from the theme.
+	css := gtk.NewCSSProvider()
+	css.LoadFromData(".stamp-warn { color: #e5a50a; } " +
+		".test-ok { color: #26a269; } .test-bad { color: #c01c28; } " +
+		// the bars a preview's aspect leaves over, in the color every other
+		// player puts there instead of the page background (see videoFrame)
+		".videoframe { background-color: #101010; }")
+	gtk.StyleContextAddProviderForDisplay(gtk.BaseWidget(a.win).Display(), css,
+		gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 	// fits a 1366x768 laptop with room for the panel: every page is either
 	// scrolled or split by a divider, so a bigger screen is worth more space
 	// but no page depends on having it
@@ -335,6 +620,11 @@ func (a *App) build(app *gtk.Application) {
 	setup.SetTooltipText("Settings — the LLM and audio.cpp endpoints")
 	setup.ConnectClicked(a.setupDialog)
 	head.PackEnd(setup)
+	info := gtk.NewMenuButton()
+	info.SetIconName("help-about-symbolic")
+	info.SetTooltipText("What this step does")
+	info.SetPopover(a.helpPopover())
+	head.PackEnd(info)
 	a.win.SetTitlebar(head)
 
 	// run controls exist BEFORE the pages: page builders refresh their info
@@ -364,49 +654,48 @@ func (a *App) build(app *gtk.Application) {
 	// looking at would not.
 	a.stack.SetHhomogeneous(false)
 	a.stack.SetVhomogeneous(false)
+	a.stack.SetVExpand(true)
 	a.stack.AddNamed(a.buildStep1(), "step1")
-	a.stack.AddNamed(a.buildStep5Voice(), "voice")
-	a.stack.AddNamed(a.buildUnderstand(), "understand")
+	a.stack.AddNamed(a.buildUnderstand(), "step2")
+	a.stack.AddNamed(a.buildStep3(), "step3")
 	a.stack.AddNamed(a.buildStep4(), "step4")
-	a.stack.AddNamed(a.buildStep5(), "narrate")
-	a.stack.AddNamed(a.buildStep6(), "produce")
+	a.stack.AddNamed(a.buildStep5(), "step5")
 
-	// custom sidebar instead of GtkStackSidebar: its rows can gray out and
-	// carry a hover hint, which the stock widget cannot do
-	a.side = gtk.NewListBox()
-	a.side.AddCSSClass("navigation-sidebar")
-	a.side.SetSelectionMode(gtk.SelectionSingle)
-	for _, title := range []string{"1) Inputs / STT / Frames", "2) Narration Voice",
-		"3) Describe + Transcript", "4) Cut", "5) Narrate", "6) Produce"} {
-		l := gtk.NewLabel(title)
-		l.SetXAlign(0)
-		l.SetMarginTop(8)
-		l.SetMarginBottom(8)
-		l.SetMarginStart(6)
-		a.side.Append(l)
+	// Tabs, not a sidebar down the left. The steps are a fixed five, so a list
+	// spent 170px of width on five rows and a column of empty space under them;
+	// as a group of toggle buttons they fit the header bar, which is already
+	// there -- the page gets the width back and gives up no height for it.
+	// Hand-rolled rather than a GtkStackSwitcher, because a tab has to be able
+	// to gray out and say what is missing, which the stock widget cannot do.
+	tabRow := gtk.NewBox(gtk.OrientationHorizontal, 0)
+	tabRow.AddCSSClass("linked") // one segmented control, not five loose buttons
+	for i, s := range steps {
+		i, b := i, gtk.NewToggleButtonWithLabel(s.label)
+		b.SetTooltipText(s.tip)
+		if i > 0 {
+			b.SetGroup(a.tabs[0]) // radio behaviour: some page is always current
+		}
+		b.ConnectToggled(func() {
+			// the other half of every switch is a tab going inactive, and the
+			// bounce below re-toggles two more -- only the one being entered acts
+			if a.tabGuard || !b.Active() {
+				return
+			}
+			if a.stepLocked(i) {
+				a.showStep(a.stack.VisibleChildName()) // bounce: the page did not move
+				// the same sentence the tooltip carries: a click is how you find
+				// out the tab is closed, so it must not answer with less than
+				// hovering it would have
+				a.setStatus(steps[i].wait)
+				return
+			}
+			a.showStep(steps[i].name)
+		})
+		a.tabs = append(a.tabs, b)
+		tabRow.Append(b)
 	}
-	pageNames := []string{"step1", "voice", "understand", "step4", "narrate", "produce"}
-	a.side.ConnectRowSelected(func(row *gtk.ListBoxRow) {
-		if row == nil || a.sideGuard {
-			return
-		}
-		// the voice step (1) is never gated: picking and hearing a reference
-		// voice needs nothing from the earlier steps except for "my own voice",
-		// which says so itself when the diarization is missing
-		locked := map[int]bool{2: a.step2Locked, 3: a.step4Locked,
-			4: a.narrLocked, 5: a.prodLocked}
-		if locked[row.Index()] {
-			a.sideGuard = true
-			a.side.SelectRow(a.side.RowAtIndex(0))
-			a.sideGuard = false
-			a.setStatus("finish the earlier steps first")
-			return
-		}
-		a.stack.SetVisibleChildName(pageNames[row.Index()])
-		a.updateRunControls() // ▶ ⏹ belong to the new page's playback now
-	})
-	a.side.SelectRow(a.side.RowAtIndex(0))
-	a.side.SetSizeRequest(170, -1)
+	head.SetTitleWidget(tabRow)
+	a.showStep("step1")
 
 	// shared log + status across all pages: one bottom row, the status text
 	// living in the expander header so nothing reserves empty space
@@ -445,19 +734,40 @@ func (a *App) build(app *gtk.Application) {
 	ctlRow.Append(a.stopBtn)
 	ctlRow.Append(a.progress)
 
-	body := gtk.NewPaned(gtk.OrientationHorizontal)
-	body.SetStartChild(a.side)
-	body.SetEndChild(a.stack)
-	body.SetPosition(170)
-	body.SetVExpand(true)
+	bottom := gtk.NewBox(gtk.OrientationVertical, 0)
+	// a hard edge above the control/log rows, so the page ending there reads as
+	// a status bar rather than as widgets stopping mid-air
+	bottom.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
+	bottom.Append(ctlRow)
+	bottom.Append(a.logExp)
 
-	outer := gtk.NewBox(gtk.OrientationVertical, 0)
-	outer.Append(body)
-	// a hard edge above the control/log rows, so the sidebar and page ending
-	// there reads as a status bar rather than as widgets stopping mid-air
-	outer.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
-	outer.Append(ctlRow)
-	outer.Append(a.logExp)
+	// The log against the page above it, on a divider. How much log you want is
+	// a per-moment question -- all of it while a run talks, none of it while
+	// cutting -- and it was a fixed 220 px that the page had to live around.
+	// Only the page takes the window's extra height; the log keeps whatever it
+	// was dragged to, and cannot be dragged over the run controls.
+	outer := gtk.NewPaned(gtk.OrientationVertical)
+	outer.SetStartChild(a.stack)
+	outer.SetEndChild(bottom)
+	outer.SetResizeStartChild(true)
+	outer.SetResizeEndChild(false)
+	outer.SetShrinkEndChild(false)
+	// Two halves, and both are needed. The expander and its scroller have to be
+	// told to fill what the divider gives them, or the log sits at its natural
+	// height under an empty stretch of window (same trick as the settings
+	// dialog). And collapsing it hands the height back rather than leaving the
+	// divider parked where a log nobody can see used to be -- position(-1) is
+	// how a GtkPaned is told to forget a dragged position.
+	logGrow := func() {
+		on := a.logExp.Expanded()
+		logScroll.SetVExpand(on)
+		a.logExp.SetVExpand(on)
+		if !on {
+			outer.SetPosition(-1)
+		}
+	}
+	a.logExp.NotifyProperty("expanded", logGrow)
+	logGrow()
 	a.win.SetChild(outer)
 
 	// pick up where the last session left off
@@ -466,169 +776,144 @@ func (a *App) build(app *gtk.Application) {
 	}
 
 	a.updateGates()
-	a.updateStep4Info()
-	a.updateStep6Info()
+	a.updateStep3Info()
+	a.updateStep5Info()
 	a.win.SetVisible(true)
 }
 
-// updateGates grays sidebar rows whose prerequisites are missing, with
-// the reason on hover; clicking a locked row just bounces back.
+// updateGates grays the tabs whose prerequisites are missing and puts the
+// reason where the description usually is; clicking a locked tab bounces back.
+// Graying rather than desensitizing is the point: an insensitive button gets no
+// hover, so the one place that says what is missing would be the one place you
+// cannot reach.
+//
+// Describe used to gate Transcript from the sidebar. They share a page now, so
+// the ordering between them is the page's business, not a locked tab's.
 func (a *App) updateGates() {
-	if a.side == nil {
+	if len(a.tabs) == 0 {
 		return
 	}
-	a.step2Locked = a.loadMeta()["VIDEO_BASE"] == ""
-	setRow := func(idx int, locked bool, hint string) {
-		row := a.side.RowAtIndex(idx)
-		w := gtk.BaseWidget(row.Child())
-		if locked {
+	// step 1 left its record, so there are transcripts to describe and fix. Not
+	// "there is a video in it": a session of recordings has nothing to see and
+	// still has everything to read.
+	a.step2Locked = len(a.loadMeta()) == 0
+	a.step3Locked = !exists(filepath.Join(a.transcriptDir(), "session.tsv"))
+	a.step4Locked = !exists(a.cutPath())
+	a.step5Locked = !exists(a.cutPath())
+	for i, s := range steps {
+		w := gtk.BaseWidget(a.tabs[i].Child()) // the label, so the button keeps its frame
+		if a.stepLocked(i) {
 			w.AddCSSClass("dim-label")
-			row.SetTooltipText(hint)
+			a.tabs[i].SetTooltipText(s.wait)
 		} else {
 			w.RemoveCSSClass("dim-label")
-			row.SetTooltipText("")
+			a.tabs[i].SetTooltipText(s.tip)
 		}
 	}
-	a.step4Locked = !exists(filepath.Join(a.outDir, "step3", "session.tsv"))
-	a.narrLocked = !exists(a.cutPath())
-	a.prodLocked = !exists(a.cutPath())
-	// the hints name the step rather than its number: the numbering has moved
-	// twice already, and a tooltip pointing at the wrong row is worse than none
-	setRow(2, a.step2Locked, "Finish Inputs first — this step needs its transcripts and frames")
-	setRow(3, a.step4Locked, "Finish Describe + Transcript first — the cut works on the session timeline")
-	setRow(4, a.narrLocked, "Finish Cut first — narration is written for the cut's clips")
-	setRow(5, a.prodLocked, "Finish Cut first — there is no cut to produce a video from")
-	// Describe used to gate Transcript from the sidebar. They share a page now,
-	// so the ordering between them is the page's business, not a locked row's.
-	name := a.stack.VisibleChildName()
-	if (name == "understand" && a.step2Locked) ||
-		(name == "step4" && a.step4Locked) || (name == "narrate" && a.narrLocked) ||
-		(name == "produce" && a.prodLocked) {
-		a.sideGuard = true
-		a.side.SelectRow(a.side.RowAtIndex(0))
-		a.sideGuard = false
-		a.stack.SetVisibleChildName("step1")
+	if a.stepLocked(stepIndex(a.stack.VisibleChildName())) {
+		a.showStep("step1")
 	}
 }
 
 func (a *App) buildStep1() gtk.Widgetter {
-	a.vidList = newSourceList(a.inDir, "input_video", nil)
-	// the voice step's "my own voice" row names the recording it would be cut
-	// from, so it has to be told when that stops being the same file
-	a.audList = newSourceList(a.inDir, "input_audio", func() {
+	// every edit to the list changes what a run would see and who the narration
+	// would be spoken by, so the snapshot and the voice picker are refreshed
+	// from here rather than from each of the six things that can edit a row
+	a.srcList = newSourceList(func() {
+		a.snapSources()
 		if a.voice5 != nil {
-			a.voice5.refreshOwn()
+			a.voice5.refreshNarrators()
+		}
+		a.updateStep1Info()
+		if a.und != nil {
+			a.und.refresh()
 		}
 	})
 
-	// the two folder rows, first: they apply to every step. Buttons lead, the
-	// path follows -- an expanding path in the middle would push Choose to
-	// the far edge, away from what it changes.
-	dirRow := func(caption, tip, dir string, choose func(), open func()) (*gtk.Box, *gtk.Label) {
-		btn := gtk.NewButtonWithLabel("Choose…")
-		btn.ConnectClicked(choose)
-		openBtn := gtk.NewButtonFromIconName("folder-open-symbolic")
-		openBtn.SetTooltipText(tip)
-		openBtn.ConnectClicked(open)
-		lbl := gtk.NewLabel(dir)
-		lbl.SetXAlign(0)
-		lbl.SetHExpand(true)
-		lbl.SetEllipsize(pango.EllipsizeStart)
-		row := gtk.NewBox(gtk.OrientationHorizontal, 8)
-		row.Append(btn)
-		row.Append(openBtn)
-		row.Append(gtk.NewLabel(caption))
-		row.Append(lbl)
-		return row, lbl
-	}
-	var inRow, outRow *gtk.Box
-	inRow, a.inLabel = dirRow("Input folder:", "Open the input folder", a.inDir,
-		a.chooseInDirDialog, func() { a.openFolder(a.inDir) })
-	outRow, a.outLabel = dirRow("Output folder:", "Open the output folder", a.outDir,
-		a.chooseOutDirDialog, func() { a.openFolder(a.outDir) })
-	// stacked, not abreast: side by side, the pair demanded twice the width of
-	// the widest row before anything could shrink, and a narrow window spent it
-	// on the one thing that cannot be ellipsized away -- the buttons -- leaving
-	// the path cut off at both ends
-	dirs := gtk.NewBox(gtk.OrientationVertical, 6)
-	dirs.Append(inRow)
-	dirs.Append(outRow)
+	var outRow *gtk.Box
+	outRow, a.outLabel = a.outDirRow("Output folder:")
 
-	srcPane := func(title string, s *sourceList, under gtk.Widgetter) gtk.Widgetter {
-		l := gtk.NewLabel(title)
-		l.SetXAlign(0)
-		// the heading is a caption, not a constraint: unellipsized it sets a
-		// floor under the whole pane, and the pane is the part meant to shrink
-		l.SetEllipsize(pango.EllipsizeEnd)
-		l.SetTooltipText(title)
-		l.AddCSSClass("heading")
-		sc := gtk.NewScrolledWindow()
-		sc.SetChild(s.box)
-		sc.SetVExpand(true)
-		b := gtk.NewBox(gtk.OrientationVertical, 4)
-		b.SetHExpand(true)
-		b.Append(l)
-		b.Append(sc)
-		if under != nil {
-			b.Append(under)
-		}
-		return b
-	}
-
-	// the frame controls belong to the videos, so they sit under their box, on
-	// one row: how often, then how big. Discrete stops -- a linear scale would
-	// bury 0.1..0.5 in one pixel.
-	a.interval = gtk.NewScaleWithRange(gtk.OrientationHorizontal,
-		0, float64(len(frameStops)-1), 1)
-	a.interval.SetDrawValue(false)
-	a.interval.SetHExpand(true)
-	for i, l := range frameStopLabels {
-		a.interval.AddMark(float64(i), gtk.PosBottom, l)
-	}
-	a.setFrameInterval(1)
+	// the frame controls: how often, then how big. A stepper over the same
+	// discrete stops the slider had, each..5s, typable by hand.
+	a.interval = newFreqPick()
 
 	labels := make([]string, len(scalePresets))
 	for i, p := range scalePresets {
 		labels[i] = p.Label
 	}
 	a.scalePick = gtk.NewDropDownFromStrings(labels)
-	a.scalePick.SetTooltipText("Left on Resize the frames keep the video's own size")
+	a.scalePick.SetTooltipText("Frame size — Original keeps the video's own size")
 	a.setFrameScale("original")
 	a.scalePick.SetVAlign(gtk.AlignCenter)
 
-	vidOpts := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	vidOpts.Append(gtk.NewLabel("Freq:"))
-	vidOpts.Append(a.interval)
-	vidOpts.Append(a.scalePick)
+	// One list, the width of the page. Two lists split by folder was the older
+	// idea and it could not say the thing this page is mostly about: a screen
+	// recording is the footage AND a voice, and the voice on it is everyone
+	// else. Each row says what its file is for instead.
+	addBtn := gtk.NewButtonWithLabel("Add files…")
+	addBtn.SetTooltipText("Add recordings or footage — several at once")
+	addBtn.ConnectClicked(a.addFilesDialog)
+	addDirBtn := gtk.NewButtonWithLabel("Add folder…")
+	addDirBtn.SetTooltipText("Add everything playable in a folder")
+	addDirBtn.ConnectClicked(a.addFolderDialog)
+	// what the symbols on a row mean, once, above the rows -- a tooltip answers
+	// that only after you already suspect the answer. The same icons the rows
+	// use, because a legend drawn in anything else is a second thing to learn.
+	// The warning is NOT here: a permanent yellow triangle in the legend read
+	// as an active warning about the files below it. It explains itself on the
+	// row it appears on.
+	legend := gtk.NewBox(gtk.OrientationHorizontal, 4)
+	legend.SetHExpand(true)
+	legend.SetHAlign(gtk.AlignEnd)
+	for _, l := range []struct{ icon, text string }{
+		{"camera-video-symbolic", "footage"},
+		{"audio-input-microphone-symbolic", "narrator"},
+		{"user-trash-symbolic", "remove"},
+	} {
+		lbl := gtk.NewLabel(l.text)
+		lbl.AddCSSClass("dim-label")
+		lbl.SetMarginEnd(6)
+		legend.Append(gtk.NewImageFromIconName(l.icon))
+		legend.Append(lbl)
+	}
+	addRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	addRow.Append(addBtn)
+	addRow.Append(addDirBtn)
+	addRow.Append(legend)
 
-	// a divider, not a fixed split: which list needs the width depends on how
-	// long the filenames are, and that is the recorder's decision, not ours
-	vidsPane := srcPane("Input videos — checked play top to bottom", a.vidList, vidOpts)
-	audsPane := srcPane("Voice recordings — checked, in order", a.audList, nil)
-	gtk.BaseWidget(vidsPane).SetMarginEnd(8) // air either side of the handle
-	gtk.BaseWidget(audsPane).SetMarginStart(8)
-	sources := gtk.NewPaned(gtk.OrientationHorizontal)
+	head := gtk.NewLabel("Sources")
+	head.SetXAlign(0)
+	head.SetEllipsize(pango.EllipsizeEnd)
+	head.AddCSSClass("heading")
+	head.SetTooltipText("Every file here is transcribed, and placed on the session clock by the timestamp in its name")
+	listScroll := gtk.NewScrolledWindow()
+	listScroll.SetChild(a.srcList.box)
+	listScroll.SetVExpand(true)
+	sources := gtk.NewBox(gtk.OrientationVertical, 4)
 	sources.SetVExpand(true)
-	sources.SetStartChild(vidsPane)
-	sources.SetEndChild(audsPane)
-	// shrink off, so the divider stops at what a pane actually needs. Left on
-	// (the GTK default) a pane is allocated below its minimum and simply
-	// clipped -- which is how the right-hand list came to run off the window
-	// and take the page's margin with it.
-	sources.SetShrinkStartChild(false)
-	sources.SetShrinkEndChild(false)
-	sources.SetPosition(620)
+	sources.Append(head)
+	sources.Append(addRow)
+	sources.Append(listScroll)
 
-	// one line, not a listing: on a finished step 1 the listing is thousands of
-	// frames, and the only questions it has to answer are how much is there and
-	// whether it is from this run or last week's
+	// The bottom line, one line: how the frames are taken, then where
+	// everything lands and what is already there -- the two ends of the same
+	// run. A count, not a listing: on a finished step 1 the listing is
+	// thousands of frames, and the names of those are in the log. What this has
+	// to answer is how much is there and whether it is from this run or last
+	// week's.
 	a.s1out = gtk.NewLabel("")
 	a.s1out.SetXAlign(0)
 	outLbl := gtk.NewLabel("Outputs:")
 	outLbl.AddCSSClass("heading")
-	outRow2 := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	outRow2.Append(outLbl)
-	outRow2.Append(a.s1out)
+	outRow.Append(outLbl)
+	outRow.Append(a.s1out)
+	outRow.SetHExpand(true)
+	outRow.SetHAlign(gtk.AlignEnd) // the whole group sits at the right edge, as on Describe
+	bottom := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	bottom.Append(gtk.NewLabel("Freq:"))
+	bottom.Append(a.interval.box)
+	bottom.Append(a.scalePick)
+	bottom.Append(outRow)
 
 	a.updateStep1Info()
 
@@ -637,22 +922,42 @@ func (a *App) buildStep1() gtk.Widgetter {
 	box.SetMarginStart(16)
 	box.SetMarginEnd(16)
 	box.SetMarginBottom(8)
-	box.Append(dirs)
 	box.Append(sources)
-	box.Append(outRow2)
+	box.Append(bottom) // frames and outputs, under the list both are made from
 	return box
 }
 
 func (a *App) rescanAll() {
-	a.vidList.rescan()
-	a.audList.rescan()
-	a.loadMeta()
-	a.updateGates()
+	// the list is the session, so a rescan cannot re-read it from a folder --
+	// what it can do is notice that a source is no longer on disk. Say which:
+	// a row that quietly disappeared is how a render comes out missing an angle.
+	for _, gone := range a.srcList.prune() {
+		a.logf("!!! dropped %s -- it is no longer there", gone)
+	}
+	a.updateGates() // which re-reads step 1's record
 	a.updateStep1Info()
 	a.und.refresh()
+	a.updateStep3Info()
 	a.updateStep4Info()
-	a.updateStep6Info()
+	a.updateStep5Info()
 	a.setStatus("rescanned")
+}
+
+// updateStep4Info re-reads the narration from disk. It was the one step a
+// rescan skipped: delete step4/ and the page went on showing the narration it
+// had in memory and an Outputs line counting files that were no longer there.
+// Nothing is lost by re-reading -- every edit on that page is written as it is
+// typed -- and after a rescan the folder is the answer, including when the
+// answer is that there is nothing in it.
+func (a *App) updateStep4Info() {
+	n := a.narr5
+	if n == nil || n.list == nil {
+		return // page not built yet
+	}
+	n.load()
+	n.rebuildRows()
+	n.updateInputs()
+	n.updateOut()
 }
 
 func (a *App) updateStep1Info() {
@@ -676,23 +981,25 @@ func (a *App) step1Clicked() {
 	if a.running {
 		return
 	}
-	vids := a.vidList.selected()
-	auds := a.audList.selected()
-	if len(vids) == 0 || len(auds) == 0 {
-		a.setStatus("select at least one video and one voice recording")
+	// one source is enough: a session can be a single screen recording that is
+	// both the footage and every voice on it, and it can equally be a recording
+	// with no footage at all
+	vids, auds := a.snapSources()
+	if len(vids)+len(auds) == 0 {
+		a.setStatus("add at least one source on the Inputs step")
+		return
+	}
+	if x, y := a.srcList.clash(); x != "" {
+		a.logf("!!! %s and %s are both step1/%s -- rename one, or the second overwrites the first",
+			x, y, baseName(x))
+		a.setStatus(fmt.Sprintf("%s and %s have the same name — rename one",
+			filepath.Base(x), filepath.Base(y)))
 		return
 	}
 	// the working copy always reflects what actually ran
 	a.saveProjectTo(filepath.Join(a.root, "project.json"))
-	abs := func(rels []string) []string {
-		out := make([]string, len(rels))
-		for i, r := range rels {
-			out[i] = a.srcPath(r)
-		}
-		return out
-	}
 	scaleName, scaleVF := a.frameScale()
-	a.startStep1(abs(vids), abs(auds), a.frameInterval(), scaleName, scaleVF)
+	a.startStep1(vids, auds, a.frameInterval(), scaleName, scaleVF)
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -701,6 +1008,9 @@ func (a *App) setStatus(s string) { a.status.SetText(s) }
 
 func (a *App) logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...) // mirror to the launching terminal
+	if a.log == nil {
+		return // called before the window exists: stderr is the whole log
+	}
 	buf := a.log.Buffer()
 	end := buf.EndIter()
 	buf.Insert(end, fmt.Sprintf(format, args...)+"\n")

@@ -17,7 +17,7 @@ import (
 // The calls that leave the machine. Everything else in the tool is ffmpeg,
 // files and arithmetic, and none of that needs a guard.
 var remoteCalls = []string{
-	"a.step1(", "a.step2(", "a.step3(", // whole steps: STT, describe, fix
+	"a.step1(", "a.describeAll(", "a.fixTranscripts(", // whole steps: STT, describe, fix
 	"a.understand(",                 // the two of them back to back
 	"a.llmChat(", "a.llmChatRetry(", // the chat client itself
 	"a.speak(", // TTS

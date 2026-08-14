@@ -1,0 +1,211 @@
+package main
+
+// Undo has one way to go wrong that a mouse would not catch quickly: a snapshot
+// that shares its backing array with the live cut, so editing after an Add
+// silently rewrites history. This exercises exactly that.
+
+import (
+	"math"
+	"path/filepath"
+	"testing"
+)
+
+func newTestEd(t *testing.T) *cutEditor {
+	t.Helper()
+	return &cutEditor{a: &App{outDir: t.TempDir()}, pps: 4, thumbHt: 64}
+}
+
+func TestCutUndoRestores(t *testing.T) {
+	ed := newTestEd(t)
+	ed.segs = []cutSeg{{10, 20}, {30, 40}, {50, 60}}
+
+	ed.pushUndo()
+	ed.removeRange(28, 42) // drops the middle scene
+	if len(ed.segs) != 2 {
+		t.Fatalf("remove left %d segments, want 2: %v", len(ed.segs), ed.segs)
+	}
+
+	// a further edit must not reach back into the snapshot
+	ed.pushUndo()
+	ed.segs = append(ed.segs[:0], ed.segs[1:]...)
+	ed.persist()
+
+	ed.segs = ed.undo[len(ed.undo)-1]
+	ed.undo = ed.undo[:len(ed.undo)-1]
+	if len(ed.segs) != 2 || ed.segs[0] != (cutSeg{10, 20}) || ed.segs[1] != (cutSeg{50, 60}) {
+		t.Fatalf("first undo gave %v, want [{10 20} {50 60}]", ed.segs)
+	}
+	ed.segs = ed.undo[len(ed.undo)-1]
+	if len(ed.segs) != 3 || ed.segs[1] != (cutSeg{30, 40}) {
+		t.Fatalf("second undo gave %v, want the original three", ed.segs)
+	}
+}
+
+// Revert must take back the hand-made delta and leave the checkpoint standing.
+// The failure that matters is the opposite of undo aliasing: a baseline that
+// tracks the live cut, so Revert becomes a no-op or wipes the suggestion too.
+func TestCutRevertKeepsBaseline(t *testing.T) {
+	ed := newTestEd(t)
+	ed.segs = []cutSeg{{100, 120}, {200, 220}} // as if suggested
+	ed.setBase()
+	if !sameCut(ed.segs, ed.base) {
+		t.Fatal("baseline does not match the cut it was taken from")
+	}
+
+	ed.segs = append(ed.segs, cutSeg{300, 310}) // ten Adds, abridged
+	ed.segs = append(ed.segs, cutSeg{400, 410})
+	ed.coalesce()
+	ed.persist()
+	ed.removeRange(195, 225) // and a hand Remove of a suggested scene
+	if sameCut(ed.segs, ed.base) {
+		t.Fatal("baseline followed the edits")
+	}
+
+	ed.pushUndo()
+	ed.segs = append([]cutSeg(nil), ed.base...)
+	ed.persist()
+	if !sameCut(ed.segs, []cutSeg{{100, 120}, {200, 220}}) {
+		t.Fatalf("revert gave %v, want the suggestion back", ed.segs)
+	}
+
+	// and the revert itself is undoable
+	ed.segs = ed.undo[len(ed.undo)-1]
+	if len(ed.segs) != 3 {
+		t.Fatalf("undo after revert gave %v, want the 3 edited segments", ed.segs)
+	}
+}
+
+func TestCutSegAt(t *testing.T) {
+	ed := newTestEd(t)
+	ed.segs = []cutSeg{{10, 20}, {30, 40}}
+	for _, c := range []struct {
+		t    float64
+		want int
+	}{{10, 0}, {19.9, 0}, {20, -1}, {25, -1}, {35, 1}, {99, -1}} {
+		if got := ed.segAt(c.t); got != c.want {
+			t.Errorf("segAt(%g) = %d, want %d", c.t, got, c.want)
+		}
+	}
+}
+
+func TestCutPersistRoundTrip(t *testing.T) {
+	ed := newTestEd(t)
+	ed.segs = []cutSeg{{1, 5}, {9, 12}}
+	ed.persist()
+	if !exists(filepath.Join(ed.a.cutDir(), "cut.json")) {
+		t.Fatal("persist wrote no cut.json")
+	}
+}
+
+// TestZoomedOutTimelineFitsItsWindow: at the zoom floor the whole session is on
+// screen, so the scrollbar has nothing to move and (being Automatic) is not
+// there at all. The floor used to be window/duration, which forgot that the
+// hatched gap between two recordings is a fixed 26px and does not shrink with
+// the zoom -- so a session of five recordings stayed 104px too wide however far
+// you zoomed out, and the bar still slid.
+func TestZoomedOutTimelineFitsItsWindow(t *testing.T) {
+	for _, c := range []struct {
+		view, dur float64
+		n         int
+	}{
+		{1200, 3600, 1},   // one long recording
+		{1200, 3600, 5},   // four gaps between five
+		{640, 90, 12},     // narrow window, mostly gaps
+		{1200, 0.5, 3},    // shorter than the window is wide
+		{300, 7200, 40},   // gaps alone already wider than the window
+		{1200, 3600, 100}, // and far past it
+	} {
+		gaps := float64(c.n-1) * gapPx
+		pps := fitPps(c.view, c.dur, c.n)
+		w := int(c.dur*pps+gaps) + 1 // exactly what relayout lays out with that pps
+		switch {
+		case gaps+1 >= c.view:
+			// the gaps are a fixed width by design (a 30 minute break is not 30
+			// minutes of scrollbar), so enough of them cannot be zoomed away.
+			// Here the bar moves because there really is timeline out of sight.
+			if float64(w) <= c.view {
+				t.Errorf("view %g, %d recordings: %g px of gaps somehow fit in %d px",
+					c.view, c.n, gaps, w)
+			}
+		case float64(w) > c.view:
+			t.Errorf("view %g, %g s over %d recordings: zoomed out to %g px/s the timeline "+
+				"is %d px wide -- the scrollbar still moves", c.view, c.dur, c.n, pps, w)
+		}
+		if pps < 0 {
+			t.Errorf("view %g, %g s over %d recordings: negative zoom %g", c.view, c.dur, c.n, pps)
+		}
+	}
+	// before the first allocation there is no width to fit into, and nothing
+	// loaded has no duration to fit: both must be a floor of zero rather than a
+	// division by it
+	if got := fitPps(0, 3600, 2); got != 0 {
+		t.Errorf("with no allocation yet, floor = %g, want 0", got)
+	}
+	if got := fitPps(1200, 0, 0); got != 0 {
+		t.Errorf("with nothing loaded, floor = %g, want 0", got)
+	}
+}
+
+// The tracks draw only what is on screen -- an hour at the top zoom is 432,000
+// px of timeline and no redraw may cost that. What the clipping must not do is
+// change WHICH frames are drawn: only every step'th one is, so a range that
+// began at the edge of the view instead of on the stride would pick a different
+// set at every scroll position and the thumbnails would crawl and reshuffle as
+// the timeline moved. Sliding a window across a recording must therefore visit
+// exactly the frames one unclipped pass would have.
+func TestVisibleFramesAreTheSameFramesEitherWay(t *testing.T) {
+	const view = 1400.0 // a timeline window of about that many px
+	for _, step := range []int{1, 2, 7, 115} {
+		v := &tlVideo{interval: 3, pxOrigin: 40, frames: make([]string, 400)}
+		const pps = 4.0
+		want := map[int]bool{}
+		for i := 0; i < len(v.frames); i += step {
+			want[i] = true
+		}
+		got := map[int]bool{}
+		width := v.pxOrigin + float64(len(v.frames))*v.interval*pps
+		for x := -view; x < width+view; x += view / 3 { // scrolled past both ends
+			first, last := v.frameRange(pps, x, x+view, step)
+			if first%step != 0 {
+				t.Fatalf("step %d at x %g: range starts at %d, off the stride", step, x, first)
+			}
+			if first < 0 || last > len(v.frames) || last < first {
+				t.Fatalf("step %d at x %g: range [%d,%d) is not inside 0..%d",
+					step, x, first, last, len(v.frames))
+			}
+			for i := first; i < last; i += step {
+				got[i] = true
+			}
+		}
+		if len(got) != len(want) {
+			t.Errorf("step %d: sliding the view over the whole recording drew %d frames, "+
+				"one pass over all of it draws %d", step, len(got), len(want))
+		}
+		for i := range want {
+			if !got[i] {
+				t.Errorf("step %d: frame %d is never drawn by any view position", step, i)
+				break
+			}
+		}
+	}
+
+	// and nothing is drawn for a recording that is off screen entirely
+	v := &tlVideo{interval: 1, pxOrigin: 10_000, frames: make([]string, 100)}
+	if first, last := v.frameRange(8, 0, 1400, 1); last > first {
+		t.Errorf("a recording 10,000 px to the right still draws frames [%d,%d)", first, last)
+	}
+
+	// the ruler's visible span, same idea: at the top zoom a tick a second over
+	// an hour is 3600 labels, of which a window holds about twenty
+	ticks := 0
+	for _, pps := range []float64{0.33, 4, 20, 120} {
+		stepS := tickStep(pps)
+		from, to := 1000.0/pps, (1000.0+view)/pps // a window somewhere in the middle
+		for t := math.Ceil(from/stepS) * stepS; t < to; t += stepS {
+			ticks++
+		}
+	}
+	if ticks > 4*40 {
+		t.Errorf("%d ruler ticks across four zooms -- a window fits about 20 at any of them", ticks)
+	}
+}

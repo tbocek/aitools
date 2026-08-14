@@ -146,23 +146,27 @@ func TestApplyPromptsIsAFullSwitch(t *testing.T) {
 	}
 }
 
-// TestMigrateHintsFoldsNotesIntoThePrompt: describe and fix used to have a
-// notes box that the runner glued onto the system prompt at request time. The
-// box is gone, so a project written before the merge has to have its notes
-// moved into the prompt -- dropping them would change what the model is told
-// without changing anything visible.
+// TestMigrateHintsFoldsNotesIntoThePrompt: describe, fix and narrate used to
+// have a notes box that the runner glued onto the system prompt at request
+// time. The boxes are gone, so a project written before the merge has to have
+// its notes moved into the prompt -- dropping them would change what the model
+// is told without changing anything visible.
 func TestMigrateHintsFoldsNotesIntoThePrompt(t *testing.T) {
 	a := &App{}
 	a.applyPrompts(nil)
 	p := Project{
 		DescribeHints:   "the HUD number top left is ammo",
 		TranscriptHints: "SPEAKER_00 is Jan",
+		CutHints:        "this was the tournament final, keep the last round whole",
+		NarrateHints:    "open with an intro over the first clip",
 	}
 	a.migrateHints(p)
 
 	for _, c := range []struct{ key, note string }{
 		{"describe", "the HUD number top left is ammo"},
 		{"fix", "SPEAKER_00 is Jan"},
+		{"cut", "this was the tournament final, keep the last round whole"},
+		{"narrate", "open with an intro over the first clip"},
 	} {
 		got := a.prompt(c.key)
 		if !strings.Contains(got, c.note) {
@@ -179,7 +183,8 @@ func TestMigrateHintsFoldsNotesIntoThePrompt(t *testing.T) {
 	if got := a.prompt("describe"); got != before {
 		t.Errorf("a second load appended the notes again:\n%q", short(got))
 	}
-	if got := a.currentPrompts(); got["describe"] == "" || got["fix"] == "" {
+	if got := a.currentPrompts(); got["describe"] == "" || got["fix"] == "" ||
+		got["cut"] == "" || got["narrate"] == "" {
 		t.Errorf("folded-in notes are not stored as prompt edits: %v", got)
 	}
 	// nothing to fold is the common case and must leave the built-ins alone

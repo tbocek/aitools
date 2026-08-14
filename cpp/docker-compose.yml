@@ -177,10 +177,10 @@ services:
       --server-name 0.0.0.0
       --port 6969
   audio:
-    # audiocpp_server plus the WebUI on top of it, one container. The WebUI on
-    # its own only starts a server when someone clicks Load in the browser, so
-    # nothing would answer 8765 until a human showed up; AUDIOCPP_SERVER points
-    # it at the one started here instead of managing its own.
+    # One process: audiocpp_server serves both the HTTP API and the web UI, on
+    # the same port. This used to be two -- the server, plus a Python/Gradio
+    # WebUI on 7860 that had to be pointed at it -- until upstream compiled the
+    # UI into the binary and deleted the Python one.
     build:
       context: .
       dockerfile: Dockerfile.audio
@@ -195,28 +195,22 @@ services:
       - seccomp=unconfined
     restart: unless-stopped
     ports:
-      - "7860:7860"
-      # loopback only: this speaks for the GPU, nothing on the LAN needs it
+      # loopback only: this speaks for the GPU, nothing on the LAN needs it.
+      # API and browser UI both live here -- http://127.0.0.1:8765/
       - "127.0.0.1:8765:8080"
     environment:
-      # backend for the server below comes from audiocpp-server.json; these two
-      # only steer a WebUI-managed server, which AUDIOCPP_SERVER prevents.
-      - AUDIOCPP_BACKEND=cpu
-      - AUDIOCPP_NO_BROWSER=1
-      - AUDIOCPP_SERVER=http://127.0.0.1:8080
-      # WebUI realtime pipeline drives sounddevice server-side, same as vc2.
+      # the backend comes from audiocpp-server.json ("hip"). The realtime
+      # capture path drives portaudio server-side, same as vc2.
       - PULSE_SERVER=unix:/run/user/1000/pulse/native
     volumes:
-      # MODELS_ROOT is <repo>/models; GGUF packages land here via the WebUI's
-      # download manager, so persist them across recreates.
+      # MODELS_ROOT is <repo>/models; GGUF packages land here from the UI's
+      # download manager and from tools/model_manager_v2.py, so persist them
+      # across recreates. voices/ lives under it too and is what the server
+      # config's voice_dir points at.
       - /mnt/models/audiocpp:/home/arch/audio.cpp/models
       # Existing RVC voices: the rvc family loads user .pth checkpoints and
       # FAISS indexes directly via voice_model_path / retrieval_index_path.
       - /mnt/models/vc:/mnt/models/vc:ro
-      # "Built-in voice" dropdown = *.wav in this dir (plus a prompt_text
-      # transcript index). Mounted so reference voices survive recreates;
-      # drop any wav in here and hit the refresh arrow next to the dropdown.
-      - /mnt/models/audiocpp/voices:/home/arch/audio.cpp/webui/voice
       - /run/user/1000/pulse/native:/run/user/1000/pulse/native
       - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
       # Same path inside and out. voice_ref and the output wav travel as paths,
@@ -224,12 +218,14 @@ services:
       # them -- a /work-style mount would break the moment either side looked.
       - ${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}:${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}
       - ./audiocpp-server.json:/etc/audiocpp-server.json:ro
-    # server first, then the WebUI against it -- the wait is so the WebUI does
-    # not probe a port that has not been bound yet on a cold start.
+    # --ui serves the browser UI off this same port; --ui-management lets it
+    # load and unload models, which is the only way to change what this server
+    # offers without editing audiocpp-server.json and recreating the service.
     command: >-
-      bash -c "build/bin/audiocpp_server --config /etc/audiocpp-server.json &
-      until curl -sf http://127.0.0.1:8080/health >/dev/null; do sleep 0.5; done &&
-      exec python -u webui/webui.py"
+      build/bin/audiocpp_server
+      --config /etc/audiocpp-server.json
+      --ui
+      --ui-management
   vc3:
     build:
       context: .

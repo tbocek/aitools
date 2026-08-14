@@ -69,12 +69,139 @@ func TestOutputSummaryCountsEveryFrame(t *testing.T) {
 	}
 }
 
-// Sources are stored relative to the INPUT folder, not to root: the two are the
-// same only until someone chooses a different input folder.
-func TestSrcPathFollowsTheInputFolder(t *testing.T) {
-	a := &App{root: "/home/x/autocut", inDir: "/mnt/recordings"}
-	want := "/mnt/recordings/input_video/clip.mkv"
-	if got := a.srcPath("input_video/clip.mkv"); got != want {
-		t.Fatalf("srcPath = %s, want %s", got, want)
+// "Add folder" refuses a folder with nothing playable in it, rather than
+// reporting that it added nothing: picking the wrong folder is the likely
+// reason, and a silent no-op does not say which folder was looked at. This is
+// the chooser's guard; listMedia is what it asks.
+func TestOnlyAFolderWithMediaIsWorthSwitchingTo(t *testing.T) {
+	full := t.TempDir()
+	for _, n := range []string{"b.mkv", "a.flac", "notes.txt", "cover.png"} {
+		os.WriteFile(filepath.Join(full, n), []byte("x"), 0o644)
+	}
+	os.MkdirAll(filepath.Join(full, "sub"), 0o755) // a folder is not a source
+
+	if got := listMedia(full); len(got) != 2 || got[0] != "a.flac" || got[1] != "b.mkv" {
+		t.Errorf("listMedia = %v, want the two media files sorted by name", got)
+	}
+	// both ways a pick can be worthless, and both must read the same to the
+	// chooser: nothing to switch to
+	empty := t.TempDir()
+	os.WriteFile(filepath.Join(empty, "readme.md"), []byte("x"), 0o644)
+	for _, c := range []struct{ name, dir string }{
+		{"a folder with no media in it", empty},
+		{"a folder that does not exist", filepath.Join(empty, "nope")},
+	} {
+		if got := listMedia(c.dir); len(got) != 0 {
+			t.Errorf("%s: listMedia = %v, want none", c.name, got)
+		}
+	}
+}
+
+// The two folders are only where the choosers open now, but they are still what
+// a pre-merge project's half-relative source names are resolved against -- so
+// they have to come out of an old project pointing where they used to. The one
+// parent an older project named had to hold input_video/ and input_audio/.
+func TestOldProjectsKeepTheirSourceFolders(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		p            Project
+		wantV, wantA string
+	}{
+		{"a project written since the split",
+			Project{VidDir: "footage", AudDir: "/mnt/rec"}, "footage", "/mnt/rec"},
+		{"one written before it",
+			Project{InDir: "/mnt/session"}, "/mnt/session/input_video", "/mnt/session/input_audio"},
+		{"...whose input folder was the root itself",
+			Project{}, "input_video", "input_audio"},
+		{"one half-written by a version in between",
+			Project{InDir: "/mnt/session", AudDir: "/mnt/rec"}, "/mnt/session/input_video", "/mnt/rec"},
+	} {
+		if v, a := srcDirs(c.p); v != c.wantV || a != c.wantA {
+			t.Errorf("%s: srcDirs = (%q, %q), want (%q, %q)", c.name, v, a, c.wantV, c.wantA)
+		}
+	}
+
+	// and an empty in_dir must resolve to the root's two subfolders, not to the
+	// root twice -- that is the case that would silently list nothing
+	a := &App{root: "/home/x/autocut"}
+	v, _ := srcDirs(Project{})
+	if got, want := a.fromRoot(v), "/home/x/autocut/input_video"; got != want {
+		t.Fatalf("a project with no folders at all opens on %s, want %s", got, want)
+	}
+}
+
+// Sources are stored relative to root where they can be, so a project folder
+// that moves keeps working; anything outside it is stored as it is. The roles
+// travel with them: a project that came back with the footage flags or the
+// narrator tags lost is a session that renders the wrong frames in the wrong
+// voice, and nothing about that says "the project file lied".
+func TestSourcesRoundTripWithTheirRoles(t *testing.T) {
+	a := &App{root: "/home/x/autocut"}
+	items := []sourceItem{
+		{path: "/home/x/autocut/input_video/clip.mkv", footage: true},
+		{path: "/mnt/recordings/voice.flac", narrator: 1},
+		{path: "/mnt/recordings/mate.flac", narrator: 3},
+		{path: "/home/x/autocut/input_video/cam2.mp4", footage: true, narrator: 2},
+	}
+	var stored []ProjectSource
+	for _, it := range items {
+		stored = append(stored, ProjectSource{
+			Path: a.relToRoot(it.path), Footage: it.footage, Narrator: it.narrator})
+	}
+	if got, want := stored[0].Path, "input_video/clip.mkv"; got != want {
+		t.Errorf("a source under root is stored as %q, want %q", got, want)
+	}
+	if got, want := stored[1].Path, "/mnt/recordings/voice.flac"; got != want {
+		t.Errorf("a source outside root has nothing to be relative to, stored as %q", got)
+	}
+	back := a.projectSources(Project{Sources: stored})
+	if len(back) != len(items) {
+		t.Fatalf("%d sources went in, %d came back", len(items), len(back))
+	}
+	for i, it := range items {
+		if back[i] != it {
+			t.Errorf("source %d came back as %+v, want %+v", i, back[i], it)
+		}
+	}
+}
+
+// A project written before the two lists became one still has to open on the
+// same files, doing the same things. Its videos were the footage; its first
+// recording was what "my own voice" cloned -- a convention nothing stated --
+// and that is now the narrator 1 tag, which is the same choice said out loud.
+func TestOldProjectsBecomeSourcesWithTheirRoles(t *testing.T) {
+	root := t.TempDir()
+	vid, aud := filepath.Join(root, "input_video"), filepath.Join(root, "rec")
+	for _, d := range []string{vid, aud} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the legacy names, and the file each one has to resolve to
+	for _, n := range []string{filepath.Join(vid, "clip.mkv"),
+		filepath.Join(aud, "me.flac"), filepath.Join(aud, "mate.flac")} {
+		if err := os.WriteFile(n, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := &App{root: root, vidDir: vid, audDir: aud}
+	got := a.projectSources(Project{
+		Videos: []string{"input_video/clip.mkv"},
+		// stored when the recordings folder was called something else, so it
+		// resolves through the folder rather than through root
+		Audios: []string{"input_audio/me.flac", "input_audio/mate.flac"},
+	})
+	want := []sourceItem{
+		{path: filepath.Join(vid, "clip.mkv"), footage: true},
+		{path: filepath.Join(aud, "me.flac"), narrator: 1},
+		{path: filepath.Join(aud, "mate.flac")},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("migrated to %+v, want %d sources", got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("source %d migrated to %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }

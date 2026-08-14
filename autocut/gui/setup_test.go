@@ -66,6 +66,50 @@ func TestTestTTS(t *testing.T) {
 	}
 }
 
+// TestTestAudioModel: one Test per id, aimed at the failure the run otherwise
+// reports minutes too late. The GUI is standalone -- it learns everything over
+// HTTP and reads no file of the server's -- so the miss message has to teach
+// how a catalog grows: live on the server's own model page, or in the config it
+// reads at startup and then a recreate.
+func TestTestAudioModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		w.Write([]byte(`{"object":"list","data":[
+			{"id":"index-tts2","family":"index_tts2","task":"clon"},
+			{"id":"parakeet-tdt","family":"parakeet_tdt","task":"asr"}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := testAudioModel(srv.URL, "parakeet-tdt", "asr", "transcribe")
+	if err != nil {
+		t.Fatalf("a served model was rejected: %v", err)
+	}
+	if !strings.Contains(got, "parakeet-tdt") {
+		t.Errorf("the report does not name the model it proved: %q", got)
+	}
+
+	_, err = testAudioModel(srv.URL, "sortformer-diar", "diar", "tell speakers apart")
+	if err == nil {
+		t.Fatal("a missing model passed its test")
+	}
+	for _, want := range []string{"sortformer-diar", "index-tts2",
+		"audiocpp-server.json", "force-recreate"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error drops %q: %v", want, err)
+		}
+	}
+
+	// the id exists but is the wrong kind of model -- a copied json entry
+	if _, err := testAudioModel(srv.URL, "index-tts2", "asr", "transcribe"); err == nil {
+		t.Error("a TTS model passed as an ASR model")
+	} else if !strings.Contains(err.Error(), "clon") {
+		t.Errorf("the error does not say what the model actually is: %v", err)
+	}
+}
+
 // TestTestLLM checks that the two answers a broken config actually produces --
 // a rejection with a reason, and a reasoning model that never gets to the
 // content -- come back as errors a user can act on.
@@ -123,11 +167,11 @@ func TestEndpointsLive(t *testing.T) {
 	})
 
 	t.Run("tts", func(t *testing.T) {
-		got, err := testTTS(a.ttsURL())
+		got, err := testTTS(a.audioURL())
 		if err != nil {
-			t.Fatalf("%s: %v", a.ttsURL(), err)
+			t.Fatalf("%s: %v", a.audioURL(), err)
 		}
-		t.Logf("%s: %s", a.ttsURL(), got)
+		t.Logf("%s: %s", a.audioURL(), got)
 	})
 }
 
@@ -166,28 +210,45 @@ func TestFFMissing(t *testing.T) {
 // TestConfDefaults pins that a machine with no llm.conf, or one written before
 // the audio.cpp settings existed, still runs: every one of those settings used
 // to be a compiled-in constant, and a blank line must mean that constant rather
-// than an empty flag handed to docker.
+// than an empty model id posted to the server.
 func TestConfDefaults(t *testing.T) {
 	a := &App{root: t.TempDir()} // no llm.conf at all
 	c := a.readConf()
-	if c.Image != defImage || c.CLI != defCLI || c.Models != defModels ||
-		c.ASRGGUF != defASRGGUF || c.DiarGGUF != defDiarGGUF ||
-		c.Backend != defBackend || c.Language != defLanguage {
+	if c.Voices != defVoices || c.ASRModel != defASRModel ||
+		c.DiarModel != defDiarModel || c.TTSModel != defTTSModel || c.Language != defLanguage {
 		t.Errorf("a missing config did not fall back to the built-ins: %+v", c)
+	}
+	// a config written when the setting was the models ROOT, voices/ implied:
+	// the same folder has to come out of the new field
+	if err := os.WriteFile(a.confPath(), []byte("AUDIOCPP_MODELS=\"/srv/models\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := a.readConf(); c.Voices != "/srv/models/voices" {
+		t.Errorf("the legacy models root migrated to %q, want /srv/models/voices", c.Voices)
 	}
 	// an old config: the LLM keys only
 	if err := os.WriteFile(a.confPath(), []byte("LLM_SERVER=\"https://x\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if c := a.readConf(); c.Server != "https://x" || c.Backend != defBackend {
+	if c := a.readConf(); c.Server != "https://x" || c.ASRModel != defASRModel {
 		t.Errorf("a pre-existing config lost its defaults: %+v", c)
 	}
-	// ...and a blank value is the same as no value, not an empty argument
-	if err := os.WriteFile(a.confPath(), []byte("AUDIOCPP_BACKEND=\"\"\n"), 0o600); err != nil {
+	// a config from before step 1 moved onto the server: its container settings
+	// are gone, and being handed one must not cost the reader the rest of the file
+	old := "AUDIOCPP_IMAGE=\"audio:latest\"\nAUDIOCPP_CLI=\"/opt/audiocpp_cli\"\n" +
+		"AUDIOCPP_BACKEND=\"cuda\"\nAUDIOCPP_LANGUAGE=\"de\"\n"
+	if err := os.WriteFile(a.confPath(), []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if c := a.readConf(); c.Backend != defBackend {
-		t.Errorf("a cleared backend came back as %q, want the default", c.Backend)
+	if c := a.readConf(); c.Language != "de" || c.ASRModel != defASRModel {
+		t.Errorf("a config with retired keys did not read the rest: %+v", c)
+	}
+	// ...and a blank value is the same as no value, not an empty model id
+	if err := os.WriteFile(a.confPath(), []byte("AUDIOCPP_ASR_MODEL=\"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := a.readConf(); c.ASRModel != defASRModel {
+		t.Errorf("a cleared ASR model came back as %q, want the default", c.ASRModel)
 	}
 }
 
@@ -200,14 +261,12 @@ func TestConfRoundTrip(t *testing.T) {
 		Model:  "Qwen3.6 (27B; 128k ctx; Q4_K_XL; visual)", // spaces, parens, semicolons
 		Key:    "sk-not-a-real-key",
 		TTS:    "http://127.0.0.1:8765",
-		// the other machine this is all for: NVIDIA, German, other paths
-		Image:    "audio:v2",
-		CLI:      "/opt/audio.cpp/bin/audiocpp_cli",
-		Models:   "/srv/models",
-		ASRGGUF:  "models/parakeet/other.gguf",
-		DiarGGUF: "models/sortformer/other.gguf",
-		Backend:  "cuda",
-		Language: "de",
+		// the other machine this is all for: German, other paths, other ids
+		Voices:    "/srv/models/voices",
+		ASRModel:  "whisper-large",
+		DiarModel: "sortformer-8spk",
+		TTSModel:  "kokoro-82m",
+		Language:  "de",
 	}
 	if err := a.writeConf(want); err != nil {
 		t.Fatal(err)
@@ -230,11 +289,11 @@ func TestConfRoundTrip(t *testing.T) {
 	// id is full of parens and semicolons, and anything that quotes it wrongly
 	// leaves the GUI working while a shell chokes on it
 	out, err := exec.Command("bash", "-c",
-		"source "+a.confPath()+`; printf '%s|%s|%s|%s' "$LLM_MODEL" "$LLM_SERVER" "$AUDIOCPP_SERVER" "$AUDIOCPP_BACKEND"`).CombinedOutput()
+		"source "+a.confPath()+`; printf '%s|%s|%s|%s' "$LLM_MODEL" "$LLM_SERVER" "$AUDIOCPP_SERVER" "$AUDIOCPP_ASR_MODEL"`).CombinedOutput()
 	if err != nil {
 		t.Fatalf("bash could not source the config: %v\n%s", err, out)
 	}
-	if got, want := string(out), want.Model+"|"+want.Server+"|"+want.TTS+"|"+want.Backend; got != want {
+	if got, want := string(out), want.Model+"|"+want.Server+"|"+want.TTS+"|"+want.ASRModel; got != want {
 		t.Errorf("bash reads back %q, want %q", got, want)
 	}
 

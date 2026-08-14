@@ -31,8 +31,19 @@ type Player struct {
 	// which dispatches there.
 	OnState func()
 
+	// OnError receives GStreamer's own words when the pipeline gives up on a
+	// file. These used to go to stdout, which for a GUI started from a launcher
+	// is nowhere at all: a wav the decoder refused looked exactly like a wav
+	// playing silently, and the transport button sat there claiming ⏸. Also on
+	// the GTK thread -- the bus watch dispatches there.
+	OnError func(string)
+
 	loaded  string // file currently cued, so a caller can seek instead of reload
 	playing bool
+	// the stream ran to its end and is sitting on its last frame. Resuming
+	// there plays nothing, so ▶ starts the same segment over instead.
+	ended               bool
+	lastStart, lastStop float64
 	// pending segment, applied once the new uri has prerolled
 	pendStart, pendStop int64 // nanoseconds; pendStart < 0 = nothing pending
 	pendPlay            bool  // false = preroll only, show the first frame paused
@@ -92,9 +103,17 @@ func NewPlayer() (*Player, error) {
 		case gst.MessageEOS:
 			// freeze on the last frame instead of tearing the stream down
 			p.pb.SetState(gst.StatePaused)
+			p.ended = true
 			p.setPlaying(false)
 		case gst.MessageError:
 			errMsg, _ := msg.ParseError()
+			// the pipeline is done for; say so, and stop drawing ⏸ over a
+			// stream that has stopped
+			p.setPlaying(false)
+			if p.OnError != nil {
+				p.OnError(fmt.Sprint(errMsg))
+				return
+			}
 			fmt.Println("gst error:", errMsg)
 		}
 	})
@@ -114,6 +133,8 @@ func (p *Player) PlaySegment(file string, start, stop float64, play bool) {
 		p.pendStop = int64(stop * 1e9)
 	}
 	p.pendPlay = play
+	p.ended = false
+	p.lastStart, p.lastStop = start, stop
 	// preroll paused; the bus watch seeks (and maybe plays) on AsyncDone
 	p.pb.SetState(gst.StatePaused)
 	p.setPlaying(false)
@@ -137,13 +158,21 @@ func (p *Player) setPlaying(v bool) {
 func (p *Player) Playing() bool { return p.playing }
 func (p *Player) Cued() bool    { return p.loaded != "" && !p.playing }
 
+// Toggle is what every play button in the app does: pause what is running,
+// resume what is paused -- and, on a stream that has run to its end, play it
+// again from the top. Resuming at the last frame is silence and a still
+// picture, i.e. a play button that looks broken.
 func (p *Player) Toggle() {
-	if p.playing {
+	switch {
+	case p.playing:
 		p.pb.SetState(gst.StatePaused)
-	} else {
+		p.setPlaying(false)
+	case p.ended && p.loaded != "":
+		p.PlaySegment(p.loaded, p.lastStart, p.lastStop, true)
+	default:
 		p.pb.SetState(gst.StatePlaying)
+		p.setPlaying(true)
 	}
-	p.setPlaying(!p.playing)
 }
 
 // Stop tears the stream down and forgets the file, so the next ▶ is a fresh
@@ -151,6 +180,7 @@ func (p *Player) Toggle() {
 func (p *Player) Stop() {
 	p.pb.SetState(gst.StateReady)
 	p.loaded = ""
+	p.ended = false
 	p.setPlaying(false)
 }
 
@@ -162,6 +192,7 @@ func (p *Player) Pause() {
 // SeekTo jumps within the currently loaded file; while paused the new frame
 // still renders, which is what frame-stepping relies on.
 func (p *Player) SeekTo(t float64) {
+	p.ended = false // wherever we land, there is stream ahead of it again
 	p.pb.Seek(1.0, gst.FormatTime,
 		gst.SeekFlagFlush|gst.SeekFlagAccurate,
 		gst.SeekTypeSet, int64(t*1e9), gst.SeekTypeNone, 0)
@@ -174,4 +205,43 @@ func (p *Player) Position() (float64, bool) {
 		return 0, false
 	}
 	return float64(ns) / 1e9, true
+}
+
+// videoFrame is the box a preview sits in, and all three pages that show video
+// use it so they cannot drift apart.
+//
+// gtk.NewFrame("") is a frame WITH a label: the empty string still builds a
+// GtkLabel, and an empty label is a whole line of text high. Measured, not
+// guessed -- 640x361 frame, child allocated at y=26 with a height of 333 and
+// the top 26 pixels gone. Every video in the app was sitting under an invisible
+// caption. A frame with no label widget hands its child the whole inside.
+//
+// The dark fill is the other half of the same complaint. A picture keeps the
+// video's aspect, so whatever the frame has spare turns into bars beside it.
+// In the window's own background those bars read as an over-wide border; in
+// black they read as letterboxing, which is what they are.
+func videoFrame(child gtk.Widgetter) *gtk.Frame {
+	f := gtk.NewFrame("")
+	f.SetLabelWidget(nil)
+	f.AddCSSClass("videoframe")
+	if child != nil {
+		f.SetChild(child)
+	}
+	return f
+}
+
+// playerErr is what every player's OnError is set to. Named, because there are
+// five of them and "playback failed" in a log shared by the whole pipeline
+// answers none of the questions you have at that point. The status line gets it
+// too: a failure the log records and the window does not mention is a failure
+// nobody notices until they wonder why the video is silent.
+func (a *App) playerErr(who string) func(string) {
+	return func(m string) {
+		a.logf("!!! %s: playback failed — %s", who, m)
+		if a.status == nil {
+			return // a player that failed before the window finished; stderr has it
+		}
+		a.setStatus(who + " would not play — see log")
+		a.updateRunControls()
+	}
 }

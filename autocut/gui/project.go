@@ -14,27 +14,37 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
-	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
 type Project struct {
-	Videos     []string `json:"videos"` // ordered, relative to root
-	Audios     []string `json:"audios"`
+	// the session's files in order, each with what it is for; paths relative to
+	// root where they can be
+	Sources []ProjectSource `json:"sources,omitempty"`
+	// videos/audios are read, never written: membership used to be a folder and
+	// a checkbox, one list per folder. A project written back then loads as
+	// sources -- its videos as footage, its first recording as narrator 1 --
+	// and the keys go away with the next save. See projectSources.
+	Videos     []string `json:"videos,omitempty"`
+	Audios     []string `json:"audios,omitempty"`
 	Interval   float64  `json:"interval"` // seconds between frames; 0 = every frame
 	FrameScale string   `json:"frame_scale,omitempty"`
-	InDir      string   `json:"in_dir,omitempty"`
-	OutDir     string   `json:"out_dir,omitempty"`
-	// describe_hints and transcript_hints are read, never written: the two
-	// pages they belonged to had a notes box beside the system prompt, which
-	// the runner glued onto the prompt just before sending. One box now, so a
-	// project written by an older build has its notes folded into the prompt on
-	// load (migrateHints) and the keys go away with the next save.
+	VidDir     string   `json:"vid_dir,omitempty"` // where the choosers open, each
+	AudDir     string   `json:"aud_dir,omitempty"` // relative to root when it can be
+	// in_dir is read, never written: there was one input folder, which had to
+	// hold input_video/ and input_audio/. A project written back then names it
+	// here, and those two subfolders are where the two folders above start.
+	InDir  string `json:"in_dir,omitempty"`
+	OutDir string `json:"out_dir,omitempty"`
+	// these four are read, never written: the pages they belonged to had a notes
+	// box beside the system prompt, which the runner glued onto the prompt just
+	// before sending. One box per step now, so a project written by an older
+	// build has its notes folded into the prompt on load (migrateHints) and the
+	// keys go away with the next save.
 	DescribeHints   string `json:"describe_hints,omitempty"`
 	TranscriptHints string `json:"transcript_hints,omitempty"`
 	CutHints        string `json:"cut_hints,omitempty"`
@@ -42,11 +52,25 @@ type Project struct {
 	// "pitch" used to live here too -- the output-pitch slider. It is gone; a
 	// project written back then still loads, the key is simply ignored.
 
+	// what the editor typed about this session on the Describe page. Stored in
+	// full, unlike a prompt: there is no built-in wording for it to differ from
+	// (see context.go).
+	Context string `json:"context,omitempty"`
+
 	// only the system prompts the user changed; see prompts.go for why an
 	// untouched one is absent rather than copied
 	Prompts map[string]string `json:"prompts,omitempty"`
 
 	Produce *prodSettings `json:"produce,omitempty"`
+}
+
+// ProjectSource is one source as a project stores it. The roles are omitted
+// when unset so the common row -- a recording nobody narrates as -- is one
+// line, and so a project file stays something you can read and fix by hand.
+type ProjectSource struct {
+	Path     string `json:"path"`
+	Footage  bool   `json:"footage,omitempty"`
+	Narrator int    `json:"narrator,omitempty"`
 }
 
 // relToRoot stores a folder the way a project file wants it: relative when it
@@ -87,18 +111,64 @@ func (a *App) currentProject() Project {
 		}
 		prod = &st
 	}
-	return Project{
-		Videos:       a.vidList.selected(),
-		Audios:       a.audList.selected(),
-		Interval:     a.frameInterval(),
-		FrameScale:   scaleName,
-		InDir:        a.relToRoot(a.inDir),
-		OutDir:       a.relToRoot(a.outDir),
-		CutHints:     a.cutHints(),
-		NarrateHints: a.narrateHints(),
-		Prompts:      a.currentPrompts(),
-		Produce:      prod,
+	var srcs []ProjectSource
+	for _, it := range a.srcList.items {
+		srcs = append(srcs, ProjectSource{
+			Path: a.relToRoot(it.path), Footage: it.footage, Narrator: it.narrator})
 	}
+	return Project{
+		Sources:    srcs,
+		Interval:   a.frameInterval(),
+		FrameScale: scaleName,
+		VidDir:     a.relToRoot(a.vidDir),
+		AudDir:     a.relToRoot(a.audDir),
+		OutDir:     a.relToRoot(a.outDir),
+		Context:    a.sessionCtx(),
+		Prompts:    a.currentPrompts(),
+		Produce:    prod,
+	}
+}
+
+// projectSources is a stored project as a list of sources, migrating one
+// written before the two lists became one.
+//
+// The migration has to preserve what the old project meant, which was: these
+// videos are the footage, these recordings are the voices, and the first
+// recording is the one step 4 clones. That last part was a convention nothing
+// stated -- ownVoiceFile took audios[0] -- so it becomes the narrator 1 tag,
+// which is the same choice said out loud.
+//
+// Legacy paths are resolved through the folder, not through root: a project
+// from before the folders were settable stores input_video/x.mkv, which is
+// relative to a root that may no longer be this one.
+func (a *App) projectSources(p Project) []sourceItem {
+	if len(p.Sources) > 0 {
+		var out []sourceItem
+		for _, s := range p.Sources {
+			out = append(out, sourceItem{
+				path: a.fromRoot(s.Path), footage: s.Footage, narrator: s.Narrator})
+		}
+		return out
+	}
+	var out []sourceItem
+	for _, l := range []struct {
+		dir     string
+		files   []string
+		footage bool
+	}{{a.vidDir, p.Videos, true}, {a.audDir, p.Audios, false}} {
+		for i, f := range l.files {
+			path := a.fromRoot(f)
+			if inDir := filepath.Join(l.dir, filepath.Base(f)); !exists(path) && exists(inDir) {
+				path = inDir
+			}
+			it := sourceItem{path: path, footage: l.footage}
+			if !l.footage && i == 0 {
+				it.narrator = 1 // what "my own voice" used to mean
+			}
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func (a *App) saveProjectTo(path string) {
@@ -122,31 +192,26 @@ func (a *App) loadProjectFrom(path string) {
 		a.logf("load project: %v", err)
 		return
 	}
-	// the input folder first: the source lists have to be looking at the right
-	// directory before a selection can be applied to them
-	a.setInDir(a.fromRoot(p.InDir))
-	// a project entry whose file vanished (renamed, moved) must be LOUD:
-	// a silently-unchecked source once cost half a debugging session
-	for _, list := range [][]string{p.Videos, p.Audios} {
-		for _, rel := range list {
-			if !exists(a.srcPath(rel)) {
-				a.logf("WARNING: project references %s, which no longer exists -- it was dropped from the selection (renamed?)", rel)
-			}
+	// the folders first: they are where the file choosers open, and where a
+	// pre-merge project's half-relative source names are resolved from
+	vid, aud := srcDirs(p)
+	a.vidDir, a.audDir = a.fromRoot(vid), a.fromRoot(aud)
+	items := a.projectSources(p)
+	// a project entry whose file vanished (renamed, moved) must be LOUD: a
+	// silently-dropped source once cost half a debugging session
+	for _, it := range items {
+		if !exists(it.path) {
+			a.logf("WARNING: project references %s, which is not there any more -- it was dropped from the session (renamed? moved?)", it.path)
 		}
 	}
-	a.vidList.setSelection(p.Videos)
-	a.audList.setSelection(p.Audios)
+	a.srcList.load(items)
+	a.srcList.prune()
 	a.setFrameInterval(p.Interval)
 	if p.FrameScale != "" {
 		a.setFrameScale(p.FrameScale)
 	}
-	if a.ed != nil && a.ed.hints != nil {
-		a.ed.hints.Buffer().SetText(p.CutHints)
-	}
-	if a.narr5 != nil && a.narr5.hints != nil {
-		a.narr5.hints.Buffer().SetText(p.NarrateHints)
-	}
 	a.applyPrompts(p.Prompts)
+	a.applySessionCtx(p.Context)
 	a.migrateHints(p)
 	a.applyProdSettings(p.Produce)
 	a.setOutDir(a.fromRoot(p.OutDir))
@@ -180,18 +245,100 @@ func (a *App) migrateHints(p Project) {
 	}
 	fold("describe", p.DescribeHints, "Editor's notes about this footage -- trust them:")
 	fold("fix", p.TranscriptHints, "Editor's notes -- trust them:")
+	fold("cut", p.CutHints, "Editor's notes about this session -- trust them and let them guide what matters:")
+	fold("narrate", p.NarrateHints, "Editor's goals and context -- honor them:")
 }
 
-func (a *App) chooseInDirDialog() {
+// srcDirs says where a project's two source folders are, still relative to root
+// where it stored them that way. A project written before the split names one
+// folder that had to hold input_video/ and input_audio/, and those two
+// subfolders are exactly the folders it meant -- so an old project keeps
+// pointing at the same files instead of opening on two empty lists.
+func srcDirs(p Project) (vid, aud string) {
+	vid, aud = p.VidDir, p.AudDir
+	if vid == "" {
+		vid = filepath.Join(p.InDir, "input_video")
+	}
+	if aud == "" {
+		aud = filepath.Join(p.InDir, "input_audio")
+	}
+	return vid, aud
+}
+
+// addFilesDialog adds files to the session, several at a time -- a card holds
+// one take per angle and picking them one dialog at a time is not a workflow.
+func (a *App) addFilesDialog() {
 	d := gtk.NewFileDialog()
-	d.SetInitialFolder(gio.NewFileForPath(a.inDir))
+	d.SetTitle("Add sources")
+	d.SetInitialFolder(gio.NewFileForPath(a.vidDir))
+	filt := gtk.NewFileFilter()
+	filt.SetName("Audio and video")
+	for e := range mediaExt {
+		filt.AddSuffix(strings.TrimPrefix(e, "."))
+	}
+	filters := gio.NewListStore(gtk.GTypeFileFilter)
+	filters.Append(filt.Object)
+	d.SetFilters(filters)
+	d.OpenMultiple(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
+		lm, err := d.OpenMultipleFinish(res)
+		if err != nil || lm == nil {
+			return // dismissed
+		}
+		var paths []string
+		for i := uint(0); i < lm.NItems(); i++ {
+			if obj := lm.Item(i); obj != nil {
+				paths = append(paths, (&gio.File{Object: obj}).Path())
+			}
+		}
+		a.addSources(paths...)
+	})
+}
+
+// addFolderDialog adds everything playable in a folder: how a session arrives
+// off a card, and what the two folder pickers on this page used to be for.
+func (a *App) addFolderDialog() {
+	d := gtk.NewFileDialog()
+	d.SetTitle("Add every recording in a folder")
+	d.SetInitialFolder(gio.NewFileForPath(a.vidDir))
 	d.SelectFolder(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
 		f, err := d.SelectFolderFinish(res)
 		if err != nil || f == nil {
+			return // dismissed
+		}
+		dir := f.Path()
+		if len(listMedia(dir)) == 0 {
+			a.logf("nothing added: %s holds no video or audio files", dir)
+			a.setStatus("nothing playable in that folder")
 			return
 		}
-		a.setInDir(f.Path())
+		var paths []string
+		for _, n := range listMedia(dir) {
+			paths = append(paths, filepath.Join(dir, n))
+		}
+		a.addSources(paths...)
 	})
+}
+
+// addSources puts files in the list and remembers where they came from, so the
+// next chooser opens where the last one did. The two folders are no longer what
+// the list is made of -- they are only where it starts looking.
+func (a *App) addSources(paths ...string) {
+	n := a.srcList.add(paths...)
+	for _, p := range paths {
+		if isVideo(p) {
+			a.vidDir = filepath.Dir(p)
+		} else {
+			a.audDir = filepath.Dir(p)
+		}
+	}
+	switch {
+	case n == 0:
+		a.setStatus("already in the session — nothing added")
+	case n == len(paths):
+		a.setStatus(fmt.Sprintf("added %d source(s)", n))
+	default:
+		a.setStatus(fmt.Sprintf("added %d of %d — the rest were already in", n, len(paths)))
+	}
 }
 
 func (a *App) chooseOutDirDialog() {
@@ -251,166 +398,6 @@ func (a *App) openFolder(dir string) {
 	})
 }
 
-// ---- an orderable multi-select file list -----------------------------------
-
-// sourceList shows every media file in a directory as a checkbox row, sorted
-// by name at first; ↑/↓ reorder rows, and the checked rows top-to-bottom ARE
-// the selection. The list is rebuilt from the slice on every change -- at a
-// handful of files that is simpler and safer than in-place row surgery.
-type sourceList struct {
-	root, dir string
-	items     []sourceItem
-	box       *gtk.ListBox
-	onChange  func()
-}
-
-type sourceItem struct {
-	name string
-	sel  bool
-}
-
-func newSourceList(root, dir string, onChange func()) *sourceList {
-	s := &sourceList{root: root, dir: dir, onChange: onChange}
-	s.box = gtk.NewListBox()
-	s.box.SetSelectionMode(gtk.SelectionNone)
-	s.box.AddCSSClass("boxed-list")
-	s.rescan()
-	return s
-}
-
-// setRoot moves the list to another input folder, forgetting what was checked
-// in the old one -- see setInDir for why nothing is carried across.
-func (s *sourceList) setRoot(root string) {
-	s.root = root
-	s.items = nil
-	s.rescan()
-	if s.onChange != nil {
-		s.onChange() // nothing is checked in the new folder; say so
-	}
-}
-
-// rescan merges the directory contents into the existing order: known files
-// keep their position and checkmark, new files append sorted by name.
-func (s *sourceList) rescan() {
-	have := map[string]bool{}
-	var kept []sourceItem
-	for _, it := range s.items {
-		if exists(filepath.Join(s.root, s.dir, it.name)) {
-			kept = append(kept, it)
-			have[it.name] = true
-		}
-	}
-	fresh := listMedia(filepath.Join(s.root, s.dir))
-	sort.Strings(fresh)
-	for _, f := range fresh {
-		if !have[f] {
-			kept = append(kept, sourceItem{name: f})
-		}
-	}
-	s.items = kept
-	s.render()
-}
-
-// setSelection applies a project: listed files first, checked, in project
-// order; everything else follows unchecked, sorted by name.
-func (s *sourceList) setSelection(relPaths []string) {
-	rank := map[string]int{}
-	for i, p := range relPaths {
-		rank[filepath.Base(p)] = i + 1
-	}
-	for i := range s.items {
-		s.items[i].sel = rank[s.items[i].name] > 0
-	}
-	sort.SliceStable(s.items, func(i, j int) bool {
-		ri, rj := rank[s.items[i].name], rank[s.items[j].name]
-		switch {
-		case ri > 0 && rj > 0:
-			return ri < rj
-		case ri != rj:
-			return ri > 0 // selected before unselected
-		default:
-			return s.items[i].name < s.items[j].name
-		}
-	})
-	s.render()
-	// a loaded project changes the checkmarks as surely as a click does, and
-	// what hangs off onChange -- the voice step's "my own voice" row -- is wrong
-	// until it hears about it
-	if s.onChange != nil {
-		s.onChange()
-	}
-}
-
-// selected returns the checked files, in list order, relative to root.
-func (s *sourceList) selected() []string {
-	var out []string
-	for _, it := range s.items {
-		if it.sel {
-			out = append(out, filepath.Join(s.dir, it.name))
-		}
-	}
-	return out
-}
-
-func (s *sourceList) render() {
-	for {
-		row := s.box.RowAtIndex(0)
-		if row == nil {
-			break
-		}
-		s.box.Remove(row)
-	}
-	for i := range s.items {
-		i := i
-		// an ellipsizing label rather than the check button's own: a recorder
-		// filename is 50 characters, and a row that insists on all of them sets
-		// a floor the divider cannot be dragged past
-		lbl := gtk.NewLabel(s.items[i].name)
-		lbl.SetXAlign(0)
-		lbl.SetHExpand(true)
-		lbl.SetEllipsize(pango.EllipsizeMiddle)
-		check := gtk.NewCheckButton()
-		check.SetChild(lbl)
-		check.SetTooltipText(s.items[i].name)
-		check.SetActive(s.items[i].sel)
-		check.SetHExpand(true)
-		check.ConnectToggled(func() {
-			s.items[i].sel = check.Active()
-			if s.onChange != nil {
-				s.onChange()
-			}
-		})
-		up := gtk.NewButtonFromIconName("go-up-symbolic")
-		up.AddCSSClass("flat")
-		up.SetSensitive(i > 0)
-		up.ConnectClicked(func() { s.move(i, -1) })
-		down := gtk.NewButtonFromIconName("go-down-symbolic")
-		down.AddCSSClass("flat")
-		down.SetSensitive(i < len(s.items)-1)
-		down.ConnectClicked(func() { s.move(i, +1) })
-
-		row := gtk.NewBox(gtk.OrientationHorizontal, 4)
-		row.SetMarginStart(6)
-		row.SetMarginEnd(2)
-		row.Append(check)
-		row.Append(up)
-		row.Append(down)
-		s.box.Append(row)
-	}
-}
-
-func (s *sourceList) move(i, d int) {
-	j := i + d
-	if j < 0 || j >= len(s.items) {
-		return
-	}
-	s.items[i], s.items[j] = s.items[j], s.items[i]
-	s.render()
-	if s.onChange != nil {
-		s.onChange()
-	}
-}
-
 // ---- output inspection ------------------------------------------------------
 
 // summarizeOutputs is the one-line answer: how many files are under dir, and
@@ -453,25 +440,51 @@ func humanAgo(t time.Time) string {
 	}
 }
 
-// describeOutputs summarizes what a directory holds, one line per entry.
-func describeOutputs(dir string) string {
-	ents, err := os.ReadDir(dir)
-	if err != nil || len(ents) == 0 {
-		return "(nothing yet)"
+// logListMax is how many files a directory gets to name before it becomes a
+// count. Step 1 writes one frame per second of footage; a log carrying four
+// thousand f000123.jpg lines is a log nobody scrolls, and the run's own
+// messages would be buried in it.
+const logListMax = 12
+
+// logOutputs names what a step actually wrote, in the log, and returns the file
+// count for the status line. The page shows the count; the names live here,
+// because that is the place you can scroll back through after a run.
+// GUI thread only -- callers are completion handlers.
+func (a *App) logOutputs(label, dir string) int {
+	n := a.logTree(dir, label) // label leads every path, so the log says which step
+	if n == 0 {
+		a.logf("    %s/: nothing written", label)
 	}
-	var out string
+	return n
+}
+
+func (a *App) logTree(dir, rel string) int {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	var files []os.DirEntry
 	for _, e := range ents {
-		p := filepath.Join(dir, e.Name())
 		if e.IsDir() {
-			sub, _ := os.ReadDir(p)
-			out += fmt.Sprintf("%s/  (%d files)\n", e.Name(), len(sub))
-		} else {
+			n += a.logTree(filepath.Join(dir, e.Name()), filepath.Join(rel, e.Name()))
+			continue
+		}
+		files = append(files, e)
+	}
+	if len(files) > logListMax {
+		a.logf("    %s/ — %d files (%s … %s)", rel, len(files),
+			files[0].Name(), files[len(files)-1].Name())
+	} else {
+		for _, e := range files {
+			size := ""
 			if fi, err := e.Info(); err == nil {
-				out += fmt.Sprintf("%s  (%s)\n", e.Name(), humanSize(fi.Size()))
+				size = "  (" + humanSize(fi.Size()) + ")"
 			}
+			a.logf("    %s%s", filepath.Join(rel, e.Name()), size)
 		}
 	}
-	return out
+	return n + len(files)
 }
 
 func humanSize(n int64) string {
