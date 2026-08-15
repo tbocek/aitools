@@ -230,7 +230,11 @@ type App struct {
 	und       *understander
 	ed        *cutEditor
 	voice5    *voicePicker
-	voiceSel  string  // the chosen voice id, cached from step4/voice.txt
+	// the chosen voice id, cached from step4/voice.txt. Guarded: since the
+	// narrator's name became part of every step's input (tlLabel), this is read
+	// by the describe and transcript workers as well as by the GUI thread.
+	voiceMu   sync.Mutex
+	voiceSel  string
 	pitchSel  float64 // semitones the reference is shifted by, from step4/pitch.txt
 	pitchRead bool    // ...and whether that file has been read yet (0 is a real value)
 	narr5     *narrator
@@ -424,7 +428,9 @@ func (a *App) setOutDir(dir string) {
 	a.followOutDir()
 	// the voice belongs to the project, not to the session: drop the cached id
 	// and pitch so both are re-read from the folder we just moved to
+	a.voiceMu.Lock()
 	a.voiceSel = ""
+	a.voiceMu.Unlock()
 	a.pitchRead = false
 	if a.voice5 != nil {
 		a.voice5.syncSelection()

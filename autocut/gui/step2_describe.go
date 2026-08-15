@@ -38,9 +38,13 @@ const describeSystem = `You describe screen-recorded footage for a video editor.
 
 You get a few consecutive frames covering a few seconds, the words heard around them, the running STATE from the previous chunk, and the last few EVENT lines. You will never see these frames or any earlier ones again: those two lines are your only memory, so write them for a reader who has seen nothing.
 
-Everything is on one clock: seconds from the first of these frames, signed. Each frame is announced by a line giving its own time, and every spoken line carries the same kind of stamp, so a line and a picture can be matched by their numbers. Negative is before these frames, positive during or after.
+Everything is on one clock: seconds from the first of these frames, signed. Negative is before these frames, positive during or after. Every line you get is stamped on it, so a line and a picture can be matched by their numbers:
+  [+2.0s] FRAME 3 of 4 -- the picture that follows this line was taken then
+  [-8s] EVENT: what you yourself wrote about the seconds just before these
+  [+2.0s] SPEAKER_01: a line somebody said
+  [+2.0s] NARRATOR: a line the narrator said into his own microphone
 
-Each spoken line also names the recording it came off. One of those is the footage's own audio; any other is somebody's microphone, and that person may be describing something you cannot see, remembering, or talking about nothing on screen at all.
+Speech reaches you from more than one microphone in the room. Whoever is talking may be describing something you cannot see, remembering, or talking about nothing on screen at all.
 
 The request may open with a block headed ABOUT THIS SESSION: the editor's own notes on what this is, who is in it and what things are called. Being told is exactly what that block is for -- use it for names, and describe what you see in its terms.
 
@@ -71,6 +75,47 @@ type tsvRow struct {
 	// ever hear the line: the render takes its audio from the footage, so a
 	// line off a separate microphone is in the transcript and not in the video.
 	src string
+}
+
+// tlLabel is who a line belongs to, in the one vocabulary every step uses:
+//
+//	EVENT       what the picture showed
+//	NARRATOR    the narrator's own microphone -- the one recording the
+//	            finished video never plays, so only the voice-over carries it
+//	SPEAKER_nn  a voice the video does play
+//
+// Four prompts describe the material they are given, and they used to describe
+// it four different ways: a recording's file name here, "[heard in NAME]"
+// there, "[base SPEAKER_00]" in the session timeline. Nothing was wrong with
+// any of them alone; together they made every step a new format to learn, on a
+// model with no room to spare for that. narr is narratorMic, blank when nobody
+// is exempt.
+func tlLabel(r tsvRow, narr string) string {
+	switch {
+	case r.spk == "EVENT":
+		return "EVENT"
+	case narr != "" && r.src == narr:
+		return "NARRATOR"
+	case r.spk == "":
+		return "SPEAKER"
+	}
+	return r.spk
+}
+
+// sessionText renders the whole merged timeline the way the cut and the audit
+// read it: one line each, stamped [mm:ss] from the start of the session, then
+// the label, then what was said or seen. The minutes keep counting past 59, so
+// the stamp is never ambiguous about which hour it is in.
+//
+// It is built from session.tsv at request time rather than read off
+// session.txt, so a change here reaches a project that was transcribed before
+// it without anyone re-running an LLM pass over an hour of speech.
+func sessionText(rows []tsvRow, narr string) string {
+	var b strings.Builder
+	for _, r := range rows {
+		fmt.Fprintf(&b, "[%02d:%02d] %s: %s\n", int(r.s)/60, int(r.s)%60, tlLabel(r, narr), r.text)
+	}
+	return b.String()
 }
 
 // How much speech rides along with a chunk of frames, and how far from it a
@@ -152,11 +197,12 @@ type spoken struct {
 // Segments are emitted one per line, never merged: the boundaries are where
 // the ASR heard pauses, and the pauses carry meaning. The text goes through
 // untouched -- no trimming, no case or punctuation repair.
-func speechBlock(srcs []speechSrc, chunkStart, chunkEnd float64) string {
+func speechBlock(srcs []speechSrc, narr string, chunkStart, chunkEnd float64) string {
 	var before, during, after []spoken
-	tag := func(dst *[]spoken, rows []tsvRow, label string) {
+	tag := func(dst *[]spoken, rows []tsvRow, src string) {
 		for _, r := range rows {
-			*dst = append(*dst, spoken{tsvRow: r, label: label})
+			r.src = src // a single recording's transcript does not carry it
+			*dst = append(*dst, spoken{tsvRow: r, label: tlLabel(r, narr)})
 		}
 	}
 	for _, s := range srcs {
@@ -174,7 +220,7 @@ func speechBlock(srcs []speechSrc, chunkStart, chunkEnd float64) string {
 		}
 		sort.SliceStable(segs, func(i, j int) bool { return segs[i].s < segs[j].s })
 		for _, r := range segs {
-			fmt.Fprintf(&b, "[%+.1fs] %s: \"%s\"\n", r.s-chunkStart, r.label, r.text)
+			fmt.Fprintf(&b, "[%+.1fs] %s: %s\n", r.s-chunkStart, r.label, r.text)
 		}
 	}
 	section("--- context before (do not describe) ---", "(none)", before)
@@ -358,6 +404,7 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 		label: p.base,
 		rows:  loadTSVRows(filepath.Join(a.outDir, "step1", p.base, "transcript.tsv")),
 	}}, comm...)
+	narr := a.narratorMic()
 	evPath := filepath.Join(p.dir, "events.tsv")
 	statePath := filepath.Join(p.dir, "state.txt")
 
@@ -391,13 +438,15 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 	// resume: chunks already described are keyed by their start time; the
 	// recent-events window picks up from the end of the existing log
 	done := map[string]bool{}
-	var recent []string
+	var recent []tsvRow
 	if b, err := os.ReadFile(evPath); err == nil {
 		for _, l := range strings.Split(string(b), "\n") {
 			f := strings.Split(l, "\t")
 			if len(f) >= 3 && f[0] != "" {
 				done[f[0]] = true
-				recent = append(recent, f[0]+"s: "+f[2])
+				r := tsvRow{spk: "EVENT", text: f[2]}
+				fmt.Sscanf(f[0], "%f", &r.s)
+				recent = append(recent, r)
 				if len(recent) > recentEvents {
 					recent = recent[1:]
 				}
@@ -438,9 +487,16 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 		// after the frames has already guessed at them
 		text := a.ctxBlock() + fmt.Sprintf("STATE so far: %s\nFrames cover t=%.0fs to t=%.0fs, %g s apart.", state, t0, tLast, p.interval)
 		if len(recent) > 0 {
-			text += "\nJust before this:\n" + strings.Join(recent, "\n")
+			// on the frames' clock like everything else in this request: these
+			// used to carry their absolute time in the video, which is the one
+			// number on the page measured from somewhere else
+			text += "\nJust before this:\n"
+			for _, r := range recent {
+				text += fmt.Sprintf("[%+.0fs] EVENT: %s\n", r.s-t0, r.text)
+			}
+			text = strings.TrimRight(text, "\n")
 		}
-		text += "\n" + speechBlock(speech, t0, tLast)
+		text += "\n" + speechBlock(speech, narr, t0, tLast)
 		// Each frame gets a line of its own in front of it, on the same signed
 		// clock the speech is on. Without them the images arrive as an unlabelled
 		// run and the only thing carrying their order is their position in the
@@ -456,8 +512,8 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 			if err != nil {
 				return err
 			}
-			content = append(content, txtPart(fmt.Sprintf("--- frame %d of %d, [%+.1fs] ---",
-				i+1, hi-lo, float64(i)*p.interval)), part)
+			content = append(content, txtPart(fmt.Sprintf("[%+.1fs] FRAME %d of %d",
+				float64(i)*p.interval, i+1, hi-lo)), part)
 		}
 		reply, err := a.llmChatRetry([]map[string]any{
 			msg("system", a.prompt("describe")), msg("user", content),
@@ -493,7 +549,7 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 		if err := os.WriteFile(statePath, []byte(state+"\n"), 0o644); err != nil {
 			return err
 		}
-		recent = append(recent, key+"s: "+event)
+		recent = append(recent, tsvRow{s: t0, spk: "EVENT", text: event})
 		if len(recent) > recentEvents {
 			recent = recent[1:]
 		}

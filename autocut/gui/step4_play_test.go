@@ -204,7 +204,10 @@ func TestALineAuditionRollsThePicture(t *testing.T) {
 	if speak == nil {
 		t.Fatal("speakEntry is gone")
 	}
-	for _, want := range []string{"n.cue(e.S, true)", "n.solo, n.soloPic = i, true"} {
+	// the cue lands a moment ahead of the line's placement, not on the head of
+	// the clip -- a line an "at" puts a minute in would otherwise audition as
+	// a minute of silence
+	for _, want := range []string{"n.cue(math.Max(e.S, e.S+e.At-3), true)", "n.solo, n.soloPic = i, true"} {
 		if !strings.Contains(string(speak), want) {
 			t.Errorf("a line's ▶ no longer rolls the picture with the voice (missing %s)", want)
 		}
@@ -219,9 +222,18 @@ func TestALineAuditionRollsThePicture(t *testing.T) {
 	if follow == nil {
 		t.Fatal("followPlayback is gone")
 	}
-	if !strings.Contains(string(follow), "n.entries[n.solo].E") {
-		t.Error("an audition no longer stops at the end of its clip — a line's ▶ and " +
-			"the run bar's ▶ would be the same button")
+	// the audition shows the line's WHOLE clip -- the picture after a line is
+	// part of how the line lands -- and then hops to the next clip that has
+	// one, skipping any of the same clip's lines already heard on the way.
+	// Only running out of lines stops it.
+	// ...and the list's blue row rides along: the hop and the tick both select
+	// the row they are sounding, or the highlight sits on a line that stopped
+	// playing three clips ago
+	for _, want := range []string{"t >= n.entries[n.solo].E", "n.nextSpoken(n.solo)", "n.nextSpoken(j)",
+		"n.selectRow(j)", "n.selectRow(ei)"} {
+		if !strings.Contains(string(follow), want) {
+			t.Errorf("the audition no longer plays the clip out and hops on (missing %s)", want)
+		}
 	}
 	// and the row that is sounding has to draw the ⏸ for it wherever the sound
 	// came from, or the button the user just pressed goes on showing ▶

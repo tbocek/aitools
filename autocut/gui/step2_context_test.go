@@ -119,24 +119,25 @@ func ownAudio(rows []tsvRow) []speechSrc {
 
 // The rendered block, exactly. The headings are load-bearing -- the prompt
 // tells the model to trust one section and not describe the others -- so the
-// wording is pinned rather than described. So is the label on every line: the
-// model is told to weigh a line by which microphone it came off, which it can
-// only do if the line says.
+// wording is pinned rather than described. So is the label on every line: it is
+// the same label the cut and the narration steps use for the same line
+// (tlLabel), because four prompts describing their input four different ways is
+// three formats too many for a small model to learn.
 func TestSpeechBlockRendersAllThreeSections(t *testing.T) {
 	rows := []tsvRow{
-		{s: 3.8, e: 5.0, text: "so the trick with these panels is"},
-		{s: 11.4, e: 12.0, text: "you pull the left one first"},
-		{s: 14.8, e: 15.6, text: "and the latch releases"},
-		{s: 17.1, e: 18.0, text: "now the same on the other side"},
+		{s: 3.8, e: 5.0, spk: "SPEAKER_00", text: "so the trick with these panels is"},
+		{s: 11.4, e: 12.0, spk: "SPEAKER_00", text: "you pull the left one first"},
+		{s: 14.8, e: 15.6, spk: "SPEAKER_01", text: "and the latch releases"},
+		{s: 17.1, e: 18.0, spk: "SPEAKER_00", text: "now the same on the other side"},
 	}
 	want := `--- context before (do not describe) ---
-[-6.2s] clip.mkv: "so the trick with these panels is"
+[-6.2s] SPEAKER_00: so the trick with these panels is
 --- spoken during these frames ---
-[+1.4s] clip.mkv: "you pull the left one first"
-[+4.8s] clip.mkv: "and the latch releases"
+[+1.4s] SPEAKER_00: you pull the left one first
+[+4.8s] SPEAKER_01: and the latch releases
 --- context after (do not describe) ---
-[+7.1s] clip.mkv: "now the same on the other side"`
-	if got := speechBlock(ownAudio(rows), 10, 16); got != want {
+[+7.1s] SPEAKER_00: now the same on the other side`
+	if got := speechBlock(ownAudio(rows), "", 10, 16); got != want {
 		t.Errorf("block is\n%s\nwant\n%s", got, want)
 	}
 }
@@ -149,28 +150,31 @@ func TestSpeechBlockRendersAllThreeSections(t *testing.T) {
 func TestSpeechBlockMergesEverySourceInTimeOrder(t *testing.T) {
 	srcs := []speechSrc{
 		{label: "clip.mkv", rows: []tsvRow{
-			{s: 11.0, e: 11.4, text: "game one"},
-			{s: 14.0, e: 14.4, text: "game two"},
-			{s: 4.0, e: 4.5, text: "game before A"}, // both inside the window: the two nearest
-			{s: 6.0, e: 6.5, text: "game before B"}, // survive, and they are these two
-			{s: 1.0, e: 1.5, text: "game before C"}, // furthest, so dropped by the count cap
+			{s: 11.0, e: 11.4, spk: "SPEAKER_01", text: "game one"},
+			{s: 14.0, e: 14.4, spk: "SPEAKER_01", text: "game two"},
+			{s: 4.0, e: 4.5, spk: "SPEAKER_01", text: "game before A"}, // both inside the window: the two nearest
+			{s: 6.0, e: 6.5, spk: "SPEAKER_01", text: "game before B"}, // survive, and they are these two
+			{s: 1.0, e: 1.5, spk: "SPEAKER_01", text: "game before C"}, // furthest, so dropped by the count cap
 		}},
+		// ...and this one is the narrator's, which the finished video never
+		// plays: the label says so here exactly as it does in the cut and in the
+		// narration brief
 		{label: "mic.flac", rows: []tsvRow{
-			{s: 12.0, e: 12.4, text: "mic one"},
-			{s: 15.0, e: 15.4, text: "mic two"},
-			{s: 5.0, e: 5.5, text: "mic before"}, // its own budget, untouched by clip.mkv's
+			{s: 12.0, e: 12.4, spk: "SPEAKER_00", text: "mic one"},
+			{s: 15.0, e: 15.4, spk: "SPEAKER_00", text: "mic two"},
+			{s: 5.0, e: 5.5, spk: "SPEAKER_00", text: "mic before"}, // its own budget, untouched by clip.mkv's
 		}},
 	}
-	got := speechBlock(srcs, 10, 16)
+	got := speechBlock(srcs, "mic.flac", 10, 16)
 	want := `--- context before (do not describe) ---
-[-6.0s] clip.mkv: "game before A"
-[-5.0s] mic.flac: "mic before"
-[-4.0s] clip.mkv: "game before B"
+[-6.0s] SPEAKER_01: game before A
+[-5.0s] NARRATOR: mic before
+[-4.0s] SPEAKER_01: game before B
 --- spoken during these frames ---
-[+1.0s] clip.mkv: "game one"
-[+2.0s] mic.flac: "mic one"
-[+4.0s] clip.mkv: "game two"
-[+5.0s] mic.flac: "mic two"
+[+1.0s] SPEAKER_01: game one
+[+2.0s] NARRATOR: mic one
+[+4.0s] SPEAKER_01: game two
+[+5.0s] NARRATOR: mic two
 --- context after (do not describe) ---
 (none)`
 	if got != want {
@@ -191,17 +195,17 @@ func TestSpeechBlockSaysNothingRatherThanSayingNothing(t *testing.T) {
 (no speech during these frames)
 --- context after (do not describe) ---
 (none)`
-	if got := speechBlock(nil, 10, 16); got != want {
+	if got := speechBlock(nil, "", 10, 16); got != want {
 		t.Errorf("empty block is\n%s\nwant\n%s", got, want)
 	}
 	// and a transcript that exists but is nowhere near this chunk reads the same
 	far := []tsvRow{{s: 0, e: 1, text: "long gone"}, {s: 600, e: 601, text: "much later"}}
-	if got := speechBlock(ownAudio(far), 300, 306); got != want {
+	if got := speechBlock(ownAudio(far), "", 300, 306); got != want {
 		t.Errorf("out-of-range block is\n%s\nwant\n%s", got, want)
 	}
 	// so does a session whose second microphone recorded nothing at all
 	quiet := []speechSrc{{label: "clip.mkv"}, {label: "mic.flac"}}
-	if got := speechBlock(quiet, 10, 16); got != want {
+	if got := speechBlock(quiet, "", 10, 16); got != want {
 		t.Errorf("silent-sources block is\n%s\nwant\n%s", got, want)
 	}
 }
@@ -212,15 +216,18 @@ func TestSpeechBlockSaysNothingRatherThanSayingNothing(t *testing.T) {
 // where the pauses were.
 func TestSpeechBlockPassesTextThroughUnchanged(t *testing.T) {
 	rows := []tsvRow{
-		{s: 11.0, e: 11.5, text: "  no wait  "},
-		{s: 11.5, e: 12.0, text: `he said "left" i think`},
-		{s: 12.0, e: 12.5, text: "uh"},
+		{s: 11.0, e: 11.5, spk: "SPEAKER_00", text: "  no wait  "},
+		{s: 11.5, e: 12.0, spk: "SPEAKER_00", text: `he said "left" i think`},
+		{s: 12.0, e: 12.5, spk: "SPEAKER_00", text: "uh"},
 	}
-	got := speechBlock(ownAudio(rows), 10, 16)
+	got := speechBlock(ownAudio(rows), "", 10, 16)
+	// a line is no longer wrapped in quotes of its own: a transcript full of
+	// speech marks put quotes inside quotes, and the label already says where
+	// the line ends and the words begin
 	for _, want := range []string{
-		`[+1.0s] clip.mkv: "  no wait  "`,
-		`[+1.5s] clip.mkv: "he said "left" i think"`,
-		`[+2.0s] clip.mkv: "uh"`,
+		`[+1.0s] SPEAKER_00:   no wait  `,
+		`[+1.5s] SPEAKER_00: he said "left" i think`,
+		`[+2.0s] SPEAKER_00: uh`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("block is missing the line %s:\n%s", want, got)

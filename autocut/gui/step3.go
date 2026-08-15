@@ -49,7 +49,10 @@ const (
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 const suggestSystem = `You choose the moments for a highlight video of a gaming session, cut for YouTube. Someone who was not there should be able to watch it from start to finish and enjoy it.
 
-You get the whole session as one timeline. Every line is [mm:ss], then a second bracket naming the recording it came from and either EVENT or a speaker, then the line itself. EVENT lines describe what was on screen at that moment and say whether it was hectic or calm. Speaker lines are what was said, possibly across several recordings of the same room. The minutes keep counting past 59, so [72:30] is 4350 seconds.
+You get the whole session as one timeline, [mm:ss] then who, then the line. The minutes keep counting past 59, so [72:30] is 4350 seconds.
+  [12:04] EVENT: what was on screen then, and whether it was hectic or calm
+  [12:04] SPEAKER_01: something said out loud, which the video plays
+  [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it, so a good NARRATOR line is worth cutting for like any other.
 
 Return strict JSON, nothing else:
 {"segments":[{"start":<sec>,"end":<sec>}]}
@@ -60,7 +63,7 @@ Timing.
 - 6 to 20 segments, chronological, never overlapping. 8 to 45 seconds each as a rule, but a beat that the session notes ask for, or that needs its whole build up and payoff, runs as long as it needs. A story cut off in the middle is worse than a long segment.
 - The total should land within about a tenth of the target length you are given. Well short or well over is rejected and you are asked again.
 - Only times the timeline actually shows. Never invent one, and never round to a moment nothing happens at.
-- Only stretches with footage. A span with no EVENT lines from any recording has nothing to show, and a segment there is thrown away, which leaves the video short.
+- Only stretches with footage. A span with no EVENT lines has nothing to show, and a segment there is thrown away, which leaves the video short.
 
 What you have been told about this session.
 
@@ -717,17 +720,14 @@ func (ed *cutEditor) updateInputs() {
 		line, detail = "nothing to cut — no source on Inputs is marked as footage", ""
 	}
 
-	b, err := os.ReadFile(filepath.Join(ed.a.transcriptDir(), "session.txt"))
+	rows := loadTSVRows(filepath.Join(ed.a.transcriptDir(), "session.tsv"))
 	switch {
-	case err != nil:
+	case len(rows) == 0:
 		line += " · no session timeline — run Describe"
 	default:
 		speech, events := 0, 0
-		for _, ln := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
-			if ln == "" {
-				continue
-			}
-			if strings.Contains(ln, " EVENT] ") {
+		for _, r := range rows {
+			if r.spk == "EVENT" {
 				events++
 			} else {
 				speech++
@@ -735,8 +735,9 @@ func (ed *cutEditor) updateInputs() {
 		}
 		line += fmt.Sprintf(" · timeline %d lines (%d spoken, %d on screen) → all of it goes to Suggest",
 			speech+events, speech, events)
+		// the same string the request will carry, so the size is the real one
 		detail += fmt.Sprintf("\n\nstep2/transcript/session.txt — %d kB, sent whole with the cut prompt",
-			(len(b)+512)/1024)
+			(len(sessionText(rows, ed.a.narratorMic()))+512)/1024)
 	}
 	// the context box on Describe rides along with every request this page
 	// makes, so this row -- which is the list of what Suggest is sent -- is
@@ -1565,11 +1566,12 @@ func (a *App) suggestClicked() {
 		a.setStatus("you have hand edits — press ↺ Revert edits first if you want a fresh suggestion")
 		return
 	}
-	session, err := os.ReadFile(filepath.Join(a.transcriptDir(), "session.txt"))
-	if err != nil {
+	rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv"))
+	if len(rows) == 0 {
 		a.setStatus("run Transcript first — no session timeline")
 		return
 	}
+	session := sessionText(rows, a.narratorMic())
 	target := 300.0
 	fmt.Sscanf(a.ed.target.Text(), "%f", &target)
 
@@ -1593,11 +1595,11 @@ func (a *App) suggestClicked() {
 	})
 	go func() {
 		a.logCtx("suggest")
-		segs, err := a.suggestCut(string(session), target)
+		segs, err := a.suggestCut(session, target)
 		if err == nil {
 			glib.IdleAdd(func() { a.progress.SetText("auditing the cut…") })
 			a.logfIdle(">>> audit: reading the %d proposed segments back against the brief — a second long call", len(segs))
-			segs = a.auditCut(string(session), target, segs)
+			segs = a.auditCut(session, target, segs)
 		}
 		glib.IdleAdd(func() {
 			a.running = false
@@ -1640,7 +1642,10 @@ func (a *App) suggestClicked() {
 // it will extend an end.
 const auditSystem = `You are checking a proposed highlight cut against the brief it was made from, before anyone watches it. You did not choose these moments. Your job is to find where they are wrong.
 
-You get the brief, the target length, the session timeline and the proposed segments. Timeline lines are [mm:ss], then a bracket naming the recording and either EVENT or a speaker, then the line itself. EVENT lines are what was on screen. The minutes keep counting past 59, so [72:30] is 4350 seconds.
+You get the brief, the target length, the session timeline and the proposed segments. Timeline lines are [mm:ss] then who, then the line. The minutes keep counting past 59, so [72:30] is 4350 seconds.
+  [12:04] EVENT: what was on screen then
+  [12:04] SPEAKER_01: something said out loud, which the video plays
+  [12:04] NARRATOR: something said on the narrator's own microphone, which the voice-over will say
 
 Return strict JSON, nothing else:
 {"checks":[{"i":<number>,"verdict":"ok","start":<sec>,"end":<sec>,"why":"<short>"}],"add":[{"start":<sec>,"end":<sec>,"why":"<short>"}]}
@@ -1662,7 +1667,7 @@ What you are checking, hardest first.
 Rules you may not break.
 
 - Only times the timeline actually shows. Never invent one.
-- Only stretches with footage. A span with no EVENT lines from any recording has nothing to show and will be thrown away.
+- Only stretches with footage. A span with no EVENT lines has nothing to show and will be thrown away.
 - After your corrections the segments must still be in order and must not overlap. If extending one would run into the next, extend it anyway and drop the next, saying so.
 - Keep the total near the target. If your fixes and additions make it much longer, pay for them by dropping the weakest segments.
 - When a segment is right, say ok. A check that changes something for the sake of changing it is worse than no check at all.`

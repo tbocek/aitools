@@ -49,7 +49,12 @@ A request may open with a block headed ABOUT THIS SESSION: the editor's notes on
 
 Each request then gives you a context block, then the lines to clean as TSV: start, end, speaker, text, tab separated, headed by how many there are.
 
-The context block is what was on screen and what the other microphones picked up in the same seconds. [on screen] is this recording's own video, [on screen, NAME] another recording's video, [heard in NAME] another recording's audio, often the same room heard from a different seat. Use it only to work out what a garbled line was. Never copy context into a line, and never let it put words in someone's mouth. It is frequently empty, which is normal: then clean the lines on their own.
+The context block is what was on screen and what the other microphones picked up in the same seconds:
+  EVENT: what this recording's own video showed
+  EVENT (NAME): what another recording's video showed
+  SPEAKER_01 (NAME): a line off another recording, often the same room heard from a different seat
+  NARRATOR (NAME): a line off the narrator's own microphone
+Use it only to work out what a garbled line was. Never copy context into a line, and never let it put words in someone's mouth. It is frequently empty, which is normal: then clean the lines on their own.
 
 Shape of your reply. It is checked line by line against what you were given. If the count, the order, a timestamp or a speaker differs, the whole block is discarded and the original uncleaned lines are kept, so every fix in it is lost.
 
@@ -339,6 +344,9 @@ func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 
 	// context provider: everything any source shows or says inside a window
 	// of one source's timeline, mapped through the wall clock
+	// ...labelled the way every other step labels a timeline line (tlLabel),
+	// with the recording named after it when it is not the one being cleaned
+	narr := a.narratorMic()
 	ctxFor := func(of *src, t0, t1 float64) string {
 		var b strings.Builder
 		w0 := of.start + t0 - 5
@@ -349,19 +357,20 @@ func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 			}
 			for _, ev := range s.events {
 				if s.start+ev.e > w0 && s.start+ev.s < w1 {
-					fmt.Fprintf(&b, "[on screen, %s] %s\n", s.base, ev.text)
+					fmt.Fprintf(&b, "EVENT (%s): %s\n", s.base, ev.text)
 				}
 			}
 			for _, r := range s.rows {
 				if s.start+r.e > w0 && s.start+r.s < w1 {
-					fmt.Fprintf(&b, "[heard in %s] %s\n", s.base, r.text)
+					who := tlLabel(tsvRow{spk: r.spk, src: s.base}, narr)
+					fmt.Fprintf(&b, "%s (%s): %s\n", who, s.base, r.text)
 				}
 			}
 		}
 		if of.isVideo { // its own events ground its own audio too
 			for _, ev := range of.events {
 				if ev.e > t0-5 && ev.s < t1+5 {
-					fmt.Fprintf(&b, "[on screen] %s\n", ev.text)
+					fmt.Fprintf(&b, "EVENT: %s\n", ev.text)
 				}
 			}
 		}
@@ -423,15 +432,21 @@ func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].g < rows[j].g })
-	var stv, stx strings.Builder
+	// session.tsv is the machine copy and keeps every column, including which
+	// recording each line came off. session.txt is the readable one, and it is
+	// written exactly as the cut step will hand it to the model (sessionText),
+	// so what you read is what it reads.
+	var stv strings.Builder
+	var tl []tsvRow
 	for _, r := range rows {
 		fmt.Fprintf(&stv, "%.2f\t%.2f\t%s\t%s\t%s\n", r.g, r.ge, r.src, r.spk, r.text)
-		fmt.Fprintf(&stx, "[%02d:%02d] [%s %s] %s\n", int(r.g)/60, int(r.g)%60, r.src, r.spk, r.text)
+		tl = append(tl, tsvRow{s: r.g, e: r.ge, src: r.src, spk: r.spk, text: r.text})
 	}
+	stx := sessionText(tl, a.narratorMic())
 	if err := os.WriteFile(filepath.Join(s3, "session.tsv"), []byte(stv.String()), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(s3, "session.txt"), []byte(stx.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(s3, "session.txt"), []byte(stx), 0o644); err != nil {
 		return err
 	}
 	a.prog(trackFix, span, "transcript done")

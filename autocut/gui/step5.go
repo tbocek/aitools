@@ -36,7 +36,7 @@ import (
 )
 
 const (
-	narrLead  = 0.3  // narration starts this far into a clip
+	narrLead  = 0.3  // the earliest a line may start into its clip (writer's "at" 0 lands here)
 	maxExtend = 4.0  // seconds a clip may grow to fit its line
 	maxTempo  = 1.25 // ... and how much the line may be sped up after that
 	loudFlt   = "loudnorm=I=-14:TP=-1.5:LRA=11"
@@ -519,15 +519,25 @@ func hasAudioStream(path string) bool {
 
 // ---- render -----------------------------------------------------------------
 
+// prodLine is one narration line placed inside a clip. at is where the writer
+// put it, seconds from the clip's start; delay is where the mix actually
+// starts it -- at, unless the line had to be pulled earlier to fit. delay is
+// what adelay and the subtitles use; at is only its input.
+type prodLine struct {
+	wav   string // synthesized wav, "" = not spoken (captioned only)
+	dur   float64
+	text  string
+	at    float64
+	delay float64
+}
+
 type prodClip struct {
 	idx    int
 	video  *tlVideo
 	local  float64 // start inside that recording
 	length float64 // slot length after growing for the narration
 	tempo  float64
-	voice  string // synthesized wav, "" = original audio only
-	vdur   float64
-	text   string
+	lines  []prodLine // empty = original audio only
 }
 
 func (a *App) produceClicked() {
@@ -637,36 +647,79 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		if c.length < 0.5 {
 			continue
 		}
-		switch e := matchEntry(entries, s); {
-		case e == nil:
-			if len(entries) > 0 {
-				a.logfIdle("clip %d at %.0f s has no narration entry — it keeps its own audio", i+1, s.S)
+		matched := matchEntries(entries, s)
+		for _, e := range matched {
+			text := strings.TrimSpace(e.Text)
+			if text == "" {
+				continue
 			}
-		default:
-			c.text = strings.TrimSpace(e.Text)
-			if c.text != "" {
-				wav := a.ttsWav(*e)
-				if !exists(wav) {
-					a.logfIdle("clip %d: no synthesis for its line — it keeps its own audio", i+1)
-				} else {
-					c.voice = wav
-					c.vdur, _ = ffprobeDur(wav)
-				}
+			ln := prodLine{text: text, at: math.Min(math.Max(0, e.At), math.Max(0, c.length-1))}
+			ln.delay = math.Max(narrLead, ln.at)
+			wav := a.ttsWav(*e)
+			if !exists(wav) {
+				a.logfIdle("clip %d: no synthesis for a line — it is captioned only", i+1)
+			} else {
+				ln.wav = wav
+				ln.dur, _ = ffprobeDur(wav)
 			}
+			c.lines = append(c.lines, ln)
 		}
-		// grow the slot for the line, then speed the line up if it still spills
-		if c.vdur > 0 {
-			need := c.vdur + narrLead + 0.2
+		if len(c.lines) == 0 && len(entries) > 0 && len(matched) == 0 {
+			a.logfIdle("clip %d at %.0f s has no narration entry — it keeps its own audio", i+1, s.S)
+		}
+		// make the lines fit where the writer put them: each starts no earlier
+		// than the one before it ended, the slot grows first (the placement
+		// survives whole -- a sign-off at the end stays at the end), then the
+		// schedule slides earlier as one piece, and only as the last resort
+		// are the lines distorted
+		if len(c.lines) > 0 {
+			pack := func() float64 { // returns when the last line ends
+				prev := 0.0
+				for k := range c.lines {
+					d := math.Max(narrLead, c.lines[k].at)
+					if d < prev {
+						d = prev
+					}
+					c.lines[k].delay = d
+					prev = d + c.lines[k].dur/c.tempo + 0.3
+				}
+				return prev - 0.3
+			}
+			need := pack() + 0.2
 			if need > c.length {
 				c.length += math.Min(need-c.length, maxExtend)
 				if end := v.start + v.dur; s.S+c.length > end {
 					c.length = end - s.S
 				}
 			}
+			if over := need - c.length; over > 0 {
+				shift := math.Min(over, c.lines[0].delay-narrLead)
+				for k := range c.lines {
+					c.lines[k].delay -= shift
+				}
+				need -= shift
+				a.logfIdle("clip %d: the narration does not fit where it was placed — moved %.1f s earlier",
+					i+1, shift)
+			}
 			if need > c.length {
-				c.tempo = math.Min(c.vdur/math.Max(0.1, c.length-narrLead-0.2), maxTempo)
+				var talk float64
+				for _, ln := range c.lines {
+					talk += ln.dur
+				}
+				avail := c.length - narrLead - 0.2 - 0.3*float64(len(c.lines)-1)
+				c.tempo = math.Min(talk/math.Max(0.1, avail), maxTempo)
+				// repack with the sped-up lines, then slide once more: the
+				// placements are re-derived from at, so the schedule is the
+				// writer's shape at the new speed
+				need = pack() + 0.2
+				if over := need - c.length; over > 0 {
+					shift := math.Min(over, c.lines[0].delay-narrLead)
+					for k := range c.lines {
+						c.lines[k].delay -= shift
+					}
+				}
 				a.logfIdle("clip %d: narration %.1f s does not fit %.1f s — sped up %.2fx",
-					i+1, c.vdur, c.length, c.tempo)
+					i+1, talk, c.length, c.tempo)
 			}
 		}
 		clips = append(clips, c)
@@ -679,14 +732,17 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 	srt, cum := "", 0.0
 	cue := 0
 	for _, c := range clips {
-		if c.text != "" {
-			end := cum + narrLead + c.vdur/c.tempo
-			if c.vdur == 0 { // unsynthesized: hold the caption for the whole clip
+		for k, ln := range c.lines {
+			end := cum + ln.delay + ln.dur/c.tempo
+			if ln.dur == 0 { // unspoken: hold the caption until the next line, or the clip's end
 				end = cum + c.length
+				if k+1 < len(c.lines) {
+					end = cum + c.lines[k+1].delay
+				}
 			}
 			cue++
 			srt += fmt.Sprintf("%d\n%s --> %s\n%s\n\n", cue,
-				srtTime(cum+narrLead), srtTime(math.Min(end, cum+c.length)), wrapSub(c.text))
+				srtTime(cum+ln.delay), srtTime(math.Min(end, cum+c.length)), wrapSub(ln.text))
 		}
 		cum += c.length
 	}
@@ -710,14 +766,20 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		stem := fmt.Sprintf("c%03d_%s", i, stampName(c.video.wall+c.local))
 		name := stem + ext
 		var cueFile string
-		if st.Subs == "burn" && c.text != "" {
+		if st.Subs == "burn" && len(c.lines) > 0 {
 			cueFile = filepath.Join(clipDir, stem+".srt")
-			end := narrLead + c.vdur/c.tempo
-			if c.vdur == 0 {
-				end = c.length
+			one := ""
+			for k, ln := range c.lines {
+				end := ln.delay + ln.dur/c.tempo
+				if ln.dur == 0 {
+					end = c.length
+					if k+1 < len(c.lines) {
+						end = c.lines[k+1].delay
+					}
+				}
+				one += fmt.Sprintf("%d\n%s --> %s\n%s\n\n", k+1, srtTime(ln.delay),
+					srtTime(math.Min(end, c.length)), wrapSub(ln.text))
 			}
-			one := fmt.Sprintf("1\n%s --> %s\n%s\n\n", srtTime(narrLead),
-				srtTime(math.Min(end, c.length)), wrapSub(c.text))
 			if err := os.WriteFile(cueFile, []byte(one), 0o644); err != nil {
 				return err
 			}
@@ -798,12 +860,17 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 			"-i", "anullsrc=channel_layout=stereo:sample_rate=48000")
 		game = "1:a"
 	}
-	if c.voice != "" {
-		args = append(args, "-i", c.voice)
+	// every spoken line is its own input, mixed over the ducked game together
+	var spoken []prodLine
+	for _, ln := range c.lines {
+		if ln.wav != "" {
+			spoken = append(spoken, ln)
+			args = append(args, "-i", ln.wav)
+		}
 	}
-	voiceIn := "2:a"
-	if game == "0:a" {
-		voiceIn = "1:a"
+	voiceBase := 1
+	if game == "1:a" {
+		voiceBase = 2
 	}
 
 	var vf []string
@@ -822,11 +889,15 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 		vf = append(vf, "subtitles="+ffEscape(cueFile))
 	}
 	fc := "[0:v]" + strings.Join(vf, ",") + "[v];"
-	if c.voice != "" {
-		fc += fmt.Sprintf("[%s]atempo=%.3f,aresample=48000,pan=stereo|c0=c0|c1=c0,adelay=%gs:all=1[nr];",
-			voiceIn, math.Max(0.5, c.tempo), narrLead)
+	if len(spoken) > 0 {
+		nrs := ""
+		for k, ln := range spoken {
+			fc += fmt.Sprintf("[%d:a]atempo=%.3f,aresample=48000,pan=stereo|c0=c0|c1=c0,adelay=%gs:all=1[nr%d];",
+				voiceBase+k, math.Max(0.5, c.tempo), math.Max(narrLead, ln.delay), k)
+			nrs += fmt.Sprintf("[nr%d]", k)
+		}
 		fc += fmt.Sprintf("[%s]volume=%.3f,aresample=48000[bg];", game, st.GameVol)
-		fc += "[bg][nr]amix=inputs=2:duration=first:normalize=0," + audFmt + "[a]"
+		fc += fmt.Sprintf("[bg]%samix=inputs=%d:duration=first:normalize=0,", nrs, 1+len(spoken)) + audFmt + "[a]"
 	} else {
 		fc += fmt.Sprintf("[%s]%s[a]", game, audFmt)
 	}
@@ -912,27 +983,24 @@ func pickVideo(vids []tlVideo, t float64) *tlVideo {
 	return nil
 }
 
-// matchEntry finds the narration written for a segment. The entries carry the
-// clip's own times, so the start usually matches to the decimal -- but the
-// model does echo them back and can round or nudge, and a line silently
-// dropped from the render is the worst possible failure here. So: best
-// overlap wins, and merely touching is not enough.
-func matchEntry(entries []narrEntry, s cutSeg) *narrEntry {
-	best, bestOv := -1, 0.0
-	for i, e := range entries {
+// matchEntries finds the narration written for a segment -- every line of it,
+// in placement order, since a clip may carry more than one. The entries carry
+// the clip's own times, so they usually match to the decimal -- but a cut
+// edited after narrating can shift underneath, and a line silently dropped
+// from the render is the worst possible failure here. So: real overlap is
+// enough, merely touching is not.
+func matchEntries(entries []narrEntry, s cutSeg) []*narrEntry {
+	var out []*narrEntry
+	for i := range entries {
+		e := &entries[i]
 		ov := math.Min(e.E, s.E) - math.Max(e.S, s.S)
-		if ov > bestOv {
-			best, bestOv = i, ov
+		shorter := math.Min(e.E-e.S, s.E-s.S)
+		if ov > 0 && (shorter <= 0 || ov >= shorter/2) {
+			out = append(out, e)
 		}
 	}
-	if best < 0 {
-		return nil
-	}
-	shorter := math.Min(entries[best].E-entries[best].S, s.E-s.S)
-	if shorter > 0 && bestOv < shorter/2 {
-		return nil
-	}
-	return &entries[best]
+	sort.SliceStable(out, func(a, b int) bool { return out[a].At < out[b].At })
+	return out
 }
 
 func srtTime(t float64) string {

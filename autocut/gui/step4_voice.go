@@ -192,6 +192,8 @@ func (a *App) narratorVoiceName(n int) string {
 // so it survives a restart, and mixed into the synthesis cache key so switching
 // voices does not throw away work.
 func (a *App) voiceID() string {
+	a.voiceMu.Lock()
+	defer a.voiceMu.Unlock()
 	if a.voiceSel != "" {
 		return a.voiceSel
 	}
@@ -231,7 +233,9 @@ func (a *App) setVoice(v voiceOpt) error {
 	if err := os.WriteFile(filepath.Join(dir, "voice.txt"), []byte(v.id), 0o644); err != nil {
 		return err
 	}
+	a.voiceMu.Lock()
 	a.voiceSel = v.id
+	a.voiceMu.Unlock()
 	return nil
 }
 
