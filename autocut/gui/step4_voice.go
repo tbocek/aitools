@@ -957,7 +957,9 @@ func (vp *voicePicker) playSample() {
 		t0 := time.Now()
 		var err error
 		if !cached {
-			err = a.speak(text, "", out)
+			// the sample is keyed by voice and words, so seed it the same way:
+			// replaying a sample must be the take you just heard, not a new one
+			err = a.speak(text, "", ttsSeed(out), out)
 		}
 		took := time.Since(t0)
 		glib.IdleAdd(func() {

@@ -196,7 +196,7 @@ func TestVoicePitchLive(t *testing.T) {
 		}
 		out := a.sampleWav(a.voiceKey(), line)
 		if !exists(out) {
-			if err := a.speak(line, "", out); err != nil {
+			if err := a.speak(line, "", ttsSeed(out), out); err != nil {
 				t.Fatalf("speak at %+.0f: %v", st, err)
 			}
 		}

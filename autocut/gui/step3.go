@@ -44,6 +44,7 @@ const (
 	snapTol  = 5.0 // seconds the Add edges may move to find a better cut point
 	minSegLn = 1.0 // segments shorter than this are dropped when editing
 	undoDeep = 50  // how many edits back Undo reaches
+	edgeGrab = 6.0 // px either side of a clip edge the right button picks it up in
 )
 
 // One paragraph or bullet per line, unwrapped: see describeSystem.
@@ -147,6 +148,16 @@ type cutEditor struct {
 	markIn, markOut float64 // editor-style in/out points, session time
 	hasIn, hasOut   bool
 
+	// the clip edge the right button has picked up: which segment, which side of
+	// it, and whether this hold has moved anything yet. The undo snapshot is
+	// taken on the first move, so picking an edge up and putting it back down is
+	// not an edit. edgeOn rather than an index-or-minus-one because a zero value
+	// has to mean "nothing held", and 0 is a perfectly good segment.
+	edgeOn    bool
+	edgeSeg   int
+	edgeEnd   bool
+	edgeDirty bool
+
 	// The tracks are NOT a wide widget in a scrolled window (see drawTrack):
 	// they are exactly as wide as the space they have, and this adjustment is
 	// the window onto the timeline that they draw.
@@ -155,9 +166,11 @@ type cutEditor struct {
 	viewX, viewW     float64 // scroll offset and width of that window, in timeline px
 	srcArea, cutArea *gtk.DrawingArea
 	total            *gtk.Label
-	target           *gtk.Entry
-	inputs           *gtk.Label // what this page reads, and what Suggest is sent
-	out              *gtk.Label // what step3/ holds, same line as step 1 and 2 show
+	clock            *gtk.Label // the red line's time in numbers, beside the transport
+
+	target *gtk.Entry
+	inputs *gtk.Label // what this page reads, and what Suggest is sent
+	out    *gtk.Label // what step3/ holds, same line as step 1 and 2 show
 
 	thumbs map[string]*gdkpixbuf.Pixbuf
 	scores map[string][]float64 // per video: visual change per frame
@@ -218,6 +231,7 @@ func (ed *cutEditor) reload() error {
 	// cut state; the undo history belongs to the cut that produced it
 	ed.segs = nil
 	ed.undo = nil
+	ed.edgeOn = false
 	ed.syncButtons()
 	if b, err := os.ReadFile(a.cutPath()); err == nil {
 		var c struct{ Segs []cutSeg }
@@ -367,6 +381,7 @@ func (ed *cutEditor) setThumbH(h int) {
 func (ed *cutEditor) setPlayhead(t float64) {
 	ed.playhead = t
 	ed.hasPlay = true
+	ed.showTime()
 	if v := ed.videoAt(t); v != nil && ed.player != nil {
 		wasPlaying := ed.player.playing
 		if ed.playVideo == v {
@@ -382,8 +397,64 @@ func (ed *cutEditor) setPlayhead(t float64) {
 	}
 }
 
-// frameStep pauses and nudges the preview by whole frames.
+// showTime prints the red line's time. The line by itself locates the playhead
+// only to the nearest pixel, and zoomed out a pixel is several seconds -- so the
+// one number a reader wants after clicking (to type into a mark, to compare with
+// a narration time, to say where something is) was the one number the page never
+// showed. Same mm:ss.d spelling the edge readouts and the Narrate page use.
+//
+// It has to be pushed rather than drawn, because three different paths move the
+// playhead -- a click, ‹f/f›, and playback following the player's own clock --
+// and because the line may well be scrolled out of view while the time is not.
+func (ed *cutEditor) showTime() {
+	if ed.clock == nil {
+		return
+	}
+	ed.clock.SetText(playheadClock(ed.playhead, ed.hasPlay))
+	ed.clock.SetTooltipText(ed.playheadTip())
+}
+
+// playheadClock is the toolbar's reading of the playhead, and the dashes are
+// exactly as wide as a time so that placing the line for the first time does not
+// shove the rest of the bar sideways.
+func playheadClock(t float64, has bool) string {
+	if !has {
+		return "--:--.-"
+	}
+	return fmtClock(t)
+}
+
+// playheadTip is the long form of the same answer, for the hover: where the line
+// falls inside the recording it is over (which is the number ffmpeg and the
+// player think in, and it is not the session time the label shows), which frame
+// that is, and whether the cut currently keeps it.
+func (ed *cutEditor) playheadTip() string {
+	if !ed.hasPlay {
+		return "No playhead yet — left-click a track to place the red line"
+	}
+	where := "in the gap between recordings"
+	if v := ed.videoAt(ed.playhead); v != nil {
+		where = fmt.Sprintf("%s at %s", filepath.Base(v.path), fmtClock(ed.playhead-v.start))
+		if v.fps > 0 {
+			where += fmt.Sprintf(", frame %d", int(math.Round((ed.playhead-v.start)*v.fps)))
+		}
+	}
+	kept := "cut away"
+	if ed.inCut(ed.playhead) {
+		kept = "kept"
+	}
+	return fmt.Sprintf("The red line: %.2f s into the session — %s — %s here",
+		ed.playhead, where, kept)
+}
+
+// frameStep pauses and nudges the preview by whole frames -- or, while a clip
+// edge is held, the edge itself. ‹f on a boundary you have just picked up can
+// only mean one thing, and it is not "move the playhead somewhere else".
 func (ed *cutEditor) frameStep(n int) {
+	if ed.edgeOn {
+		ed.nudgeEdge(n)
+		return
+	}
 	if ed.playVideo == nil || ed.player == nil {
 		ed.a.setStatus("click a track first to place the playhead")
 		return
@@ -393,6 +464,7 @@ func (ed *cutEditor) frameStep(n int) {
 	local := math.Max(0, math.Min(v.dur, ed.playhead-v.start+float64(n)/v.fps))
 	ed.playhead = v.start + local
 	ed.player.SeekTo(local)
+	ed.showTime()
 	ed.srcArea.QueueDraw()
 	ed.cutArea.QueueDraw()
 }
@@ -425,6 +497,7 @@ func (ed *cutEditor) followPlayback() bool {
 	}
 	if pos, ok := ed.player.Position(); ok {
 		ed.playhead = ed.playVideo.start + pos
+		ed.showTime()
 		if ed.srcArea != nil {
 			ed.srcArea.QueueDraw()
 			ed.cutArea.QueueDraw()
@@ -580,6 +653,156 @@ func (ed *cutEditor) removeRange(t0, t1 float64) {
 	ed.persist()
 }
 
+// ---- moving a clip edge by hand ---------------------------------------------
+//
+// Add and Remove work in whole regions, which is right for choosing a scene and
+// wrong for the last thing you do to one: a clip that starts half a second too
+// early is not a region you re-select, it is an edge you nudge. The green
+// borders are the handles for that, the right button picks one up, and until it
+// is put down the frame buttons move it a frame at a time instead of the
+// playhead -- the same gesture, aimed at the thing you just said you were
+// working on.
+
+// edgeAt is the clip edge nearest a point of the timeline, within edgeGrab px:
+// the segment's index and which side of it. Both tracks answer to it -- the
+// boundary in the lower band is the same boundary as the green line above it.
+func (ed *cutEditor) edgeAt(px float64) (int, bool, bool) {
+	seg, end, near := -1, false, edgeGrab
+	for i, s := range ed.segs {
+		if d := math.Abs(ed.xOf(s.S) - px); d < near {
+			seg, end, near = i, false, d
+		}
+		if d := math.Abs(ed.xOf(s.E) - px); d < near {
+			seg, end, near = i, true, d
+		}
+	}
+	return seg, end, seg >= 0
+}
+
+// grabEdge picks up the edge under a timeline x, and says whether it found one.
+func (ed *cutEditor) grabEdge(px float64) bool {
+	seg, end, ok := ed.edgeAt(px)
+	if !ok {
+		return false
+	}
+	ed.edgeOn, ed.edgeSeg, ed.edgeEnd, ed.edgeDirty = true, seg, end, false
+	side := "start"
+	if end {
+		side = "end"
+	}
+	ed.a.setStatus(fmt.Sprintf("clip %d's %s picked up at %s — drag it, or nudge it a frame with ‹f and f›; "+
+		"right-click clear of it (or any left click) puts it down", seg+1, side, fmtClock(ed.edgeTime())))
+	ed.redrawTracks()
+	return true
+}
+
+func (ed *cutEditor) dropEdge() {
+	if !ed.edgeOn {
+		return
+	}
+	ed.edgeOn = false
+	ed.redrawTracks()
+}
+
+// edgeTime is where the held edge is now, or 0 when nothing is held.
+func (ed *cutEditor) edgeTime() float64 {
+	if !ed.edgeOn || ed.edgeSeg >= len(ed.segs) {
+		return 0
+	}
+	if ed.edgeEnd {
+		return ed.segs[ed.edgeSeg].E
+	}
+	return ed.segs[ed.edgeSeg].S
+}
+
+// clampEdge is how far an edge may travel: never so far that its own clip is
+// shorter than minSegLn, never onto the neighbouring clip, and never out of the
+// recording it was cut from (lo..hi). The cut is the input to every step after
+// this one, so this arithmetic sits on its own where it can be tested rather
+// than inside a mouse handler.
+func clampEdge(segs []cutSeg, i int, end bool, t, lo, hi float64) float64 {
+	s := segs[i]
+	if end {
+		if i+1 < len(segs) {
+			hi = math.Min(hi, segs[i+1].S)
+		}
+		return math.Min(math.Max(t, s.S+minSegLn), hi)
+	}
+	if i > 0 {
+		lo = math.Max(lo, segs[i-1].E)
+	}
+	return math.Max(math.Min(t, s.E-minSegLn), lo)
+}
+
+// moveEdgeTo puts the held edge at a session time, as far as it may go. live
+// says the mouse is still down, and then the cut is only redrawn: writing
+// cut.json (and re-reading the folder it is in, and re-gating two tabs) on
+// every motion event is a lot of work for a version of the cut that exists for
+// sixteen milliseconds. The drag's end writes the one that matters.
+func (ed *cutEditor) moveEdgeTo(t float64, live bool) {
+	if !ed.edgeOn || ed.edgeSeg >= len(ed.segs) {
+		ed.edgeOn = false
+		return
+	}
+	s := &ed.segs[ed.edgeSeg]
+	lo, hi := math.Inf(-1), math.Inf(1)
+	if v := ed.videoAt((s.S + s.E) / 2); v != nil {
+		lo, hi = v.start, v.start+v.dur
+	}
+	t = clampEdge(ed.segs, ed.edgeSeg, ed.edgeEnd, t, lo, hi)
+	if (ed.edgeEnd && t == s.E) || (!ed.edgeEnd && t == s.S) {
+		return // against a stop: not an edit, and not worth an undo step
+	}
+	// one undo entry for the whole hold, not one per mouse move: a drag is a
+	// single act, and fifty of them would be the entire history
+	if !ed.edgeDirty {
+		ed.pushUndo()
+		ed.edgeDirty = true
+	}
+	if ed.edgeEnd {
+		s.E = t
+	} else {
+		s.S = t
+	}
+	if live {
+		ed.updateTotal()
+		ed.redrawTracks()
+		return
+	}
+	ed.persist()
+}
+
+// nudgeEdge moves the held edge by whole frames and shows the frame it lands
+// on. An end edge is previewed a frame short of itself: the boundary's own
+// frame is the first one the cut does NOT keep, and what you are judging is the
+// last one it does.
+func (ed *cutEditor) nudgeEdge(n int) {
+	if !ed.edgeOn || ed.edgeSeg >= len(ed.segs) {
+		ed.edgeOn = false
+		return
+	}
+	fps := 30.0
+	if v := ed.videoAt(ed.edgeTime()); v != nil && v.fps > 0 {
+		fps = v.fps
+	}
+	ed.moveEdgeTo(ed.edgeTime()+float64(n)/fps, false)
+	t := ed.edgeTime()
+	if ed.edgeEnd {
+		t -= 1 / fps
+	}
+	ed.setPlayhead(t)
+	ed.a.setStatus(fmt.Sprintf("clip %d: %s – %s", ed.edgeSeg+1,
+		fmtClock(ed.segs[ed.edgeSeg].S), fmtClock(ed.segs[ed.edgeSeg].E)))
+}
+
+func (ed *cutEditor) redrawTracks() {
+	if ed.srcArea == nil {
+		return
+	}
+	ed.srcArea.QueueDraw()
+	ed.cutArea.QueueDraw()
+}
+
 // pushUndo snapshots the cut before an edit. Every path that changes segs goes
 // through here first, so Add, Remove and Suggest are all reversible -- pressing
 // Add is a try, not a commitment.
@@ -645,6 +868,9 @@ func (ed *cutEditor) segAt(t float64) int {
 }
 
 func (ed *cutEditor) coalesce() {
+	// this is where the segment list is rearranged wholesale -- sorted, merged,
+	// renumbered -- so a held edge, which is an index into it, has to let go
+	ed.edgeOn = false
 	sort.Slice(ed.segs, func(i, j int) bool { return ed.segs[i].S < ed.segs[j].S })
 	var out []cutSeg
 	for _, s := range ed.segs {
@@ -829,14 +1055,32 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int, isCut bool) {
 		first, last := v.frameRange(ed.pps, vx0, vx1, step)
 		for i := first; i < last; i += step {
 			t := v.start + float64(i)*v.interval
-			x := ed.xOf(t)
-			if isCut && !ed.inCut(t) {
+			pb := ed.thumb(v.frames[i])
+			if pb == nil {
 				continue
 			}
-			pb := ed.thumb(v.frames[i])
-			if pb != nil {
+			x := ed.xOf(t)
+			w := math.Min(float64(pb.Width()), float64(step)*v.interval*ed.pps)
+			if !isCut {
 				gdk.CairoSetSourcePixbuf(cr, pb, x, top+2)
-				cr.Rectangle(x, top+2, math.Min(float64(pb.Width()), float64(step)*v.interval*ed.pps), th)
+				cr.Rectangle(x, top+2, w, th)
+				cr.Fill()
+				continue
+			}
+			// The cut track paints the parts of a frame's stretch of video that
+			// the cut keeps -- not the frames whose sample time happens to land
+			// inside it. Frames are sampled seconds apart and a clip's start
+			// almost never falls on one, so the old test threw away the frame
+			// covering the boundary and left a grey bar at the head of nearly
+			// every clip. Clipped instead, the lower band is the upper band with
+			// the removed stretches missing, which is what it claims to be.
+			for _, k := range keptSpans(ed.segs, t, t+float64(step)*v.interval) {
+				x0, x1 := math.Max(x, ed.xOf(k[0])), math.Min(x+w, ed.xOf(k[1]))
+				if x1 <= x0 {
+					continue
+				}
+				gdk.CairoSetSourcePixbuf(cr, pb, x, top+2)
+				cr.Rectangle(x0, top+2, x1-x0, th)
 				cr.Fill()
 			}
 		}
@@ -970,6 +1214,26 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int, isCut bool) {
 		cr.Fill()
 	}
 
+	// the clip edge the right button is holding: white, wider than the green
+	// border it sits on, with a head each way to say that it moves. Drawn on
+	// both tracks, and last, so nothing painted over it can hide what is about
+	// to change under the next ‹f.
+	if ed.edgeOn && ed.edgeSeg < len(ed.segs) {
+		x := ed.xOf(ed.edgeTime())
+		cr.SetSourceRGB(1, 1, 1)
+		cr.SetLineWidth(3)
+		cr.MoveTo(x, top)
+		cr.LineTo(x, top+th+4)
+		cr.Stroke()
+		for _, d := range []float64{-1, 1} {
+			cr.MoveTo(x, top+th/2-5)
+			cr.LineTo(x+7*d, top+th/2)
+			cr.LineTo(x, top+th/2+5)
+			cr.ClosePath()
+			cr.Fill()
+		}
+	}
+
 	// the red select point / playhead
 	if ed.hasPlay {
 		x := ed.xOf(ed.playhead)
@@ -979,6 +1243,20 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int, isCut bool) {
 		cr.LineTo(x, float64(h))
 		cr.Stroke()
 	}
+}
+
+// keptSpans is the parts of one stretch of video the cut keeps, in order. The
+// stretch is a thumbnail's worth of seconds, so a clip boundary usually falls
+// in the middle of one and the answer is a piece of it.
+func keptSpans(segs []cutSeg, t0, t1 float64) [][2]float64 {
+	var out [][2]float64
+	for _, s := range segs {
+		a, b := math.Max(t0, s.S), math.Min(t1, s.E)
+		if b > a {
+			out = append(out, [2]float64{a, b})
+		}
+	}
+	return out
 }
 
 func (ed *cutEditor) inCut(t float64) bool {
@@ -1016,11 +1294,20 @@ func (ed *cutEditor) playing() bool { return ed.player != nil && ed.player.Playi
 func (ed *cutEditor) cued() bool    { return ed.player != nil && ed.player.Cued() }
 
 func (ed *cutEditor) toggle() {
-	if ed.player != nil {
-		ed.player.Toggle()
-		ed.started = ed.started || ed.player.Playing()
-		ed.a.updateRunControls()
+	if ed.player == nil {
+		return
 	}
+	// With a clip edge held, ▶ plays from the EDGE. It is the thing you are
+	// working on and the only reason to press play while holding it is to watch
+	// what you have just trimmed to; starting from wherever the playhead was
+	// last left meant winding back to the boundary by hand every time. Only on
+	// the way into playing -- ⏸ has to stop where it is, not jump.
+	if ed.edgeOn && !ed.playing() {
+		ed.setPlayhead(ed.edgeTime())
+	}
+	ed.player.Toggle()
+	ed.started = ed.started || ed.player.Playing()
+	ed.a.updateRunControls()
 }
 
 func (ed *cutEditor) stop() {
@@ -1081,6 +1368,17 @@ func (a *App) buildStep3() gtk.Widgetter {
 	ed.undoBtn.SetTooltipText("Undo — take back the last Add, Remove or Suggest (Ctrl+Z)")
 	ed.undoBtn.SetSensitive(false)
 	ed.undoBtn.ConnectClicked(func() { ed.undoLast() })
+	// The playhead's time, printed. It sits with the transport keys because
+	// those are the buttons that move it, and it is monospaced ("numeric") so
+	// the digits do not dance under ‹f/f› -- a readout that reflows on every
+	// frame is one you cannot read while stepping.
+	ed.clock = gtk.NewLabel("")
+	ed.clock.AddCSSClass("numeric")
+	ed.clock.SetWidthChars(8) // "--:--.-" and "59:59.9" both fit; the bar never twitches
+	ed.clock.SetMarginStart(2)
+	ed.clock.SetMarginEnd(2)
+	ed.showTime() // opens as "--:--.-", not as a blank gap in the bar
+
 	ed.total = gtk.NewLabel("")
 	ed.total.SetHExpand(true)
 	ed.total.SetXAlign(1)
@@ -1126,17 +1424,20 @@ func (a *App) buildStep3() gtk.Widgetter {
 	ed.playBtn = gtk.NewButtonFromIconName("media-playback-start-symbolic")
 	ed.playBtn.SetTooltipText("play or pause the preview at the playhead")
 	ed.playBtn.ConnectClicked(ed.toggle)
+	// with a clip edge held (right-click one), these move the edge instead --
+	// said on every one of them, because that is the state you are in when you
+	// look at them
 	prev5 := gtk.NewButtonWithLabel("‹‹f")
-	prev5.SetTooltipText("back 5 frames (pauses)")
+	prev5.SetTooltipText("back 5 frames (pauses) — or the held clip edge, 5 frames")
 	prev5.ConnectClicked(func() { ed.frameStep(-5) })
 	prevF := gtk.NewButtonWithLabel("‹f")
-	prevF.SetTooltipText("previous frame (pauses)")
+	prevF.SetTooltipText("previous frame (pauses) — or the held clip edge, one frame")
 	prevF.ConnectClicked(func() { ed.frameStep(-1) })
 	nextF := gtk.NewButtonWithLabel("f›")
-	nextF.SetTooltipText("next frame (pauses)")
+	nextF.SetTooltipText("next frame (pauses) — or the held clip edge, one frame")
 	nextF.ConnectClicked(func() { ed.frameStep(+1) })
 	next5 := gtk.NewButtonWithLabel("f››")
-	next5.SetTooltipText("forward 5 frames (pauses)")
+	next5.SetTooltipText("forward 5 frames (pauses) — or the held clip edge, 5 frames")
 	next5.ConnectClicked(func() { ed.frameStep(+5) })
 	markIn := gtk.NewButtonWithLabel("⟦ in")
 	markIn.SetTooltipText("set the start marker at the playhead")
@@ -1210,6 +1511,7 @@ func (a *App) buildStep3() gtk.Widgetter {
 
 	bar := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	bar.Append(linked(ed.playBtn, prev5, prevF, nextF, next5))
+	bar.Append(ed.clock) // where those keys have got to, in numbers
 	bar.Append(linked(markIn, markOut, clearBtn))
 	bar.Append(rule())
 	bar.Append(linked(suggest, ed.target))
@@ -1272,6 +1574,7 @@ func (a *App) buildStep3() gtk.Widgetter {
 		var selT0, selT1 float64
 		drag.ConnectDragBegin(func(x, y float64) {
 			area.GrabFocus()
+			ed.dropEdge() // any left click puts a held edge down
 			dragStartX, dragStartY = x, y
 			hadSel, selT0, selT1 = ed.sel.active, ed.sel.t0, ed.sel.t1
 			ed.sel.t0 = ed.tAtView(x)
@@ -1294,6 +1597,38 @@ func (a *App) buildStep3() gtk.Widgetter {
 			ed.setPlayhead(ed.tAtView(dragStartX))
 		})
 		area.AddController(drag)
+
+		// The right button is the edge tool, and only that: press near a green
+		// border to pick it up, drag to move it, press clear of one to put it
+		// down. Nothing else on this page uses button 3, and a left drag is
+		// still a selection -- which is why trimming could not simply be "drag
+		// the border" and needed a button of its own.
+		edge := gtk.NewGestureDrag()
+		edge.SetButton(gdk.BUTTON_SECONDARY)
+		var edgeStartX float64
+		edge.ConnectDragBegin(func(x, y float64) {
+			area.GrabFocus()
+			edgeStartX = x
+			if !ed.grabEdge(x + ed.viewX) {
+				ed.dropEdge()
+			}
+		})
+		edge.ConnectDragUpdate(func(ox, oy float64) {
+			if ed.edgeOn {
+				ed.moveEdgeTo(ed.tAtView(edgeStartX+ox), true)
+			}
+		})
+		edge.ConnectDragEnd(func(ox, oy float64) {
+			if !ed.edgeOn || !ed.edgeDirty {
+				return
+			}
+			ed.persist() // the drag is over: this is the cut that goes on disk
+			// and the picture follows the edge home, so what you trimmed to is
+			// on screen and the next ‹f is judged against it rather than against
+			// wherever the playhead happened to be
+			ed.nudgeEdge(0)
+		})
+		area.AddController(edge)
 	}
 
 	// The scrollbar is ours rather than a scrolled window's, because a scrolled
@@ -1350,6 +1685,20 @@ func (a *App) buildStep3() gtk.Widgetter {
 			ed.undoLast()
 		case keyval == gdk.KEY_Delete || keyval == gdk.KEY_BackSpace:
 			a.removeSelClicked()
+		// the arrows are the frame buttons for the hand that is already on the
+		// mouse, and they exist ONLY while an edge is held: unheld they are the
+		// focus keys GTK expects them to be
+		case ed.edgeOn && (keyval == gdk.KEY_Left || keyval == gdk.KEY_Right):
+			n := 1
+			if state&gdk.ShiftMask != 0 {
+				n = 5
+			}
+			if keyval == gdk.KEY_Left {
+				n = -n
+			}
+			ed.nudgeEdge(n)
+		case ed.edgeOn && keyval == gdk.KEY_Escape:
+			ed.dropEdge()
 		default:
 			return false
 		}
@@ -1482,6 +1831,7 @@ func (a *App) updateStep3Info() {
 
 func (ed *cutEditor) clearMarks() {
 	ed.hasIn, ed.hasOut = false, false
+	ed.edgeOn = false // an edge held over an Undo or a Revert points at the old cut
 }
 
 func (a *App) addSelClicked() {

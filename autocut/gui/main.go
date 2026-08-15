@@ -71,23 +71,78 @@ var steps = []struct{ name, label, tip, wait, help string }{
 		"Two tracks over the session: the source above, the cut below. Suggest cut " +
 			"asks the model to fill the target length from what Describe found; from then " +
 			"on the cut is yours — drag to select, add, remove, and Revert goes back to " +
-			"the suggestion. The scroll wheel zooms around the cursor."},
+			"the suggestion. The scroll wheel zooms around the cursor.\n\nA left click " +
+			"drops the red playhead; the clock beside the transport buttons is where it " +
+			"landed, in mm:ss.d of session time, and hovering it says which recording " +
+			"that is, which frame, and whether the cut keeps it.\n\nA clip's own " +
+			"edges are trimmed rather than re-selected: right-click a green border to " +
+			"pick it up — it turns white — and drag it, or move it a frame at a time " +
+			"with ‹f and f› (the arrow keys do the same, Shift for five). The picture " +
+			"follows the edge, so what you are trimming to is on screen, and ▶ plays " +
+			"from the edge rather than from the playhead. Right-click " +
+			"clear of a border, or any left click, puts it down; the whole trim is one " +
+			"Undo."},
 	{"step4", "Narrate", "The narration, and the voice it is spoken in",
 		"Finish Cut first — narration is written for the cut's clips",
-		"One narration line per clip, written to fit the time the clip has. ▶ below is " +
-			"the whole step: it writes the narration when there is none or the cut has " +
-			"moved under it, then speaks every line that is not cached yet. The voice " +
-			"is cloned from a sample above; clicking the picture plays the cut, speaking " +
-			"each line as it reaches it and holding the picture where a line still has to " +
-			"be synthesized. ▶ on a single line plays that one clip with its line over " +
-			"it and stops at the end of it. ✎ on a clip leaves a note, and the next ▶ writes the " +
-			"narration again to honor it."},
+		"▶ below is the initial fill: it writes the narration once (again only if the " +
+			"cut moves) and speaks every line not cached yet. After that the lines are " +
+			"yours: each box is \"[emotion] words\" with its start time beside it — edit " +
+			"the words, the delivery, or when the line begins — a time inside another " +
+			"clip moves the line to that clip, and one outside the cut is refused with " +
+			"the line left where it was. \"+ Line at playhead\" " +
+			"adds a line at the paused second, 🗑 removes one, and an edited line is " +
+			"simply re-spoken the first time it plays. The voice is cloned from a " +
+			"sample above; the slider and the picture play the cut, speaking each " +
+			"line where it was placed, with the blue row following along. The bar is " +
+			"the cut end to end — what the edit removed takes up no room on it, so " +
+			"every point on it is video you keep, and the time beside it reads " +
+			"\"session clock · how far into the finished video\". The cut is " +
+			"the master: once it is rolling it keeps rolling, clip after clip, and " +
+			"nothing moves the picture but you. Picking a line — clicking its row, or " +
+			"its ▶ — starts three seconds before that line so you can watch it land, " +
+			"and then the preview simply carries on down the cut. A clip the narration " +
+			"left alone keeps its row and its ▶ too: that one plays the clip from the " +
+			"top on its own audio, which is how you decide whether it wants a line. " +
+			"A line whose time you retype into another clip leaves that row behind it, " +
+			"empty. ⏪ and ⏩ " +
+			"jump three seconds; stopped, the wheel over the slider steps one frame " +
+			"at a time, which is the resolution a line's placement is judged at. The " +
+			"playhead only lands on material the cut kept: dropped into a gap it " +
+			"carries on the way it was going, to the head of the next clip or back " +
+			"to the tail of the one behind.\n\nA take " +
+			"is stable: the same words, delivery and voice always come back as the " +
+			"same performance, so nothing you have approved changes behind you. " +
+			"When a delivery is wrong rather than the words, the row's ↻ re-rolls " +
+			"it — same line, a new draw — and plays the result.\n\nThe TTS blends eight base emotions — " +
+			"happy, angry, sad, afraid, disgusted, melancholic, surprised, calm — " +
+			"and maps whatever is in the [brackets] onto them. One or two of those " +
+			"words work best; \"loud\" or \"fast\" is not an emotion and only dilutes " +
+			"the match (anger already shouts, calm is already slow). Length lives in " +
+			"the words themselves: more short exclamations, not stretched letters, " +
+			"which get spelled out.\n\nPlain words are read by a small judge model, " +
+			"which is forgiving but approximate. Write a weight and it is skipped, " +
+			"the mix going to the engine exactly as asked: \"[angry=1]\" is pure " +
+			"anger at full force, \"[happy=0.8, surprised=0.4]\" a blend you chose. " +
+			"Weights run 0 to 1, and the difference is audible: \"[surprised]\" " +
+			"is the judge's reading of the word, \"[surprised=1]\" the axis " +
+			"itself at full force.\n\nBeside the eight there are named mixes of " +
+			"them, which take a weight the same way: excited, ecstatic, playful, " +
+			"proud, relieved, hopeful, tender, nostalgic, solemn, awed, alarmed, " +
+			"horrified, desperate, confused, frustrated, bitter, contemptuous, " +
+			"dismayed, heartbroken, ominous, tense. \"[excited=1]\" is happiness " +
+			"with surprise mixed into it, which is what excitement sounds like " +
+			"and what plain happiness does not. Any name none of these knows sends the " +
+			"line back to the judge rather than guessing at an axis."},
 	{"step5", "Produce", "Render the video and write the upload text",
 		"Finish Cut first — there is no cut to produce a video from",
 		"▶ below renders the final video: every clip is cut from its own recording, " +
 			"the narration is laid over ducked game audio, and the whole thing is " +
 			"loudness-normalized to -14 LUFS for YouTube. Lines that have not been " +
-			"synthesized yet are spoken first."},
+			"synthesized yet are spoken first.\n\nWhen it finishes, the result is " +
+			"waiting in the picture below: ▶ then plays it rather than producing " +
+			"again, and ⏹ hands ▶ back to producing. The row at the top says what " +
+			"is going in — the cut, the lines, and how many of them still have to " +
+			"be spoken — and the row at the foot says what is on disk."},
 }
 
 // stepLocked reports whether a tab's prerequisites are missing. Step 1 never
@@ -146,8 +201,15 @@ func (a *App) showStep(name string) {
 	// things it counts is the cut -- which is the page you have just come from
 	// and the one thing most likely to have changed under it.
 	if name == "step4" && a.narr5 != nil {
+		a.narr5.refit() // a clip dragged wider over there moves its line's slot here
 		a.narr5.updateInputs()
 		a.narr5.updateOut()
+	}
+	// ...and Produce reads both of those, plus the synthesis cache and the file
+	// it wrote last time. It is the end of the chain, so everything upstream is
+	// something that may have moved since it was last looked at.
+	if name == "step5" {
+		a.updateStep5Info()
 	}
 }
 
@@ -1029,7 +1091,12 @@ func (a *App) step1Clicked() {
 
 // ---- helpers ---------------------------------------------------------------
 
-func (a *App) setStatus(s string) { a.status.SetText(s) }
+func (a *App) setStatus(s string) {
+	if a.status == nil {
+		return // headless (tests): the status line is the window's
+	}
+	a.status.SetText(s)
+}
 
 func (a *App) logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...) // mirror to the launching terminal

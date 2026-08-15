@@ -9,7 +9,7 @@
     {
       "id": "index-tts2",
       "family": "index_tts2",
-      "path": "/home/arch/audio.cpp/models/IndexTTS2-GGUF/index-tts2-q8_0.gguf",
+      "path": "/home/arch/audio.cpp/models/IndexTTS2.5-GGUF/index-tts2_5-q8_0.gguf",
       "task": "clon",
       "mode": "offline"
     },

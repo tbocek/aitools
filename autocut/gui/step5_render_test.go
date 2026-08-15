@@ -15,9 +15,12 @@ package main
 // below is the one place that split is made.
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -186,5 +189,155 @@ func TestFrameTimingFlagsAreOnesFFmpegTakes(t *testing.T) {
 	// constant branch -- under a ceiling it would undo the ceiling's point
 	if fps := fpsArgs(prodSettings{FPS: 30, VFR: true}); fps[0] == "-fps_mode" {
 		t.Errorf("a chosen peak rate was dropped on the floor: %v", fps)
+	}
+}
+
+// Produce ends the chain, and it used to be the page that said least about it:
+// no Inputs row, no Outputs row, and in their place one dim paragraph that ran
+// the cut, the narration, the resolution and the CRF together in a single
+// sentence. It also had two ▶s -- its own beside "Preview result", and the run
+// bar's, which meant something else -- for a video the finished run already
+// cues up by itself.
+//
+// So: one line per question, in the places every other step puts them, and one
+// ▶ on the page. Source-level, because nothing at run time can tell that a row
+// is in the wrong place or that a button is one too many.
+func TestProduceSaysWhatItReadsAndWroteLikeEveryOtherStep(t *testing.T) {
+	b, err := os.ReadFile("step5.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	// the preview is gone, and so is the button that drew it
+	for _, gone := range []string{
+		`gtk.NewButtonWithLabel("Preview result")`,
+		"playBtn",
+		`gtk.NewLabel("Output:")`, // the destination row is "Save to:" now
+	} {
+		if strings.Contains(src, gone) {
+			t.Errorf("step5 still builds %s", gone)
+		}
+	}
+	if p, err := os.ReadFile("pipeline.go"); err == nil && strings.Contains(string(p), "setPlayIcon(p.playBtn") {
+		t.Error("the run bar still draws a play button Produce no longer has — that is a nil dereference")
+	}
+	// three lines, three jobs, one entry point that redraws all of them
+	for _, want := range []string{
+		"func (p *producer) updateInputs()",
+		"func (p *producer) updateSettings()",
+		"func (p *producer) updateOut()",
+		"p.updateInputs()\n\tp.updateSettings()\n\tp.updateOut()",
+		`gtk.NewLabel("Save to:")`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("step5 no longer has %s", want)
+		}
+	}
+	// ...and arriving on the page re-reads them, because everything they count
+	// is made on a page upstream of this one
+	m, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?s)func \(a \*App\) showStep.*?name == "step5".*?a\.updateStep5Info\(\)`).Match(m) {
+		t.Error("Produce no longer refreshes on arrival — its rows would show the cut as it was two edits ago")
+	}
+	// a subtitle mode saved by some later version must not index off the end of
+	// the label list: the settings line reads it on every keystroke
+	for _, c := range []struct {
+		key  string
+		want int
+	}{{"burn", 0}, {"mux", 1}, {"sidecar", 2}, {"none", 3}, {"holographic", 0}, {"", 0}} {
+		if got := subsIndex(c.key); got != c.want {
+			t.Errorf("subsIndex(%q) = %d, want %d", c.key, got, c.want)
+		}
+	}
+}
+
+// Where a line actually starts in the mix.
+//
+// This is the overlapping-narration bug, and it is a units bug. The graph asked
+// for "adelay=13.09s", meaning 13.09 seconds; adelay counts in milliseconds and
+// reads a fractional value with a seconds suffix as nothing at all -- no error,
+// no warning, the line simply started at the top of its clip. Every line
+// dropped anywhere but on a whole second did that, all of them at once, over
+// each other and over the first line. A whole number ("40s") happened to parse,
+// which is why some clips were right and the fault looked intermittent.
+//
+// So the unit is pinned twice: once on the number this client computes, and
+// once against ffmpeg itself, which is the only witness that can say what the
+// filter did with it. No server, no session -- two synthetic tones.
+func TestNarrationLandsWhereItWasPlaced(t *testing.T) {
+	for _, c := range []struct {
+		delay float64
+		want  int
+	}{
+		{13.089980999259012, 13090}, // the line that started at zero
+		{23.375761999258998, 23376},
+		{40, 40000},   // the whole second that always worked
+		{0, 300},      // never before the lead-in
+		{-5, 300},     // ...including a placement dragged off the front
+		{0.0006, 300}, // and the floor is applied before the rounding, not after
+	} {
+		if got := delayMS(c.delay); got != c.want {
+			t.Errorf("a line placed at %gs is delayed by %d ms, want %d", c.delay, got, c.want)
+		}
+	}
+	b, err := os.ReadFile("step5.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	// The other way a line can arrive early: the render places it by its offset
+	// into the clip it was written against, and Cut may have moved that clip
+	// since -- matchEntries accepts exactly that. Drag a border 20 s left and an
+	// offset kept as written is 20 s early, which lands it on the head of the
+	// clip over the line before it. Produce reads the saved narration directly,
+	// so it cannot rely on Narrate having been visited to re-anchor them.
+	if !strings.Contains(src, "at := e.S + e.At - s.S") {
+		t.Error("the render places a line by its offset into a clip that may have moved underneath it")
+	}
+	// the format verb matters as much as the number: %g on 23376 would write
+	// "23376" today and "2.3376e+06" for a longer clip, and the s suffix is the
+	// spelling that started this
+	if !strings.Contains(src, "adelay=%d:all=1") || strings.Contains(src, "adelay=%gs") {
+		t.Error("the mix is back to giving adelay a fractional number of seconds, which it reads as no delay at all")
+	}
+
+	// ...and now ask ffmpeg. A half-second tone mixed over six seconds of
+	// silence, delayed the way encodeClip delays a line: the first sound in the
+	// result has to be at the delay, not at zero.
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("no ffmpeg on this machine")
+	}
+	dir := t.TempDir()
+	mix := filepath.Join(dir, "mix.wav")
+	const want = 2.345
+	out, err := exec.Command("ffmpeg", "-v", "error", "-y",
+		"-f", "lavfi", "-t", "6", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+		"-f", "lavfi", "-t", "0.5", "-i", "sine=frequency=1000:sample_rate=48000",
+		"-filter_complex", fmt.Sprintf(
+			"[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0,adelay=%d:all=1[nr0];"+
+				"[0:a]volume=0.220,aresample=48000[bg];"+
+				"[bg][nr0]amix=inputs=2:duration=first:normalize=0,"+audFmt+"[a]", delayMS(want)),
+		"-map", "[a]", mix).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the narration graph does not run: %v\n%s", err, out)
+	}
+	// silencedetect reports the silence BEFORE the tone; where that silence ends
+	// is where the line came in
+	det, err := exec.Command("ffmpeg", "-v", "info", "-i", mix,
+		"-af", "silencedetect=n=-50dB:d=0.1", "-f", "null", "-").CombinedOutput()
+	if err != nil {
+		t.Fatalf("silencedetect: %v\n%s", err, det)
+	}
+	m := regexp.MustCompile(`silence_end: ([0-9.]+)`).FindStringSubmatch(string(det))
+	if m == nil {
+		t.Fatalf("the tone never arrives in six seconds — the delay ran away with it\n%s", det)
+	}
+	got, _ := strconv.ParseFloat(m[1], 64)
+	if math.Abs(got-want) > 0.05 {
+		t.Errorf("a line placed at %gs is spoken at %gs — %s", want, got,
+			"this is the units bug: adelay counts milliseconds")
 	}
 }

@@ -88,7 +88,7 @@ func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
 		`inRow.Append(inLbl)`,
 		`.SetEllipsize(pango.EllipsizeEnd)`, // never a floor under the window
 	}
-	for _, f := range []string{"step2.go", "step3.go", "step4.go"} {
+	for _, f := range []string{"step2.go", "step3.go", "step4.go", "step5.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -103,6 +103,22 @@ func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
 		// carries the weight, the reading itself is plain, as on Inputs
 		if strings.Contains(src, `inputs.AddCSSClass("dim-label")`) {
 			t.Errorf("%s dims its Inputs line where the other pages do not", f)
+		}
+		// The row at the other end of the page, the same way: what this step
+		// wrote, at the bottom right, with a way into the folder beside it.
+		// Produce answered neither question for a long time -- it had a "Output:"
+		// row that was the destination SETTING, one letter and one meaning away
+		// from the heading every other page ends on.
+		for _, want := range []string{
+			`outLbl := gtk.NewLabel("Outputs:")`,
+			`outLbl.AddCSSClass("heading")`,
+			`outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)`,
+			`outRow.SetHAlign(gtk.AlignEnd)`,
+			`outRow.Append(outLbl)`,
+		} {
+			if !strings.Contains(src, want) {
+				t.Errorf("%s's Outputs row is missing %s", f, want)
+			}
 		}
 	}
 }

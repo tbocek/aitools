@@ -146,37 +146,30 @@ func TestStaleForOnlyRewritesWhenItMust(t *testing.T) {
 	if n.staleFor(append(segs, cutSeg{S: 40, E: 44})) == "" {
 		t.Error("a clip added and the narration still counted as current")
 	}
-	n.rewrite = true // a ✎ note, which is a request for exactly this
-	if n.staleFor(segs) == "" {
-		t.Error("a pending ✎ note did not reach the next run")
+	// a clip may carry several lines: still current, and still the user's
+	n.entries = []narrEntry{{S: 1, E: 5, Text: "one"}, {S: 1, E: 5, At: 2, Text: "one more"},
+		{S: 20, E: 26, Text: "two"}}
+	if why := n.staleFor(segs); why != "" {
+		t.Errorf("a clip with two hand-placed lines wants a rewrite: %s", why)
 	}
 }
 
-// TestTheNoteSurvivesTheAppBeingClosed: the note is written in the evening and
-// applied the next time, so the flag it sets belongs in the file. In memory it
-// would be lost on the one path it exists for.
-func TestTheNoteSurvivesTheAppBeingClosed(t *testing.T) {
+// TestHandEditsSurviveTheAppBeingClosed: since the ✎ notes went away, the
+// lines themselves are the editing surface -- placement, emotion and words all
+// live in the entries, and the file is the only place they survive an evening.
+func TestHandEditsSurviveTheAppBeingClosed(t *testing.T) {
 	root := t.TempDir()
 	a := &App{root: root, outDir: root}
-	n := &narrator{a: a, entries: []narrEntry{{S: 0, E: 3, Text: "x", Instr: "shorter"}}, rewrite: true}
+	n := &narrator{a: a, entries: []narrEntry{
+		{S: 0, E: 30, At: 4, Text: "x", Emotion: "deadpan"},
+		{S: 0, E: 30, At: 21, Text: "y", Emotion: "screaming"},
+	}}
 	n.save()
 	back := &narrator{a: a}
 	back.load()
-	if !back.rewrite {
-		t.Error("the pending rewrite was not stored, so the note is silently dropped")
-	}
-	if len(back.entries) != 1 || back.entries[0].Instr != "shorter" {
+	if len(back.entries) != 2 || back.entries[1].At != 21 ||
+		back.entries[1].Emotion != "screaming" || back.entries[0].Text != "x" {
 		t.Errorf("entries came back as %+v", back.entries)
-	}
-	// ...and a narration with nothing pending leaves no key behind
-	back.rewrite = false
-	back.save()
-	b, err := os.ReadFile(a.narrPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(b), "rewrite") {
-		t.Errorf("a narration with nothing pending still wrote the flag: %s", b)
 	}
 }
 

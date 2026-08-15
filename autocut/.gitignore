@@ -6,4 +6,4 @@ llm.conf
 gui/autocut-gui
 gui/gui
 step1/
-project*.json
+*.json

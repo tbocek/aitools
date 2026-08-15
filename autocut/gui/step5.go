@@ -79,12 +79,11 @@ type producer struct {
 	crf, gvol                                        *gtk.Scale
 	outLbl                                           *gtk.Label
 	outFile                                          string
-	outAuto                                          bool // still the default -- follows the output folder
-	info                                             *gtk.Label
+	outAuto                                          bool       // still the default -- follows the output folder
+	inputs, info, out                                *gtk.Label // the two rows every step has, and the encode summary between them
 	player                                           *Player
-	playBtn                                          *gtk.Button // ▶/⏸; drawn by syncPlayIcons
-	started                                          bool        // the result is being watched, so the run bar is its transport
-	guard                                            bool        // suppresses feedback while applying a project
+	started                                          bool // the result is being watched, so the run bar is its transport
+	guard                                            bool // suppresses feedback while applying a project
 }
 
 // ---- settings ---------------------------------------------------------------
@@ -300,6 +299,7 @@ func (a *App) buildStep5() gtk.Widgetter {
 	p.gvol.SetDrawValue(true)
 	p.gvol.SetSizeRequest(200, -1)
 	p.gvol.SetTooltipText("how loud the original game audio sits under the narration")
+	p.gvol.ConnectValueChanged(func() { a.updateStep5Info() }) // it is on the settings line now
 
 	at(0, 0, "Container:", p.container)
 	at(0, 1, "Video codec:", p.codec)
@@ -312,46 +312,29 @@ func (a *App) buildStep5() gtk.Widgetter {
 	at(0, 4, "Subtitles:", p.subs)
 	at(1, 4, "Frame timing:", p.vfr)
 
-	// output row
+	// Where the video is written. This is a setting, not the Outputs line: it
+	// says where the file WILL go, and the row at the foot of the page says
+	// what is actually there -- which is why it is no longer labelled "Output",
+	// one letter from the heading below and meaning something else.
 	choose := gtk.NewButtonWithLabel("Choose…")
 	choose.ConnectClicked(func() { a.chooseOutFileDialog() })
-	open := gtk.NewButtonFromIconName("folder-open-symbolic")
-	open.SetTooltipText("Open the folder holding the produced file")
-	open.ConnectClicked(func() { a.openFolder(filepath.Dir(p.outFile)) })
 	p.outLbl = gtk.NewLabel("")
 	p.outLbl.SetXAlign(0)
 	p.outLbl.SetHExpand(true)
 	p.outLbl.SetEllipsize(pango.EllipsizeMiddle)
 	p.outLbl.SetSelectable(true)
-	outRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	outRow.Append(choose)
-	outRow.Append(open)
-	outRow.Append(gtk.NewLabel("Output:"))
-	outRow.Append(p.outLbl)
+	destRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
+	destRow.Append(choose)
+	destRow.Append(gtk.NewLabel("Save to:"))
+	destRow.Append(p.outLbl)
 	p.setOut(filepath.Join(a.outDir, "final.mp4"))
 	p.outAuto = true
 
-	// no "Produce video" button: rendering is what this page does, so it is
-	// what ▶ in the run bar means -- the same button under two names was one
-	// too many. What is left is the result: load it, and pause it.
-	p.playBtn = gtk.NewButtonFromIconName("media-playback-start-symbolic")
-	p.playBtn.ConnectClicked(p.toggle)
-	load := gtk.NewButtonWithLabel("Preview result")
-	load.SetTooltipText("play the video that was produced last — ▶ below goes back " +
-		"to producing once ⏹ has ended it")
-	load.ConnectClicked(func() {
-		if !exists(p.outFile) {
-			a.setStatus("nothing produced yet")
-			return
-		}
-		p.player.PlaySegment(p.outFile, 0, -1, true)
-		p.started = true
-		a.updateRunControls()
-	})
-	ctl := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	ctl.Append(load)
-	ctl.Append(p.playBtn)
-
+	// No buttons of its own down here. Rendering is what this page does, so it
+	// is what ▶ in the run bar means, and a finished run cues its result into
+	// the picture below by itself -- a "Preview result" button beside a second
+	// ▶ was two more ways to press the one thing the run bar already does, and
+	// the pair of ▶s did not even mean the same thing.
 	p.info = gtk.NewLabel("")
 	p.info.SetXAlign(0)
 	p.info.SetWrap(true)
@@ -365,6 +348,39 @@ func (a *App) buildStep5() gtk.Widgetter {
 	}
 	vframe.SetMarginTop(4)
 
+	// The two rows every other step has, in the two places every other step has
+	// them: what this one is working from, at the top, and what it has put on
+	// disk, at the bottom right. Cut and Narrate answer the same question in the
+	// same words, and this page used to answer neither -- what it had instead
+	// was one dim paragraph in the middle that mixed its inputs in with its
+	// encoder settings.
+	p.inputs = gtk.NewLabel("")
+	p.inputs.SetXAlign(0)
+	p.inputs.SetHExpand(true)
+	p.inputs.SetEllipsize(pango.EllipsizeEnd) // never a floor under the window
+	inLbl := gtk.NewLabel("Inputs:")
+	inLbl.AddCSSClass("heading")
+	inRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	inRow.SetMarginStart(12)
+	inRow.SetMarginEnd(12)
+	inRow.SetMarginTop(6)
+	inRow.Append(inLbl)
+	inRow.Append(p.inputs)
+
+	openOut := gtk.NewButtonFromIconName("folder-open-symbolic")
+	openOut.SetTooltipText("Open the folder holding the produced file (step5/ beside it holds the per-clip encodes)")
+	openOut.ConnectClicked(func() { a.openFolder(filepath.Dir(p.outFile)) })
+	p.out = gtk.NewLabel("")
+	outLbl := gtk.NewLabel("Outputs:")
+	outLbl.AddCSSClass("heading")
+	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	outRow.SetHAlign(gtk.AlignEnd)
+	outRow.SetMarginEnd(12)
+	outRow.SetMarginBottom(6)
+	outRow.Append(outLbl)
+	outRow.Append(openOut)
+	outRow.Append(p.out)
+
 	box := gtk.NewBox(gtk.OrientationVertical, 10)
 	box.SetMarginTop(10)
 	box.SetMarginBottom(8)
@@ -372,15 +388,23 @@ func (a *App) buildStep5() gtk.Widgetter {
 	box.SetMarginEnd(12)
 	box.Append(grid)
 	box.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
-	box.Append(outRow)
-	box.Append(ctl)
+	box.Append(destRow)
 	box.Append(p.info)
 	box.Append(vframe)
 
+	a.updateStep5Info() // the three rows say something before anything is clicked
+
+	// only the settings scroll: the two rows are the page's frame, and a frame
+	// that slides out from under the reader is the thing they are there to stop
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetChild(box)
 	scroll.SetVExpand(true)
-	return scroll
+
+	page := gtk.NewBox(gtk.OrientationVertical, 4)
+	page.Append(inRow)
+	page.Append(scroll)
+	page.Append(outRow)
+	return page
 }
 
 func (a *App) chooseOutFileDialog() {
@@ -398,29 +422,78 @@ func (a *App) chooseOutFileDialog() {
 	})
 }
 
+// updateStep5Info redraws all three lines: what the render reads, what it will
+// encode, and what it has written. Everything that changes any of them comes
+// through here -- a dropdown, a cut edited next door, a finished run.
 func (a *App) updateStep5Info() {
 	p := a.prod
-	if p == nil || p.info == nil {
+	if p == nil {
 		return
 	}
+	p.updateInputs()
+	p.updateSettings()
+	p.updateOut()
+}
+
+// updateInputs is the row Cut and Narrate open with, asking the same question
+// of this page: what is actually going into the render? Three things, and not
+// one of them is made here -- the clips come from Cut, the lines and their
+// recordings from Narrate, and a line whose wav is missing is spoken before any
+// video is encoded, which is minutes this row is the only warning of.
+func (p *producer) updateInputs() {
+	if p == nil || p.inputs == nil {
+		return
+	}
+	a := p.a
 	segs := a.produceSegs()
 	entries := a.produceEntries()
-	if len(segs) == 0 {
-		p.info.SetText("No cut yet — build one on the Cut step.")
-		return
-	}
-	total, voiced := 0.0, 0
+	total := 0.0
 	for _, s := range segs {
 		total += s.E - s.S
 	}
-	missing := 0
+	line := fmt.Sprintf("%d clip(s) · %s of video", len(segs), mmss(total))
+	detail := fmt.Sprintf("step3/cut.json — %d clips, %s of video (the produced file grows a little where the narration needs room)",
+		len(segs), mmss(total))
+	if len(segs) == 0 {
+		line, detail = "no cut yet — build one on the Cut step", ""
+	}
+	spoken := 0
 	for _, e := range entries {
-		voiced++
-		if !exists(a.ttsWav(e)) {
-			missing++
+		if exists(a.ttsWav(e)) {
+			spoken++
 		}
 	}
-	st := a.prodSettings()
+	switch {
+	case len(entries) == 0:
+		line += " · no narration — the clips would carry only game audio"
+	case spoken < len(entries):
+		line += fmt.Sprintf(" · %d line(s), %d still to speak", len(entries), len(entries)-spoken)
+		detail += fmt.Sprintf("\n\nstep4/narration.json — %d lines, %d already in step4/tts; the other %d are spoken first, before any video is encoded",
+			len(entries), spoken, len(entries)-spoken)
+	default:
+		line += fmt.Sprintf(" · %d line(s), all spoken", len(entries))
+		detail += fmt.Sprintf("\n\nstep4/narration.json — %d lines, all of them already in step4/tts", len(entries))
+	}
+	// the voice is named on Narrate's inputs row too: it is what the cached
+	// takes were spoken in, and the thing nothing else on this page says
+	if vp := a.voice5; vp != nil && len(entries) > 0 {
+		if v, ok := vp.current(); ok {
+			line += " · voice: " + v.name
+			detail += "\n\nSpoken by " + v.name + " (step4/voice_ref.wav)"
+		}
+	}
+	p.inputs.SetText(line)
+	p.inputs.SetTooltipText(strings.TrimSpace(detail))
+}
+
+// updateSettings echoes the grid above it in the words the encoder would use --
+// the one line on this page that is neither an input nor an output, which is
+// why it sits between them and beside the controls it is reporting.
+func (p *producer) updateSettings() {
+	if p == nil || p.info == nil {
+		return
+	}
+	st := p.a.prodSettings()
 	res := "source resolution"
 	if st.Height > 0 {
 		res = fmt.Sprintf("%dp", st.Height)
@@ -434,12 +507,43 @@ func (a *App) updateStep5Info() {
 	case st.VFR:
 		fps = "source fps, variable"
 	}
-	msg := fmt.Sprintf("%d clips, %.0f s of source (the produced file grows a little where narration needs room) · %s, %s, %s crf %d · %d/%d lines synthesized",
-		len(segs), total, res, fps, st.Codec, st.CRF, voiced-missing, voiced)
-	if len(entries) == 0 {
-		msg += " · no narration yet — the clips would carry only game audio"
+	p.info.SetText(fmt.Sprintf("%s, %s, %s crf %d · %s · audio %d kbit/s, game at %.0f%% under the voice · subtitles %s",
+		res, fps, st.Codec, st.CRF, st.Container, st.AudioKbps, st.GameVol*100,
+		prodSubsLbl[subsIndex(st.Subs)]))
+}
+
+// updateOut is the line every step ends on. Here it is one file rather than a
+// folder: the video is the whole point of the page, so its size and age are
+// what "what is on disk" means -- with step5/ named too, because a run that
+// stopped half way leaves its finished clips there and nothing else says so.
+func (p *producer) updateOut() {
+	if p == nil || p.out == nil {
+		return
 	}
-	p.info.SetText(msg)
+	part := ""
+	if s := summarizeOutputs(p.a.produceDir()); s != "nothing yet" {
+		part = " · step5/ " + s
+	}
+	fi, err := os.Stat(p.outFile)
+	if err != nil {
+		p.out.SetText("nothing produced yet" + part)
+		p.out.SetTooltipText("nothing at " + p.outFile)
+		return
+	}
+	p.out.SetText(fmt.Sprintf("%s — %s, %s%s", filepath.Base(p.outFile),
+		humanSize(fi.Size()), humanAgo(fi.ModTime()), part))
+	p.out.SetTooltipText(p.outFile)
+}
+
+// subsIndex is the label for a stored subtitle mode, defaulting to the first
+// rather than panicking on a project written by a later version.
+func subsIndex(key string) int {
+	for i, k := range prodSubsKey {
+		if k == key {
+			return i
+		}
+	}
+	return 0
 }
 
 // ---- inputs -----------------------------------------------------------------
@@ -653,7 +757,15 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			if text == "" {
 				continue
 			}
-			ln := prodLine{text: text, at: math.Min(math.Max(0, e.At), math.Max(0, c.length-1))}
+			// at is an offset into the clip the line was WRITTEN against, and
+			// matchEntries deliberately accepts a clip that has moved since --
+			// so it has to be re-based onto the clip actually being rendered. A
+			// border dragged 20 s to the left and the line kept its old offset,
+			// which is 20 s early: near the head of the clip, over whatever the
+			// line before it was saying. Identical arithmetic to Narrate's
+			// refit, and a no-op for a clip that has not moved.
+			at := e.S + e.At - s.S
+			ln := prodLine{text: text, at: math.Min(math.Max(0, at), math.Max(0, c.length-1))}
 			ln.delay = math.Max(narrLead, ln.at)
 			wav := a.ttsWav(*e)
 			if !exists(wav) {
@@ -849,6 +961,13 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 	return nil
 }
 
+// delayMS is a line's start in the units adelay actually reads: whole
+// milliseconds, never below the lead-in. Rounded rather than truncated, so a
+// placement is out by at most half a millisecond either way.
+func delayMS(delay float64) int {
+	return int(math.Round(math.Max(narrLead, delay) * 1000))
+}
+
 // encodeClip cuts one slot out of its recording and mixes the narration in.
 func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error {
 	args := []string{"-v", "error", "-y",
@@ -892,8 +1011,17 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 	if len(spoken) > 0 {
 		nrs := ""
 		for k, ln := range spoken {
-			fc += fmt.Sprintf("[%d:a]atempo=%.3f,aresample=48000,pan=stereo|c0=c0|c1=c0,adelay=%gs:all=1[nr%d];",
-				voiceBase+k, math.Max(0.5, c.tempo), math.Max(narrLead, ln.delay), k)
+			// MILLISECONDS, as a whole number, and nothing else. adelay takes an
+			// integer per channel; a seconds suffix on a fraction ("13.09s") is
+			// not read as 13.09 s and is not rejected either -- ffmpeg drops the
+			// value and delays by nothing, so the line played from the top of its
+			// clip. Every line whose placement was fractional -- which is every
+			// line dropped by hand or moved by the wheel -- started at zero, all
+			// of them together, which is the overlapping narration. An integer
+			// number of seconds ("40s") happened to survive, so the fault looked
+			// intermittent.
+			fc += fmt.Sprintf("[%d:a]atempo=%.3f,aresample=48000,pan=stereo|c0=c0|c1=c0,adelay=%d:all=1[nr%d];",
+				voiceBase+k, math.Max(0.5, c.tempo), delayMS(ln.delay), k)
 			nrs += fmt.Sprintf("[nr%d]", k)
 		}
 		fc += fmt.Sprintf("[%s]volume=%.3f,aresample=48000[bg];", game, st.GameVol)

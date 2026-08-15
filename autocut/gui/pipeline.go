@@ -296,10 +296,9 @@ func (a *App) syncPlayIcons() {
 			vp.stopBtn.SetSensitive(vp.playing() || vp.cued())
 		}
 	}
-	if p := a.prod; p != nil {
-		setPlayIcon(p.playBtn, p.playing(),
-			"play the finished video — same as ▶ below", "pause the video")
-	}
+	// Produce is not here: it has no play button of its own. A finished run cues
+	// its result into the picture and the run bar is that video's transport from
+	// there, which is one ▶ for the page instead of the two it used to have.
 }
 
 // ---- process plumbing ------------------------------------------------------

@@ -98,36 +98,6 @@ func TestEntryAtIsByTime(t *testing.T) {
 	}
 }
 
-// TestNoteForFollowsTheClip: a ✎ note is standing -- it is honored the next
-// time the whole narration is written, which may be after the cut moved under
-// it. Matching by index would hand a note to whatever clip inherited its
-// position; matching by overlap keeps it on the footage it was written about,
-// and lets a clip that replaced it start clean.
-func TestNoteForFollowsTheClip(t *testing.T) {
-	n := &narrator{entries: []narrEntry{
-		{S: 100, E: 130, Instr: "mention the countdown"},
-		{S: 400, E: 460, Instr: "shorter"},
-		{S: 900, E: 940}, // narrated, never annotated
-	}}
-	for _, c := range []struct {
-		name string
-		seg  cutSeg
-		want string
-	}{
-		{"the same clip", cutSeg{S: 100, E: 130}, "mention the countdown"},
-		{"trimmed by a second", cutSeg{S: 101, E: 128}, "mention the countdown"},
-		{"grown at both ends", cutSeg{S: 96, E: 137}, "mention the countdown"},
-		{"split, mostly the second note's clip", cutSeg{S: 380, E: 430}, "shorter"},
-		{"a clip that was never annotated", cutSeg{S: 900, E: 940}, ""},
-		{"footage added where nothing was", cutSeg{S: 600, E: 640}, ""},
-		{"touching at the edge is not overlap", cutSeg{S: 130, E: 160}, ""},
-	} {
-		if got := n.noteFor(c.seg); got != c.want {
-			t.Errorf("%s: noteFor(%.0f–%.0f) = %q, want %q", c.name, c.seg.S, c.seg.E, got, c.want)
-		}
-	}
-}
-
 // TestNarrationFollowsOutDir is the regression behind "my narration is gone
 // after a restart". It was always written; it was READ once, while building the
 // page at startup, when outDir was still the root -- so a project whose output
@@ -189,12 +159,53 @@ func TestALinePlayedAloneOutlivesTheTick(t *testing.T) {
 	}
 }
 
+// TestAnEditedLineResumesCleanly is the fix for "a syllable of the old voice,
+// then the video plays with no voice". Editing a line changes its cache key;
+// the tick holds the picture and synthesizes -- but the voice player still
+// held the OLD wav (paused, or ended, where Toggle replays it), and the resume
+// continued from wherever the picture froze, starting the NEW wav at a stale
+// mid-line offset: past its end if the new line is shorter, which is instant
+// EOS and silence. So the hold must drop the stale wav and forget the voiced
+// line, and the resume must go back to the line's start.
+func TestAnEditedLineResumesCleanly(t *testing.T) {
+	src, err := os.ReadFile("step4.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold := regexp.MustCompile(`(?s)func \(n \*narrator\) holdForSynth\(i int\) \{.*?\n}\n`).Find(src)
+	if hold == nil {
+		t.Fatal("holdForSynth is gone")
+	}
+	for _, want := range []string{"n.voice.Stop()", "n.playSeg = -1"} {
+		if !strings.Contains(string(hold), want) {
+			t.Errorf("the synthesis hold no longer says %s — a stale wav survives it", want)
+		}
+	}
+	if strings.Contains(string(hold), "n.voice.Pause()") {
+		t.Error("the hold merely pauses the stale wav, which a later resume can replay")
+	}
+	wait := regexp.MustCompile(`(?s)func \(n \*narrator\) synthWait\(.*?\n}\n`).Find(src)
+	if wait == nil {
+		t.Fatal("synthWait is gone")
+	}
+	if !strings.Contains(string(wait), "n.cue(math.Max(e.S, e.S+e.At), true)") {
+		t.Error("the resume after synthesis no longer returns to the line's start — " +
+			"a mid-line hold starts the new wav at a stale offset")
+	}
+	// and the transport's resume drops whatever wav is cued: the tick reloads
+	// the right one at the right offset, edited or not
+	tog := regexp.MustCompile(`(?s)func \(n \*narrator\) toggle\(\) \{.*?\n}\n`).Find(src)
+	if tog == nil || !strings.Contains(string(tog), "n.voice.Stop()") {
+		t.Error("the transport resume leaves a stale wav loaded in the voice player")
+	}
+}
+
 // TestALineAuditionRollsThePicture: a line's ▶ plays the clip it was written
 // for, not the words alone over a frozen frame -- most of what there is to
 // judge about a narration line is whether it lands on what is on screen. Source
 // level, because the wiring is a GStreamer pipeline and a 100 ms tick: what a
-// test can hold is that the button still reaches the picture, and that the
-// audition still ends at its own clip instead of running the rest of the cut.
+// test can hold is that the button still reaches the picture, and that once the
+// line has been spoken the transport goes back to being the cut's.
 func TestALineAuditionRollsThePicture(t *testing.T) {
 	src, err := os.ReadFile("step4.go")
 	if err != nil {
@@ -206,8 +217,11 @@ func TestALineAuditionRollsThePicture(t *testing.T) {
 	}
 	// the cue lands a moment ahead of the line's placement, not on the head of
 	// the clip -- a line an "at" puts a minute in would otherwise audition as
-	// a minute of silence
-	for _, want := range []string{"n.cue(math.Max(e.S, e.S+e.At-3), true)", "n.solo, n.soloPic = i, true"} {
+	// a minute of silence. And the ▶ clears the line's failure mark: the tick
+	// runs a refused line mute so one bad request cannot stall every pass,
+	// which without a retry path reads as "the TTS stopped working".
+	for _, want := range []string{"n.cue(math.Max(e.S, e.S+e.At-3), true)", "n.solo, n.soloPic = i, true",
+		"delete(n.synthFail, a.ttsWav(e))"} {
 		if !strings.Contains(string(speak), want) {
 			t.Errorf("a line's ▶ no longer rolls the picture with the voice (missing %s)", want)
 		}
@@ -222,23 +236,122 @@ func TestALineAuditionRollsThePicture(t *testing.T) {
 	if follow == nil {
 		t.Fatal("followPlayback is gone")
 	}
-	// the audition shows the line's WHOLE clip -- the picture after a line is
-	// part of how the line lands -- and then hops to the next clip that has
-	// one, skipping any of the same clip's lines already heard on the way.
-	// Only running out of lines stops it.
-	// ...and the list's blue row rides along: the hop and the tick both select
-	// the row they are sounding, or the highlight sits on a line that stopped
-	// playing three clips ago
-	for _, want := range []string{"t >= n.entries[n.solo].E", "n.nextSpoken(n.solo)", "n.nextSpoken(j)",
-		"n.selectRow(j)", "n.selectRow(ei)"} {
+	// The cut is the master. The audition is a seek into the preview and lasts
+	// exactly as long as its line: when the line has been spoken the tick drops
+	// solo and the preview goes on playing the cut in order.
+	//
+	// It used to own the transport instead -- at the end of the auditioned CLIP
+	// it hopped to the clip of the next line, or stopped dead if there was none.
+	// A line placed near the end of its clip therefore threw the picture
+	// somewhere else a second after it finished speaking, so the thing on screen
+	// was never the cut the page exists to preview.
+	for _, want := range []string{
+		"t >= e.S+e.At+n.speechDur(e)",  // the audition ends with its line...
+		"n.solo, n.soloPic = -1, false", // ...and hands the transport back
+		"n.selectRow(ei)",               // the blue row still rides the tick
+	} {
 		if !strings.Contains(string(follow), want) {
-			t.Errorf("the audition no longer plays the clip out and hops on (missing %s)", want)
+			t.Errorf("the audition no longer hands the transport back to the cut (missing %s)", want)
+		}
+	}
+	for _, gone := range []string{"nextSpoken", "n.entries[n.solo].E"} {
+		if strings.Contains(string(follow), gone) {
+			t.Errorf("the tick still steers by the audition's clip (%s) -- the cut is the master", gone)
 		}
 	}
 	// and the row that is sounding has to draw the ⏸ for it wherever the sound
 	// came from, or the button the user just pressed goes on showing ▶
 	if !strings.Contains(string(follow), "n.speaking = ei") {
 		t.Error("the tick speaks a line without telling its row, so the row keeps showing ▶")
+	}
+}
+
+// A clip the narration left alone is still part of the cut, and its ▶ is the
+// only way to watch it from the list. It used to answer with a status line and
+// nothing else -- "clip 3 has no line" -- so the one part of the video the page
+// would not play was the part you were deciding whether to write a line for.
+func TestAClipWithNoLinePlaysFromItsRow(t *testing.T) {
+	src, err := os.ReadFile("step4.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	speak := regexp.MustCompile(`(?s)func \(a \*App\) speakEntry\(i int\) \{.*?\n}\n`).Find(src)
+	if speak == nil {
+		t.Fatal("speakEntry is gone")
+	}
+	empty := regexp.MustCompile(`(?s)if strings\.TrimSpace\(e\.Text\) == "" \{.*?\n\t\}`).Find(speak)
+	if empty == nil {
+		t.Fatal("speakEntry no longer has a branch for a clip with no line")
+	}
+	for _, want := range []string{
+		"n.cue(e.S, true)", // the clip rolls, from its own start
+		"n.player.Pause()", // ...and the second press pauses it, like the ⏸ it draws
+		"n.selectRow(i)",   // the blue row follows the press
+		"n.claimVoice()",   // whatever was sounding gives the players up
+	} {
+		if !strings.Contains(string(empty), want) {
+			t.Errorf("a wordless clip's ▶ does not play it (missing %s)", want)
+		}
+	}
+	// what it must NOT do is speak: an empty line costs a call and comes back
+	// as silence
+	for _, gone := range []string{"a.synthesize(", "a.speakAlone(", "n.holdForSynth("} {
+		if strings.Contains(string(empty), gone) {
+			t.Errorf("a clip with no line is sent to the TTS anyway (%s)", gone)
+		}
+	}
+	// and the ⏸ has to be allowed to land on that row, or the button offers to
+	// play something that is already playing
+	live := regexp.MustCompile(`(?s)func \(n \*narrator\) livePlayRow\(\) int \{.*?\n}\n`).Find(src)
+	if live == nil {
+		t.Fatal("livePlayRow is gone")
+	}
+	if strings.Contains(string(live), `strings.TrimSpace(n.entries[i].Text) == ""`) {
+		t.Error("livePlayRow still refuses a wordless row the ⏸, which its ▶ now needs")
+	}
+}
+
+// The crash: editing a row's time and committing it took the whole app down
+// with a SIGSEGV under GTK's text-iterator code. rebuildRows destroys every
+// widget in the list, and both commit paths ran it from INSIDE one of those
+// widgets' own handlers -- Enter on the entry, and the focus leaving it. GTK is
+// still walking that widget when the handler returns.
+func TestARowRebuildWaitsForTheEventToFinish(t *testing.T) {
+	src, err := os.ReadFile("step4.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := regexp.MustCompile(`(?s)func \(n \*narrator\) queueRebuild\(\) \{.*?\n}\n`).Find(src)
+	if q == nil {
+		t.Fatal("queueRebuild is gone")
+	}
+	for _, want := range []string{"glib.IdleAdd(", "n.rebuildRows()", "n.rebuildQ"} {
+		if !strings.Contains(string(q), want) {
+			t.Errorf("queueRebuild no longer defers the rebuild (missing %s)", want)
+		}
+	}
+	// the two paths that a typed time commits through, and the shape of the
+	// bug: a rebuild reached directly from either of them
+	rows := regexp.MustCompile(`(?s)func \(n \*narrator\) rebuildRows\(\) \{.*?\n}\n`).Find(src)
+	if rows == nil {
+		t.Fatal("rebuildRows is gone")
+	}
+	for _, handler := range []string{
+		`when.ConnectActivate(func() {`,
+		`wf.ConnectLeave(func() {`,
+	} {
+		i := strings.Index(string(rows), handler)
+		if i < 0 {
+			t.Errorf("the time field lost its %s handler", handler)
+			continue
+		}
+		body := string(rows)[i : i+400]
+		if !strings.Contains(body, "n.queueRebuild()") {
+			t.Errorf("%s does not queue its rebuild", handler)
+		}
+		if strings.Contains(body, "\n\t\t\t\tn.rebuildRows()") {
+			t.Errorf("%s still tears the list down inside its own event", handler)
+		}
 	}
 }
 

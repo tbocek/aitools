@@ -39,7 +39,7 @@ func TestOneRowIsLabelledTheSameEverywhere(t *testing.T) {
 	const narr = "his-own-mic"
 
 	timeline := sessionText(rows, narr)
-	brief := clipBriefs([]cutSeg{{S: 10, E: 20}}, nil, rows, narr)
+	brief := clipBriefs([]cutSeg{{S: 10, E: 20}}, rows, narr)
 	var speech []speechSrc
 	for _, src := range []string{"capture-0", "his-own-mic"} {
 		var mine []tsvRow

@@ -11,6 +11,7 @@ package main
 // a session like that usually contains.
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -76,7 +77,7 @@ func TestClipBriefsCarryTheWordsTheKindAndTheTiming(t *testing.T) {
 		{s: 900, e: 904, spk: "EVENT", text: "Everyone regroups on the dock."},
 	}
 	segs := []cutSeg{{S: 751, E: 800}, {S: 880, E: 890}}
-	got := clipBriefs(segs, []string{"", "keep this one short"}, rows, "")
+	got := clipBriefs(segs, rows, "")
 
 	for _, want := range []string{
 		"CLIP 1: 751.0–800.0 (49 s, at most 30 words -- fewer is better, none is fine)",
@@ -85,7 +86,6 @@ func TestClipBriefsCarryTheWordsTheKindAndTheTiming(t *testing.T) {
 		// that cannot embarrass the narration
 		"[+7s] SPEAKER_00: there's not much time",
 		"[+47s] EVENT: The player swings a pickaxe at a green wall.",
-		"EDITOR'S NOTE for this clip -- follow it: keep this one short",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the brief is missing %q:\n%s", want, got)
@@ -218,33 +218,6 @@ func TestTheNarrationLeavesRoom(t *testing.T) {
 	}
 }
 
-// A note is the clip's, and a clip has several rows now. The regression this
-// pins: a note saved against the clip's second row was collected by taking the
-// FIRST best-overlapping entry's note -- the first row's stale or empty one --
-// so the user's note went into the file and the next write never saw it.
-func TestANoteOnAnyRowOfAClipReachesTheWriter(t *testing.T) {
-	n := &narrator{entries: []narrEntry{
-		{S: 392, E: 419, Text: "welcome"},
-		{S: 392, E: 419, Text: "weee", Instr: "scream the zipline"},
-		{S: 585, E: 653, Text: "fbi", Instr: "pause after FBI"},
-	}}
-	if got := n.noteFor(cutSeg{S: 392, E: 419}); got != "scream the zipline" {
-		t.Errorf("the note on the clip's second row came back as %q", got)
-	}
-	// notes on two rows of one clip both arrive, joined
-	n.entries[0].Instr = "short welcome first"
-	got := n.noteFor(cutSeg{S: 392, E: 419})
-	for _, want := range []string{"short welcome first", "scream the zipline"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the clip's combined note %q lost %q", got, want)
-		}
-	}
-	// and the neighbouring clip's note stays its own
-	if got := n.noteFor(cutSeg{S: 585, E: 653}); got != "pause after FBI" {
-		t.Errorf("clip 2's note is %q", got)
-	}
-}
-
 // The row is one box, "[excited] Weee, ziplining!", but the wire is two
 // fields: the TTS server takes the emotion as its own request parameter, and
 // whatever stays in the text gets pronounced. lineParts/lineText are the seam,
@@ -273,31 +246,239 @@ func TestOneBoxCarriesEmotionAndWords(t *testing.T) {
 				c.box, emo, at, hasAt, text, c.emo, c.at, c.hasAt, c.text)
 		}
 	}
-	// and the box shows what the parts will be read back from
+	// and the box shows what the parts will be read back from. The placement is
+	// deliberately NOT rendered: the row's time field owns it, and a second
+	// editable spelling of the same number is how the two drift apart.
 	for _, c := range []struct {
 		e    narrEntry
 		want string
 	}{
 		{narrEntry{Text: "Weee, ziplining!", Emotion: "excited"}, "[excited] Weee, ziplining!"},
-		{narrEntry{Text: "Weee, ziplining!", Emotion: "excited", At: 13}, "[excited @13] Weee, ziplining!"},
-		{narrEntry{Text: "placed only", At: 62}, "[@62] placed only"},
-		{narrEntry{Text: "plain"}, "plain"},
+		{narrEntry{Text: "Weee, ziplining!", Emotion: "excited", At: 13}, "[excited] Weee, ziplining!"},
+		{narrEntry{Text: "plain", At: 62}, "plain"},
 		{narrEntry{Text: "", Emotion: "excited", At: 5}, ""}, // a silent clip shows nothing to speak
 	} {
 		if got := lineText(c.e); got != c.want {
 			t.Errorf("lineText(%+v) = %q, want %q", c.e, got, c.want)
 		}
 	}
-	// the round trip is what the save path actually does
+	// the round trip is what the save path actually does: words and delivery
+	// survive the box, and the box never volunteers an @ to go stale
 	for _, e := range []narrEntry{
 		{Text: "Weee, ziplining!", Emotion: "excited", At: 13},
-		{Text: "Weee, ziplining!", Emotion: "excited"},
 		{Text: "plain"},
 	} {
-		emo, at, hasAt, text := lineParts(lineText(e))
-		if emo != e.Emotion || text != e.Text || (hasAt && at != e.At) || (!hasAt && e.At != 0) {
-			t.Errorf("round trip of %+v came back %q @%g(%v) + %q", e, emo, at, hasAt, text)
+		emo, _, hasAt, text := lineParts(lineText(e))
+		if emo != e.Emotion || text != e.Text || hasAt {
+			t.Errorf("round trip of %+v came back %q (hasAt %v) + %q", e, emo, hasAt, text)
 		}
+	}
+}
+
+// The eight base emotions are the TTS's actual vocabulary (IndexTTS2 maps the
+// emotion text onto them): the prompt has to teach them to the writer, and the
+// ⓘ has to teach them to the user, because "loud, angry, fast" reads as one
+// third emotion and two thirds dilution. And the blend strength is part of the
+// synthesis cache key -- a changed emoAlpha is a different performance, and
+// serving the tamer take from cache would make the constant a lie.
+func TestTheEmotionBasisIsTaught(t *testing.T) {
+	for _, base := range []string{"happy", "angry", "sad", "afraid",
+		"disgusted", "melancholic", "surprised", "calm"} {
+		if !strings.Contains(narrSystem, base) {
+			t.Errorf("the prompt no longer names the base emotion %q", base)
+		}
+		found := false
+		for _, s := range steps {
+			found = found || strings.Contains(s.help, base)
+		}
+		if !found {
+			t.Errorf("the ⓘ no longer names the base emotion %q", base)
+		}
+	}
+	b, err := os.ReadFile("step4.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{root: t.TempDir()}
+	if !strings.Contains(a.ttsKey(narrEntry{Text: "hi"}), emoAlpha) {
+		t.Error("emoAlpha is no longer part of the synthesis cache key — changing the " +
+			"blend serves the old intensity from cache")
+	}
+	// ...and the request has to carry the emotion where the server reads it.
+	// The endpoint parses input/language/options and DROPS unknown top-level
+	// fields, and the engine's emotion path only runs behind use_emotion_text:
+	// this client spent its whole life sending a top-level "emotion" that was
+	// ignored, which is why "[excited] Yeah!" sounded like every other line.
+	src := string(b)
+	if !strings.Contains(src, `opts := emoOpts(emotion)`) {
+		t.Error("the request no longer builds its options from emoOpts — the emotion is " +
+			"back to being carried somewhere the server does not read")
+	}
+	if strings.Contains(src, `"emotion":   emotion`) {
+		t.Error("speak() sends a top-level emotion field again, which the server ignores")
+	}
+	// a plain word is scored by the judge, and only reaches it behind its switch
+	o := emoOpts("angry")
+	if o["emotion_text"] != "angry" || o["use_emotion_text"] != "true" {
+		t.Errorf(`emoOpts("angry") = %v, want the judge asked for by name`, o)
+	}
+	if o["emotion_alpha"] != emoAlpha {
+		t.Errorf("a word-read line blends at %v, want emoAlpha", o["emotion_alpha"])
+	}
+	if o, ok := emoOpts("")["emotion_text"]; ok {
+		t.Errorf("a line with no tag still asks for an emotion (%v)", o)
+	}
+}
+
+// The weighted spelling: "[angry=1]" and "[happy=0.8, surprised=0.4]" go to the
+// engine as the eight floats it mixes, skipping the judge that reads plain
+// words. What this pins is the shape the server insists on -- exactly eight
+// finite numbers, in ITS order -- and which tags take which path, because a tag
+// that quietly fell back to the judge would look identical from here and sound
+// like the thing the weights were written to stop.
+func TestAWeightedEmotionIsSentAsAVector(t *testing.T) {
+	for _, c := range []struct {
+		tag  string
+		want string
+	}{
+		{"angry=1", "0,1,0,0,0,0,0,0"},
+		{"happy=0.8, surprised=0.4", "0.8,0,0,0,0,0,0.4,0"},
+		{"calm=1", "0,0,0,0,0,0,0,1"},           // the eighth axis is "natural"
+		{"melancholy=0.5", "0,0,0,0,0,0.5,0,0"}, // ...and kin resolve to their base
+		{"furious=1", "0,1,0,0,0,0,0,0"},
+		{"deadpan=0.6", "0,0,0,0,0,0,0,0.6"},
+		{"angry=3", "0,1,0,0,0,0,0,0"},                // weights are a 0..1 blend, not a gain
+		{"angry=1, angry=0.2", "0,1,0,0,0,0,0,0"},     // named twice: the louder ask wins
+		{"angry, surprised=0.5", "0,1,0,0,0,0,0.5,0"}, // an unweighted name in a weighted tag is full
+	} {
+		got, ok := emoVector(c.tag)
+		if !ok || got != c.want {
+			t.Errorf("emoVector(%q) = %q,%v want %q,true", c.tag, got, ok, c.want)
+		}
+		if n := len(strings.Split(got, ",")); ok && n != 8 {
+			t.Errorf("emoVector(%q) returned %d values, the server takes exactly 8", c.tag, n)
+		}
+	}
+	// Everything else stays on the text path: the judge is forgiving where this
+	// mapping is not, and a wrong axis is worse than a slower one.
+	for _, tag := range []string{"angry", "surprised, happy", "", "smug=1",
+		"angry=loud", "angry=0", "loud, angry, fast"} {
+		if got, ok := emoVector(tag); ok {
+			t.Errorf("emoVector(%q) = %q, want the judge to read it instead", tag, got)
+		}
+	}
+	// ...and what the judge is handed has the weights taken off, so an axis this
+	// client does not know still arrives as a word it can score.
+	for _, c := range []struct{ in, want string }{
+		{"angry", "angry"}, {"smug=1", "smug"}, {"wistful=1, smug=0.3", "wistful, smug"},
+		{"surprised, happy", "surprised, happy"},
+	} {
+		if got := emoText(c.in); got != c.want {
+			t.Errorf("emoText(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// The two ways in are exclusive, and the order matters: the engine tests
+	// use_emotion_text BEFORE emotion_vector, so a request carrying both is a
+	// request for the judge -- the weights would be read, sent, and thrown away.
+	o := emoOpts("angry=1")
+	if o["emotion_vector"] != "0,1,0,0,0,0,0,0" {
+		t.Errorf(`emoOpts("angry=1") sent vector %v`, o["emotion_vector"])
+	}
+	if _, ok := o["use_emotion_text"]; ok {
+		t.Error("a weighted line also asks for the judge, which overrides the weights it just sent")
+	}
+	if _, ok := o["emotion_text"]; ok {
+		t.Error("a weighted line still carries emotion_text")
+	}
+	// ...and alpha multiplies those weights before use, so anything below 1
+	// quietly rewrites "=1" as "=alpha" and fills the rest with the sample's own
+	// reading. The weight is the intensity; the dial has to stand aside.
+	if o["emotion_alpha"] != "1" {
+		t.Errorf("a weighted line blends at %v — a written =1 arrives as =%v", o["emotion_alpha"], o["emotion_alpha"])
+	}
+}
+
+// The engine has eight axes and no more, so "more emotions" can only mean more
+// points inside them. A blend is a recipe over the eight: "excited" was listed
+// as kin of happy, which is the nearest base and not the thing -- what makes it
+// excited is the surprise in it, and read as plain happiness it came back
+// merely pleased. What this pins is that the recipes stay reachable, stay
+// mixtures rather than synonyms, and keep a weight meaning what it means
+// everywhere else.
+func TestABlendIsMoreThanItsNearestBase(t *testing.T) {
+	for _, c := range []struct{ tag, want string }{
+		// happy at full force, with over half as much surprise: the difference
+		// between "a chest of coins" and "a nice day"
+		{"excited=1", "1,0,0,0,0,0,0.55,0"},
+		{"excited=0.5", "0.5,0,0,0,0,0,0.275,0"}, // the same recipe, read half as hard
+		{"awed=1", "0.5,0,0,0.25,0,0,1,0"},
+		{"frustrated=1", "0,1,0,0,0.35,0.5,0,0"},
+		// a blend mixes with a base in one tag, and the louder ask still wins
+		{"excited=1, angry=0.3", "1,0.3,0,0,0,0,0.55,0"},
+		{"excited=1, surprised=1", "1,0,0,0,0,0,1,0"},
+	} {
+		got, ok := emoVector(c.tag)
+		if !ok || got != c.want {
+			t.Errorf("emoVector(%q) = %q,%v want %q,true", c.tag, got, ok, c.want)
+		}
+	}
+	// no long tails: this string is read by the engine and is part of the take's
+	// name, and 0.16499999999999998 is neither
+	for _, tag := range []string{"excited=0.3", "awed=0.7", "tense=0.15", "ominous=0.42"} {
+		got, _ := emoVector(tag)
+		for _, f := range strings.Split(got, ",") {
+			if len(f) > 5 {
+				t.Errorf("emoVector(%q) = %q — %q is a floating-point tail, not a weight", tag, got, f)
+			}
+		}
+	}
+	// Every recipe peaks at 1 so that "=1" is the mix at full force wherever it
+	// is written, spends itself on the eight the engine has, and is a mixture --
+	// a one-axis "blend" is a kin word and belongs in emoBases.
+	seen := map[string]string{}
+	for _, b := range emoBlends {
+		peak, axes := 0.0, 0
+		for _, f := range b.V {
+			if f < 0 || f > 1 {
+				t.Errorf("blend %q has a weight of %g outside 0..1", b.Kin[0], f)
+			}
+			if f > 0 {
+				axes++
+			}
+			peak = math.Max(peak, f)
+		}
+		if peak != 1 {
+			t.Errorf("blend %q peaks at %g — \"=1\" would not be full force", b.Kin[0], peak)
+		}
+		if axes < 2 {
+			t.Errorf("blend %q touches %d axis — that is a kin word, not a mix", b.Kin[0], axes)
+		}
+		// ...and no name may be claimed twice, in either table: the first match
+		// would win silently and the second spelling would be dead.
+		for _, k := range b.Kin {
+			if emoTerm(k) >= 0 {
+				t.Errorf("%q is both a base kin word and a blend", k)
+			}
+			if was, dup := seen[k]; dup {
+				t.Errorf("%q is claimed by both the %q and %q blends", k, was, b.Kin[0])
+			}
+			seen[k] = b.Kin[0]
+		}
+	}
+	// A take is named by the mix it asked for, not by the spelling: the same
+	// request written two ways is one performance, and a recipe that changes
+	// re-speaks the lines that used it instead of serving the old reading.
+	a := &App{root: t.TempDir()}
+	if a.ttsKey(narrEntry{Text: "hi", Emotion: "angry=1"}) != a.ttsKey(narrEntry{Text: "hi", Emotion: "furious=1"}) {
+		t.Error("two spellings of one weighted request are two takes")
+	}
+	if !strings.Contains(a.ttsKey(narrEntry{Text: "hi", Emotion: "excited=1"}), "0.55") {
+		t.Error("a weighted take is still named by its spelling — a changed recipe would serve the old performance")
+	}
+	// ...but a plain word is still keyed as written: those go to the judge, and
+	// re-keying them would re-speak every line of every project for nothing.
+	if !strings.Contains(a.ttsKey(narrEntry{Text: "hi", Emotion: "excited"}), "|excited") {
+		t.Error("an unweighted tag no longer keeps its old key — every narrated project re-speaks")
 	}
 }
 
@@ -360,7 +541,9 @@ func TestTheLineLandsWhereTheWriterPutIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(b)
-	if !strings.Contains(src, "math.Max(narrLead, ln.delay)") {
+	// (delayMS is that number in adelay's own units -- see
+	// TestNarrationLandsWhereItWasPlaced, which pins the units against ffmpeg)
+	if !strings.Contains(src, "adelay=%d:all=1") || !strings.Contains(src, "delayMS(ln.delay)") {
 		t.Error("encodeClip no longer delays each voice to its line's placement")
 	}
 	if !strings.Contains(src, "srtTime(cum+ln.delay)") || !strings.Contains(src, "srtTime(ln.delay)") {
@@ -433,7 +616,7 @@ func TestTheNarratePromptDescribesTheBriefItGets(t *testing.T) {
 				"work out the shape of its own input", want)
 		}
 	}
-	brief := clipBriefs([]cutSeg{{S: 0, E: 10}}, nil, []tsvRow{
+	brief := clipBriefs([]cutSeg{{S: 0, E: 10}}, []tsvRow{
 		{s: 1, e: 2, spk: "EVENT", text: "x"},
 		{s: 3, e: 4, spk: "SPEAKER_01", text: "y", src: "capture"},
 		{s: 5, e: 6, spk: "SPEAKER_00", text: "z", src: "his-own-mic"},
@@ -485,7 +668,7 @@ func TestOnlyWhatTheVideoCarriesIsOffLimits(t *testing.T) {
 		t.Errorf("a footage-only session exempts %q, which the video plays out loud", got)
 	}
 
-	brief := clipBriefs([]cutSeg{{S: 640, E: 660}}, nil, rows, a.narratorMic())
+	brief := clipBriefs([]cutSeg{{S: 640, E: 660}}, rows, a.narratorMic())
 	if !strings.Contains(brief, "NARRATOR: Open up, FBI.") {
 		t.Errorf("the joke is not marked quotable:\n%s", brief)
 	}
