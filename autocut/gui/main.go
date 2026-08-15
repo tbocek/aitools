@@ -341,8 +341,11 @@ type App struct {
 	// the project file, and what was last written to it. projPath is the named
 	// file Save/Load last used -- the working copy at root/project.json is
 	// written whatever it says. Both are the GUI thread's (project.go).
+	// projLabel is projPath's name in the header bar; nil under the tests,
+	// which build an App without a window.
 	projPath  string
 	projSaved []byte
+	projLabel *gtk.Label
 
 	// one progress bar fed by both tracks: summed fractions, joined texts
 	progMu    sync.Mutex
@@ -697,6 +700,26 @@ func (a *App) build(app *gtk.Application) {
 	saveP.ConnectClicked(a.saveProjectDialog)
 	head.PackStart(loadP)
 	head.PackStart(saveP)
+	// Which file this session is being written to. Projects are files in a
+	// folder and several sit side by side (a recut, a variant, last week's), and
+	// until now the window said nothing about which one Save was following --
+	// the title bar was the five tabs and nothing else, so the only way to find
+	// out was to open the Save dialog and read the name it proposed.
+	//
+	// Ellipsized rather than wrapped or left to grow: the tabs are the title
+	// widget and sit centered, so a project with a long name must not push them
+	// off center or shove the buttons at the other end off the bar. The label
+	// therefore asks for at most projNameChars characters and ends in "…" when
+	// the name is longer -- the CSS text-overflow: ellipsis of the web app --
+	// and the tooltip carries the whole path for when the tail is the part you
+	// needed to read.
+	a.projLabel = gtk.NewLabel("")
+	a.projLabel.SetEllipsize(pango.EllipsizeEnd)
+	a.projLabel.SetMaxWidthChars(projNameChars)
+	a.projLabel.AddCSSClass("dim-label")
+	a.projLabel.SetMarginStart(6)
+	head.PackStart(a.projLabel)
+	a.showProject()
 	// every step needs a rescan after files change on disk, so it lives here
 	rescan := gtk.NewButtonFromIconName("view-refresh-symbolic")
 	rescan.SetTooltipText("Rescan inputs and outputs")

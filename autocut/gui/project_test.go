@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -299,5 +300,63 @@ func TestOnlyProduceWritesTheProduceFolder(t *testing.T) {
 	}
 	if n := strings.Count(string(b), "\tredirectOutput(t, a"); n < 2 {
 		t.Errorf("%d of the render tests redirect their output -- the rest write into the live out/test", n)
+	}
+}
+
+// ---- the project name in the header bar --------------------------------------
+
+// What the title bar says about the open project. The name and not the path:
+// variants of a session live beside each other in one folder, so the leading
+// directories are the identical half and the file name is the half that tells
+// them apart. The unnamed case has to say something too -- a blank space where
+// a file name goes reads as a bug, not as "nothing has been saved yet".
+func TestTheHeaderBarNamesTheOpenProject(t *testing.T) {
+	name, tip := projLabelText("/home/tom/cuts/before-the-recut.json")
+	if name != "before-the-recut.json" {
+		t.Errorf("the bar shows %q, want the file name alone", name)
+	}
+	if tip != "/home/tom/cuts/before-the-recut.json" {
+		t.Errorf("the tooltip shows %q, want the whole path -- it is the only place the path is readable", tip)
+	}
+	name, tip = projLabelText("  ")
+	if !strings.Contains(name, "no project") {
+		t.Errorf("with nothing saved the bar shows %q, want it to say so in words", name)
+	}
+	if tip == "" {
+		t.Error("with nothing saved the tooltip is empty -- hovering must still answer")
+	}
+}
+
+// The wiring: the label is ellipsized and capped (a project buried in a long
+// name must not walk the centered tabs sideways), and both places that assign
+// projPath refresh it. The second half is the one that rots quietly -- a Save
+// As that renames the file the autosave follows while the bar keeps showing
+// the old name is worse than showing no name at all.
+func TestTheProjectNameFollowsSaveAndLoad(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"a.projLabel.SetEllipsize(pango.EllipsizeEnd)",
+		"a.projLabel.SetMaxWidthChars(projNameChars)",
+		"head.PackStart(a.projLabel)",
+	} {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("the header bar no longer does %s", want)
+		}
+	}
+	p, err := os.ReadFile("project.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range []string{"saveProjectTo", "loadProjectFrom"} {
+		body := regexp.MustCompile(`(?s)func \(a \*App\) ` + fn + `\(path string\) \{.*?\n}\n`).Find(p)
+		if body == nil {
+			t.Fatalf("%s is gone", fn)
+		}
+		if !strings.Contains(string(body), "a.showProject()") {
+			t.Errorf("%s renames the project without telling the header bar", fn)
+		}
 	}
 }

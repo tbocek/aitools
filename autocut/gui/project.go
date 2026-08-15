@@ -206,6 +206,37 @@ func (a *App) projectFiles() []string {
 	return []string{work, a.projPath}
 }
 
+// projNameChars is how much of the project's name the header bar shows before
+// it ellipsizes. Wide enough for the names people actually type ("before the
+// recut.json"), narrow enough that it cannot walk the centered tabs sideways
+// on a small window.
+const projNameChars = 28
+
+// projLabelText is what the header bar says about a project path: the file's
+// name, and the whole path as the tooltip behind it. The name alone, not the
+// path -- every project in a session usually lives in the same folder, so the
+// leading directories are the part that is identical between them and the name
+// is the part that is not, and an ellipsized path would cut away exactly the
+// half worth reading.
+func projLabelText(path string) (name, tip string) {
+	if strings.TrimSpace(path) == "" {
+		return "no project file", "this session has not been saved to a project file yet"
+	}
+	return filepath.Base(path), path
+}
+
+// showProject puts the open project's name in the header bar. Called from both
+// places that assign projPath, so the bar can never name a file the autosave
+// has stopped following.
+func (a *App) showProject() {
+	if a.projLabel == nil {
+		return // headless (tests)
+	}
+	name, tip := projLabelText(a.projPath)
+	a.projLabel.SetText(name)
+	a.projLabel.SetTooltipText(tip)
+}
+
 // saveProjectNow writes every target and remembers what it wrote. Quiet: it is
 // what the ticker and the step runners call, and a status line per autosave
 // would push the message the user is actually waiting on off the bar.
@@ -229,6 +260,7 @@ func (a *App) saveProjectNow() {
 // autosave follows from here on, and says so.
 func (a *App) saveProjectTo(path string) {
 	a.projPath = path
+	a.showProject()
 	a.saveProjectNow()
 	a.setStatus("project saved: " + path)
 }
@@ -293,6 +325,7 @@ func (a *App) loadProjectFrom(path string) {
 	// what is open is what the autosave keeps: opening a variant and then
 	// editing it must not quietly write the edits into the working copy alone
 	a.projPath = path
+	a.showProject()
 	a.projSaved = a.projectJSON()
 	a.setStatus("project loaded: " + path)
 }
