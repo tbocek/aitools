@@ -3,8 +3,9 @@ package main
 // Project state: which sources are in, in what order, and the step settings.
 // Saved as plain JSON with root-relative paths, so a project file survives
 // moving the autocut directory. root/project.json is the working copy --
-// loaded on startup, rewritten whenever a step runs; Save/Load dialogs are
-// for keeping named variants.
+// always written, whatever else is open; Save/Load dialogs are for keeping
+// named variants, and whichever file is open when the window closes is the one
+// the next launch reopens (settings.go).
 
 import (
 	"bytes"
@@ -266,6 +267,7 @@ func (a *App) saveProjectNow() {
 func (a *App) saveProjectTo(path string) {
 	a.projPath = path
 	a.showProject()
+	a.rememberProject(path)
 	a.saveProjectNow()
 	a.setStatus("project saved: " + path)
 }
@@ -332,6 +334,7 @@ func (a *App) loadProjectFrom(path string) {
 	// editing it must not quietly write the edits into the working copy alone
 	a.projPath = path
 	a.showProject()
+	a.rememberProject(path)
 	a.projSaved = a.projectJSON()
 	a.setStatus("project loaded: " + path)
 }

@@ -41,7 +41,10 @@ var promptDefs = []promptDef{
 	{"cut", strings.TrimSpace(suggestSystem)},
 	{"audit", strings.TrimSpace(auditSystem)},
 	{"narrate", strings.TrimSpace(narrSystem)},
-	{"thumbnail", strings.TrimSpace(thumbSystem)},
+	// "thumbnail" was here: a second Publish prompt that picked which frame to
+	// edit and wrote the instruction for it. Removed, not renamed -- the key is
+	// gone from the registry, so a project that saved an edited copy of it just
+	// keeps a dead key nobody reads.
 	{"youtube", strings.TrimSpace(youtubeSystem)},
 }
 

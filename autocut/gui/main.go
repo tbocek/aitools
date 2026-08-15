@@ -146,13 +146,17 @@ var steps = []struct{ name, label, tip, wait, help string }{
 	{"step6", "Publish", "Draw the thumbnail and write the upload text",
 		"Finish Cut first — there is nothing to make a thumbnail of yet",
 		"The two things a finished video still needs: a thumbnail, and the text " +
-			"under it on the upload page.\n\nThe first ▶ writes the title, the edit " +
-			"instruction and the description, and then draws. Every ▶ after that " +
-			"only draws — the model is not asked again, however much you edit the " +
-			"boxes, so rewording the instruction or changing the images costs " +
-			"GPU time and no thinking. Deleting the step6 folder is what starts the " +
-			"text over; Suggest again, beside the images, rewrites all three " +
-			"without redrawing.\n\nThe picture is usually not made from nothing — " +
+			"under it on the upload page. The page is split the same way — the " +
+			"picture and everything that makes it on the left, the words on the " +
+			"right.\n\nThe first ▶ writes the title and the description, and then " +
+			"draws. Every ▶ after that only draws — the model is not asked again, " +
+			"however much you edit the boxes, so rewording the instruction or " +
+			"changing the images costs GPU time and no thinking. Deleting the step6 " +
+			"folder is what starts the text over; Suggest again, beside the title, " +
+			"rewrites both without redrawing.\n\nThe edit instruction is yours to " +
+			"write — nothing suggests one. There was a second model job that picked " +
+			"a frame and wrote an instruction for it, and it was removed because it " +
+			"did neither well.\n\nThe picture is usually not made from nothing — " +
 			"it is an edit of one of your own frames, which is what keeps it " +
 			"recognizably this video rather than a stock illustration of the " +
 			"genre. Two are taken from the cut on the first run, and the row is " +
@@ -920,8 +924,14 @@ func (a *App) build(app *gtk.Application) {
 	logGrow()
 	a.win.SetChild(outer)
 
-	// pick up where the last session left off
-	if pj := filepath.Join(a.root, "project.json"); exists(pj) {
+	// Pick up where the last session left off: the named project that was open
+	// when it ended, and only failing that the working copy. Opening
+	// project.json unconditionally was the old behaviour, and it silently
+	// undid the Save that named a variant -- you saved jan-video.json, quit,
+	// and came back to the session you had saved it to get away from.
+	if pj := a.lastProject(); pj != "" {
+		a.loadProjectFrom(pj)
+	} else if pj := filepath.Join(a.root, "project.json"); exists(pj) {
 		a.loadProjectFrom(pj)
 	}
 
@@ -1147,8 +1157,12 @@ func (a *App) step1Clicked() {
 			filepath.Base(x), filepath.Base(y)))
 		return
 	}
-	// the working copy always reflects what actually ran
-	a.saveProjectTo(filepath.Join(a.root, "project.json"))
+	// The working copy always reflects what actually ran -- and so does the
+	// named project, since saveProjectNow writes every target. It used to be
+	// saveProjectTo(project.json), which also RENAMED the open project to the
+	// working copy: running step 1 quietly stopped the autosave following the
+	// file you had opened, and the header bar changed under you to say so.
+	a.saveProjectNow()
 	scaleName, scaleVF := a.frameScale()
 	a.startStep1(vids, auds, a.frameInterval(), scaleName, scaleVF)
 }

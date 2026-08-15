@@ -24,11 +24,24 @@ package main
 // afterwards, and it takes any number of references, so an instruction may
 // borrow from any of the others.
 //
-// Two model jobs, two prompts on the page, same rule as every other step: the
-// box IS what the model is told, and an edited one is kept in the project.
+// One model job and one prompt on the page, same rule as every other step: the
+// box IS what the model is told, and an edited one is kept in the project. It
+// writes the title and the description; the edit instruction is typed, not
+// generated. There was a second job that picked a frame and wrote the
+// instruction for it, and it was removed because it did neither well -- the
+// pick was guesswork and the instruction it wrote was worse than the one you
+// would have typed.
+//
 // What comes back is a suggestion in an editable field, never a decision --
 // the title, the instruction and the description are all yours to rewrite, and
 // ▶ pressed again redraws from what the boxes say rather than asking again.
+//
+// The page is two columns. Left is the picture and everything that makes it:
+// the images, the edit instruction, the negative prompt, the result. Right is
+// the words: the prompt that writes them, then the title, then the
+// description. They are worked on separately -- rewording the instruction and
+// redrawing has nothing to do with the description -- so they do not share a
+// column and fight for its height.
 //
 // step6/thumbnail.png        the upload
 // step6/thumbnail-plain.png  the same picture, kept so a failed re-roll does
@@ -76,47 +89,22 @@ const (
 //
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 
-const thumbSystem = `You design the thumbnail for a finished YouTube video, and the title printed on it.
-
-You are given what the video is made of -- its clips, what was seen and said in each -- and the candidate images, numbered in the order they are shown to you. There may be one, several, or none. You pick one to be the picture, and you write an instruction that turns it into a thumbnail.
-
-The request may open with a block headed ABOUT THIS SESSION: the editor's own notes on what this is, who is in it and what things are called. Names and spellings in the title come from there, and anything it singles out is what the picture should be of.
-
-Return strict JSON, nothing else:
-{"title":"...","base_frame":<the number of one of the candidate images, or 0 if you were given none>,"prompt":"...","negative_prompt":"..."}
-
-The title.
-
-- Four to seven words. It is read at the size of a phone's sidebar, so every extra word costs one that mattered.
-- Say the specific thing that happens in THIS video: the moment, the mistake, the win, the thing nobody expected. A title that would fit any session of this game is a wasted title.
-- Plain words people say out loud. No colons splitting a subtitle off, no clickbait punctuation, no ALL CAPS -- it is drawn in large letters already.
-- Never promise something the clips do not contain.
-- Do NOT put the title in the prompt. It is added to the instruction separately, so that it can be changed without rewriting everything else.
-
-The base image.
-
-- Pick the candidate that already has the video's best moment, or its most legible subject, in it. Composition beats prettiness: something large and central survives being shrunk, a wide landscape does not.
-- base_frame is the number of the image you picked, counting from 1 in the order they were given. It is moved to the front for you, so the one you pick becomes the first image.
-
-The prompt.
-
-- It is an EDIT INSTRUCTION given to an image editing model that is looking at the same images you were given. Write it as plain sentences telling it what to change: "brighten the character and blur the background", "remove the health bar in the corner", "make the sky stormy". It is not a list of tags and it is not a description of a picture to invent.
-- The first image is the one you chose. Anything you do not mention stays exactly as it is, so mention only what should change -- an instruction that describes the whole scene will get you a different scene.
-- You may take something from any of the other images by naming its position: "add the wooden ship from the second image behind them". Only do this when it genuinely improves the picture; two images merged badly is worse than one left alone.
-- If you were given no images at all, base_frame is 0 and the prompt describes the picture to draw from nothing instead. That is the only case where describing a whole scene is right.
-- Aim for one clear focal point, strong separation between it and the background, and colours that survive being shrunk to a fingernail. Leave the lower part of the frame uncluttered, because the title goes there.
-- Keep the frame's own subject, place and time of day. You are editing this moment, not replacing it.
-- negative_prompt lists what must stay out: at minimum watermark, logo, subtitles, extra limbs, blurry, low contrast. Add whatever this particular frame is likely to go wrong with. Do not put "text" in it -- the title is lettering this model is being asked for on purpose.`
-
-const youtubeSystem = `You write the description that sits under a finished gaming video on YouTube.
+const youtubeSystem = `You write the upload text for a finished gaming video on YouTube: its title, and the description that sits under it.
 
 You are given what the video is made of -- its clips, what was seen and said in each, and the narration that was written over it. Write about the video that exists, and invent nothing that is not in it.
 
 The request may open with a block headed ABOUT THIS SESSION: the editor's own notes, written by someone who was there. Every name, spelling and fact in it outranks what you would otherwise have guessed, and what it singles out is what the description should lead with.
 
-Return the description text itself. No JSON, no code fence, no heading, no commentary about the task.
+Return the title on the first line, prefixed exactly "TITLE: ", then a blank line, then the description text itself. No JSON, no code fence, no heading, no commentary about the task.
 
-Shape.
+The title.
+
+- Four to seven words. It is both the YouTube title and the lettering printed across the thumbnail, and it is read at the size of a phone's sidebar, so every extra word costs one that mattered.
+- Say the specific thing that happens in THIS video: the moment, the mistake, the win, the thing nobody expected. A title that would fit any session of this game is a wasted title.
+- Plain words people say out loud. No colons splitting a subtitle off, no clickbait punctuation, no ALL CAPS -- it is drawn in large letters already.
+- Never promise something the clips do not contain.
+
+The description.
 
 - Open with one or two sentences that say what happens in this video, in plain language, and make someone want to watch it. This first line is the only part shown before "...more", so it has to work alone.
 - Then a short paragraph, three or four sentences, on what the session actually was: where it is set, who is in it, what went right and wrong.
@@ -202,8 +190,10 @@ type publisher struct {
 	addFrame  *gtk.Button
 
 	title *gtk.Entry
-	// the three editable results. Text views rather than entries for the two
-	// long ones: an image prompt is a paragraph and a description is several.
+	// The four editable boxes, split by column: prompt and neg are the drawing
+	// side and are typed by hand, title and desc are the writing side and are
+	// what the model suggests. Text views rather than entries for the long
+	// ones -- an edit instruction is a paragraph and a description is several.
 	prompt, neg, desc *gtk.TextView
 	shot              *gtk.Picture // what was drawn last
 	inputs, out       *gtk.Label
@@ -274,32 +264,15 @@ func (a *App) buildStep6() gtk.Widgetter {
 		"the rest are only there to be named (\"the ship from the second image\")")
 	p.addFrame.ConnectClicked(func() { p.addImage() })
 
-	// the ↻ rides on the frames heading rather than beside any one field: it
-	// throws away the title, the prompt AND the description together, which is
-	// the only honest place to put a button that rewrites all three
-	p.suggest = gtk.NewButtonWithLabel("Suggest again")
-	p.suggest.AddCSSClass("flat")
-	p.suggest.SetTooltipText("Ask the model for a fresh title, image prompt and description " +
-		"from these images — the only thing that does. ▶ never rewrites text that " +
-		"has already been written; the picture is not redrawn here, ▶ does that")
-	p.suggest.ConnectClicked(func() { a.publishRun(true) })
 	framesHead := p.heading("Images", fmt.Sprintf("What the image model is given, in order. The FIRST is "+
 		"the base — the picture being edited — and the others are references the instruction can name. "+
-		"▶ takes %d from the cut on the first run; after that the row is yours: add, remove, or make "+
-		"another one the base. An empty row is allowed, and draws the thumbnail from the instruction alone.",
-		defPubFrames), p.addFrame, p.suggest)
+		"%d are taken from the cut the first time this page runs; after that the row is yours: add, "+
+		"remove, swap, or make another one the base. An empty row is allowed, and draws the thumbnail "+
+		"from the instruction alone.", defPubFrames), p.addFrame)
 
-	// Title, then the two long boxes. The title is an entry and not a text
-	// view on purpose: it is lettered into the picture as a handful of words,
-	// and a box you can press Return in invites a paragraph that will not fit.
-	p.title = gtk.NewEntry()
-	p.title.SetHExpand(true)
-	p.title.SetPlaceholderText("the words printed on the thumbnail — ▶ suggests some")
-	p.title.SetTooltipText("Lettered into the picture by the image model, which is asked for it " +
-		"as its own sentence — so retyping the title does not mean rewriting the instruction. " +
-		"Four to seven words: a thumbnail is read at the size of a phone's sidebar.")
-	p.title.ConnectChanged(func() { p.touched() })
-
+	// The two long boxes on the drawing side. Both are text views rather than
+	// entries: an instruction is a paragraph, and a negative prompt is a list
+	// that outgrows one line the moment a picture goes wrong in a new way.
 	var promptBox, negBox, descBox *gtk.ScrolledWindow
 	p.prompt, promptBox = p.textBox(4, "What the image model is told to CHANGE about the first image. "+
 		"Plain sentences: \"blur the background\", \"add the ship from the second image behind them\". "+
@@ -307,63 +280,94 @@ func (a *App) buildStep6() gtk.Widgetter {
 		"The title is added after this automatically — do not ask for it here.")
 	p.neg, negBox = p.textBox(2, "What must stay out of the picture — watermarks, logos, extra limbs. "+
 		"Not \"text\" any more: the title is lettering this model is being asked for on purpose.")
-	p.desc, descBox = p.textBox(8, "The text under the video on the YouTube page. Written by the second "+
-		"prompt on the right, and yours to rewrite.")
 
-	// The result, at the size it will be judged at. It sits under the boxes
-	// that make it, so pressing ▶ again after an edit to the instruction shows
-	// the two answers in the same place.
+	// The result, at the size it will be judged at, under the boxes that make
+	// it -- so pressing ▶ after rewording the instruction shows the change in
+	// the same place you asked for it.
 	p.shot = gtk.NewPicture()
 	p.shot.SetCanShrink(true)
-	p.shot.SetSizeRequest(-1, 400)
+	p.shot.SetSizeRequest(-1, 320)
 	p.shot.SetVExpand(true)
 	shotFrame := videoFrame(p.shot)
 	shotFrame.SetMarginTop(4)
 
-	work := gtk.NewBox(gtk.OrientationVertical, 6)
-	work.SetMarginTop(4)
-	work.SetMarginStart(12)
-	work.SetMarginEnd(6)
-	work.Append(framesHead)
-	work.Append(p.framesBox)
-	work.Append(p.heading("Title", "The words drawn on the thumbnail"))
-	work.Append(p.title)
-	work.Append(p.heading("Edit instruction", "What to change about the first image, sent to sd.cpp with the whole row"))
-	work.Append(promptBox)
-	work.Append(p.heading("Negative prompt", "What must not appear"))
-	work.Append(negBox)
-	work.Append(p.heading("YouTube description", "The text under the video on the upload page"))
-	work.Append(descBox)
-	work.Append(shotFrame)
+	// LEFT: everything that makes the picture, in the order it happens --
+	// choose the images, say what to change, say what to keep out, look at what
+	// came back. Nothing on this side calls the language model any more.
+	draw := gtk.NewBox(gtk.OrientationVertical, 6)
+	draw.SetMarginTop(4)
+	draw.SetMarginStart(12)
+	draw.SetMarginEnd(6)
+	draw.Append(framesHead)
+	draw.Append(p.framesBox)
+	draw.Append(p.heading("Edit instruction", "What to change about the first image, sent to sd.cpp with the whole row"))
+	draw.Append(promptBox)
+	draw.Append(p.heading("Negative prompt", "What must not appear"))
+	draw.Append(negBox)
+	draw.Append(shotFrame)
 
-	scroll := gtk.NewScrolledWindow()
-	scroll.SetChild(work)
-	scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
-	scroll.SetVExpand(true)
+	drawScroll := gtk.NewScrolledWindow()
+	drawScroll.SetChild(draw)
+	drawScroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
+	drawScroll.SetVExpand(true)
 
-	// The two prompts, in full, beside the work -- the same arrangement as
-	// Describe, for the same reason: what the model was told is not something
-	// to go looking for behind a disclosure triangle, and the results next to
-	// them are what makes an edit to the wording something you can judge.
-	prompts := gtk.NewPaned(gtk.OrientationVertical)
-	prompts.SetStartChild(a.promptEditor("thumbnail", "Thumbnail",
-		"Gets the cut, the narration and the images below, and answers with a title, "+
-			"which image to edit, and the instruction."))
-	prompts.SetEndChild(a.promptEditor("youtube", "Description",
-		"Gets the same material without the images, and answers with the text for the upload page."))
-	prompts.SetResizeStartChild(true)
-	prompts.SetResizeEndChild(true)
-	prompts.SetShrinkStartChild(false)
-	prompts.SetShrinkEndChild(false)
-	prompts.SetVExpand(true)
-	prompts.SetSizeRequest(320, -1)
-	prompts.SetMarginStart(12)
+	// RIGHT: everything the language model writes, with the prompt that writes
+	// it directly above -- the same arrangement as Describe, for the same
+	// reason: what the model was told is not something to go looking for behind
+	// a disclosure triangle, and its answer sitting under it is what makes an
+	// edit to the wording something you can judge.
+	//
+	// The title lives here rather than beside the drawing even though it is
+	// lettered into the picture, because this is what writes it and this is
+	// where it is read from: it is the YouTube title first and the thumbnail's
+	// lettering second.
+	p.title = gtk.NewEntry()
+	p.title.SetHExpand(true)
+	p.title.SetPlaceholderText("the video's title, also printed on the thumbnail — ▶ suggests one")
+	p.title.SetTooltipText("The YouTube title, and the words the image model letters into the " +
+		"picture — it is asked for them as its own sentence, so retyping the title does not mean " +
+		"rewriting the instruction. Four to seven words: a thumbnail is read at the size of a " +
+		"phone's sidebar. Empty means no lettering at all.")
+	p.title.ConnectChanged(func() { p.touched() })
+
+	p.desc, descBox = p.textBox(8, "The text under the video on the YouTube page. Written by the "+
+		"prompt above, and yours to rewrite.")
+
+	// ↻ sits on the Title heading because the title and the description are
+	// what it rewrites -- and it is the only thing that rewrites them: ▶ writes
+	// them once and then never touches them again
+	p.suggest = gtk.NewButtonWithLabel("Suggest again")
+	p.suggest.AddCSSClass("flat")
+	p.suggest.SetTooltipText("Ask the model for a fresh title and description — the only thing " +
+		"that does. ▶ never rewrites text that has already been written, and nothing here " +
+		"redraws the picture; ▶ does that")
+	p.suggest.ConnectClicked(func() { a.publishRun(true) })
+
+	said := gtk.NewBox(gtk.OrientationVertical, 6)
+	said.SetMarginTop(4)
+	said.SetMarginStart(6)
+	said.Append(p.heading("Title", "The YouTube title, and the lettering on the thumbnail", p.suggest))
+	said.Append(p.title)
+	said.Append(p.heading("YouTube description", "The text under the video on the upload page"))
+	said.Append(descBox)
+	descBox.SetVExpand(true)
+
+	text := gtk.NewPaned(gtk.OrientationVertical)
+	text.SetStartChild(a.promptEditor("youtube", "Upload text",
+		"Gets the cut and the narration — no images — and answers with the title and the description."))
+	text.SetEndChild(said)
+	text.SetResizeStartChild(true)
+	text.SetResizeEndChild(true)
+	text.SetShrinkStartChild(false)
+	text.SetShrinkEndChild(false)
+	text.SetVExpand(true)
+	text.SetSizeRequest(340, -1)
 
 	outer := gtk.NewPaned(gtk.OrientationHorizontal)
-	outer.SetStartChild(scroll)
-	outer.SetEndChild(prompts)
+	outer.SetStartChild(drawScroll)
+	outer.SetEndChild(text)
 	outer.SetResizeStartChild(true)
-	outer.SetResizeEndChild(false)
+	outer.SetResizeEndChild(true)
 	outer.SetShrinkStartChild(false)
 	outer.SetShrinkEndChild(false)
 	outer.SetVExpand(true)
@@ -943,96 +947,66 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 
 // ---- the two model jobs ----------------------------------------------------------
 
-type thumbPlan struct {
-	Title    string `json:"title"`
-	Base     int    `json:"base_frame"`
-	Prompt   string `json:"prompt"`
-	Negative string `json:"negative_prompt"`
-}
-
-// parseThumbPlan reads one reply. Returns the plan, or the problem to hand
-// back to the model -- same retry shape as the cut and the narration, because
-// the failure being caught is the same one: a model that answers with prose
-// around its JSON, or with a frame number it made up.
-func parseThumbPlan(reply string, frames int) (thumbPlan, string) {
-	var p thumbPlan
-	clean := strings.TrimSpace(reply)
-	if i := strings.Index(clean, "{"); i >= 0 {
-		clean = clean[i:]
-	}
-	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
-	if err := json.Unmarshal([]byte(clean), &p); err != nil {
-		return p, "not valid JSON: " + err.Error()
-	}
-	p.Title = strings.TrimSpace(p.Title)
-	p.Prompt = strings.TrimSpace(p.Prompt)
-	p.Negative = strings.TrimSpace(p.Negative)
-	switch {
-	case p.Title == "":
-		return p, "no title"
-	case len(strings.Fields(p.Title)) > 12:
-		return p, fmt.Sprintf("the title is %d words long; four to seven is what fits",
-			len(strings.Fields(p.Title)))
-	case p.Prompt == "":
-		return p, "no prompt"
-	case frames > 0 && (p.Base < 1 || p.Base > frames):
-		return p, fmt.Sprintf("base_frame is %d; there are %d images, numbered from 1", p.Base, frames)
-	}
-	return p, ""
-}
-
-// writeThumbPlan asks for the title, the base frame and the image prompt, with
-// the candidate frames attached as pictures.
-func (a *App) writeThumbPlan(brief string, frames []string) (thumbPlan, error) {
-	content := []any{txtPart(a.ctxBlock() + brief + "\n\nTHE CANDIDATE FRAMES, in order:")}
-	for i, f := range frames {
-		content = append(content, txtPart(fmt.Sprintf("FRAME %d of %d", i+1, len(frames))))
-		part, err := imgPart(f)
-		if err != nil {
-			return thumbPlan{}, fmt.Errorf("frame %d (%s): %w", i+1, f, err)
-		}
-		content = append(content, part)
-	}
-	msgs := []map[string]any{msg("system", a.prompt("thumbnail")), msg("user", content)}
-	for try := 0; try < 3; try++ {
-		if err := a.checkpoint(); err != nil {
-			return thumbPlan{}, err
-		}
-		reply, err := a.llmChatRetry(msgs, true)
-		if err != nil {
-			return thumbPlan{}, err
-		}
-		plan, problem := parseThumbPlan(reply, len(frames))
-		if problem == "" {
-			return plan, nil
-		}
-		a.logfIdle(">>> thumbnail attempt %d rejected: %s", try+1, problem)
-		msgs = append(msgs, msg("assistant", reply),
-			msg("user", "Your answer failed validation: "+problem+". Return corrected strict JSON only."))
-	}
-	return thumbPlan{}, fmt.Errorf("no valid thumbnail plan after 3 attempts")
-}
-
-// writeDescription asks for the YouTube text. No JSON here on purpose: the
-// answer IS prose, and wrapping prose in JSON only adds a way for a reply that
-// is otherwise perfectly good to be thrown away over an unescaped quote.
-func (a *App) writeDescription(brief string) (string, error) {
+// writeDescription asks for the upload text: the title and the description, in
+// one reply. No JSON on purpose -- the description IS prose, and wrapping prose
+// in JSON only adds a way for a reply that is otherwise perfectly good to be
+// thrown away over an unescaped quote. The title rides in front of it on a
+// labelled line, which costs one string operation and cannot fail that way.
+//
+// This is now the only model call this page makes. There used to be a second
+// one, with the images attached, that picked which frame to edit and wrote the
+// instruction for it; it was removed because it did neither well -- the frame
+// it chose was rarely the one a person would, and the instructions it wrote
+// described pictures instead of asking for changes. Both are decisions worth
+// twenty seconds of a human's attention, and the page is built around making
+// them by hand now.
+func (a *App) writeDescription(brief string) (title, desc string, err error) {
 	msgs := []map[string]any{
 		msg("system", a.prompt("youtube")),
 		msg("user", a.ctxBlock()+brief),
 	}
 	if err := a.checkpoint(); err != nil {
-		return "", err
+		return "", "", err
 	}
 	reply, err := a.llmChatRetry(msgs, true)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	out := cleanDescription(reply)
-	if out == "" {
-		return "", fmt.Errorf("the model answered with nothing")
+	title, desc = splitTitle(reply)
+	if desc == "" {
+		return "", "", fmt.Errorf("the model answered with nothing")
 	}
-	return out, nil
+	return title, desc, nil
+}
+
+// splitTitle peels the "TITLE: ..." line off the front. A reply without one is
+// not an error: the description is the part that matters, and a missing title
+// leaves the box for the user to fill rather than throwing away good prose over
+// a header the model forgot. The rest goes through cleanDescription either way.
+func splitTitle(reply string) (title, desc string) {
+	s := strings.TrimSpace(reply)
+	// A fenced reply puts the fence before the title line, so the fence has to
+	// come off here rather than in cleanDescription: by the time the TITLE:
+	// line is peeled the text no longer *starts* with a fence, and the closing
+	// one would be left sitting at the bottom of the description.
+	if strings.HasPrefix(s, "```") {
+		if i := strings.IndexByte(s, '\n'); i >= 0 {
+			s = s[i+1:]
+		}
+		if i := strings.LastIndex(s, "```"); i >= 0 {
+			s = s[:i]
+		}
+		s = strings.TrimSpace(s)
+	}
+	line := s
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		line = s[:i]
+	}
+	if t := strings.TrimSpace(line); len(t) > 6 && strings.EqualFold(t[:6], "title:") {
+		title = strings.Trim(strings.TrimSpace(t[6:]), `"“”`)
+		s = strings.TrimSpace(strings.TrimPrefix(s, line))
+	}
+	return title, cleanDescription(s)
 }
 
 // cleanDescription strips the wrapping a chat model puts around prose it was
@@ -1087,10 +1061,10 @@ func (a *App) publishRun(textOnly bool) {
 	st := p.snapshot()
 	entries := a.produceEntries()
 
-	// The model writes this page's text once per session and then never again.
-	// ▶ is the redraw button: press it as often as you like with the
-	// instruction reworded or the base frame swapped, and it costs GPU time
-	// and no thinking.
+	// The model writes this page's text -- the title and the description --
+	// once per session and then never again. ▶ is the redraw button: press it
+	// as often as you like with the instruction reworded or the images
+	// changed, and it costs GPU time and no thinking.
 	//
 	// The record is the folder, not the boxes. Gating on "is the title empty"
 	// -- which is what this did -- meant clearing a field you did not like
@@ -1099,8 +1073,7 @@ func (a *App) publishRun(textOnly bool) {
 	// Deleting step6/ is the deliberate way to start the text over, and
 	// "Suggest again" is the way to do it without losing the pictures.
 	written := a.publishRecorded()
-	needText := textOnly || (!written && (st.Title == "" || st.Prompt == ""))
-	needDesc := textOnly || (!written && st.Desc == "")
+	needText := textOnly || !written
 	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
 
 	a.running = true
@@ -1116,9 +1089,9 @@ func (a *App) publishRun(textOnly bool) {
 
 	switch {
 	case textOnly:
-		a.logf(">>> publish: rewriting the title, the image prompt and the description — two thinking calls")
-	case needText || needDesc:
-		a.logf(">>> publish: writing the title, the image prompt and the description once, "+
+		a.logf(">>> publish: rewriting the title and the description — one thinking call")
+	case needText:
+		a.logf(">>> publish: writing the title and the description once, "+
 			"then drawing the thumbnail on %s", a.sdURL())
 	default:
 		a.logf(">>> publish: redrawing the thumbnail on %s from what the boxes say — "+
@@ -1149,51 +1122,40 @@ func (a *App) publishRun(textOnly bool) {
 		var failed error
 		defer func() { a.publishDone(failed, textOnly) }()
 
-		// The images first, but only when the model is about to be asked which
-		// one to edit -- it needs pictures to choose between, and an empty row
-		// is the normal state of this step before its first run.
+		// A starting image on the very first run, so the row is not empty the
+		// first time the page is opened. Nothing chooses between them any more
+		// -- the first is simply the base -- so this is a convenience, not a
+		// decision: swap them, add to them, or empty the row entirely.
 		//
-		// Not on a redraw, though. The row is a list the user edits, and one
-		// they have emptied is a decision ("draw it from the instruction
-		// alone"), not a gap to quietly refill with frames they threw away.
-		if len(st.Frames) == 0 && needText {
+		// Not on a redraw. A row the user has emptied is a decision ("draw it
+		// from the instruction alone"), not a gap to quietly refill with frames
+		// they threw away.
+		if len(st.Frames) == 0 && !written {
 			a.logfIdle("    publish: no images chosen — taking %d from the cut", defPubFrames)
-			st.Frames = pickShots(a.publishShots(), segs, defPubFrames)
-			if len(st.Frames) == 0 {
-				failed = fmt.Errorf("no frames to choose from — run the Inputs step, or pick them by hand")
-				return
+			if st.Frames = pickShots(a.publishShots(), segs, defPubFrames); len(st.Frames) > 0 {
+				a.landPublish(st)
+			} else {
+				a.logfIdle("    publish: no frames extracted either — add an image by hand, " +
+					"or let the instruction draw one from nothing")
 			}
-			a.landPublish(st)
 		}
 
-		brief := ""
-		if needText || needDesc {
-			brief = a.publishBrief(segs, entries)
-			a.logCtx("publish")
-		}
 		if needText {
-			glib.IdleAdd(func() { a.progress.SetText("writing the title and the image prompt…") })
-			plan, err := a.writeThumbPlan(brief, st.Frames)
+			brief := a.publishBrief(segs, entries)
+			a.logCtx("publish")
+			glib.IdleAdd(func() { a.progress.SetText("writing the title and the description…") })
+			title, desc, err := a.writeDescription(brief)
 			if err != nil {
 				failed = err
 				return
 			}
-			st.Title, st.Prompt, st.Negative = plan.Title, plan.Prompt, plan.Negative
-			// the model counts from 1, and its answer is applied by moving that
-			// image to the front -- where "which one is the base" is now kept
-			st.Frames = moveToFront(st.Frames, plan.Base-1)
-			a.logfIdle("    publish: title %q, editing image %d", st.Title, plan.Base)
-			a.landPublish(st)
-		}
-		if needDesc {
-			glib.IdleAdd(func() { a.progress.SetText("writing the YouTube description…") })
-			desc, err := a.writeDescription(brief)
-			if err != nil {
-				failed = err
-				return
+			// a reply that forgot its TITLE: line still has a good description
+			// in it, and an empty title box is easier to notice than a wrong one
+			if title != "" {
+				st.Title = title
 			}
 			st.Desc = desc
-			a.logfIdle("    publish: description written, %d characters", len(desc))
+			a.logfIdle("    publish: title %q, description %d characters", st.Title, len(desc))
 			a.landPublish(st)
 		}
 		if err := a.writePublishFiles(st); err != nil {

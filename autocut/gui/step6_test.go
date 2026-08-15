@@ -102,37 +102,26 @@ func TestTheCandidateFramesComeFromTheCut(t *testing.T) {
 	}
 }
 
-// The thumbnail reply is JSON from a chat model, which means it arrives wrapped
-// in prose and fences as often as not, and it names a frame by a number it may
-// have invented. Both are the model's problem to fix, so both have to come back
-// as a sentence it can act on rather than as a run that failed.
-func TestTheThumbnailReplyIsValidated(t *testing.T) {
-	good := `{"title":"the door was a lie","base_frame":2,"prompt":"a wooden door, lit from behind","negative_prompt":"text, watermark"}`
-	p, problem := parseThumbPlan(good, 4)
-	if problem != "" {
-		t.Fatalf("a good reply was rejected: %s", problem)
-	}
-	if p.Title != "the door was a lie" || p.Base != 2 || p.Prompt == "" || p.Negative == "" {
-		t.Errorf("parsed wrong: %+v", p)
-	}
-
-	// the prose-and-fence wrapping, which every model does at least once
-	if _, problem := parseThumbPlan("Sure! Here you go:\n```json\n"+good+"\n```", 4); problem != "" {
-		t.Errorf("a fenced reply was rejected: %s", problem)
-	}
-
-	for _, c := range []struct{ reply, want string }{
-		{"no json here at all", "not valid JSON"},
-		{`{"base_frame":1,"prompt":"x"}`, "no title"},
-		{`{"title":"t","base_frame":1}`, "no prompt"},
-		{`{"title":"t","prompt":"x","base_frame":0}`, "base_frame"},
-		{`{"title":"t","prompt":"x","base_frame":9}`, "base_frame"},
-		// a title long enough that it would be drawn as a paragraph
-		{`{"title":"a b c d e f g h i j k l m n","prompt":"x","base_frame":1}`, "words long"},
+// One model call now writes both the title and the description, and the only
+// thing separating them in the reply is a line the model was asked to prefix.
+// It will forget that line, wrap the whole answer in a fence, or put the title
+// in quotes -- none of which is worth a failed run. What must not happen is the
+// TITLE: line surviving into the description box, or a forgotten line costing
+// the description that was written underneath it.
+func TestTheTitleIsPeeledOffTheDescription(t *testing.T) {
+	const body = "We went in for the chest and came out with nothing.\n\n#tarkov #raid"
+	for _, c := range []struct{ name, reply, title, desc string }{
+		{"as asked", "TITLE: The Door Was A Lie\n\n" + body, "The Door Was A Lie", body},
+		{"lowercase key", "title: The Door Was A Lie\n\n" + body, "The Door Was A Lie", body},
+		{"quoted title", "TITLE: \"The Door Was A Lie\"\n\n" + body, "The Door Was A Lie", body},
+		{"fenced", "```\nTITLE: The Door Was A Lie\n\n" + body + "\n```", "The Door Was A Lie", body},
+		// no line at all: the description is still the product, so it is kept
+		// whole and the title box is simply left for the user to fill
+		{"no title line", body, "", body},
 	} {
-		_, problem := parseThumbPlan(c.reply, 4)
-		if !strings.Contains(problem, c.want) {
-			t.Errorf("parseThumbPlan(%q) said %q, want something about %q", c.reply, problem, c.want)
+		title, desc := splitTitle(c.reply)
+		if title != c.title || desc != c.desc {
+			t.Errorf("%s: splitTitle = (%q, %q), want (%q, %q)", c.name, title, desc, c.title, c.desc)
 		}
 	}
 }
@@ -289,80 +278,82 @@ func TestTheImageRowIsAddableAndRemovable(t *testing.T) {
 	}
 }
 
-// The two prompts are the point of the step being editable at all: the user
-// asked for a generic prompt they can change, and the registry is what makes an
-// edited one stick to the project while an untouched one keeps tracking the
-// built-in.
-func TestThePublishPromptsAreEditable(t *testing.T) {
-	for _, key := range []string{"thumbnail", "youtube"} {
-		d := promptDefFor(key)
-		if d.key != key || strings.TrimSpace(d.def) == "" {
-			t.Fatalf("prompt %q is not in promptDefs", key)
-		}
+// The prompt is the point of the step being editable at all: the user asked for
+// a generic prompt they can change, and the registry is what makes an edited one
+// stick to the project while an untouched one keeps tracking the built-in.
+//
+// There used to be two. The second one picked which frame to edit and wrote the
+// instruction for it, and it did not work: the picking was guesswork and the
+// instruction it wrote was worse than the one the user would have typed. The
+// key is gone from the registry rather than renamed, so a project that saved an
+// edited copy just keeps a dead key nobody reads.
+func TestThePublishPromptIsEditable(t *testing.T) {
+	d := promptDefFor("youtube")
+	if d.key != "youtube" || strings.TrimSpace(d.def) == "" {
+		t.Fatal(`prompt "youtube" is not in promptDefs`)
+	}
+	if promptDefFor("thumbnail").def != "" {
+		t.Error(`the "thumbnail" prompt is still in the registry -- ` +
+			"the job it belonged to is gone, so it is a prompt nobody sends")
 	}
 	src := readSrc(t, "step6.go")
 	for _, want := range []string{
-		`a.promptEditor("thumbnail"`,
 		`a.promptEditor("youtube"`,
-		`a.prompt("thumbnail")`,
 		`a.prompt("youtube")`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("step6 is missing %s -- an editable prompt that is not sent is a lie", want)
 		}
 	}
+	if strings.Contains(src, `"thumbnail"`) {
+		t.Error("step6 still names the thumbnail prompt, which no longer exists")
+	}
 }
 
-// What the two prompts must and must not ask for. The prompt is no longer a
-// description of a picture to invent -- it is an instruction to an edit model
-// looking at the frames -- and getting that wrong is not a syntax error, it is
-// a thumbnail of somewhere else. The title must stay OUT of it, because
-// editInstruction adds it separately and a title in both places is lettered
-// twice. And asking the description model for JSON would throw away good prose
+// What the one remaining prompt must and must not ask for. It writes two things
+// in one reply, so the separator has to be spelled out exactly -- without the
+// TITLE: line splitTitle has nothing to peel and the title arrives as the first
+// paragraph of the description. And asking for JSON would throw away good prose
 // over one unescaped quote.
-func TestThePublishPromptsMatchHowTheAnswersAreUsed(t *testing.T) {
+func TestThePublishPromptMatchesHowTheAnswerIsUsed(t *testing.T) {
 	for _, want := range []string{
-		"base_frame",         // the frame it picks, by number
-		"negative_prompt",    // and what to keep out
-		"numbered in the o",  // ...counting from the order they are shown in
-		"EDIT INSTRUCTION",   // not a description of a picture to invent
-		"do not mention",     // ...so the rest of the frame is left alone
-		"the second image",   // and the other frame is there to borrow from
-		"Do NOT put the tit", // the title travels separately
+		"TITLE: ",     // the separator splitTitle looks for, verbatim
+		"first line",  // ...and where it will look for it
+		"Four to sev", // a title short enough to be lettered across a thumbnail
+		"No JSON",     // which models volunteer even when asked for prose
 	} {
-		if !strings.Contains(thumbSystem, want) {
-			t.Errorf("the thumbnail prompt no longer says %q", want)
+		if !strings.Contains(youtubeSystem, want) {
+			t.Errorf("the upload-text prompt no longer says %q", want)
 		}
 	}
-	// the old prompt forbade lettering, because ffmpeg drew it. Now the model
-	// letters it, so a negative prompt saying "text" fights the instruction.
-	if strings.Contains(thumbSystem, "No lettering") {
-		t.Error("the thumbnail prompt still forbids lettering, which is now its job")
-	}
 	if strings.Contains(youtubeSystem, "strict JSON") {
-		t.Error("the description prompt asks for JSON; the answer is prose and is read as prose")
+		t.Error("the upload-text prompt asks for JSON; the answer is prose and is read as prose")
 	}
-	if !strings.Contains(youtubeSystem, "No JSON") {
-		t.Error("the description prompt no longer forbids JSON, which models volunteer")
+	// The edit instruction is the user's to write now. A prompt that also wrote
+	// one would put a second, unasked-for instruction into a box the user had
+	// already filled.
+	for _, gone := range []string{"base_frame", "negative_prompt", "EDIT INSTRUCTION"} {
+		if strings.Contains(youtubeSystem, gone) {
+			t.Errorf("the upload-text prompt still asks for %q, which belonged to the deleted job", gone)
+		}
 	}
 }
 
 // The run's shape, which is what makes it survivable. The text is landed on the
 // page before anything is drawn, so an image server that is down costs the
-// picture and not the two thinking calls already paid for; and what is already
+// picture and not the thinking call already paid for; and what is already
 // written is never overwritten by ▶, which is what makes ▶ the button you press
 // after rewording the instruction.
 func TestPublishWritesTheTextBeforeItDraws(t *testing.T) {
 	body := funcBody(t, "step6.go", `func \(a \*App\) publishRun\(textOnly bool\) \{`)
-	iText := strings.Index(body, "writeThumbPlan")
 	iDesc := strings.Index(body, "writeDescription")
 	iDraw := strings.Index(body, "drawThumbnail")
-	if iText < 0 || iDesc < 0 || iDraw < 0 {
-		t.Fatalf("publishRun no longer does all three: %d %d %d", iText, iDesc, iDraw)
+	if iDesc < 0 || iDraw < 0 {
+		t.Fatalf("publishRun no longer does both: %d %d", iDesc, iDraw)
 	}
-	if !(iText < iDraw && iDesc < iDraw) {
+	if iDesc > iDraw {
 		t.Error("the thumbnail is drawn before the text is written -- a failed draw would then " +
-			"throw away two LLM calls that had already succeeded")
+			"throw away an LLM call that had already succeeded")
 	}
 	if !strings.Contains(body, "landPublish") {
 		t.Error("nothing lands the written text on the page, so a failed draw would lose it")
@@ -371,13 +362,59 @@ func TestPublishWritesTheTextBeforeItDraws(t *testing.T) {
 	// press over and over -- with the instruction reworded, with a different base
 	// frame -- is that the gate is the record on disk and not the state of the
 	// boxes: a title you emptied is a deletion you made, not a gap to refill.
-	if !strings.Contains(body, "a.publishRecorded()") || !strings.Contains(body, "!written &&") {
-		t.Error("publishRun no longer gates its model calls on the step6 record; " +
+	if !strings.Contains(body, "a.publishRecorded()") ||
+		!strings.Contains(body, "needText := textOnly || !written") ||
+		!strings.Contains(body, "if needText {") {
+		t.Error("publishRun no longer gates its model call on the step6 record; " +
 			"▶ would go back to the LLM after the first run")
 	}
 	// and the ↻ beside the frames is the opposite: it rewrites and does NOT draw
 	if !strings.Contains(body, "if textOnly {\n\t\t\treturn\n\t\t}") {
 		t.Error("Suggest again no longer stops before drawing")
+	}
+}
+
+// The page is split because the two halves are worked on at different times:
+// you reword the instruction and press ▶ half a dozen times without touching
+// the description, then you rewrite the description without redrawing. Stacked
+// in one column they fought for height and the picture -- the thing you are
+// judging -- ended up below the fold.
+//
+// This is a fact about the source because a GTK page cannot be built without a
+// display. What it pins is the assignment: which widget went into which side.
+func TestThePageIsSplitBetweenTheDrawingAndTheWords(t *testing.T) {
+	body := funcBody(t, "step6.go", `func \(a \*App\) buildStep6\(\) gtk.Widgetter \{`)
+	iSplit := strings.Index(body, "outer := gtk.NewPaned(gtk.OrientationHorizontal)")
+	if iSplit < 0 {
+		t.Fatal("the page is no longer two columns")
+	}
+	// left: the images, what to change, what to keep out, the result
+	for _, want := range []string{
+		"draw.Append(p.framesBox)",
+		"draw.Append(promptBox)",
+		"draw.Append(negBox)",
+		"draw.Append(shotFrame)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the drawing column is missing %s", want)
+		}
+	}
+	// right: the prompt that writes the words, then the words
+	for _, want := range []string{
+		`text.SetStartChild(a.promptEditor("youtube"`,
+		"said.Append(p.title)",
+		"said.Append(descBox)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the text column is missing %s", want)
+		}
+	}
+	// and the two lines that belong to neither stay top and bottom, full width
+	iRun := strings.Index(body, "page.Append(inRow)")
+	iOuter := strings.Index(body, "page.Append(outer)")
+	iOut := strings.Index(body, "page.Append(outRow)")
+	if iRun < 0 || iOuter < 0 || iOut < 0 || !(iRun < iOuter && iOuter < iOut) {
+		t.Errorf("Inputs/Outputs are no longer above and below the split: %d %d %d", iRun, iOuter, iOut)
 	}
 }
 
