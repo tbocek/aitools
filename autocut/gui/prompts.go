@@ -41,6 +41,8 @@ var promptDefs = []promptDef{
 	{"cut", strings.TrimSpace(suggestSystem)},
 	{"audit", strings.TrimSpace(auditSystem)},
 	{"narrate", strings.TrimSpace(narrSystem)},
+	{"thumbnail", strings.TrimSpace(thumbSystem)},
+	{"youtube", strings.TrimSpace(youtubeSystem)},
 }
 
 func promptDefFor(key string) promptDef {

@@ -11,7 +11,32 @@ SD_DEVICE=ROCM0
 no_cache_arch=''
 no_cache_llama=''
 skip_build=false
-sd_args=''
+# Which weights sd-server loads, and the sampling settings that belong to them.
+# The compose service passes only --diffusion-fa --offload-to-cpu, because
+# steps/cfg/sampler/flow-shift are properties of the checkpoint and have to
+# change with it: at Krea-Turbo's cfg 1.0 an edit model gets no guidance and
+# ignores half the instruction.
+#
+# Qwen-Image-Edit 2511. Chosen over Krea-2 img2img because this step asks for
+# edits ("change this, take that from the second picture, put this title on")
+# and img2img has no way to express one: its strength dial renoises the whole
+# frame and resamples it, so everything you did not mention changes too.
+# 2511 also renders legible lettering, which the diffusion models before it
+# could not. --model-args qwen_image_zero_cond_t=true is not optional; without
+# it upstream reports edit quality degrades badly.
+sd_args="--diffusion-model ${MODELS_DIR}/sd/unet/qwen-image-edit-2511-Q8_0.gguf \
+--llm ${MODELS_DIR}/sd/text_encoders/Qwen2.5-VL-7B-Instruct.Q8_0.gguf \
+--llm_vision ${MODELS_DIR}/sd/text_encoders/Qwen2.5-VL-7B-Instruct.mmproj-f16.gguf \
+--vae ${MODELS_DIR}/sd/vae/qwen_image_vae.safetensors \
+--model-args qwen_image_zero_cond_t=true \
+--steps 20 --cfg-scale 2.5 --sampling-method euler --flow-shift 3"
+
+# The Krea-2-Turbo it replaced, kept because it is the fast text-to-image model
+# and this one is not: pass it with --sd-args to put it back.
+#sd_args="--diffusion-model ${MODELS_DIR}/sd/krea/Krea-2-Turbo-Q8_0.gguf \
+#--llm ${MODELS_DIR}/sd/text_encoders/Qwen3VL-4B-Instruct-Q8_0.gguf \
+#--vae ${MODELS_DIR}/sd/vae/wan_2.1_vae.safetensors \
+#--steps 10 --cfg-scale 1.0 --sampling-method euler"
 
 while :; do
     case "${1-}" in
@@ -21,7 +46,9 @@ while :; do
         echo "  --no-cache          Rebuild all images without Docker cache"
         echo "  --no-cache-llama    Rebuild only llama image without Docker cache"
         echo "  --skip-build        Skip building entirely"
-        echo "  --sd-args ARGS      Extra args passed verbatim to sd-server"
+        echo "  --sd-args ARGS      Weights and sampling settings passed verbatim to"
+        echo "                      sd-server, replacing the Qwen-Image-Edit default set"
+        echo "                      at the top of this script"
         echo "                      (e.g. \"--diffusion-model /mnt/models/sd/foo.safetensors --vae /mnt/models/sd/bar.safetensors\")"
         echo "  -h, --help          Print this help and exit"
         exit 0 ;;
@@ -146,15 +173,13 @@ DOWNLOAD_PID=$!
 
 if [ "$skip_build" = false ]; then
     buildx_args="--output type=docker,compression=zstd,compression-level=3"
-    docker buildx build $no_cache_arch  $buildx_args -t arch:latest  -f "$SCRIPT_DIR/Dockerfile.arch"  "$SCRIPT_DIR"
-    #docker buildx build $no_cache_llama $buildx_args -t llama:latest -f "$SCRIPT_DIR/Dockerfile.llama" "$SCRIPT_DIR"
-    #docker buildx build $no_cache_llama $buildx_args -t sd:latest    -f "$SCRIPT_DIR/Dockerfile.sd"    "$SCRIPT_DIR"
-    #docker buildx build $no_cache_llama $buildx_args -t vc:latest    -f "$SCRIPT_DIR/Dockerfile.vc"    "$SCRIPT_DIR"
-    #docker buildx build $no_cache_llama $buildx_args -t vc2:latest   -f "$SCRIPT_DIR/Dockerfile.vc2"   "$SCRIPT_DIR"
-    docker buildx build $no_cache_llama $buildx_args -t audio:latest -f "$SCRIPT_DIR/Dockerfile.audio"   "$SCRIPT_DIR"
-    #docker buildx build $no_cache_llama $buildx_args -t vc3:latest   -f "$SCRIPT_DIR/Dockerfile.vc3"   "$SCRIPT_DIR"
+    docker buildx build $no_cache_arch  $buildx_args -t arch:latest    -f "$SCRIPT_DIR/Dockerfile.arch"    "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t llama:latest   -f "$SCRIPT_DIR/Dockerfile.llama"   "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t sd:latest      -f "$SCRIPT_DIR/Dockerfile.sd"      "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t audio:latest   -f "$SCRIPT_DIR/Dockerfile.audio"   "$SCRIPT_DIR"
+    docker buildx build $no_cache_llama $buildx_args -t acestep:latest -f "$SCRIPT_DIR/Dockerfile.acestep" "$SCRIPT_DIR"
 fi
 setup_virtual_mic
-docker compose up -d audio
+docker compose up -d llama sd audio acestep
 
 wait "$DOWNLOAD_PID"

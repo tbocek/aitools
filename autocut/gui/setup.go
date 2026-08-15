@@ -40,6 +40,16 @@ type appConf struct {
 	Server, Model, Key string // the LLM that writes
 	TTS                string // the audio.cpp server; blank = the compose default
 
+	// the sd.cpp server that draws the thumbnail; blank for the compose
+	// default, like TTS.
+	//
+	// There is no model box beside it. sd-server loads one model when it starts
+	// and its request bodies have no model field, so nothing autocut sends can
+	// switch it -- and a box that cannot choose anything is a box that can only
+	// be wrong. The Test button reports what the server actually has loaded,
+	// which is the same information without a second place to keep it in sync.
+	SD string
+
 	// What to ask that server for, and where the reference voices live on this
 	// machine -- the ONE folder autocut still reads: the wavs the voice picker
 	// lists, and where "Add sample…" converts new ones into. Model weights are
@@ -73,6 +83,10 @@ func or(v, def string) string {
 
 // withDefaults fills the blanks. The TTS endpoint is pointedly not in here:
 // empty there is a real answer, meaning "the compose service on loopback".
+// The two SD fields are out for the same reason and for one more: an empty
+// model name means "do not check", and inventing a default would turn every
+// Test on a differently-stocked server into a failure about a name nobody
+// typed.
 func (c appConf) withDefaults() appConf {
 	c.Voices = or(c.Voices, defVoices)
 	c.ASRModel = or(c.ASRModel, defASRModel)
@@ -122,6 +136,11 @@ func (a *App) readConf() appConf {
 			c.TTSModel = v
 		case "AUDIOCPP_LANGUAGE":
 			c.Language = v
+		case "SD_SERVER":
+			c.SD = strings.TrimRight(strings.TrimSpace(v), "/")
+			// SD_MODEL was here. It named the weights the Test button held the
+			// server to; the server reports them itself, so an old conf file
+			// still carrying the key just falls through unread.
 		}
 	}
 	if c.Voices == "" && legacyRoot != "" {
@@ -155,8 +174,15 @@ AUDIOCPP_DIAR_MODEL=%q
 AUDIOCPP_TTS_MODEL=%q
 # what the ASR model is told to expect; wrong here transcribes into gibberish
 AUDIOCPP_LANGUAGE=%q
+
+# stable-diffusion.cpp's sd-server -- it draws the thumbnail on the Publish
+# step; empty means 127.0.0.1:%d. There is no model key: the server serves the
+# one model it was started with (SD_ARGS in cpp/run.sh), and nothing autocut
+# sends can change it.
+SD_SERVER=%q
 `, c.Server, c.Model, c.Key, ttsPort, c.TTS,
-		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel, c.Language)
+		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel, c.Language,
+		sdPort, c.SD)
 	return os.WriteFile(a.confPath(), []byte(body), 0o600)
 }
 
@@ -332,6 +358,9 @@ func testAudioModel(url, id, task, what string) (string, error) {
 // subtitles filter needs libass. A build missing one works perfectly until the
 // step that uses it, which is minutes into a render.
 var (
+	// drawtext used to be here for the Publish step's thumbnail title. The
+	// title is now lettered by the image model itself (step6.go), so requiring
+	// drawtext would fail a build over a filter nothing asks for any more.
 	ffFilters  = []string{"rubberband", "subtitles", "loudnorm", "atempo", "amix", "adelay"}
 	ffEncoders = []string{"libx264", "libx265", "aac", "libopus"}
 )
@@ -469,6 +498,13 @@ func (a *App) setupDialog() {
 	tts.SetText(c.TTS)
 	tts.SetPlaceholderText(fmt.Sprintf("empty = http://127.0.0.1:%d", ttsPort))
 	tts.SetHExpand(true)
+
+	// the sd.cpp server the Publish step draws its thumbnail on -- the compose
+	// "sd" service by default, like the one above
+	sd := gtk.NewEntry()
+	sd.SetText(c.SD)
+	sd.SetPlaceholderText(fmt.Sprintf("empty = http://127.0.0.1:%d", sdPort))
+	sd.SetHExpand(true)
 
 	// the log: what each test asked and what came back, in order -- the badge
 	// on the row says pass or fail, this says why, and it keeps saying it after
@@ -625,7 +661,6 @@ func (a *App) setupDialog() {
 	asrModel := entry(c.ASRModel, defASRModel, "Id of the speech-to-text model, exactly as the server lists it")
 	diarModel := entry(c.DiarModel, defDiarModel, "Id of the diarization model — the one that tells speakers apart")
 	lang := entry(c.Language, defLanguage, "Language the ASR model is told to expect — the wrong one transcribes into gibberish")
-
 	testTTSMBtn := gtk.NewButtonWithLabel("Test")
 	testTTSMBtn.SetTooltipText("Check that the audio.cpp server serves this voice-cloning model")
 	ttsmBadge := newTestBadge()
@@ -655,6 +690,24 @@ func (a *App) setupDialog() {
 			}
 	})
 
+	// one Test for both boxes: the endpoint and the model are one question here
+	// -- the server has exactly one model, so "does it answer" and "is it the
+	// right one" are answered by the same capabilities call
+	sdTarget := func() string {
+		if u := strings.TrimRight(strings.TrimSpace(sd.Text()), "/"); u != "" {
+			return u
+		}
+		return fmt.Sprintf("http://127.0.0.1:%d", sdPort)
+	}
+	testSDBtn := gtk.NewButtonWithLabel("Test")
+	testSDBtn.SetTooltipText("Check that an sd.cpp server answers, can draw an image, and say which weights it has loaded")
+	sdBadge := newTestBadge()
+	hook(testSDBtn, sdBadge, "sd.cpp", func() (string, func() (string, error)) {
+		url := sdTarget()
+		return fmt.Sprintf("asking %s what it has loaded …", url),
+			func() (string, error) { return testSD(url) }
+	})
+
 	save := gtk.NewButtonWithLabel("Save")
 	save.AddCSSClass("suggested-action")
 	save.ConnectClicked(func() {
@@ -665,6 +718,7 @@ func (a *App) setupDialog() {
 			DiarModel: diarModel.Text(),
 			TTSModel:  strings.TrimSpace(ttsm.Text()),
 			Language:  lang.Text(),
+			SD:        strings.TrimRight(strings.TrimSpace(sd.Text()), "/"),
 		}
 		if err := a.writeConf(cc); err != nil {
 			logExp.SetExpanded(true)
@@ -769,13 +823,23 @@ func (a *App) setupDialog() {
 		grid.Attach(row.badge.stack, 2, 13+i, 1, 1)
 		grid.Attach(row.btn, 3, 13+i, 1, 1)
 	}
-	grid.Attach(logExp, 0, 16, 4, 1)
+
+	// the last step's server. Endpoint only: unlike audio.cpp above, there is
+	// no model id to send per request, so there is nothing here to choose. Test
+	// reports which weights it found rather than checking them against a box.
+	grid.Attach(head("Drawing — the sd.cpp server that paints the thumbnail"), 0, 16, 4, 1)
+	grid.Attach(lbl("Endpoint:"), 0, 17, 1, 1)
+	grid.Attach(sd, 1, 17, 1, 1)
+	grid.Attach(sdBadge.stack, 2, 17, 1, 1)
+	grid.Attach(testSDBtn, 3, 17, 1, 1)
+
+	grid.Attach(logExp, 0, 18, 4, 1)
 
 	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	btns.SetHAlign(gtk.AlignEnd)
 	btns.Append(cancel)
 	btns.Append(save)
-	grid.Attach(btns, 0, 17, 4, 1)
+	grid.Attach(btns, 0, 19, 4, 1)
 
 	win.SetChild(grid)
 	win.SetVisible(true)

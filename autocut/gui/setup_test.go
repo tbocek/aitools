@@ -267,6 +267,7 @@ func TestConfRoundTrip(t *testing.T) {
 		DiarModel: "sortformer-8spk",
 		TTSModel:  "kokoro-82m",
 		Language:  "de",
+		SD:        "http://127.0.0.1:1234",
 	}
 	if err := a.writeConf(want); err != nil {
 		t.Fatal(err)
@@ -298,12 +299,25 @@ func TestConfRoundTrip(t *testing.T) {
 	}
 
 	// an empty endpoint is how the user asks for the compose default, and it has
-	// to survive the round trip as empty rather than as a URL
-	want.TTS = ""
+	// to survive the round trip as empty rather than as a URL.
+	want.TTS, want.SD = "", ""
 	if err := a.writeConf(want); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.readConf(); got.TTS != "" {
-		t.Errorf("cleared endpoint came back as %q", got.TTS)
+	got := a.readConf()
+	if got.TTS != "" || got.SD != "" {
+		t.Errorf("cleared endpoints came back as %q / %q", got.TTS, got.SD)
+	}
+
+	// SD_MODEL used to live in this file, naming the weights the Test button
+	// held the server to. It is gone -- sd-server serves what it was started
+	// with and nothing autocut sent could change it -- and an old conf file
+	// still carrying the key has to be read, not rejected.
+	if err := os.WriteFile(a.confPath(),
+		[]byte("SD_SERVER=\"http://127.0.0.1:1234\"\nSD_MODEL=\"Krea-2-Turbo-Q8_0\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.readConf(); got.SD != "http://127.0.0.1:1234" {
+		t.Errorf("a conf file with the retired SD_MODEL key read back as %+v", got)
 	}
 }

@@ -212,6 +212,13 @@ func (a *App) playClicked() {
 		a.narrateRun()
 	case "step5":
 		a.produceClicked()
+	case "step6":
+		// same shape as step 4's: one press does whatever is still missing.
+		// Empty boxes are written first, then the picture is drawn -- and with
+		// everything already written it only draws, which is what makes ▶ the
+		// button you press after rewording the instruction or swapping the base
+		// frame.
+		a.publishRun(false)
 	}
 }
 
@@ -396,6 +403,22 @@ func ffprobeDur(f string) (float64, error) {
 		return 0, fmt.Errorf("cannot determine duration of %s", f)
 	}
 	return v, nil
+}
+
+// ffprobeSize is a still's pixel size. The Publish step needs it because the
+// title is drawn at a fraction of the picture's height, and the picture's
+// height is the image server's decision, not ours: it is asked for 1280x720
+// and a model with a fixed latent size may hand back something else.
+func ffprobeSize(f string) (w, h int, err error) {
+	out, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", f).Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("size of %s: %w", f, err)
+	}
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%dx%d", &w, &h); err != nil || w <= 0 || h <= 0 {
+		return 0, 0, fmt.Errorf("cannot read the size of %s (ffprobe said %q)", f, strings.TrimSpace(string(out)))
+	}
+	return w, h, nil
 }
 
 // walk any decoded JSON, visiting every object -- survives the CLI and server

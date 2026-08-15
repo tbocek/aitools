@@ -48,21 +48,25 @@ services:
       - "1234:1234"
     volumes:
       - /mnt/models/sd:/mnt/models/sd
+    # Only the flags that are true of any model live here. Steps, cfg-scale,
+    # sampler and flow-shift are properties of the checkpoint -- a turbo model
+    # wants 10 steps at cfg 1.0, an edit model wants 20 at cfg 2.5 -- so they
+    # travel with the weights in SD_ARGS (run.sh) instead. They used to be
+    # pinned here at Krea-2-Turbo's values, which silently underdrove every
+    # other model: cfg 1.0 is no guidance at all, so an edit instruction was
+    # barely followed.
     command: >-
       /home/arch/stable-diffusion.cpp/build/bin/sd-server
       --listen-ip 0.0.0.0
       --listen-port 1234
       --diffusion-fa
       --offload-to-cpu
-      --steps 10
-      --cfg-scale 1.0
-      --sampling-method euler
       ${SD_ARGS:-}
-  ace:
+  acestep:
     build:
       context: .
       dockerfile: Dockerfile.acestep
-    image: ace:latest
+    image: acestep:latest
     devices:
       - /dev/kfd
       - /dev/dri
@@ -75,14 +79,14 @@ services:
     ports:
       - "8082:8082"
     volumes:
-      - /mnt/models/ace:/mnt/models/ace
+      - /mnt/models/acestep:/mnt/models/acestep
     command: >-
       bash -c "export PATH=\"/home/arch/.local/bin:$$PATH\" &&
-      if [ ! -f /mnt/models/ace/acestep-5Hz-lm-4B-Q8_0.gguf ]; then
+      if [ ! -f /mnt/models/acestep/acestep-5Hz-lm-4B-Q8_0.gguf ]; then
         echo 'Downloading ACE-Step models...' &&
-        hf download Serveurperso/ACE-Step-1.5-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf acestep-5Hz-lm-4B-Q8_0.gguf acestep-v15-turbo-Q8_0.gguf vae-BF16.gguf --local-dir /mnt/models/ace;
+        hf download Serveurperso/ACE-Step-1.5-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf acestep-5Hz-lm-4B-Q8_0.gguf acestep-v15-turbo-Q8_0.gguf vae-BF16.gguf --local-dir /mnt/models/acestep;
       fi &&
-      /home/arch/acestep.cpp.${ACE_BACKEND:-vulkan}/build/ace-server --models /mnt/models/ace --host 0.0.0.0 --port 8082"
+      /home/arch/acestep.cpp.${ACE_BACKEND:-vulkan}/build/ace-server --models /mnt/models/acestep --host 0.0.0.0 --port 8082"
       svan:
           build:
             context: .
@@ -111,71 +115,6 @@ services:
             fi &&
             ln -sfn /mnt/models/svan/ckpt pretrained_checkpoints &&
             python evaluations/real-time-gui.py"
-  vc:
-    build:
-      context: .
-      dockerfile: Dockerfile.vc
-    image: vc:latest
-    devices:
-      - /dev/kfd
-      - /dev/dri
-    group_add:
-      - render
-      - video
-    security_opt:
-      - seccomp=unconfined
-    restart: unless-stopped
-    ports:
-      - "18888:18888"
-    volumes:
-      # model_dir must stay RELATIVE: the app mounts static files at
-      # f"/{model_dir}", so an absolute path yields a broken "//mnt/..." route
-      # and every model icon 404s.
-      - /mnt/models/vc:/home/arch/voice-changer/server/model_dir
-    command: >-
-      python MMVCServerSIO.py
-      --host 0.0.0.0
-      --port 18888
-      --model_dir model_dir
-  vc2:
-    build:
-      context: .
-      dockerfile: Dockerfile.vc2
-    image: vc2:latest
-    devices:
-      - /dev/kfd
-      - /dev/dri
-    group_add:
-      - render
-      - video
-    security_opt:
-      - seccomp=unconfined
-    restart: unless-stopped
-    ports:
-      - "6969:6969"
-    environment:
-      # Applio's realtime tab drives PortAudio server-side (sounddevice), unlike
-      # w-okada which captures in the browser. Without a sound server the device
-      # dropdowns are empty, so hand it the host's pipewire-pulse socket.
-      - PULSE_SERVER=unix:/run/user/1000/pulse/native
-    volumes:
-      # Applio downloads ~1.9GB of pretraineds/embedders/predictors on first
-      # start; without these mounts that happens again on every recreate.
-      # logs/ is also where trained models and indexes end up.
-      - /mnt/models/applio/models:/home/arch/Applio/rvc/models
-      - /mnt/models/applio/logs:/home/arch/Applio/logs
-      # Same path inside and out, so the symlinks in logs/ resolve either side.
-      - /mnt/models/vc:/mnt/models/vc:ro
-      # uid 1000 both on the host and in the arch image, so the socket and
-      # cookie land where libpulse already looks for them.
-      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
-      - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
-    # -u: gradio/tqdm output is block-buffered through docker's pipe, so without
-    # it "docker compose logs vc2" stays empty until the buffer flushes.
-    command: >-
-      python -u app.py
-      --server-name 0.0.0.0
-      --port 6969
   audio:
     # One process: audiocpp_server serves both the HTTP API and the web UI, on
     # the same port. This used to be two -- the server, plus a Python/Gradio
@@ -226,56 +165,3 @@ services:
       --config /etc/audiocpp-server.json
       --ui
       --ui-management
-  vc3:
-    build:
-      context: .
-      dockerfile: Dockerfile.vc3
-    image: vc3:latest
-    devices:
-      - /dev/kfd
-      - /dev/dri
-    group_add:
-      - render
-      - video
-    security_opt:
-      - seccomp=unconfined
-    restart: unless-stopped
-    environment:
-      # run_rt.py calls torch.set_num_threads(1) but the JIT ASR / vocoder ops
-      # still fan out over the OpenMP pool, which defaults to all 32 cores and
-      # pins ~22 of them continuously -- even converting silence. 4 threads
-      # keeps chunk compute well inside the 160ms budget (measured 22-54ms with
-      # the full pool; the model is 18M params, it does not need the machine).
-      - OMP_NUM_THREADS=4
-      - MKL_NUM_THREADS=4
-      - PULSE_SERVER=unix:/run/user/1000/pulse/native
-      # run_rt.py opens ONE duplex stream: capture stays on the default source
-      # (the mic -- PULSE_SINK does not touch capture), playback lands on the
-      # VoiceChanger null sink, so VoiceChangerMic carries the converted voice
-      # for OBS/Discord. No monitor stream exists here, so unlike Applio this
-      # routing has no self-monitoring side effect.
-      - PULSE_SINK=VoiceChanger
-    volumes:
-      # initialization.py downloads ~2GB into these two repo-relative dirs
-      # (VC safetensors + vocos, and the ASR JIT + WavLM speaker encoder).
-      - /mnt/models/meanvc2/ckpts:/home/arch/MeanVC2/ckpts
-      - /mnt/models/meanvc2/preprocess_ckpts:/home/arch/MeanVC2/preprocess/ckpts
-      # CC0 reference voices shared with the audio.cpp webui; any wav works as
-      # the target speaker (zero-shot).
-      - /mnt/models/audiocpp/voices:/voices:ro
-      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
-      - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
-    # --model 120ms = better quality (~200ms pipeline latency); switch to 40ms
-    # for the 110ms path. --device cuda maps to the iGPU via ROCm torch, but
-    # upstream tuned this for CPU (18M params) and CPU is immune to GPU
-    # contention from OBS encoding -- keep cpu unless it overruns.
-    command: >-
-      bash -c "if [ ! -f ckpts/pretrained_models/meanvc2_120ms_40ms.safetensors ]; then
-        echo 'Downloading MeanVC2 models...' &&
-        python initialization.py --task all;
-      fi &&
-      python -u runtime/run_rt.py
-      --mode realtime
-      --model 120ms
-      --device cpu
-      --target-spk /voices/cv-us-male-60s.wav"

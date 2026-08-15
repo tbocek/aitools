@@ -143,6 +143,33 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"again, and ⏹ hands ▶ back to producing. The row at the top says what " +
 			"is going in — the cut, the lines, and how many of them still have to " +
 			"be spoken — and the row at the foot says what is on disk."},
+	{"step6", "Publish", "Draw the thumbnail and write the upload text",
+		"Finish Cut first — there is nothing to make a thumbnail of yet",
+		"The two things a finished video still needs: a thumbnail, and the text " +
+			"under it on the upload page.\n\nThe first ▶ writes the title, the edit " +
+			"instruction and the description, and then draws. Every ▶ after that " +
+			"only draws — the model is not asked again, however much you edit the " +
+			"boxes, so rewording the instruction or changing the images costs " +
+			"GPU time and no thinking. Deleting the step6 folder is what starts the " +
+			"text over; Suggest again, beside the images, rewrites all three " +
+			"without redrawing.\n\nThe picture is usually not made from nothing — " +
+			"it is an edit of one of your own frames, which is what keeps it " +
+			"recognizably this video rather than a stock illustration of the " +
+			"genre. Two are taken from the cut on the first run, and the row is " +
+			"yours after that: Add image… puts another one in, − takes one out, " +
+			"Change… swaps one in place. The first in the row is the picture being " +
+			"edited; the others are references the instruction can name by " +
+			"position — \"put the ship from the second image behind them\" — and " +
+			"Make base promotes one of them to the front. Empty the row and the " +
+			"thumbnail is drawn from the instruction alone.\n\nWrite the instruction as instructions, not as a description " +
+			"of a picture — say what to change, and everything you do not mention " +
+			"stays as it is. That is the whole reason this is an edit model rather " +
+			"than the image-to-image one it used to be: there, a single strength " +
+			"dial renoised the entire frame, so asking for one change altered every " +
+			"other thing too.\n\nThe title is lettered by the image model as part " +
+			"of the instruction. Keep it to four or five words — that is what " +
+			"survives being shrunk to a phone's sidebar, and it is also what a model " +
+			"spells reliably. Leave it empty and the picture comes back without any."},
 }
 
 // stepLocked reports whether a tab's prerequisites are missing. Step 1 never
@@ -164,6 +191,12 @@ func (a *App) stepLocked(i int) bool {
 		// decides nothing you cannot decide again afterwards.
 		return a.step4Locked
 	case "step5":
+		return a.step5Locked
+	case "step6":
+		// the thumbnail is painted over a frame the cut kept and its text is
+		// written from the clips, so this waits on the same thing Produce does --
+		// but not on the video itself, which is a long render you should be able
+		// to start the upload text without waiting for
 		return a.step5Locked
 	}
 	return false
@@ -210,6 +243,11 @@ func (a *App) showStep(name string) {
 	// something that may have moved since it was last looked at.
 	if name == "step5" {
 		a.updateStep5Info()
+	}
+	// Publish reads all of that AND the folder it wrote into last time, since the
+	// thumbnail on the page is the file on disk rather than something remembered
+	if name == "step6" && a.pub != nil {
+		a.pub.refresh()
 	}
 }
 
@@ -301,6 +339,7 @@ type App struct {
 	pitchRead bool    // ...and whether that file has been read yet (0 is a real value)
 	narr5     *narrator
 	prod      *producer
+	pub       *publisher
 	progress  *gtk.ProgressBar
 	playBtn   *gtk.Button
 	stopBtn   *gtk.Button
@@ -512,6 +551,7 @@ func (a *App) setOutDir(dir string) {
 	a.updateStep1Info()
 	a.und.refresh()
 	a.updateStep5Info()
+	a.pub.refresh()
 	a.updateGates()
 }
 
@@ -769,6 +809,7 @@ func (a *App) build(app *gtk.Application) {
 	a.stack.AddNamed(a.buildStep3(), "step3")
 	a.stack.AddNamed(a.buildStep4(), "step4")
 	a.stack.AddNamed(a.buildStep5(), "step5")
+	a.stack.AddNamed(a.buildStep6(), "step6")
 
 	// Tabs, not a sidebar down the left. The steps are a fixed five, so a list
 	// spent 170px of width on five rows and a column of empty space under them;

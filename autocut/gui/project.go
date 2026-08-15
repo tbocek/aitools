@@ -64,6 +64,10 @@ type Project struct {
 	Prompts map[string]string `json:"prompts,omitempty"`
 
 	Produce *prodSettings `json:"produce,omitempty"`
+	// the thumbnail and the upload text. Absent until the Publish page has
+	// something on it, so an older project -- or a session that stops at the
+	// rendered video -- stays as short a file as it was.
+	Publish *pubSettings `json:"publish,omitempty"`
 }
 
 // ProjectSource is one source as a project stores it. The roles are omitted
@@ -128,6 +132,7 @@ func (a *App) currentProject() Project {
 		Context:    a.sessionCtx(),
 		Prompts:    a.currentPrompts(),
 		Produce:    prod,
+		Publish:    a.currentPublish(),
 	}
 }
 
@@ -321,6 +326,7 @@ func (a *App) loadProjectFrom(path string) {
 	a.applySessionCtx(p.Context)
 	a.migrateHints(p)
 	a.applyProdSettings(p.Produce)
+	a.applyPublish(p.Publish)
 	a.setOutDir(a.fromRoot(p.OutDir))
 	// what is open is what the autosave keeps: opening a variant and then
 	// editing it must not quietly write the edits into the working copy alone

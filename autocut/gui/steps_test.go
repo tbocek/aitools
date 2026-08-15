@@ -10,22 +10,31 @@ import (
 // a finished step is barred or an unfinished one opens onto an empty page, and
 // both read as a bug in the step rather than in the table -- which is where the
 // renumbering that comes with every merged page actually breaks things.
+//
+// One flag may gate more than one tab, and step5Locked does: Produce and
+// Publish both wait on the cut and on nothing else. Publish deliberately does
+// NOT wait on the rendered video -- writing the upload text is the thing you
+// want to be doing while the render runs.
 func TestEachGateLocksExactlyItsOwnTab(t *testing.T) {
 	for _, c := range []struct {
-		page string
-		set  func(*App)
+		pages []string
+		set   func(*App)
 	}{
-		{"step2", func(a *App) { a.step2Locked = true }},
-		{"step3", func(a *App) { a.step3Locked = true }},
-		{"step4", func(a *App) { a.step4Locked = true }},
-		{"step5", func(a *App) { a.step5Locked = true }},
+		{[]string{"step2"}, func(a *App) { a.step2Locked = true }},
+		{[]string{"step3"}, func(a *App) { a.step3Locked = true }},
+		{[]string{"step4"}, func(a *App) { a.step4Locked = true }},
+		{[]string{"step5", "step6"}, func(a *App) { a.step5Locked = true }},
 	} {
 		a := &App{}
 		c.set(a)
+		gated := map[string]bool{}
+		for _, p := range c.pages {
+			gated[p] = true
+		}
 		for i, s := range steps {
-			if got, want := a.stepLocked(i), s.name == c.page; got != want {
-				t.Errorf("with only %s gated, tab %d (%s) locked = %v, want %v",
-					c.page, i, s.name, got, want)
+			if got, want := a.stepLocked(i), gated[s.name]; got != want {
+				t.Errorf("with only %v gated, tab %d (%s) locked = %v, want %v",
+					c.pages, i, s.name, got, want)
 			}
 		}
 	}
@@ -88,7 +97,7 @@ func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
 		`inRow.Append(inLbl)`,
 		`.SetEllipsize(pango.EllipsizeEnd)`, // never a floor under the window
 	}
-	for _, f := range []string{"step2.go", "step3.go", "step4.go", "step5.go"} {
+	for _, f := range []string{"step2.go", "step3.go", "step4.go", "step5.go", "step6.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
