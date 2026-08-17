@@ -5,7 +5,14 @@ package main
 // endpoints live here -- the LLM that writes (descriptions, cuts, narration)
 // and the audio.cpp server, which speaks the narration and does the listening
 // in step 1 -- plus the handful of names the second one needs: which of its
-// models transcribes, which one tells speakers apart, and in what language.
+// models transcribes and which one tells speakers apart.
+//
+// What is deliberately NOT here any more is the language. This file is one
+// machine's stack, the same for every session it ever runs; the language is a
+// fact about the footage, and a machine that cut a German session yesterday
+// still transcribed today's English one as German until somebody remembered to
+// come in here. It lives on the Inputs page now, in the project, beside the
+// sources it describes.
 //
 // Those were compiled in until they made the app run on exactly one machine:
 // the paths were one person's, and the backend assumed an AMD card. The
@@ -60,7 +67,6 @@ type appConf struct {
 	Voices              string
 	ASRModel, DiarModel string
 	TTSModel            string
-	Language            string
 }
 
 // The dev box this grew up on. A config line that is missing or blank means
@@ -71,7 +77,6 @@ const (
 	defASRModel  = "parakeet-tdt"
 	defDiarModel = "sortformer-diar"
 	defTTSModel  = "index-tts2"
-	defLanguage  = "en"
 )
 
 func or(v, def string) string {
@@ -92,7 +97,6 @@ func (c appConf) withDefaults() appConf {
 	c.ASRModel = or(c.ASRModel, defASRModel)
 	c.DiarModel = or(c.DiarModel, defDiarModel)
 	c.TTSModel = or(c.TTSModel, defTTSModel)
-	c.Language = or(c.Language, defLanguage)
 	return c
 }
 
@@ -134,8 +138,9 @@ func (a *App) readConf() appConf {
 			c.DiarModel = v
 		case "AUDIOCPP_TTS_MODEL":
 			c.TTSModel = v
-		case "AUDIOCPP_LANGUAGE":
-			c.Language = v
+			// AUDIOCPP_LANGUAGE was here, and is now the project's (Project.Language).
+			// An old conf file still carrying the key falls through unread, the same
+			// way SD_MODEL below does.
 		case "SD_SERVER":
 			c.SD = strings.TrimRight(strings.TrimSpace(v), "/")
 			// SD_MODEL was here. It named the weights the Test button held the
@@ -172,8 +177,6 @@ AUDIOCPP_VOICES=%q
 AUDIOCPP_ASR_MODEL=%q
 AUDIOCPP_DIAR_MODEL=%q
 AUDIOCPP_TTS_MODEL=%q
-# what the ASR model is told to expect; wrong here transcribes into gibberish
-AUDIOCPP_LANGUAGE=%q
 
 # stable-diffusion.cpp's sd-server -- it draws the thumbnail on the Publish
 # step; empty means 127.0.0.1:%d. There is no model key: the server serves the
@@ -181,7 +184,7 @@ AUDIOCPP_LANGUAGE=%q
 # sends can change it.
 SD_SERVER=%q
 `, c.Server, c.Model, c.Key, ttsPort, c.TTS,
-		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel, c.Language,
+		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel,
 		sdPort, c.SD)
 	return os.WriteFile(a.confPath(), []byte(body), 0o600)
 }
@@ -509,15 +512,7 @@ func (a *App) setupDialog() {
 	// the log: what each test asked and what came back, in order -- the badge
 	// on the row says pass or fail, this says why, and it keeps saying it after
 	// the next click. Mirrored into the main log so it outlives the dialog.
-	logView := gtk.NewTextView()
-	logView.SetEditable(false)
-	logView.SetCursorVisible(false)
-	logView.SetMonospace(true)
-	logView.SetWrapMode(gtk.WrapWordChar)
-	logScroll := gtk.NewScrolledWindow()
-	logScroll.SetChild(logView)
-	logScroll.SetMinContentHeight(110)
-	logScroll.AddCSSClass("frame")
+	logView, logScroll := newLogPane(110)
 	// collapsed like the main window's log: the badges answer the usual
 	// question, and the words are one click away -- except on a failure, which
 	// opens it, because then the words ARE the answer
@@ -660,7 +655,6 @@ func (a *App) setupDialog() {
 		"Id of the voice-cloning model the narration is spoken through, exactly as the server lists it")
 	asrModel := entry(c.ASRModel, defASRModel, "Id of the speech-to-text model, exactly as the server lists it")
 	diarModel := entry(c.DiarModel, defDiarModel, "Id of the diarization model — the one that tells speakers apart")
-	lang := entry(c.Language, defLanguage, "Language the ASR model is told to expect — the wrong one transcribes into gibberish")
 	testTTSMBtn := gtk.NewButtonWithLabel("Test")
 	testTTSMBtn.SetTooltipText("Check that the audio.cpp server serves this voice-cloning model")
 	ttsmBadge := newTestBadge()
@@ -717,7 +711,6 @@ func (a *App) setupDialog() {
 			ASRModel:  asrModel.Text(),
 			DiarModel: diarModel.Text(),
 			TTSModel:  strings.TrimSpace(ttsm.Text()),
-			Language:  lang.Text(),
 			SD:        strings.TrimRight(strings.TrimSpace(sd.Text()), "/"),
 		}
 		if err := a.writeConf(cc); err != nil {
@@ -795,7 +788,8 @@ func (a *App) setupDialog() {
 	grid.Attach(testFFBtn, 3, 10, 1, 1)
 
 	// no endpoint of its own: step 1 talks to the server named above. What is
-	// left is which of its models to ask, and in what language
+	// left is which of its models to ask -- what language to ask them in is the
+	// project's, on the Inputs page, where the footage it describes is
 	grid.Attach(head("Listening — speech-to-text and diarization, on that same server"), 0, 11, 4, 1)
 	foot := gtk.NewLabel("Model ids as the server lists them, not files: which weights they are, and on " +
 		"which backend, is set in audiocpp-server.json. The server opens the project folder itself, " +
@@ -807,18 +801,13 @@ func (a *App) setupDialog() {
 	for i, row := range []struct {
 		name  string
 		w     *gtk.Entry
-		btn   *gtk.Button // a row with one keeps the entry two columns narrower
+		btn   *gtk.Button
 		badge *testBadge
 	}{
 		{"ASR model:", asrModel, testASRBtn, asrBadge},
 		{"Diarization model:", diarModel, testDiarBtn, diarBadge},
-		{"Language:", lang, nil, nil},
 	} {
 		grid.Attach(lbl(row.name), 0, 13+i, 1, 1)
-		if row.btn == nil {
-			grid.Attach(row.w, 1, 13+i, 3, 1)
-			continue
-		}
 		grid.Attach(row.w, 1, 13+i, 1, 1)
 		grid.Attach(row.badge.stack, 2, 13+i, 1, 1)
 		grid.Attach(row.btn, 3, 13+i, 1, 1)
@@ -827,19 +816,19 @@ func (a *App) setupDialog() {
 	// the last step's server. Endpoint only: unlike audio.cpp above, there is
 	// no model id to send per request, so there is nothing here to choose. Test
 	// reports which weights it found rather than checking them against a box.
-	grid.Attach(head("Drawing — the sd.cpp server that paints the thumbnail"), 0, 16, 4, 1)
-	grid.Attach(lbl("Endpoint:"), 0, 17, 1, 1)
-	grid.Attach(sd, 1, 17, 1, 1)
-	grid.Attach(sdBadge.stack, 2, 17, 1, 1)
-	grid.Attach(testSDBtn, 3, 17, 1, 1)
+	grid.Attach(head("Drawing — the sd.cpp server that paints the thumbnail"), 0, 15, 4, 1)
+	grid.Attach(lbl("Endpoint:"), 0, 16, 1, 1)
+	grid.Attach(sd, 1, 16, 1, 1)
+	grid.Attach(sdBadge.stack, 2, 16, 1, 1)
+	grid.Attach(testSDBtn, 3, 16, 1, 1)
 
-	grid.Attach(logExp, 0, 18, 4, 1)
+	grid.Attach(logExp, 0, 17, 4, 1)
 
 	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	btns.SetHAlign(gtk.AlignEnd)
 	btns.Append(cancel)
 	btns.Append(save)
-	grid.Attach(btns, 0, 19, 4, 1)
+	grid.Attach(btns, 0, 18, 4, 1)
 
 	win.SetChild(grid)
 	win.SetVisible(true)

@@ -59,13 +59,21 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"come out of it and it can be cut, and the microphone tags who is speaking, " +
 			"1 being the voice the narration is spoken in. Running the step transcribes " +
 			"everything in the list and pulls a frame out of the footage every few " +
-			"seconds — that is what the later steps read instead of the video."},
+			"seconds — that is what the later steps read instead of the video.\n\n" +
+			"Language is what this session is spoken in, told to the speech-to-text " +
+			"model: it belongs to the footage, so it is here and in the project rather " +
+			"than in Settings, and each project carries its own."},
 	{"step2", "Describe", "Describe the frames and fix the transcripts into one session timeline",
 		"Finish Inputs first — this step needs its transcripts and frames",
 		"Two model jobs over what Inputs produced: the frames are described, and the raw " +
 			"transcripts are cleaned up and merged into one timeline covering the whole " +
 			"session. Both prompts are on the page — they are what the models are told, " +
-			"in full, and an edited one is kept in the project."},
+			"in full, and an edited one is kept in the project.\n\nThis is the long one, " +
+			"so the two run buttons mean different things here. ⏸ parks it between " +
+			"requests and ▶ carries on from the same frame; ⏹ ends it, and the next ▶ " +
+			"describes the session from the beginning. Edit a prompt and it is ⏹ you " +
+			"want — a resumed run would describe the rest of the footage under the new " +
+			"wording and leave the first half under the old."},
 	{"step3", "Cut", "Choose the clips the video is made of",
 		"Finish Describe first — the cut works on the session timeline",
 		"Two tracks over the session: the source above, the cut below. Suggest cut " +
@@ -231,8 +239,15 @@ func (a *App) showStep(name string) {
 	// is the context box on Describe -- the page you have usually just come
 	// from. Refreshed on arrival rather than on every keystroke over there,
 	// which would re-read the session timeline as you type.
+	// ...and the tracks themselves, when the last run (or another project) moved
+	// what they are drawn from. Only then: a rebuild probes every recording and
+	// drops the undo history, which is not what a tab click should cost.
 	if name == "step3" && a.ed != nil {
-		a.ed.updateInputs()
+		if a.ed.stale || len(a.ed.vids) == 0 {
+			a.updateStep3Info() // which does updateInputs itself
+		} else {
+			a.ed.updateInputs()
+		}
 	}
 	// Narrate's row says the same thing about the narration, and one of the
 	// things it counts is the cut -- which is the page you have just come from
@@ -329,6 +344,7 @@ type App struct {
 	srcList   *sourceList // the session's files, and what each one is for
 	interval  *freqPick
 	scalePick *gtk.DropDown
+	langEntry *gtk.Entry // what the ASR is told this session is spoken in
 	outLabel  *gtk.Label
 	s1out     *gtk.Label
 	und       *understander
@@ -358,10 +374,17 @@ type App struct {
 	pauseFlag atomic.Bool
 	runCtx    context.Context // canceled by stop -- aborts in-flight LLM calls
 	runCancel context.CancelFunc
-	srcMu     sync.Mutex
-	selVid    []string              // snapshot of the session's sources, taken on the GUI
-	selAud    []string              // thread when a run starts: the footage, then the rest
-	selNarr   [narratorSlots]string // ...and who was tagged as which narrator
+	// ⏸ parks a run, ⏹ abandons one, and the difference has to be visible on
+	// the next ▶: resume where it stopped, or start over. Only the describer
+	// can tell them apart at all -- it is the one job that resumes per chunk --
+	// so a stopped Describe + Transcript sets this, and the next run of that
+	// step throws its half-written event logs away first. See resetDescribe.
+	undRestart bool
+
+	srcMu   sync.Mutex
+	selVid  []string              // snapshot of the session's sources, taken on the GUI
+	selAud  []string              // thread when a run starts: the footage, then the rest
+	selNarr [narratorSlots]string // ...and who was tagged as which narrator
 
 	// the editable system prompts. The views are the GUI thread's; promptTxt is
 	// the copy a runner reads, kept current by the buffers' changed handler --
@@ -373,6 +396,9 @@ type App struct {
 	// a bare label are the same height and the boxes under them line up
 	// (editorBody). GUI thread only, like the views.
 	headGroup *gtk.SizeGroup
+	// what langEntry says, for the runner to read; guarded like ctxTxt below and
+	// for the same reason
+	langTxt string
 	// what the editor says about THIS session, typed on Describe and read by
 	// every step (context.go). Under promptMu for the same reason as the
 	// prompts: the box belongs to the GUI thread, the string is what a runner
@@ -400,6 +426,12 @@ type App struct {
 // all the useful low end into the first pixel. Index 0 keeps every frame.
 var frameStops = []float64{0, 0.1, 0.2, 0.5, 1, 2, 3, 4, 5}
 var frameStopLabels = []string{"each", "0.1", "0.2", "0.5", "1s", "2s", "3s", "4s", "5s"}
+
+// where a session with nobody's opinion on it starts: one frame a second. Named
+// rather than typed twice, since a new project has to land on the same stop the
+// stepper builds itself at -- and index 0 is not it (that is every frame, which
+// is gigabytes).
+const defFrameStop = 4
 
 // Frame size presets, no-resize first because that is the default and picking a
 // size is the exception. Name is the identity and Label is only what the drop
@@ -430,6 +462,48 @@ func (a *App) setFrameScale(name string) {
 			a.scalePick.SetSelected(uint(i))
 			return
 		}
+	}
+}
+
+// defLanguage is what a session is assumed to be in when nobody says. It was a
+// setting on this machine (llm.conf) and is now a field on the project, for the
+// reason setup.go's header gives: the stack is the same every night, the
+// footage is not.
+const defLanguage = "en"
+
+// projectLanguage is the box's text as the project file stores it: what was
+// typed, trimmed, and "" when nothing was -- an empty box means the default,
+// and writing "en" into every project would freeze today's default into files
+// that never asked for it (same rule as an unedited prompt).
+func (a *App) projectLanguage() string {
+	a.promptMu.Lock()
+	defer a.promptMu.Unlock()
+	return strings.TrimSpace(a.langTxt)
+}
+
+// asrLanguage is the same value with the default filled in: what step 1 puts in
+// the request. Callable from a runner's goroutine, which is the whole reason
+// the string is cached beside the widget rather than read off it -- the box is
+// the GUI thread's (same rule as sessionCtx).
+func (a *App) asrLanguage() string {
+	if s := a.projectLanguage(); s != "" {
+		return s
+	}
+	return defLanguage
+}
+
+func (a *App) setLanguage(s string) {
+	a.promptMu.Lock()
+	a.langTxt = s
+	a.promptMu.Unlock()
+}
+
+// applyLanguage loads a project's language into the box as well as the cache.
+// GUI thread only, like applySessionCtx and for the same reason.
+func (a *App) applyLanguage(s string) {
+	a.setLanguage(s)
+	if a.langEntry != nil {
+		a.langEntry.SetText(s)
 	}
 }
 
@@ -484,7 +558,7 @@ func newFreqPick() *freqPick {
 	f.box.Append(f.entry)
 	f.box.Append(minus)
 	f.box.Append(plus)
-	f.set(4) // 1 s
+	f.set(defFrameStop)
 	return f
 }
 
@@ -609,7 +683,7 @@ func main() {
 	a.audDir = filepath.Join(wd, "input_audio")
 	a.outDir = wd
 
-	app := gtk.NewApplication("li.jos.autocut", gio.ApplicationFlagsNone)
+	app := gtk.NewApplication(appID, gio.ApplicationFlagsNone)
 	app.ConnectActivate(func() { a.build(app) })
 	os.Exit(app.Run(nil))
 }
@@ -736,12 +810,18 @@ func (a *App) build(app *gtk.Application) {
 	// were the only words up there, so they read as the important ones. The
 	// tooltip says what the icon means, which is the deal every other button
 	// here already makes.
+	// New, then Open, then Save: the order every application puts them in, and
+	// the order they happen in
+	newP := gtk.NewButtonFromIconName("document-new-symbolic")
+	newP.SetTooltipText("New project — empty the session and start over")
+	newP.ConnectClicked(a.newProjectDialog)
 	loadP := gtk.NewButtonFromIconName("document-open-symbolic")
 	loadP.SetTooltipText("Load a project — sources, prompts and settings")
 	loadP.ConnectClicked(a.loadProjectDialog)
 	saveP := gtk.NewButtonFromIconName("document-save-symbolic")
 	saveP.SetTooltipText("Save this project to a file")
 	saveP.ConnectClicked(a.saveProjectDialog)
+	head.PackStart(newP)
 	head.PackStart(loadP)
 	head.PackStart(saveP)
 	// Which file this session is being written to. Projects are files in a
@@ -789,7 +869,7 @@ func (a *App) build(app *gtk.Application) {
 	a.playBtn.SetTooltipText("Run this step — or resume what is paused")
 	a.playBtn.ConnectClicked(a.playClicked)
 	a.stopBtn = gtk.NewButtonFromIconName("media-playback-stop-symbolic")
-	a.stopBtn.SetTooltipText("Stop the run or the playback — finished work is kept")
+	a.stopBtn.SetTooltipText("Stop the run or the playback — ⏸ is what parks one to carry on later")
 	a.stopBtn.SetSensitive(false)
 	a.stopBtn.ConnectClicked(a.stopClicked)
 	a.progress = gtk.NewProgressBar()
@@ -853,12 +933,8 @@ func (a *App) build(app *gtk.Application) {
 
 	// shared log + status across all pages: one bottom row, the status text
 	// living in the expander header so nothing reserves empty space
-	a.log = gtk.NewTextView()
-	a.log.SetEditable(false)
-	a.log.SetMonospace(true)
-	logScroll := gtk.NewScrolledWindow()
-	logScroll.SetChild(a.log)
-	logScroll.SetSizeRequest(-1, 220)
+	var logScroll *gtk.ScrolledWindow
+	a.log, logScroll = newLogPane(220)
 	a.status = gtk.NewLabel("")
 	a.status.SetXAlign(1) // status lives right-aligned in the free header space
 	a.status.SetHExpand(true)
@@ -923,6 +999,9 @@ func (a *App) build(app *gtk.Application) {
 	a.logExp.NotifyProperty("expanded", logGrow)
 	logGrow()
 	a.win.SetChild(outer)
+	// after the log exists, so that a theme that cannot find the icon says so
+	// somewhere the user will look rather than only on stderr
+	a.setupIcons()
 
 	// Pick up where the last session left off: the named project that was open
 	// when it ended, and only failing that the working copy. Opening
@@ -989,6 +1068,7 @@ func (a *App) buildStep1() gtk.Widgetter {
 		if a.und != nil {
 			a.und.refresh()
 		}
+		a.refreshCut() // the tracks ARE this list: a row added or unmarked changes them
 	})
 
 	var outRow *gtk.Box
@@ -1006,6 +1086,27 @@ func (a *App) buildStep1() gtk.Widgetter {
 	a.scalePick.SetTooltipText("Frame size — Original keeps the video's own size")
 	a.setFrameScale("original")
 	a.scalePick.SetVAlign(gtk.AlignCenter)
+
+	// The language, on the page whose run is the one that listens. It used to be
+	// in Settings, next to the model ids -- which made it a property of the
+	// machine, so a session in the other language was transcribed into gibberish
+	// by a box nobody thought to open, three tabs away from the sources it was
+	// wrong about.
+	//
+	// Free text, not a list: the code is the server's to interpret, and a drop
+	// down would have to guess which of its models take what -- being able to
+	// type what the server documents beats a menu that is right for one model.
+	a.langEntry = gtk.NewEntry()
+	a.langEntry.SetWidthChars(4)
+	a.langEntry.SetMaxWidthChars(6)
+	a.langEntry.SetPlaceholderText(defLanguage)
+	a.langEntry.SetTooltipText("Language of this session's speech, as the ASR model spells it (en, de, …) — " +
+		"the wrong one transcribes into gibberish. Empty means " + defLanguage)
+	a.langEntry.SetVAlign(gtk.AlignCenter)
+	// the cache follows every keystroke rather than a commit: unlike the frame
+	// stepper there is nothing to parse, and a value that only counts once you
+	// tab away is a value the next run silently disagrees with
+	a.langEntry.ConnectChanged(func() { a.setLanguage(a.langEntry.Text()) })
 
 	// One list, the width of the page. Two lists split by folder was the older
 	// idea and it could not say the thing this page is mostly about: a screen
@@ -1074,6 +1175,8 @@ func (a *App) buildStep1() gtk.Widgetter {
 	bottom.Append(gtk.NewLabel("Freq:"))
 	bottom.Append(a.interval.box)
 	bottom.Append(a.scalePick)
+	bottom.Append(gtk.NewLabel("Language:"))
+	bottom.Append(a.langEntry)
 	bottom.Append(outRow)
 
 	a.updateStep1Info()
@@ -1174,6 +1277,31 @@ func (a *App) setStatus(s string) {
 		return // headless (tests): the status line is the window's
 	}
 	a.status.SetText(s)
+}
+
+// newLogPane is what a log looks like, everywhere one appears: a read-only
+// monospace view that wraps rather than scrolls sideways, in a scroller with a
+// border around it.
+//
+// There are two -- the run log at the bottom of the window and the settings
+// dialog's test log -- and they were built separately, a dozen lines apart in
+// two files, which is how they drifted: same font and same expander, but only
+// one of them had the frame, so the run log's text sat loose on the window
+// background with nothing to say where it began. One builder, one design.
+//
+// minHeight is the only thing the two disagree on, and legitimately: the run
+// log is a page of a session, the dialog's is a handful of verdicts.
+func newLogPane(minHeight int) (*gtk.TextView, *gtk.ScrolledWindow) {
+	tv := gtk.NewTextView()
+	tv.SetEditable(false)
+	tv.SetCursorVisible(false) // read-only: a blinking caret in it is a lie
+	tv.SetMonospace(true)
+	tv.SetWrapMode(gtk.WrapWordChar) // paths and ffmpeg lines are long
+	sw := gtk.NewScrolledWindow()
+	sw.SetChild(tv)
+	sw.SetMinContentHeight(minHeight)
+	sw.AddCSSClass("frame")
+	return tv, sw
 }
 
 func (a *App) logf(format string, args ...any) {

@@ -518,6 +518,7 @@ func (a *App) startStep1(videos, audios []string, interval float64, scaleName, s
 			a.updateStep1Info()
 			a.und.refresh() // the next step's input counts just changed
 			a.updateGates()
+			a.refreshCut() // new frames, new interval: the track strip is drawn from them
 		})
 	}()
 }

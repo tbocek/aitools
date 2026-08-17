@@ -215,7 +215,7 @@ func TestConfDefaults(t *testing.T) {
 	a := &App{root: t.TempDir()} // no llm.conf at all
 	c := a.readConf()
 	if c.Voices != defVoices || c.ASRModel != defASRModel ||
-		c.DiarModel != defDiarModel || c.TTSModel != defTTSModel || c.Language != defLanguage {
+		c.DiarModel != defDiarModel || c.TTSModel != defTTSModel {
 		t.Errorf("a missing config did not fall back to the built-ins: %+v", c)
 	}
 	// a config written when the setting was the models ROOT, voices/ implied:
@@ -233,14 +233,15 @@ func TestConfDefaults(t *testing.T) {
 	if c := a.readConf(); c.Server != "https://x" || c.ASRModel != defASRModel {
 		t.Errorf("a pre-existing config lost its defaults: %+v", c)
 	}
-	// a config from before step 1 moved onto the server: its container settings
-	// are gone, and being handed one must not cost the reader the rest of the file
+	// a config from before step 1 moved onto the server, and from before the
+	// language became the project's: those keys are gone, and being handed one
+	// must not cost the reader the rest of the file
 	old := "AUDIOCPP_IMAGE=\"audio:latest\"\nAUDIOCPP_CLI=\"/opt/audiocpp_cli\"\n" +
-		"AUDIOCPP_BACKEND=\"cuda\"\nAUDIOCPP_LANGUAGE=\"de\"\n"
+		"AUDIOCPP_BACKEND=\"cuda\"\nAUDIOCPP_LANGUAGE=\"de\"\nAUDIOCPP_ASR_MODEL=\"whisper-large\"\n"
 	if err := os.WriteFile(a.confPath(), []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if c := a.readConf(); c.Language != "de" || c.ASRModel != defASRModel {
+	if c := a.readConf(); c.ASRModel != "whisper-large" || c.TTSModel != defTTSModel {
 		t.Errorf("a config with retired keys did not read the rest: %+v", c)
 	}
 	// ...and a blank value is the same as no value, not an empty model id
@@ -261,12 +262,11 @@ func TestConfRoundTrip(t *testing.T) {
 		Model:  "Qwen3.6 (27B; 128k ctx; Q4_K_XL; visual)", // spaces, parens, semicolons
 		Key:    "sk-not-a-real-key",
 		TTS:    "http://127.0.0.1:8765",
-		// the other machine this is all for: German, other paths, other ids
+		// the other machine this is all for: other paths, other ids
 		Voices:    "/srv/models/voices",
 		ASRModel:  "whisper-large",
 		DiarModel: "sortformer-8spk",
 		TTSModel:  "kokoro-82m",
-		Language:  "de",
 		SD:        "http://127.0.0.1:1234",
 	}
 	if err := a.writeConf(want); err != nil {

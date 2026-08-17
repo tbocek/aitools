@@ -172,6 +172,86 @@ func (a *App) readChatStream(r io.Reader, onText func(string)) (string, error) {
 	}
 }
 
+// jsonItemsDone reads a reply that is still arriving: how many objects have
+// closed inside the last "<key>": [ , and how far into the session the last one
+// to close reaches, for the shapes that carry an "end" in seconds. Only what is
+// complete counts, so a bar never claims an item the model is still writing.
+//
+// It starts at the LAST "<key>": [ in the text, because everything before the
+// answer is the model thinking, out loud, about the answer -- braces, quotes,
+// the key's own name and all. Requiring the key's punctuation is what keeps a
+// mention of it in that thinking from starting the count early; a worked
+// example in there would still fool it, and the cost of that is one reading of
+// a progress bar, which is the right price for not parsing prose.
+//
+// The second return is what makes a bar out of a reply whose length nobody
+// knows in advance. How many moments a cut has is the model's decision, so
+// there is no denominator to count against -- but the order is not its
+// decision: it walks the session from the front, so the end time of the last
+// finished item is how far through the session, and through the job, it is.
+func jsonItemsDone(s, key string) (done int, through float64) {
+	q := `"` + key + `"`
+	i := -1
+	for at := 0; ; {
+		j := strings.Index(s[at:], q)
+		if j < 0 {
+			break
+		}
+		j += at
+		at = j + 1
+		rest := strings.TrimLeft(s[j+len(q):], " \t\r\n")
+		if !strings.HasPrefix(rest, ":") {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimLeft(rest[1:], " \t\r\n"), "[") {
+			i = j
+		}
+	}
+	if i < 0 {
+		return 0, 0
+	}
+	tail := s[i:]
+	depth, from := 0, 0
+	inStr, esc := false, false
+	for k, r := range tail {
+		switch {
+		case esc:
+			esc = false
+		case inStr && r == '\\':
+			esc = true
+		case r == '"':
+			inStr = !inStr
+		case inStr: // braces inside a line of narration are just text
+		case r == '{':
+			if depth == 0 {
+				from = k
+			}
+			depth++
+		case r == '}':
+			if depth--; depth == 0 {
+				done++
+				if e, ok := jsonEnd(tail[from : k+1]); ok && e > through {
+					through = e
+				}
+			}
+		}
+	}
+	return done, through
+}
+
+// jsonEnd reads the "end" out of one finished object. A shape without one -- a
+// narration clip, say -- simply has no answer here, and its caller falls back
+// to counting.
+func jsonEnd(obj string) (float64, bool) {
+	var o struct {
+		End *float64 `json:"end"`
+	}
+	if json.Unmarshal([]byte(obj), &o) != nil || o.End == nil {
+		return 0, false
+	}
+	return *o.End, true
+}
+
 // llmChatRetry absorbs one transport hiccup, which a multi-hour pass will hit
 // -- but never retries a user stop.
 func (a *App) llmChatRetry(msgs []map[string]any, thinking bool) (string, error) {

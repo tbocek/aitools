@@ -36,8 +36,13 @@ type Project struct {
 	Audios     []string `json:"audios,omitempty"`
 	Interval   float64  `json:"interval"` // seconds between frames; 0 = every frame
 	FrameScale string   `json:"frame_scale,omitempty"`
-	VidDir     string   `json:"vid_dir,omitempty"` // where the choosers open, each
-	AudDir     string   `json:"aud_dir,omitempty"` // relative to root when it can be
+	// what the ASR model is told this session is spoken in. It was a setting --
+	// one language for the machine, however many languages its sessions were in
+	// -- and it is a property of the footage, so it belongs to the project that
+	// names that footage. Absent means defLanguage, the same deal a prompt gets.
+	Language string `json:"language,omitempty"`
+	VidDir   string `json:"vid_dir,omitempty"` // where the choosers open, each
+	AudDir   string `json:"aud_dir,omitempty"` // relative to root when it can be
 	// in_dir is read, never written: there was one input folder, which had to
 	// hold input_video/ and input_audio/. A project written back then names it
 	// here, and those two subfolders are where the two folders above start.
@@ -127,6 +132,7 @@ func (a *App) currentProject() Project {
 		Sources:    srcs,
 		Interval:   a.frameInterval(),
 		FrameScale: scaleName,
+		Language:   a.projectLanguage(),
 		VidDir:     a.relToRoot(a.vidDir),
 		AudDir:     a.relToRoot(a.audDir),
 		OutDir:     a.relToRoot(a.outDir),
@@ -306,6 +312,24 @@ func (a *App) loadProjectFrom(path string) {
 		a.logf("load project: %v", err)
 		return
 	}
+	a.applyProject(p)
+	// what is open is what the autosave keeps: opening a variant and then
+	// editing it must not quietly write the edits into the working copy alone
+	a.projPath = path
+	a.showProject()
+	a.rememberProject(path)
+	a.projSaved = a.projectJSON()
+	a.setStatus("project loaded: " + path)
+}
+
+// applyProject puts a project on screen -- every page of it. Split out of
+// loadProjectFrom because New Project needs exactly this and nothing else:
+// handed a blank project it walks the same list and each page comes back to its
+// default, which is a reset that cannot forget a page. A newProject() that
+// cleared what it could remember to clear would leave the last session's
+// narration settings, or its thumbnail, in a project claiming to be new -- the
+// invisible kind of bug applyPrompts's comment is about.
+func (a *App) applyProject(p Project) {
 	// the folders first: they are where the file choosers open, and where a
 	// pre-merge project's half-relative source names are resolved from
 	vid, aud := srcDirs(p)
@@ -324,19 +348,127 @@ func (a *App) loadProjectFrom(path string) {
 	if p.FrameScale != "" {
 		a.setFrameScale(p.FrameScale)
 	}
+	a.applyLanguage(p.Language)
 	a.applyPrompts(p.Prompts)
 	a.applySessionCtx(p.Context)
 	a.migrateHints(p)
 	a.applyProdSettings(p.Produce)
 	a.applyPublish(p.Publish)
 	a.setOutDir(a.fromRoot(p.OutDir))
-	// what is open is what the autosave keeps: opening a variant and then
-	// editing it must not quietly write the edits into the working copy alone
-	a.projPath = path
+	// the Cut page is drawn from the OTHER project's folder until something
+	// says so; the sources on its tracks have just been replaced wholesale
+	a.refreshCut()
+}
+
+// blankProject is what New Project starts from: an empty session, and the
+// defaults that are the program's rather than the zero value's.
+//
+// Interval and Produce are stated because their zero values are real settings
+// and the wrong ones -- 0 seconds means EVERY frame, which is gigabytes nobody
+// asked for, and a zeroed produce block is a 0-CRF, 0-fps render. Everything
+// else is legitimately empty: no sources, nothing typed, no prompt edited, no
+// thumbnail, and the output folder back to the autocut root.
+func blankProject() Project {
+	prod := defaultProdSettings()
+	return Project{
+		Interval:   frameStops[defFrameStop],
+		FrameScale: scalePresets[0].Name,
+		Produce:    &prod,
+	}
+}
+
+// newProject empties the session. The project FILE is not deleted and not
+// written over here: what the autosave follows afterwards is the working copy
+// again (projPath ""), so a named project that was open stays on disk exactly
+// as it was, and going back to it is Load, not undo.
+func (a *App) newProject() {
+	a.applyProject(blankProject())
+	a.projPath = ""
 	a.showProject()
-	a.rememberProject(path)
-	a.projSaved = a.projectJSON()
-	a.setStatus("project loaded: " + path)
+	// the working copy is now the open project, and that is a decision, not an
+	// absence: without this the next launch reopens the named project this was
+	// meant to get away from (see rememberProject)
+	a.rememberProject(filepath.Join(a.root, "project.json"))
+	a.saveProjectNow()
+	a.setStatus("new project — the session is empty")
+	a.logf(">>> new project: the session was emptied; outputs already on disk are untouched")
+}
+
+// newProjectDialog asks first. The session is not a file until Save names one,
+// so New on a session nobody saved throws away work that exists nowhere else --
+// and it is one click from Load and Save in the header bar, which are the two
+// buttons a hand reaching for it is aiming between.
+//
+// Nothing to lose, no question: an empty session being emptied is not a
+// decision worth interrupting anyone for.
+func (a *App) newProjectDialog() {
+	if a.running {
+		a.setStatus("stop the run first — a new project would pull its inputs out from under it")
+		return
+	}
+	if len(a.srcList.items) == 0 && a.sessionCtx() == "" {
+		a.newProject()
+		return
+	}
+	detail := "The sources, the session context and every prompt edit go back to empty. " +
+		"Files already written to the output folder are left alone."
+	if a.projPath != "" {
+		detail += "\n\n" + filepath.Base(a.projPath) + " stays on disk as it is -- " +
+			"this session simply stops being it."
+	} else {
+		detail += "\n\nThis session has never been saved to a named project file, " +
+			"so there is nothing to come back to."
+	}
+	a.confirm("Start a new project?", detail, "Start new", a.newProject)
+}
+
+// confirm is a modal yes/no. Hand-rolled on a plain window for the reason the
+// settings dialog is: GtkAlertDialog's constructor is variadic and does not
+// survive the binding, and this needs no more than the two buttons anyway.
+// Destructive-action styling, because that is what the left button means.
+func (a *App) confirm(question, detail, okLabel string, ok func()) {
+	win := gtk.NewWindow()
+	win.SetTransientFor(&a.win.Window)
+	win.SetModal(true)
+	win.SetTitle(question)
+	win.SetDefaultSize(420, -1)
+
+	q := gtk.NewLabel(question)
+	q.SetXAlign(0)
+	q.SetWrap(true)
+	q.AddCSSClass("heading")
+	d := gtk.NewLabel(detail)
+	d.SetXAlign(0)
+	d.SetWrap(true)
+	d.AddCSSClass("dim-label")
+
+	cancel := gtk.NewButtonWithLabel("Cancel")
+	cancel.ConnectClicked(func() { win.Close() })
+	go1 := gtk.NewButtonWithLabel(okLabel)
+	go1.AddCSSClass("destructive-action")
+	go1.ConnectClicked(func() {
+		win.Close()
+		ok()
+	})
+	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	btns.SetHAlign(gtk.AlignEnd)
+	btns.SetMarginTop(8)
+	btns.Append(cancel)
+	btns.Append(go1)
+
+	box := gtk.NewBox(gtk.OrientationVertical, 8)
+	box.SetMarginTop(16)
+	box.SetMarginBottom(16)
+	box.SetMarginStart(16)
+	box.SetMarginEnd(16)
+	box.Append(q)
+	box.Append(d)
+	box.Append(btns)
+	win.SetChild(box)
+	// Escape is Cancel, as it is in every other dialog; the default is Cancel
+	// too, so a blind Enter on a destructive question does nothing
+	cancel.GrabFocus()
+	win.SetVisible(true)
 }
 
 // migrateHints folds a pre-merge project's notes into the prompts they used to

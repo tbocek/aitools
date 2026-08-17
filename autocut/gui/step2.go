@@ -297,7 +297,32 @@ func (a *App) understandRun() {
 		}
 	}
 	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
+	// ⏹ then ▶ is "do it again", not "carry on" -- and this is the moment to
+	// act on that rather than the stop itself: pressing ⏹ has to be safe to do
+	// at the end of the day, with the half-run still on disk in the morning.
+	// It is the press that starts the work over that throws the work away.
+	if err := a.undFreshStart(); err != nil {
+		// nothing here is worth refusing to run over: say what could not be
+		// cleared, and let the run pick up from what is still on disk
+		a.logf(">>> could not clear the last run (%v) -- resuming it instead of starting over", err)
+	}
 	a.startUnderstand(vids, auds)
+}
+
+// undFreshStart is the whole difference between ⏸ and ⏹ on this page. Paused
+// is parked: the goroutine is still sitting in checkpoint and ▶ lets it go on.
+// Stopped is abandoned, and the ▶ after it starts the step from the beginning
+// -- which for the describer means dropping the event logs it resumes from,
+// and for the fixer means nothing, since it never resumed in the first place.
+//
+// It does nothing unless the last run of this step ended in a stop, so a ▶ on a
+// project described days ago still resumes it. Only ⏹ arms this.
+func (a *App) undFreshStart() error {
+	if !a.undRestart {
+		return nil
+	}
+	a.undRestart = false
+	return a.resetDescribe()
 }
 
 func (a *App) startUnderstand(videos, audios []string) {
@@ -328,8 +353,11 @@ func (a *App) startUnderstand(videos, audios []string) {
 			a.updateRunControls()
 			switch {
 			case errors.Is(err, errStopped):
-				a.progress.SetText("stopped — finished chunks are kept")
-				a.setStatus("describe + transcript stopped")
+				// the work stays on disk until the next ▶, which is the press
+				// that decides it was not wanted (undFreshStart)
+				a.undRestart = true
+				a.progress.SetText("stopped — ▶ starts over, ⏸ was the way to keep a place")
+				a.setStatus("describe + transcript stopped — ▶ starts it from the beginning")
 			case err != nil:
 				a.logf("describe + transcript FAILED: %v", err)
 				a.progress.SetText("failed — see log")
@@ -343,6 +371,10 @@ func (a *App) startUnderstand(videos, audios []string) {
 			}
 			a.und.refresh()
 			a.updateGates()
+			// the frames and the session timeline the Cut page draws are what
+			// this run just wrote -- including the first time, where the tab it
+			// unlocks would otherwise open on nothing
+			a.refreshCut()
 		})
 	}()
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -357,6 +358,140 @@ func TestTheProjectNameFollowsSaveAndLoad(t *testing.T) {
 		}
 		if !strings.Contains(string(body), "a.showProject()") {
 			t.Errorf("%s renames the project without telling the header bar", fn)
+		}
+	}
+}
+
+// ---- the language, and a project that starts empty --------------------------
+
+// The language is the project's, not the machine's. It used to be a line in
+// llm.conf, which meant one language for every session that machine ever cut:
+// the German session after the English one came back as gibberish, from a box
+// three tabs away that nobody had reason to open. What this pins is the whole
+// path -- what a runner reads, what the file stores, and that the setting is
+// really gone from the config rather than quietly written in both places.
+func TestTheLanguageBelongsToTheProject(t *testing.T) {
+	a := &App{root: t.TempDir()}
+
+	// nothing typed is the default, not an empty language field posted to a
+	// server that would then transcribe into whatever it guesses
+	if got := a.asrLanguage(); got != defLanguage {
+		t.Errorf("an untouched session asks for %q, want %q", got, defLanguage)
+	}
+	if got := a.projectLanguage(); got != "" {
+		t.Errorf("an untouched session STORES %q -- an unset box must not freeze today's default into the file", got)
+	}
+
+	// what the box says is what the request carries, whitespace and all removed
+	a.setLanguage("  de \n")
+	if got := a.asrLanguage(); got != "de" {
+		t.Errorf("the run would ask for %q, want de", got)
+	}
+	if got := a.projectLanguage(); got != "de" {
+		t.Errorf("the project would store %q, want de", got)
+	}
+	// ...and clearing it comes back to the default rather than to ""
+	a.setLanguage("")
+	if got := a.asrLanguage(); got != defLanguage {
+		t.Errorf("a cleared box asks for %q, want the default", got)
+	}
+	// applyLanguage runs at load time, before any window exists in the tests
+	a.applyLanguage("fr")
+	if got := a.asrLanguage(); got != "fr" {
+		t.Errorf("a loaded project's language came out as %q", got)
+	}
+
+	// through the file: stored when set, absent when not
+	b, err := json.Marshal(Project{Language: "de"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"language":"de"`) {
+		t.Errorf("a project with a language wrote %s", b)
+	}
+	var back Project
+	if err := json.Unmarshal(b, &back); err != nil || back.Language != "de" {
+		t.Errorf("the language came back as %q (%v)", back.Language, err)
+	}
+	if b, err = json.Marshal(Project{}); err != nil || strings.Contains(string(b), "language") {
+		t.Errorf("a project with no language wrote %s (%v)", b, err)
+	}
+
+	// and it is out of the config: a value left in llm.conf would be a second
+	// place to set it, disagreeing with the page silently
+	if err := a.writeConf(appConf{Server: "https://x"}); err != nil {
+		t.Fatal(err)
+	}
+	conf, err := os.ReadFile(a.confPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(conf), "AUDIOCPP_LANGUAGE") {
+		t.Errorf("llm.conf still carries the language:\n%s", conf)
+	}
+}
+
+// New Project hands applyProject a blank one, so "blank" has to mean the
+// program's defaults and not Go's zero values. Two of them are the whole reason
+// this function exists: interval 0 is not "unset", it is EVERY frame, which is
+// gigabytes of jpegs nobody asked for; and a zeroed produce block renders at
+// CRF 0 and 0 fps.
+func TestANewProjectStartsFromTheDefaultsNotFromZero(t *testing.T) {
+	p := blankProject()
+	if p.Interval != frameStops[defFrameStop] || p.Interval == 0 {
+		t.Errorf("a new project extracts a frame every %gs, want %gs", p.Interval, frameStops[defFrameStop])
+	}
+	if p.FrameScale != scalePresets[0].Name {
+		t.Errorf("a new project's frame size is %q, want %q", p.FrameScale, scalePresets[0].Name)
+	}
+	if p.Produce == nil {
+		t.Fatal("a new project has no produce settings -- the page would load zeroes")
+	}
+	if *p.Produce != defaultProdSettings() {
+		t.Errorf("a new project renders with %+v, want %+v", *p.Produce, defaultProdSettings())
+	}
+	// everything else is legitimately empty: a new project is an empty session
+	if len(p.Sources) > 0 || p.Context != "" || len(p.Prompts) > 0 ||
+		p.Publish != nil || p.OutDir != "" || p.Language != "" {
+		t.Errorf("a new project came out carrying something: %+v", p)
+	}
+}
+
+// The reset has to go through applyProject rather than clearing what somebody
+// remembered to clear: a page left out is last session's thumbnail, or its
+// narration settings, sitting in a project that says it is new -- and nothing
+// on screen says so. Pinned by reading the source, because applyProject touches
+// widgets and there is no window here.
+func TestNewProjectResetsEveryPageThroughApplyProject(t *testing.T) {
+	src, err := os.ReadFile("project.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := regexp.MustCompile(`(?s)func \(a \*App\) newProject\(\) \{.*?\n}\n`).Find(src)
+	if body == nil {
+		t.Fatal("newProject is gone")
+	}
+	if !strings.Contains(string(body), "a.applyProject(blankProject())") {
+		t.Errorf("newProject resets by hand instead of through applyProject:\n%s", body)
+	}
+	// the one thing it must NOT do is delete or overwrite the named project the
+	// session was in: New is not a destructive file operation, it is a session
+	// that stops being that file
+	for _, no := range []string{"os.Remove", "a.writeProject("} {
+		if strings.Contains(string(body), no) {
+			t.Errorf("newProject calls %s -- it must leave the named project file alone:\n%s", no, body)
+		}
+	}
+	// every page's applier belongs to the load path, so a new one added later is
+	// in the reset by construction
+	load := regexp.MustCompile(`(?s)func \(a \*App\) applyProject\(p Project\) \{.*?\n}\n`).Find(src)
+	if load == nil {
+		t.Fatal("applyProject is gone")
+	}
+	for _, want := range []string{"a.srcList.load(", "a.setFrameInterval(", "a.applyLanguage(",
+		"a.applyPrompts(", "a.applySessionCtx(", "a.applyProdSettings(", "a.applyPublish(", "a.setOutDir("} {
+		if !strings.Contains(string(load), want) {
+			t.Errorf("applyProject no longer calls %s -- New Project would leave that page as it was", want)
 		}
 	}
 }

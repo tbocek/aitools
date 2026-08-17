@@ -393,6 +393,49 @@ func (a *App) describeAll(videos, audios []string, span float64) error {
 	return nil
 }
 
+// resetDescribe undoes the resume below: every source's event log and rolling
+// STATE go, and the next run describes the footage from t=0 again.
+//
+// What it does NOT touch is .llmframes beside them. Those are scaled pixels,
+// not results -- keeping them means starting over costs the vision model again
+// but not the minutes of ffmpeg that scaling an hour of frames takes. Nor does
+// it touch step2/transcript: the fixer never resumes, so every run of it
+// already starts from the first block.
+//
+// Every folder under step2/describe/ is cleared, not just the sources selected
+// now: "start from the start" is about the step, and a log left behind by a
+// recording that has since been deselected is exactly the stale half-run this
+// is here to get rid of.
+func (a *App) resetDescribe() error {
+	ents, err := os.ReadDir(a.describeDir())
+	if err != nil {
+		return nil // nothing described yet is already at the start
+	}
+	var cleared []string
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		gone := false
+		for _, f := range []string{"events.tsv", "state.txt"} {
+			switch err := os.Remove(filepath.Join(a.describeDir(), e.Name(), f)); {
+			case err == nil:
+				gone = true
+			case !errors.Is(err, os.ErrNotExist):
+				return err
+			}
+		}
+		if gone {
+			cleared = append(cleared, e.Name())
+		}
+	}
+	if len(cleared) > 0 {
+		a.logf(">>> stopped last time — describing from the start again: %s (scaled frames kept)",
+			strings.Join(cleared, ", "))
+	}
+	return nil
+}
+
 // ---- describe ---------------------------------------------------------------
 
 func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal int, span float64) error {

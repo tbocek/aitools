@@ -45,6 +45,15 @@ const (
 	minSegLn = 1.0 // segments shorter than this are dropped when editing
 	undoDeep = 50  // how many edits back Undo reaches
 	edgeGrab = 6.0 // px either side of a clip edge the right button picks it up in
+
+	// How the run bar is shared between Suggest's two calls. Choosing gets the
+	// bigger half because it is the one that can be asked again: its answer is
+	// validated and rejected up to three times, where the audit runs once and is
+	// kept or discarded whole.
+	suggestChooseShare = 0.6
+	// the most segments the cut prompt asks for. Only a fallback denominator,
+	// for a reply whose segments have no readable end to place them by.
+	suggestMaxSegs = 20.0
 )
 
 // One paragraph or bullet per line, unwrapped: see describeSystem.
@@ -125,6 +134,16 @@ type cutEditor struct {
 	a    *App
 	vids []tlVideo
 	segs []cutSeg
+
+	// the tracks are built from what step 1 and step 2 wrote, and that is a
+	// snapshot taken at reload time -- so anything that writes into those
+	// folders, or changes which project's folders they are, leaves this page
+	// showing the past. stale says so, and the page catches up when it is next
+	// looked at (see refreshCut). Rebuilding on every arrival instead would
+	// re-probe every recording for a tab click and throw away the undo history
+	// for nothing.
+	stale   bool
+	pending bool // a catch-up is already queued for the end of this turn
 
 	pps    float64 // pixels per second (zoom)
 	lastX  float64 // cursor x, for zoom centering
@@ -1814,19 +1833,73 @@ func (ed *cutEditor) totalDur() float64 {
 	return d
 }
 
-// updateStep3Info (re)loads the editor when its inputs exist.
+// updateStep3Info (re)loads the editor when its inputs exist. It is the ONLY
+// thing that fills this page -- buildStep3 makes an empty one -- so anything
+// that changes what step 2 wrote has to end up here, or the tracks go on
+// showing a session that is over. refreshCut is how the runs say so.
 func (a *App) updateStep3Info() {
 	if a.ed == nil {
 		return
 	}
 	a.ed.updateOut()    // true even with no timeline to load: the folder is the folder
 	a.ed.updateInputs() // and so is what is missing, which is the useful part here
+	a.ed.stale = false  // whatever the tracks show after this, it is what is on disk
 	if !exists(filepath.Join(a.transcriptDir(), "session.tsv")) {
+		a.ed.clearTracks()
 		return
 	}
 	if err := a.ed.reload(); err != nil {
 		a.logf("cut editor: %v", err)
+		a.ed.clearTracks() // a half-built timeline is worse than an empty one
 	}
+}
+
+// refreshCut brings the Cut page up to date with what a run just wrote: now if
+// that is the page on screen, and otherwise on the way in.
+//
+// Describe is what made this necessary. It writes the session timeline the Cut
+// page is gated on, the tab unlocks the moment it lands -- and nothing rebuilt
+// the tracks, so the page you were finally allowed to open was the empty box it
+// had been built as. It filled in on the next restart, which is what made it
+// look like the run had not worked rather than like the page had not looked.
+func (a *App) refreshCut() {
+	if a.ed == nil {
+		return
+	}
+	a.ed.stale = true
+	if a.stack == nil || a.stack.VisibleChildName() != "step3" {
+		return // it will catch up on the way in
+	}
+	// on screen, so it has to catch up now -- but not once per caller. Opening a
+	// project says "the sources changed" three times on its way through
+	// applyProject, and a rebuild is three ffprobes per recording. The idle pass
+	// folds them into the one that matters, the last.
+	if a.ed.pending {
+		return
+	}
+	a.ed.pending = true
+	glib.IdleAdd(func() {
+		a.ed.pending = false
+		if a.ed.stale {
+			a.updateStep3Info()
+		}
+	})
+}
+
+// clearTracks empties the timeline. For the project that was swapped out from
+// under the page: without it, opening another project whose folder holds no
+// session of its own leaves the previous one's recordings drawn on the tracks,
+// which is the most convincing wrong thing this page can show.
+func (ed *cutEditor) clearTracks() {
+	if len(ed.vids) == 0 && len(ed.segs) == 0 {
+		return
+	}
+	ed.vids, ed.segs, ed.undo, ed.base = nil, nil, nil, nil
+	ed.sel.active = false
+	ed.hasPlay = false
+	ed.clearMarks()
+	ed.syncButtons()
+	ed.relayout() // which redraws both tracks and re-counts the total
 }
 
 func (ed *cutEditor) clearMarks() {
@@ -1924,20 +1997,42 @@ func (a *App) suggestClicked() {
 	session := sessionText(rows, a.narratorMic())
 	target := 300.0
 	fmt.Sscanf(a.ed.target.Text(), "%f", &target)
+	// how long the session runs, which is the denominator the choosing half of
+	// the bar counts against (see suggestCut)
+	span := 0.0
+	for _, r := range rows {
+		span = math.Max(span, r.e)
+	}
 
 	a.running = true
 	a.stopFlag.Store(false)
 	a.pauseFlag.Store(false)
 	a.runCtx, a.runCancel = context.WithCancel(context.Background())
+	a.progMu.Lock()
+	a.progParts = [2]float64{}
+	a.progTexts = [2]string{}
+	a.progMu.Unlock()
 	a.updateRunControls()
 	a.setStatus("suggesting a cut…")
 	a.logExp.SetExpanded(true)
 	a.logf(">>> suggest: target %.0f s, thinking over the session timeline — two long LLM calls "+
 		"(choose, then audit what was chosen), expect a few minutes", target)
-	// a single call has no measurable fraction; pulse so it visibly lives
-	a.progress.SetText("suggesting a cut…")
+	// Both calls are streamed, so the bar has real news to report -- but not
+	// yet: the model thinks for minutes before it writes the first segment, and
+	// there is nothing to measure in that. So it pulses until the first finished
+	// segment arrives, and the thing that stops the pulse is that segment's own
+	// fraction rather than a flag set from the goroutine. Pulse and SetFraction
+	// drive the same needle, and the one that lasts has to be the one with real
+	// news. (Same shape as publish; see there.)
+	a.progress.SetText("thinking over the whole session…")
 	glib.TimeoutAdd(150, func() bool {
 		if !a.running {
+			return false
+		}
+		a.progMu.Lock()
+		moving := a.progParts[trackSTT] > 0
+		a.progMu.Unlock()
+		if moving {
 			return false
 		}
 		a.progress.Pulse()
@@ -1945,9 +2040,9 @@ func (a *App) suggestClicked() {
 	})
 	go func() {
 		a.logCtx("suggest")
-		segs, err := a.suggestCut(session, target)
+		segs, err := a.suggestCut(session, target, span)
 		if err == nil {
-			glib.IdleAdd(func() { a.progress.SetText("auditing the cut…") })
+			a.prog(trackSTT, suggestChooseShare, "cut chosen — auditing it")
 			a.logfIdle(">>> audit: reading the %d proposed segments back against the brief — a second long call", len(segs))
 			segs = a.auditCut(session, target, segs)
 		}
@@ -2047,7 +2142,20 @@ func (a *App) auditCut(session string, target float64, segs []cutSeg) []cutSeg {
 	if err := a.checkpoint(); err != nil {
 		return segs
 	}
-	reply, err := a.llmChatRetry(msgs, true)
+	// the rest of the bar, and this half has a denominator: one check per
+	// proposed segment is what the audit was asked for
+	best := 0
+	onText := func(s string) {
+		n, _ := jsonItemsDone(s, "checks")
+		if len(segs) == 0 || n <= best {
+			return
+		}
+		best = n
+		a.prog(trackSTT, suggestChooseShare+(1-suggestChooseShare)*
+			math.Min(1, float64(best)/float64(len(segs))),
+			"auditing the cut — %d/%d checked", best, len(segs))
+	}
+	reply, err := a.llmChatRetryOn(msgs, true, onText)
 	if err != nil {
 		a.logfIdle(">>> audit skipped: %v — keeping the suggestion as it is", err)
 		return segs
@@ -2162,15 +2270,44 @@ func (a *App) keepFilmed(segs []cutSeg) []cutSeg {
 	return out
 }
 
-func (a *App) suggestCut(session string, target float64) ([]cutSeg, error) {
+func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, error) {
 	system := a.prompt("cut")
 	user := a.ctxBlock() + fmt.Sprintf("TARGET LENGTH: %.0f seconds.\n\nSESSION TIMELINE:\n%s", target, session)
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
+	// The bar, while a call that takes minutes runs: segments counted as they
+	// close, placed by where in the session they land (see jsonItemsDone).
+	// Only ever forward -- a rejected attempt starts the count again, and a bar
+	// that fell back to the first minute would read as work being undone rather
+	// than redone.
+	best := 0.0
+	onText := func(s string) {
+		n, through := jsonItemsDone(s, "segments")
+		if n == 0 {
+			return // still thinking, and the pulse says that better than a 0 does
+		}
+		f := float64(n) / suggestMaxSegs // no timeline to place them on: count
+		if span > 0 && through > 0 {
+			f = through / span
+		}
+		// never quite 0: a first segment two minutes into a two-hour session is
+		// news, and reporting it as nothing would leave the pulse running
+		f = math.Max(0.02, math.Min(1, f))
+		if f <= best {
+			return
+		}
+		best = f
+		if span > 0 {
+			a.prog(trackSTT, suggestChooseShare*f, "choosing moments — %d so far, at %s of %s",
+				n, mmss(through), mmss(span))
+		} else {
+			a.prog(trackSTT, suggestChooseShare*f, "choosing moments — %d so far", n)
+		}
+	}
 	for try := 0; try < 3; try++ {
 		if err := a.checkpoint(); err != nil {
 			return nil, err
 		}
-		reply, err := a.llmChatRetry(msgs, true)
+		reply, err := a.llmChatRetryOn(msgs, true, onText)
 		if err != nil {
 			return nil, err
 		}

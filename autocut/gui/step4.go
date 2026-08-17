@@ -2355,54 +2355,11 @@ func clipBriefs(segs []cutSeg, rows []tsvRow, narr string) string {
 const narrWriteShare = 0.5
 
 // narrEntriesDone counts the clips finished in a reply that is still arriving:
-// the objects inside "entries" whose braces have closed. Only what is complete
-// counts, so the reading never claims a clip the model is still writing.
-//
-// It starts at the LAST "entries": [ in the text, because everything before
-// the answer is the model thinking, out loud, about the answer -- braces,
-// quotes, the word entries and all. Requiring the key's punctuation is what
-// keeps a mention of it in that thinking from starting the count early; a
-// worked example in there would still fool it, and the cost of that is one
-// reading of a progress bar, which is the right price for not parsing prose.
+// the objects inside "entries" whose braces have closed. See jsonItemsDone,
+// which is this with the key as an argument -- the Cut page counts the same way
+// over "segments" and "checks".
 func narrEntriesDone(s string) int {
-	i := -1
-	for at := 0; ; {
-		j := strings.Index(s[at:], `"entries"`)
-		if j < 0 {
-			break
-		}
-		j += at
-		at = j + 1
-		rest := strings.TrimLeft(s[j+len(`"entries"`):], " \t\r\n")
-		if !strings.HasPrefix(rest, ":") {
-			continue
-		}
-		if strings.HasPrefix(strings.TrimLeft(rest[1:], " \t\r\n"), "[") {
-			i = j
-		}
-	}
-	if i < 0 {
-		return 0
-	}
-	depth, n := 0, 0
-	inStr, esc := false, false
-	for _, r := range s[i:] {
-		switch {
-		case esc:
-			esc = false
-		case inStr && r == '\\':
-			esc = true
-		case r == '"':
-			inStr = !inStr
-		case inStr: // braces inside a line of narration are just text
-		case r == '{':
-			depth++
-		case r == '}':
-			if depth--; depth == 0 {
-				n++
-			}
-		}
-	}
+	n, _ := jsonItemsDone(s, "entries")
 	return n
 }
 

@@ -189,7 +189,9 @@ func (a *App) audioRun(model string, req map[string]any) ([]byte, error) {
 //
 // The language goes as its own field: over HTTP it lands in the request
 // options directly, so the empty --text the CLI needed to carry it is gone.
-// Models that ignore it (parakeet is multilingual) simply ignore it.
+// Models that ignore it (parakeet is multilingual) simply ignore it. It comes
+// off the project, not off llm.conf -- what this session is spoken in is the
+// session's business, not the machine's.
 func (a *App) asrJSON(wav string) ([]byte, string, error) {
 	// absolute, always: the path is opened by the server, whose working
 	// directory is its own and is not ours
@@ -198,11 +200,8 @@ func (a *App) asrJSON(wav string) ([]byte, string, error) {
 		return nil, "", err
 	}
 	c := a.readConf()
-	req := map[string]any{"audio": path}
-	if c.Language != "" {
-		req["language"] = c.Language
-	}
-	body, err := a.audioRun(c.ASRModel, req)
+	body, err := a.audioRun(c.ASRModel, map[string]any{
+		"audio": path, "language": a.asrLanguage()})
 	if err != nil {
 		return nil, "", err
 	}

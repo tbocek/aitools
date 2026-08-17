@@ -112,11 +112,20 @@ func atoiOr(s string, def int) int {
 	return def
 }
 
+// defaultProdSettings is the render a project gets before anyone touches the
+// Produce page: h264 in mp4 at the quality this pipeline was tuned on. Named
+// because two places need it -- the page before it is built, and a new project,
+// which has to come back to these rather than to zeroes (a 0 CRF is lossless
+// and a 0 fps is not a video at all).
+func defaultProdSettings() prodSettings {
+	return prodSettings{Container: "mp4", Codec: "h264", CRF: 24, Preset: "veryslow",
+		FPS: 30, AudioKbps: 128, GameVol: 0.22, Subs: "sidecar"}
+}
+
 func (a *App) prodSettings() prodSettings {
 	p := a.prod
 	if p == nil {
-		return prodSettings{Container: "mp4", Codec: "h264", CRF: 24, Preset: "veryslow",
-			FPS: 30, AudioKbps: 128, GameVol: 0.22, Subs: "sidecar"}
+		return defaultProdSettings()
 	}
 	st := prodSettings{
 		Container: pickText(p.container, prodContainers),
