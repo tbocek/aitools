@@ -1048,7 +1048,7 @@ func snapToCut(segs []cutSeg, from, to, edge float64) float64 {
 func cutLen(segs []cutSeg) float64 {
 	tot := 0.0
 	for _, s := range segs {
-		tot += math.Max(0, s.E-s.S)
+		tot += math.Max(0, s.length())
 	}
 	return tot
 }
@@ -1066,7 +1066,7 @@ func cutPos(segs []cutSeg, t float64) float64 {
 		if t < s.E {
 			return acc + (t - s.S)
 		}
-		acc += math.Max(0, s.E-s.S)
+		acc += math.Max(0, s.length())
 	}
 	return acc
 }
@@ -1080,8 +1080,14 @@ func cutAt(segs []cutSeg, x float64) float64 {
 	}
 	acc := 0.0
 	for _, s := range segs {
-		d := math.Max(0, s.E-s.S)
+		d := math.Max(0, s.length())
 		if x < acc+d {
+			if s.spliced() {
+				// the card runs for d, but it happens AT a point of the session:
+				// there is no session time inside it to land on, only the moment
+				// the footage is cut open for it
+				return s.S
+			}
 			return s.S + math.Max(0, x-acc)
 		}
 		acc += d
@@ -1333,7 +1339,7 @@ func (n *narrator) addLineAt(t float64) int {
 		return -1
 	}
 	s := segs[si]
-	at := math.Min(math.Max(0, t-s.S), math.Max(0, s.E-s.S-1))
+	at := math.Min(math.Max(0, t-s.S), math.Max(0, s.length()-1))
 	// the clip's own entries, if any
 	lo, hi := -1, -1
 	for i, e := range n.entries {
@@ -1449,7 +1455,7 @@ func (n *narrator) moveLine(i int, t float64) bool {
 	// a line still may not start in the last second of its clip: there is no
 	// room to speak, and everything downstream (lineWindow, the ⚠, the render's
 	// spill) is written against that rule
-	e.At = math.Min(math.Max(0, t-s.S), math.Max(0, s.E-s.S-1))
+	e.At = math.Min(math.Max(0, t-s.S), math.Max(0, s.length()-1))
 	at := e.At // read before the append below can move the entry out from under e
 	// The clip the line just left keeps a row. Every clip in the cut owns at
 	// least one entry -- that is the invariant the rest of the page is written
@@ -1726,7 +1732,7 @@ func (n *narrator) updateInputs() {
 	segs := a.produceSegs()
 	var total float64
 	for _, s := range segs {
-		total += s.E - s.S
+		total += s.length()
 	}
 	line := fmt.Sprintf("%d clip(s) · %s to narrate", len(segs), mmss(total))
 	detail := fmt.Sprintf("step3/cut.json — %d clips, %s of video to write for", len(segs), mmss(total))
@@ -2134,8 +2140,7 @@ func (a *App) narrateRun() {
 	a.logExp.SetExpanded(true)
 	// this run's bar is this run's: the two tracks are summed, so a fraction
 	// left behind by the previous step would be added to every reading here
-	a.progParts = [2]float64{}
-	a.progTexts = [2]string{}
+	a.qReset()
 	// True only while the model is writing. The pulse used to stop when the run
 	// did, which is the wrong end of it: the writing is one call with nothing to
 	// measure, but the speaking that follows it is n lines and counts them, and
@@ -2143,10 +2148,18 @@ func (a *App) narrateRun() {
 	// block sliding back and forth. It is read and written on the GUI thread
 	// only -- the timeout below and the idle callback that clears it.
 	writing := why != ""
+	// what the bar calls the two halves. Writing is one call and cannot be
+	// queued -- the model decides how many lines there are -- so it is a job
+	// with no tasks under it; the speaking below queues one task per line.
+	if writing {
+		a.qJob(trackSTT, "narration", 1, 2)
+	} else {
+		a.qJob(trackSTT, "speaking", 0, 0)
+	}
 	if writing {
 		a.logf(">>> narrate: %s — writing %d clip(s), one thinking call (a minute or two), then speaking them",
 			why, len(segs))
-		a.progress.SetText("thinking about the narration…")
+		a.prog(trackSTT, 0, "thinking about it")
 		glib.TimeoutAdd(150, func() bool {
 			if !a.running || !writing {
 				return false
@@ -2189,7 +2202,7 @@ func (a *App) narrateRun() {
 			// whatever the streamed count reached, the writing is now finished:
 			// the bar starts the speaking half from a full half, not from
 			// wherever a clip that closed oddly left it
-			a.prog(trackSTT, narrWriteShare, "narration written")
+			a.qDone(trackSTT, narrWriteShare)
 			done := make(chan struct{})
 			glib.IdleAdd(func() {
 				writing = false // hands the bar to the count below
@@ -2203,6 +2216,13 @@ func (a *App) narrateRun() {
 			<-done
 		}
 		var failed error
+		// the speaking half, which CAN be queued: one task per line, cached or
+		// not. When there was writing to do this is the run's second job -- read
+		// off why rather than off writing, which belongs to the GUI thread.
+		if why != "" {
+			a.qJob(trackSTT, "speaking", 2, 2)
+		}
+		a.qPush(trackSTT, len(speak), "line")
 		spoke, cached := 0, 0
 		for i, e := range speak {
 			// ▶ started this and is the ⏸ for it, so the pause has to be real:
@@ -2215,8 +2235,8 @@ func (a *App) narrateRun() {
 			// this run is done with, and skipping the reading for it left the bar
 			// sitting at whatever the last synthesized line put there while the
 			// loop ran through the rest of a cached narration.
-			a.prog(trackSTT, speakBase+speakSpan*float64(i)/float64(len(speak)),
-				"speaking %d/%d", i+1, len(speak))
+			a.qTake(trackSTT)
+			a.prog(trackSTT, speakBase+speakSpan*float64(i)/float64(len(speak)), "")
 			if strings.TrimSpace(e.Text) == "" || exists(a.ttsWav(e)) {
 				cached++
 				continue
@@ -2330,7 +2350,23 @@ func clipBriefs(segs []cutSeg, rows []tsvRow, narr string) string {
 	var b strings.Builder
 	for i, s := range segs {
 		fmt.Fprintf(&b, "\nCLIP %d: %.1f–%.1f (%.0f s, at most %d words -- fewer is better, none is fine)\n",
-			i+1, s.S, s.E, s.E-s.S, narrBudget(s.E-s.S))
+			i+1, s.S, s.E, s.length(), narrBudget(s.length()))
+		// An insert has no footage under it and no transcript over it, so the
+		// lines around it would be a description of whatever it covered -- which
+		// is the one thing the viewer will not be looking at. Say what it is
+		// instead: a card that says "a few moments later" wants no narration, and
+		// a ranking graphic wants the ranking read out, and the file's name is
+		// the only thing here that tells them apart.
+		if s.isInsert() {
+			// deliberately the whole thing, parameters and all: "tier.svg" says
+			// nothing about what is on the card and "tier.svg?S=Dust II,Mirage"
+			// says all of it, which is exactly what a narrator needs to read
+			fmt.Fprintf(&b, "  (not footage: a graphic or clip inserted here, %q. "+
+				"Narrate what is ON it, or say nothing -- there is nothing from the "+
+				"session to describe, and inventing one would caption the wrong picture)\n",
+				filepath.Base(s.Ins))
+			continue
+		}
 		n := 0
 		for _, r := range rows {
 			if r.e <= s.S-4 || r.s >= s.E+4 {
@@ -2379,7 +2415,7 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 		if d := narrEntriesDone(s); d > best {
 			best = d
 			a.prog(trackSTT, narrWriteShare*math.Min(1, float64(best)/float64(len(segs))),
-				"writing narration %d/%d", best, len(segs))
+				"writing %d/%d clips", best, len(segs))
 		}
 	}
 	for try := 0; try < 3; try++ {
@@ -2461,7 +2497,7 @@ func bindEntries(segs []cutSeg, raw []rawEntry) ([]narrEntry, string) {
 		last = j
 		// the placement is clamped here so everything downstream can trust
 		// it: never negative, never in the clip's final second
-		at := math.Min(math.Max(0, r.At), math.Max(0, segs[j].E-segs[j].S-1))
+		at := math.Min(math.Max(0, r.At), math.Max(0, segs[j].length()-1))
 		entries = append(entries, narrEntry{
 			S: segs[j].S, E: segs[j].E, At: at, Text: strings.TrimSpace(r.Text),
 			Emotion: r.Emotion})

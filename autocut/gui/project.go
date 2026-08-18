@@ -65,9 +65,19 @@ type Project struct {
 	// (see context.go).
 	Context string `json:"context,omitempty"`
 
-	// only the system prompts the user changed; see prompts.go for why an
-	// untouched one is absent rather than copied
+	// Read, never written. Prompts is how a project stored an edited system
+	// prompt before a job could have more than one wording: one string per job
+	// and no name for it. Loading folds each into the default style for that job,
+	// which is where it came from, and the next save writes it back under
+	// prompt_styles instead.
 	Prompts map[string]string `json:"prompts,omitempty"`
+
+	// the wordings this project has something of its own to say about -- one it
+	// edited, one it added -- keyed by job then listed by name, and which name
+	// each job is set to. Both hold only what differs from what the build ships;
+	// see prompts.go for why an untouched prompt is absent rather than copied.
+	PromptStyles map[string][]promptStyle `json:"prompt_styles,omitempty"`
+	PromptPick   map[string]string        `json:"prompt_pick,omitempty"`
 
 	Produce *prodSettings `json:"produce,omitempty"`
 	// the thumbnail and the upload text. Absent until the Publish page has
@@ -126,20 +136,22 @@ func (a *App) currentProject() Project {
 	var srcs []ProjectSource
 	for _, it := range a.srcList.items {
 		srcs = append(srcs, ProjectSource{
-			Path: a.relToRoot(it.path), Footage: it.footage, Narrator: it.narrator})
+			Path: a.relToRoot(it.path), Footage: it.footage, Narrator: it.narrator,
+		})
 	}
 	return Project{
-		Sources:    srcs,
-		Interval:   a.frameInterval(),
-		FrameScale: scaleName,
-		Language:   a.projectLanguage(),
-		VidDir:     a.relToRoot(a.vidDir),
-		AudDir:     a.relToRoot(a.audDir),
-		OutDir:     a.relToRoot(a.outDir),
-		Context:    a.sessionCtx(),
-		Prompts:    a.currentPrompts(),
-		Produce:    prod,
-		Publish:    a.currentPublish(),
+		Sources:      srcs,
+		Interval:     a.frameInterval(),
+		FrameScale:   scaleName,
+		Language:     a.projectLanguage(),
+		VidDir:       a.relToRoot(a.vidDir),
+		AudDir:       a.relToRoot(a.audDir),
+		OutDir:       a.relToRoot(a.outDir),
+		Context:      a.sessionCtx(),
+		PromptStyles: a.currentPromptStyles(),
+		PromptPick:   a.currentPromptPick(),
+		Produce:      prod,
+		Publish:      a.currentPublish(),
 	}
 }
 
@@ -160,7 +172,8 @@ func (a *App) projectSources(p Project) []sourceItem {
 		var out []sourceItem
 		for _, s := range p.Sources {
 			out = append(out, sourceItem{
-				path: a.fromRoot(s.Path), footage: s.Footage, narrator: s.Narrator})
+				path: a.fromRoot(s.Path), footage: s.Footage, narrator: s.Narrator,
+			})
 		}
 		return out
 	}
@@ -328,7 +341,7 @@ func (a *App) loadProjectFrom(path string) {
 // default, which is a reset that cannot forget a page. A newProject() that
 // cleared what it could remember to clear would leave the last session's
 // narration settings, or its thumbnail, in a project claiming to be new -- the
-// invisible kind of bug applyPrompts's comment is about.
+// invisible kind of bug applyPromptStyles's comment is about.
 func (a *App) applyProject(p Project) {
 	// the folders first: they are where the file choosers open, and where a
 	// pre-merge project's half-relative source names are resolved from
@@ -349,7 +362,7 @@ func (a *App) applyProject(p Project) {
 		a.setFrameScale(p.FrameScale)
 	}
 	a.applyLanguage(p.Language)
-	a.applyPrompts(p.Prompts)
+	a.applyPromptStyles(p.PromptStyles, p.PromptPick, p.Prompts)
 	a.applySessionCtx(p.Context)
 	a.migrateHints(p)
 	a.applyProdSettings(p.Produce)
@@ -475,7 +488,7 @@ func (a *App) confirm(question, detail, okLabel string, ok func()) {
 // be appended to. The runners did that concatenation at request time, using
 // exactly these lead-ins, so folding them in preserves what the model saw;
 // dropping them would silently change what a reloaded project sends. Must run
-// after applyPrompts, which is what puts the prompt in the box in the first
+// after applyPromptStyles, which is what puts the prompt in the box in the first
 // place.
 func (a *App) migrateHints(p Project) {
 	fold := func(key, notes, lead string) {

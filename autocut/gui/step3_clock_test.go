@@ -50,7 +50,7 @@ func TestTheClocksTooltipPlacesTheLineInARecording(t *testing.T) {
 		{base: "a", path: "/tmp/take-a.mkv", start: 0, dur: 100, fps: 30},
 		{base: "b", path: "/tmp/take-b.mkv", start: 100, dur: 100, fps: 25},
 	}
-	ed.segs = []cutSeg{{10, 20}}
+	ed.segs = []cutSeg{{S: 10, E: 20}}
 
 	if tip := ed.playheadTip(); !strings.Contains(tip, "left-click") {
 		t.Errorf("with no playhead the hover says %q -- it should say how to get one", tip)

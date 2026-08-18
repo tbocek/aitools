@@ -489,7 +489,7 @@ func TestNewProjectResetsEveryPageThroughApplyProject(t *testing.T) {
 		t.Fatal("applyProject is gone")
 	}
 	for _, want := range []string{"a.srcList.load(", "a.setFrameInterval(", "a.applyLanguage(",
-		"a.applyPrompts(", "a.applySessionCtx(", "a.applyProdSettings(", "a.applyPublish(", "a.setOutDir("} {
+		"a.applyPromptStyles(", "a.applySessionCtx(", "a.applyProdSettings(", "a.applyPublish(", "a.setOutDir("} {
 		if !strings.Contains(string(load), want) {
 			t.Errorf("applyProject no longer calls %s -- New Project would leave that page as it was", want)
 		}

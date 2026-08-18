@@ -60,6 +60,12 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"1 being the voice the narration is spoken in. Running the step transcribes " +
 			"everything in the list and pulls a frame out of the footage every few " +
 			"seconds — that is what the later steps read instead of the video.\n\n" +
+			"Everything in the list is placed on one clock — the timestamp in the file " +
+			"name, or the file's own time and length — which is what puts a separate " +
+			"recording's words, waveform and sound where they belong against the footage. " +
+			"The footage is the master: everything else is drawn, mixed and cut " +
+			"against where it falls on the footage, and a recording is heard for the " +
+			"part of it that was running while the footage was.\n\n" +
 			"Language is what this session is spoken in, told to the speech-to-text " +
 			"model: it belongs to the footage, so it is here and in the project rather " +
 			"than in Settings, and each project carries its own."},
@@ -68,7 +74,11 @@ var steps = []struct{ name, label, tip, wait, help string }{
 		"Two model jobs over what Inputs produced: the frames are described, and the raw " +
 			"transcripts are cleaned up and merged into one timeline covering the whole " +
 			"session. Both prompts are on the page — they are what the models are told, " +
-			"in full, and an edited one is kept in the project.\n\nThis is the long one, " +
+			"in full, and an edited one is kept in the project.\n\nThe run bar names them " +
+			"in turn — “describe 1/2” then “transcript 2/2” — and after the colon is the " +
+			"piece of work it is on, counted against everything queued so far. Which file " +
+			"that piece came from is in the log; hover the bar for how many tasks are still " +
+			"waiting.\n\nThis is the long one, " +
 			"so the two run buttons mean different things here. ⏸ parks it between " +
 			"requests and ▶ carries on from the same frame; ⏹ ends it, and the next ▶ " +
 			"describes the session from the beginning. Edit a prompt and it is ⏹ you " +
@@ -76,20 +86,110 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"wording and leave the first half under the old."},
 	{"step3", "Cut", "Choose the clips the video is made of",
 		"Finish Describe first — the cut works on the session timeline",
-		"Two tracks over the session: the source above, the cut below. Suggest cut " +
-			"asks the model to fill the target length from what Describe found; from then " +
+		"The footage over the session timeline, with everything the cut keeps tinted " +
+			"green over it, and a waveform lane per sound below. ▶ below asks " +
+			"the model to fill the ▶ target length from what Describe found; from then " +
 			"on the cut is yours — drag to select, add, remove, and Revert goes back to " +
-			"the suggestion. The scroll wheel zooms around the cursor.\n\nA left click " +
+			"the suggestion. Once you have edited by hand ▶ says so rather than throwing " +
+			"the edits away — Revert first if you want a fresh suggestion. The scroll " +
+			"wheel zooms around the cursor.\n\nA left click " +
 			"drops the red playhead; the clock beside the transport buttons is where it " +
 			"landed, in mm:ss.d of session time, and hovering it says which recording " +
 			"that is, which frame, and whether the cut keeps it.\n\nA clip's own " +
-			"edges are trimmed rather than re-selected: right-click a green border to " +
-			"pick it up — it turns white — and drag it, or move it a frame at a time " +
-			"with ‹f and f› (the arrow keys do the same, Shift for five). The picture " +
-			"follows the edge, so what you are trimming to is on screen, and ▶ plays " +
-			"from the edge rather than from the playhead. Right-click " +
-			"clear of a border, or any left click, puts it down; the whole trim is one " +
-			"Undo."},
+			"edges are trimmed rather than re-selected, and that is two buttons: the " +
+			"right one picks a green border up — it turns white — and does nothing else, " +
+			"so the choice keeps while your hand moves. Then move it, either by dragging " +
+			"the white bar with the left button or a frame at a time with ‹f and f› (the " +
+			"arrow keys do the same, Shift for five). The picture follows the edge the " +
+			"whole way, so you trim against the frame rather than against a ruler, and " +
+			"▶ plays from the edge rather than from the playhead. A left click clear of " +
+			"the bar, or a right-click clear of any border, puts it down; the whole trim " +
+			"is one Undo.\n\nA whole clip moves the same way, one level up: the right " +
+			"button pressed on a clip away from its borders picks up the CLIP — outlined " +
+			"in white — and a left drag then slides it with its length intact, snapping " +
+			"flush to the clip either side of it. ‹f and f› nudge it a frame, it never " +
+			"leaves the recording it was cut from or overlaps its neighbours, and the " +
+			"whole slide is one Undo. Picking anything up leaves the playhead where it " +
+			"is — a press near a border takes the border, one away from it takes the clip, " +
+			"and neither moves the picture. The preview follows what you MOVE: drag or " +
+			"nudge either of them and it lands on the frame you left it on.\n\nA source on Inputs that is not marked as footage gets its own " +
+			"lanes under the cut, in blue, one per channel — left and right apart, because " +
+			"they are often separate things, a mic on one and the game on the other. A " +
+			"stereo file with the same signal on both sides is one lane marked L=R: a mic " +
+			"in one input of an interface is one recording however it was written out. The " +
+			"video is the master: the timeline is the footage's, and a separate recording is " +
+			"placed on it by its own clock (the timestamp in its name, or the file's time and " +
+			"length), so it sits where it actually was rather than at the left edge. Only the " +
+			"stretch that was running while the footage ran is drawn, over its own lighter " +
+			"ground — the minutes before you started the capture card are visibly not there " +
+			"rather than stretched to fit. The waveforms appear a moment after the page does; " +
+			"each is decoded once and kept.\n\n" +
+			"What ▶ asks for is a wording you pick: the dropdown above the " +
+			"cut prompt holds Highlights (fill the length with the best moments) and " +
+			"Rating / tier list (line the subjects up, visit each one, end on the verdict). " +
+			"＋ adds your own, and an edited wording is kept in the project under its name.\n\n" +
+			"⧉ Insert drops a file into the cut at the playhead — a title card, a still, an " +
+			"\"a few moments later\" clip, an SVG that animates itself. It shows in violet on " +
+			"the track, the preview shows it while the red line is inside it — animated cards " +
+			"animate — the footage under it gives way exactly as Remove would, and it is " +
+			"never merged, trimmed or replaced by a later Suggest: a card is a file, not a " +
+			"span. While a card is on the preview the session goes quiet, footage and " +
+			"separate recordings alike, because that is the cut Produce makes; an inserted " +
+			"video plays its own sound.\n\nThat is one of two modes, and the dialog asks " +
+			"which — for every file, a sting as much as a card: over the footage, " +
+			"as above, or between it. Between is what a card dropped at the playhead does, " +
+			"since that is what Insert means; over the footage is what a card placed on a " +
+			"marked selection does, since marking the seconds first is saying what they are " +
+			"for. \"Insert between the footage\" cuts the video at that " +
+			"point, plays the card, and carries on, so nothing filmed is lost and the video " +
+			"gets longer by exactly the card. Where that shows is the \"cut\" figure under " +
+			"the tracks, and in the finished video — not in the timeline, which is the " +
+			"session's own clock and stays exactly as long as the recording however much " +
+			"is cut out of it or spliced into it. Playing past one holds the footage where it " +
+			"is, plays the card through, and lets it go again, which is what the finished " +
+			"video does. An inserted card costs no session time, so it " +
+			"is drawn as a violet marker hatched like the hole between two recordings " +
+			"— the same picture, because it is the same thing: the footage stops here — as " +
+			"wide as the card is long at the zoom you are at, so it grows with the clips " +
+			"around it, and never narrower than a marker you can hit. Its name and length " +
+			"are written beside it, and its seconds are typed in the dialog rather " +
+			"than dragged. Right-click a card to hold it and ⧉ Insert becomes ✎ Edit: the " +
+			"same dialog again, for what the card says, which mode it is in, and how long it " +
+			"runs. Switching modes moves the footage back or out of the way to match.\n\n" +
+			"A card that animates itself is rendered frame by frame, written either " +
+			"way: SMIL (<animate>, <animateTransform>), or a <style> block with @keyframes " +
+			"in it — opacity, transform and fill, with the delay and the easing the " +
+			"stylesheet asks for. Whatever the file does not cover is drawn as it stands, " +
+			"and anything Produce could not read says so in the log.\n\n" +
+			"The project's assets folder starts with cards this app draws itself: tier.svg is " +
+			"the S/A/B/C/D/F board, and s.svg, a.svg, b.svg, c.svg, d.svg, f.svg are single " +
+			"letters that fly in. The board arrives with two of those letters flying onto it, " +
+			"which is the one thing a still cannot show you and is what Just added below does. " +
+			"They are filled in when you insert them — the board is the six tiers, S A B C D " +
+			"F, and one line each: type \"Dust II, Mirage\" into Tier S and it is a red row " +
+			"with two chips in it. A chip can be a " +
+			"name, a logo, or both: \"Logo…\" beside a tier adds picture files to it, and " +
+			"\"Dust II|logos/dust2.png\" is the name under the logo. A tier holds six; a " +
+			"seventh is not drawn and the log says so. The last line, Just " +
+			"added, is what the shot is about: the board you have already shown is put back up " +
+			"quickly and these fly in on their own afterwards. A bare name (\"Mirage\") points " +
+			"at an item already in a row above. \"D[1.1s]: logos/bla.svg, Test\" is the other " +
+			"form — into row D, starting 1.1 seconds in (or 1100ms), the logo with Test under " +
+			"it — and the list is comma separated, so several things can be sent in one after " +
+			"another on a beat you choose. Leave the line empty and the whole board arrives at one " +
+			"pace, as it always did. What you type is kept on the end of the path " +
+			"(tier.svg?S=Dust II, Mirage&A=Nuke), so the same file is " +
+			"a different board every time you place it and the cut says which. tier.svg is also " +
+			"the file it is drawn from, and it is a board when you open it: every row and all " +
+			"six places in it are written out with their own coordinates, and the {{holes}} in " +
+			"them are what you typed and the timings the arrivals get — restyle that file and " +
+			"every board drawn from it comes out restyled. " +
+			"Your own SVG can " +
+			"do the same: put {{name}} or {{name|default}} in it and Insert asks for each one, " +
+			"and add <!-- Input: name | Label | what it is --> beside it to have the dialog ask " +
+			"in your words rather than in the placeholder's. assets/CARDS.md is written into " +
+			"the folder with the cards and says all of it — the canvas, the placeholders, and " +
+			"how an animated one has to be written — for whoever, or whatever, writes the next one."},
 	{"step4", "Narrate", "The narration, and the voice it is spoken in",
 		"Finish Cut first — narration is written for the cut's clips",
 		"▶ below is the initial fill: it writes the narration once (again only if the " +
@@ -146,7 +246,15 @@ var steps = []struct{ name, label, tip, wait, help string }{
 		"▶ below renders the final video: every clip is cut from its own recording, " +
 			"the narration is laid over ducked game audio, and the whole thing is " +
 			"loudness-normalized to -14 LUFS for YouTube. Lines that have not been " +
-			"synthesized yet are spoken first.\n\nWhen it finishes, the result is " +
+			"synthesized yet are spoken first.\n\nA session's separate recordings are " +
+			"in the sound as well as in the picture: whatever was running while a clip " +
+			"was running is mixed into it, from the second of that recording the clip " +
+			"actually falls on — the same placement the blue lanes on Cut are drawn " +
+			"from, with the footage as the master. It joins the game audio rather than " +
+			"the narration, so \"Game audio under voice\" ducks both together and the " +
+			"spoken lines still sit on top. Cards are left silent: a card is time added " +
+			"to the cut, not a moment of the session, so there is nothing that was said " +
+			"under it.\n\nWhen it finishes, the result is " +
 			"waiting in the picture below: ▶ then plays it rather than producing " +
 			"again, and ⏹ hands ▶ back to producing. The row at the top says what " +
 			"is going in — the cut, the lines, and how many of them still have to " +
@@ -392,6 +500,16 @@ type App struct {
 	promptMu    sync.Mutex
 	promptTxt   map[string]string
 	promptViews map[string]*gtk.TextView
+	// the several wordings a job can have and which one this project picked
+	// (prompts.go). promptSty holds only what the project has of its own to say
+	// -- an edited built-in or one it invented -- so both are keyed by job, then
+	// by style name. Under promptMu with promptTxt: setPrompt writes all three.
+	promptSty  map[string][]promptStyle
+	promptPick map[string]string
+	// the picker widgets, and the flag that stops filling them from reading as
+	// the user editing them. GUI thread only, so no lock (showPromptStyle).
+	promptRows  map[string]promptRow
+	promptQuiet bool
 	// every text box's heading row, so a row with a Reset button and a row with
 	// a bare label are the same height and the boxes under them line up
 	// (editorBody). GUI thread only, like the views.
@@ -416,10 +534,11 @@ type App struct {
 	projSaved []byte
 	projLabel *gtk.Label
 
-	// one progress bar fed by both tracks: summed fractions, joined texts
+	// one progress bar fed by both tracks: summed fractions, and the work each
+	// of them still has queued (runqueue.go)
 	progMu    sync.Mutex
 	progParts [2]float64
-	progTexts [2]string
+	progQ     [2]qTrack
 }
 
 // The frame slider snaps to these stops; a linear 0.1..5 s scale would cram
@@ -875,6 +994,10 @@ func (a *App) build(app *gtk.Application) {
 	a.progress = gtk.NewProgressBar()
 	a.progress.SetShowText(true)
 	a.progress.SetText("nothing running")
+	// the bar reads "describe 1/2: chunk 4/12": the job, which of the run's jobs
+	// it is, and where the work queue has got to. Which file is in the log --
+	// the tooltip a run replaces this one with counts the tasks instead
+	a.progress.SetTooltipText("The run: the job, which of the run's jobs it is, and the task it is on")
 	a.progress.SetHExpand(true)
 	a.progress.SetVAlign(gtk.AlignCenter)
 

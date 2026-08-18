@@ -330,10 +330,7 @@ func (a *App) startUnderstand(videos, audios []string) {
 	a.stopFlag.Store(false)
 	a.pauseFlag.Store(false)
 	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.progMu.Lock()
-	a.progParts = [2]float64{}
-	a.progTexts = [2]string{}
-	a.progMu.Unlock()
+	a.qReset()
 	a.updateRunControls()
 	a.setStatus("describe + transcript running…")
 	a.logExp.SetExpanded(true)
@@ -385,8 +382,13 @@ func (a *App) startUnderstand(videos, audios []string) {
 // fixer makes dozens of big text ones -- which is the same trap step 1 fell
 // into.
 func (a *App) understand(videos, audios []string) error {
+	// two jobs, one after the other, and the bar says which of the two it is
+	// on: this page's ▶ is the longest press in the app, and "1/2" is the
+	// difference between halfway through and nearly done.
+	a.qJob(trackDescribe, "describe", 1, 2)
 	if err := a.describeAll(videos, audios, 0.5); err != nil {
 		return err
 	}
+	a.qJob(trackFix, "transcript", 2, 2)
 	return a.fixTranscripts(videos, audios, 0.5)
 }

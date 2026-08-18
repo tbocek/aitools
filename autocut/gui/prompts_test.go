@@ -73,10 +73,16 @@ func TestEveryPromptIsExposed(t *testing.T) {
 	if len(declared) == 0 {
 		t.Fatal("found no system prompts at all -- the pattern went stale, not the code")
 	}
-	if len(declared) != len(promptDefs) {
+	// counted across the wordings, not the jobs: a job can ship several, so what
+	// has to match is how many prompts exist against how many the dropdowns offer
+	exposed := 0
+	for _, d := range promptDefs {
+		exposed += len(d.builtins())
+	}
+	if len(declared) != exposed {
 		t.Errorf("%d system prompts declared %v, but %d are exposed in promptDefs -- "+
-			"a new one needs a promptDef and an editor on its step",
-			len(declared), keysOf(declared), len(promptDefs))
+			"a new one needs a promptDef (or an alts entry) and an editor on its step",
+			len(declared), keysOf(declared), exposed)
 	}
 }
 
@@ -165,29 +171,38 @@ func keysOf(m map[string]bool) []string {
 // into every project file forever.
 func TestCurrentPromptsStoresOnlyEdits(t *testing.T) {
 	a := &App{}
-	if got := a.currentPrompts(); got != nil {
+	if got := a.currentPromptStyles(); got != nil {
 		t.Errorf("an untouched app wants to store %v, want nothing", got)
 	}
 	// what the editor does on build: fill the box with the default
 	for _, d := range promptDefs {
 		a.setPrompt(d.key, d.def)
 	}
-	if got := a.currentPrompts(); got != nil {
+	if got := a.currentPromptStyles(); got != nil {
 		t.Errorf("boxes holding the defaults want to store %v, want nothing", got)
 	}
 
 	a.setPrompt("narrate", "Say nothing at all.")
-	got := a.currentPrompts()
-	if len(got) != 1 || got["narrate"] != "Say nothing at all." {
-		t.Fatalf("currentPrompts = %v, want only the edited one", got)
+	got := a.currentPromptStyles()
+	if len(got) != 1 || len(got["narrate"]) != 1 || got["narrate"][0].Text != "Say nothing at all." {
+		t.Fatalf("currentPromptStyles = %v, want only the edited one", got)
+	}
+	if n := got["narrate"][0].Name; n != defStyle {
+		t.Errorf("the edit was stored under %q, want the picked style %q", n, defStyle)
 	}
 	// and it survives the file, under a key the next version will still know
-	b, _ := json.Marshal(Project{Prompts: got})
-	if !strings.Contains(string(b), `"prompts":{"narrate":`) {
+	b, _ := json.Marshal(Project{PromptStyles: got})
+	if !strings.Contains(string(b), `"prompt_styles":{"narrate":[{"name":`) {
 		t.Errorf("project JSON does not carry the prompt: %s", b)
 	}
-	if b, _ := json.Marshal(Project{}); strings.Contains(string(b), "prompts") {
+	if b, _ := json.Marshal(Project{}); strings.Contains(string(b), "prompt") {
 		t.Errorf("an untouched project mentions prompts: %s", b)
+	}
+	// typing the built-in wording back is how an edit is undone -- storing a
+	// copy of it instead would freeze it exactly as storing them all would
+	a.setPrompt("narrate", promptDefFor("narrate").def)
+	if got := a.currentPromptStyles(); got != nil {
+		t.Errorf("an edit typed back to the built-in still wants to store %v", got)
 	}
 }
 
@@ -199,7 +214,8 @@ func TestApplyPromptsIsAFullSwitch(t *testing.T) {
 	a.setPrompt("cut", "the previous project's idea of a highlight")
 	a.setPrompt("narrate", "and its idea of a voice")
 
-	a.applyPrompts(map[string]string{"narrate": "the new project's voice"})
+	a.applyPromptStyles(map[string][]promptStyle{
+		"narrate": {{defStyle, "the new project's voice"}}}, nil, nil)
 
 	if got := a.prompt("cut"); got != promptDefFor("cut").def {
 		t.Errorf("a key the project does not mention kept %q, want the built-in", short(got))
@@ -208,12 +224,143 @@ func TestApplyPromptsIsAFullSwitch(t *testing.T) {
 		t.Errorf("narrate = %q, want the loaded project's", short(got))
 	}
 	// a project saved before prompts existed has none at all
-	a.applyPrompts(nil)
+	a.applyPromptStyles(nil, nil, nil)
 	for _, d := range promptDefs {
 		if got := a.prompt(d.key); got != d.def {
 			t.Errorf("after loading a prompt-less project, %s = %q, want the built-in",
 				d.key, short(got))
 		}
+	}
+}
+
+// A project written before a job could have more than one wording stored one
+// string per key and no name for it. That is the default style's text -- the
+// shipped wording of a job did not move, it only gained company -- and dropping
+// it on load would silently hand the model the built-in instead of what the
+// user wrote.
+func TestALegacyPromptLoadsAsAnEditOfTheDefaultStyle(t *testing.T) {
+	a := &App{}
+	a.applyPromptStyles(nil, nil, map[string]string{"cut": "the old project's idea of a cut"})
+
+	if got := a.prompt("cut"); got != "the old project's idea of a cut" {
+		t.Errorf("cut = %q, want what the pre-styles project stored", short(got))
+	}
+	if got := a.promptPickName("cut"); got != promptDefFor("cut").styleName() {
+		t.Errorf("it landed on style %q, want the default %q", got, promptDefFor("cut").styleName())
+	}
+	// and the next save writes it back the new way, so the legacy key can go
+	got := a.currentPromptStyles()
+	if len(got["cut"]) != 1 || got["cut"][0].Text != "the old project's idea of a cut" {
+		t.Errorf("the migrated prompt is not stored as a style: %v", got)
+	}
+	// switching away and back must still find it: the migration put it in the
+	// style list, not just in the box
+	a.showPromptStyle("cut", "Rating / tier list")
+	if got := a.prompt("cut"); got != strings.TrimSpace(ratingSystem) {
+		t.Errorf("picking the other wording gave %q", short(got))
+	}
+	a.showPromptStyle("cut", promptDefFor("cut").styleName())
+	if got := a.prompt("cut"); got != "the old project's idea of a cut" {
+		t.Errorf("switching back lost the edit: %q", short(got))
+	}
+}
+
+// The cut is the one job that ships more than one wording, because what makes a
+// good segment is a property of the footage and not of this tool.
+func TestTheCutShipsMoreThanOneWording(t *testing.T) {
+	got := promptDefFor("cut").builtins()
+	if len(got) < 2 {
+		t.Fatalf("the cut ships %d wording(s), want the highlights one and the rating one", len(got))
+	}
+	if got[0].Text != promptDefFor("cut").def {
+		t.Error("the default is not first -- a project that never picked would open on the wrong one")
+	}
+	seen := map[string]bool{}
+	for _, s := range got {
+		if s.Name == "" {
+			t.Error("a wording with no name can never be picked back")
+		}
+		if seen[s.Name] {
+			t.Errorf("two wordings both called %q", s.Name)
+		}
+		seen[s.Name] = true
+	}
+	// the rating cut exists to cover every item and to land the ranking whole;
+	// a wording that forgot either is the bug it was written to fix
+	rating := strings.ToLower(strings.TrimSpace(ratingSystem))
+	for _, want := range []string{"chronological", "ranking", "every item"} {
+		if !strings.Contains(rating, want) {
+			t.Errorf("the rating cut never mentions %q", want)
+		}
+	}
+}
+
+// Picking is what the box shows, and every keystroke is stored under the name
+// that was picked when it was typed -- so a wording cannot be lost by looking
+// at another one.
+func TestSwitchingWordingKeepsBothEdits(t *testing.T) {
+	a := &App{}
+	def := promptDefFor("cut").styleName()
+
+	a.setPrompt("cut", "my highlights wording")
+	a.showPromptStyle("cut", "Rating / tier list")
+	a.setPrompt("cut", "my rating wording")
+
+	a.showPromptStyle("cut", def)
+	if got := a.prompt("cut"); got != "my highlights wording" {
+		t.Errorf("going back to %q gave %q", def, short(got))
+	}
+	a.showPromptStyle("cut", "Rating / tier list")
+	if got := a.prompt("cut"); got != "my rating wording" {
+		t.Errorf("the other wording came back as %q", short(got))
+	}
+	// and the pick is stored, since it decides what the next run sends
+	if got := a.currentPromptPick(); got["cut"] != "Rating / tier list" {
+		t.Errorf("the project stores pick %v, want the rating cut", got)
+	}
+	if got := a.currentPromptPick(); len(got) != 1 {
+		t.Errorf("a job nobody switched is stored anyway: %v", got)
+	}
+}
+
+// A wording the project invented has to survive the file and come back
+// pickable; removing it falls back to the default rather than to an empty box,
+// which would silently send the model nothing.
+func TestAnAddedWordingRoundTrips(t *testing.T) {
+	a := &App{}
+	a.savePromptStyle("cut", "Speedrun", "Cut for splits and route.")
+	a.showPromptStyle("cut", "Speedrun")
+
+	b := &App{}
+	b.applyPromptStyles(a.currentPromptStyles(), a.currentPromptPick(), nil)
+	if got := b.prompt("cut"); got != "Cut for splits and route." {
+		t.Errorf("after a save and a load the added wording is %q", short(got))
+	}
+	names := []string{}
+	for _, s := range b.promptStyleList("cut") {
+		names = append(names, s.Name)
+	}
+	if len(names) != len(promptDefFor("cut").builtins())+1 {
+		t.Errorf("the dropdown offers %v, want the built-ins plus Speedrun", names)
+	}
+
+	b.dropPromptStyle("cut", "Speedrun")
+	b.showPromptStyle("cut", promptDefFor("cut").styleName())
+	if got := b.prompt("cut"); got != promptDefFor("cut").def {
+		t.Errorf("after removing it the box holds %q, want the built-in", short(got))
+	}
+	if got := b.currentPromptStyles(); got != nil {
+		t.Errorf("the removed wording is still stored: %v", got)
+	}
+}
+
+// A style deleted while it was picked -- by hand in project.json, or by a build
+// that stopped shipping it -- must not leave the runner with an empty prompt.
+func TestAPickedWordingThatIsGoneFallsBackToTheBuiltIn(t *testing.T) {
+	a := &App{}
+	a.applyPromptStyles(nil, map[string]string{"cut": "a wording nobody has"}, nil)
+	if got := a.prompt("cut"); got != promptDefFor("cut").def {
+		t.Errorf("a missing wording sent %q, want the built-in", short(got))
 	}
 }
 
@@ -224,7 +371,7 @@ func TestApplyPromptsIsAFullSwitch(t *testing.T) {
 // is told without changing anything visible.
 func TestMigrateHintsFoldsNotesIntoThePrompt(t *testing.T) {
 	a := &App{}
-	a.applyPrompts(nil)
+	a.applyPromptStyles(nil, nil, nil)
 	p := Project{
 		DescribeHints:   "the HUD number top left is ammo",
 		TranscriptHints: "SPEAKER_00 is Jan",
@@ -254,15 +401,17 @@ func TestMigrateHintsFoldsNotesIntoThePrompt(t *testing.T) {
 	if got := a.prompt("describe"); got != before {
 		t.Errorf("a second load appended the notes again:\n%q", short(got))
 	}
-	if got := a.currentPrompts(); got["describe"] == "" || got["fix"] == "" ||
-		got["cut"] == "" || got["narrate"] == "" {
-		t.Errorf("folded-in notes are not stored as prompt edits: %v", got)
+	got := a.currentPromptStyles()
+	for _, key := range []string{"describe", "fix", "cut", "narrate"} {
+		if len(got[key]) != 1 {
+			t.Errorf("%s's folded-in notes are not stored as an edit of a wording: %v", key, got[key])
+		}
 	}
 	// nothing to fold is the common case and must leave the built-ins alone
 	b := &App{}
-	b.applyPrompts(nil)
+	b.applyPromptStyles(nil, nil, nil)
 	b.migrateHints(Project{})
-	if got := b.currentPrompts(); got != nil {
+	if got := b.currentPromptStyles(); got != nil {
 		t.Errorf("a project without notes wants to store %v, want nothing", got)
 	}
 }
@@ -272,4 +421,106 @@ func short(s string) string {
 		return s[:60] + "…"
 	}
 	return s
+}
+
+// Choosing a wording froze the app.
+//
+// The dropdown's notify::selected is emitted from inside GtkDropDown, with the
+// popup still closing, and the handler rebuilt the dropdown's own list model
+// from there -- so the list view was left drawing a list that no longer
+// existed. It hung after the switch had visibly worked: the box already showed
+// the new wording and Reset had already dimmed, which is why it read as "the
+// app freezes when I pick Highlights" rather than as anything the pick did.
+//
+// So the two jobs are split. pickPromptStyle records the choice and fills the
+// box and is the only one the signal may call; showPromptStyle also rebuilds
+// the menu and belongs to the places where the list of wordings really changed
+// -- a load, an add, a delete -- none of which are inside that emission.
+//
+// Source-level, because reproducing it needs a display, a main loop and a real
+// popup. What can be checked without one is that the handler stays on its side
+// of the split.
+func TestChoosingAWordingDoesNotRebuildTheMenuUnderItself(t *testing.T) {
+	b, err := os.ReadFile("prompts.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+
+	m := regexp.MustCompile(`(?s)pick\.NotifyProperty\("selected".*?\n\t\}\)`).FindString(src)
+	if m == "" {
+		t.Fatal("the dropdown no longer connects notify::selected — find where a pick lands now")
+	}
+	if strings.Contains(m, "showPromptStyle") {
+		t.Errorf("the pick handler rebuilds the menu it was called from:\n%s", m)
+	}
+	if !strings.Contains(m, "pickPromptStyle") {
+		t.Errorf("the pick handler no longer shows the wording that was picked:\n%s", m)
+	}
+	// the half that may touch the model has to still exist as its own function,
+	// or the split is only a rename away from being undone
+	for _, want := range []string{
+		"func (a *App) pickPromptStyle(key, name string)",
+		"func (a *App) showPromptStyle(key, name string)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("%s is gone — the two jobs are one again", want)
+		}
+	}
+	// and the rebuild that does happen is one emission, not one per item: a
+	// Remove loop empties the model an item at a time, and an empty model is a
+	// selection GTK moves for you at every step
+	if strings.Contains(src, "row.names.Remove(") {
+		t.Error("the menu is rebuilt by removing items one at a time; Splice replaces it in one go")
+	}
+	if !strings.Contains(src, "row.names.Splice(") {
+		t.Error("the menu is no longer replaced in a single items-changed")
+	}
+}
+
+// ...and the rebuild is skipped entirely when the names did not move, which is
+// every plain switch between wordings. Cheap to check and it is what keeps the
+// dangerous path from running at all on the common one.
+func TestTheMenuIsOnlyRebuiltWhenTheNamesChange(t *testing.T) {
+	a := &App{}
+	if !sameStringsSlice(namesOfStyles(a.promptStyleList("cut")), namesOfStyles(a.promptStyleList("cut"))) {
+		t.Fatal("the shipped wordings for the cut are not stable between calls")
+	}
+	// switching wording does not add or remove one
+	before := namesOfStyles(a.promptStyleList("cut"))
+	a.promptPick = map[string]string{"cut": "Rating / tier list"}
+	if after := namesOfStyles(a.promptStyleList("cut")); !sameStringsSlice(before, after) {
+		t.Errorf("picking a wording changed the menu from %v to %v", before, after)
+	}
+	// editing one does not either -- it replaces the text under the same name
+	a.setPrompt("cut", "Rank them, shortest first.")
+	if after := namesOfStyles(a.promptStyleList("cut")); !sameStringsSlice(before, after) {
+		t.Errorf("editing a wording changed the menu from %v to %v", before, after)
+	}
+	// adding one does, and that is the case showPromptStyle is for
+	a.savePromptStyle("cut", "Speedrun", "One clip per split.")
+	after := namesOfStyles(a.promptStyleList("cut"))
+	if len(after) != len(before)+1 || after[len(after)-1] != "Speedrun" {
+		t.Errorf("an added wording gave %v, want %v plus Speedrun at the end", after, before)
+	}
+}
+
+func namesOfStyles(list []promptStyle) []string {
+	out := make([]string, len(list))
+	for i, s := range list {
+		out[i] = s.Name
+	}
+	return out
+}
+
+func sameStringsSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

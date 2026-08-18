@@ -40,7 +40,7 @@ func (a *App) setSessionCtx(s string) {
 }
 
 // applySessionCtx loads a project's context into the box as well as the cache.
-// Called from the GUI thread only, like applyPrompts, and for the same reason:
+// Called from the GUI thread only, like applyPromptStyles, and for the same reason:
 // it touches a GtkTextBuffer.
 func (a *App) applySessionCtx(s string) {
 	a.setSessionCtx(s)

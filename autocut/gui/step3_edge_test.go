@@ -2,12 +2,14 @@ package main
 
 // Trimming a clip by its edge. Add and Remove work in regions, which is the
 // wrong shape for the last thing you do to a scene -- half a second off the
-// front -- so the right button picks a green border up and the frame buttons
-// move it. What these pin is the arithmetic under that: how far an edge may go,
-// that one hold is one Undo, and that the lower track paints the frame the
-// boundary falls inside instead of leaving a grey bar there.
+// front -- so the right button picks a green border up, and a left drag or the
+// frame buttons move it. What these pin is the arithmetic under that: how far an
+// edge may go, that one hold is one Undo, that a left press knows the difference
+// between the edge and the track it sits on, and that the lower track paints the
+// frame the boundary falls inside instead of leaving a grey bar there.
 
 import (
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -132,36 +134,29 @@ func TestTheFrameButtonsMoveTheHeldEdge(t *testing.T) {
 	}
 }
 
-// The cut track used to draw a frame only if the frame's own sample time fell
-// inside the cut. Frames are sampled seconds apart, so a clip that starts
-// between two of them lost the frame covering its first seconds and showed a
-// grey bar at the head of nearly every clip.
-func TestTheBoundaryFrameIsPainted(t *testing.T) {
-	segs := []cutSeg{{S: 103, E: 137}}
-	// the thumbnail sampled at 100 covers 100-105, of which the cut keeps 103-105
-	got := keptSpans(segs, 100, 105)
-	if len(got) != 1 || got[0] != [2]float64{103, 105} {
-		t.Fatalf("the frame at the clip's head paints %v, want [{103 105}]", got)
+// The page draws the footage once. There used to be a second band under it
+// holding the same thumbnails with the dropped stretches cut out of them, which
+// is the green overlay said twice -- and it was the band that kept going wrong
+// on its own (a frame was painted only when its sample time fell inside the
+// cut, so a clip starting between two samples showed a grey bar at its head).
+// Nothing about the cut is only readable from a second row of pictures.
+func TestThereIsOneThumbnailBand(t *testing.T) {
+	b, err := os.ReadFile("step3.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-	// one wholly inside is painted whole, one wholly outside not at all
-	if got := keptSpans(segs, 110, 115); len(got) != 1 || got[0] != [2]float64{110, 115} {
-		t.Errorf("a frame inside the clip paints %v, want all of it", got)
+	src := string(b)
+	for _, gone := range []string{"cutArea", "isCut", "keptSpans"} {
+		if strings.Contains(src, gone) {
+			t.Errorf("the second thumbnail band is back (%q) — the green overlay already says which parts are kept", gone)
+		}
 	}
-	if got := keptSpans(segs, 90, 95); got != nil {
-		t.Errorf("a frame the cut dropped paints %v", got)
-	}
-	// the tail is the same case as the head, and a frame spanning two clips
-	// paints once per clip
-	if got := keptSpans(segs, 135, 140); len(got) != 1 || got[0] != [2]float64{135, 137} {
-		t.Errorf("the frame at the clip's tail paints %v, want [{135 137}]", got)
-	}
-	two := []cutSeg{{S: 101, E: 102}, {S: 103, E: 104}}
-	if got := keptSpans(two, 100, 105); len(got) != 2 {
-		t.Errorf("a frame spanning two clips paints %v, want a piece for each", got)
+	if !strings.Contains(src, "cr.SetSourceRGBA(0.2, 0.8, 0.3, 0.30)") {
+		t.Error("the green overlay is gone, and with the second band gone too nothing says what the cut keeps")
 	}
 }
 
-// ...and the wiring that hands all of that to the right mouse button.
+// ...and the wiring that splits it between the two mouse buttons.
 func TestTheEdgeToolIsWired(t *testing.T) {
 	b, err := os.ReadFile("step3.go")
 	if err != nil {
@@ -169,23 +164,92 @@ func TestTheEdgeToolIsWired(t *testing.T) {
 	}
 	src := string(b)
 	for _, want := range []string{
-		"edge.SetButton(gdk.BUTTON_SECONDARY)",           // the right button, and only it
-		"if !ed.grabEdge(x + ed.viewX) {",                // press: pick up the border under the cursor
-		"ed.moveEdgeTo(ed.tAtView(edgeStartX+ox), true)", // drag: move it, without writing the file per motion
-		"ed.persist() // the drag is over",               // release: this is the cut that goes on disk
-		"ed.dropEdge() // any left click puts a held edge down",
-		"case ed.edgeOn && (keyval == gdk.KEY_Left || keyval == gdk.KEY_Right):", // arrows nudge, but only while held
-		"case ed.edgeOn && keyval == gdk.KEY_Escape:",
+		"pick.SetButton(gdk.BUTTON_SECONDARY)", // the right button selects...
+		"pick.ConnectPressed(",                 // ...on the press, and that is the whole of it
+		"case ed.grabEdge(px):",                // press: pick up the border under the cursor
+		// the left button moves it, but only from a press that landed on it
+		"if trimming = ed.onHeldEdge(x + ed.viewX); trimming {",
+		"ed.moveEdgeTo(ed.tAtView(dragStartX+ox), true)", // drag: move it, without writing the file per motion
+		"ed.showEdge(true) // the picture comes with it",
+		"ed.persist() // the drag is over", // release: this is the cut that goes on disk
+		"ed.dropEdge() // any other left click puts a held edge or clip down",
+		// arrows nudge, but only while something is held
+		"case (ed.edgeOn || ed.segOn) && (keyval == gdk.KEY_Left || keyval == gdk.KEY_Right):",
+		"case (ed.edgeOn || ed.segOn) && keyval == gdk.KEY_Escape:",
 		"if ed.edgeOn {\n\t\ted.nudgeEdge(n)",                                // ‹f and f› are the edge's while one is held
 		"if ed.edgeOn && !ed.playing() {\n\t\ted.setPlayhead(ed.edgeTime())", // ▶ plays from the held edge
 		"if ed.edgeOn && ed.edgeSeg < len(ed.segs) {",                        // ...and the held edge is drawn
-		"for _, k := range keptSpans(ed.segs, t, t+float64(step)*v.interval) {",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the cut page no longer contains %q", want)
 		}
 	}
-	if strings.Contains(src, "if isCut && !ed.inCut(t) {") {
-		t.Error("the cut track is back to drawing whole frames by their sample time — the grey bar at every clip's head")
+	// the right button moves nothing: it has no drag to move anything with
+	if strings.Contains(src, "edge.ConnectDragUpdate(") {
+		t.Error("the right button is dragging an edge again — it selects, and the left button moves")
+	}
+}
+
+// A left press takes hold of the edge only where the edge is drawn. Anywhere
+// else it is the selection it has always been -- which is also what puts a held
+// edge down, so the two readings of a left press never overlap.
+func TestALeftPressTakesTheEdgeOnlyOnTheEdge(t *testing.T) {
+	ed := edgeEd(t)
+	if ed.onHeldEdge(400) {
+		t.Error("a press took hold of an edge while none was held")
+	}
+	ed.grabEdge(400) // clip 1's start, at timeline px 400
+	for _, c := range []struct {
+		px   float64
+		want bool
+	}{
+		{400, true},  // on it
+		{409, true},  // on the handle's head
+		{412, true},  // the far side of the grab margin
+		{414, false}, // clear of it: a selection, and the edge goes down
+		{460, false}, // well clear
+	} {
+		if got := ed.onHeldEdge(c.px); got != c.want {
+			t.Errorf("a left press at px %g takes the edge: %v, want %v", c.px, got, c.want)
+		}
+	}
+	// and the edge it follows is the one being moved, not the one it was
+	// picked up at: a drag that has travelled keeps its grip
+	ed.moveEdgeTo(120, true)
+	if ed.onHeldEdge(400) || !ed.onHeldEdge(ed.xOf(120)) {
+		t.Error("the grip stayed at the px the edge was picked up at rather than following it")
+	}
+}
+
+// The preview follows the edge, because an edge is judged by the frame it cuts
+// on. An end edge shows the last frame the cut KEEPS, which is a frame short of
+// the boundary itself -- the boundary's own frame is the first one dropped.
+func TestThePictureFollowsTheEdge(t *testing.T) {
+	ed := edgeEd(t) // one 30 fps recording
+	ed.grabEdge(400)
+	ed.showEdge(false)
+	if ed.playhead != 100 || !ed.hasPlay {
+		t.Errorf("a start edge at 100 s previewed %g", ed.playhead)
+	}
+	ed.grabEdge(520) // clip 1's end, at 130 s
+	ed.showEdge(false)
+	if want := 130 - 1.0/30; math.Abs(ed.playhead-want) > 1e-9 {
+		t.Errorf("an end edge at 130 s previewed %g, want %g — the last frame kept, not the first dropped",
+			ed.playhead, want)
+	}
+	// a live drag is thinned: the seeks would otherwise queue up behind the
+	// mouse. The first one goes through, the ones in the same instant do not
+	ed.moveEdgeTo(140, true)
+	ed.showEdge(true)
+	first := ed.playhead
+	ed.moveEdgeTo(150, true)
+	ed.showEdge(true)
+	if ed.playhead != first {
+		t.Error("every motion event seeks — the preview is not thinned during a drag")
+	}
+	// ...and the end of the drag always lands, throttle or no throttle
+	ed.showEdge(false)
+	if want := 150 - 1.0/30; math.Abs(ed.playhead-want) > 1e-9 {
+		t.Errorf("the drag ended at %g and the picture stayed at %g", want, ed.playhead)
 	}
 }

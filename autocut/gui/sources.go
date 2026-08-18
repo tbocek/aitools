@@ -319,6 +319,8 @@ func (s *sourceList) load(items []sourceItem) {
 }
 
 func (s *sourceList) changed() {
+	// before anything reads the list: placing a file is the first thing every
+	// step does with one, and it has to place it where this list says
 	s.render()
 	if s.onChange != nil {
 		s.onChange()

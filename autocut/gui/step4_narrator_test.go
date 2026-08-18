@@ -236,7 +236,7 @@ func TestTheBarPulsesOnlyWhileNothingCanBeCounted(t *testing.T) {
 	}
 	// the two tracks are summed, so last step's leftovers would be added to
 	// every reading this one takes
-	if !strings.Contains(run, "a.progParts = [2]float64{}") {
+	if !strings.Contains(run, "a.qReset()") {
 		t.Error("the bar is not reset at the start of the run")
 	}
 	// ...and once the writing IS being counted, the pulse has to stop on its

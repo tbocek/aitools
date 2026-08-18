@@ -379,6 +379,10 @@ func (a *App) describeAll(videos, audios []string, span float64) error {
 		plans = append(plans, p)
 		total += p.chunks
 	}
+	// the queue: one task per chunk of frames, over every recording. Nothing
+	// here is countable before the frames are on disk, which is why it is
+	// filled at the top of the job rather than when the run started.
+	a.qPush(trackDescribe, total, "chunk")
 	// this step ONLY describes; the fixer reads these event logs afterwards
 	done := 0
 	for _, p := range plans {
@@ -389,7 +393,7 @@ func (a *App) describeAll(videos, audios []string, span float64) error {
 	}
 	// chunks that resume skip their progress call, so a video that was already
 	// described would leave the bar where it started -- claim the share here
-	a.prog(trackDescribe, span, "described")
+	a.qDone(trackDescribe, span)
 	return nil
 }
 
@@ -516,11 +520,14 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 		tLast := float64(hi-1) * p.interval
 		t1 := float64(hi) * p.interval
 		key := fmt.Sprintf("%.2f", t0)
+		// taken whatever becomes of it: a chunk described by an earlier run is
+		// one this run is done with, and a queue that only counted the ones it
+		// worked would sit at 1/300 through a resumed session
+		a.qTake(trackDescribe)
 		if done[key] {
 			continue
 		}
-		a.prog(trackDescribe, span*float64(chunkOff+c)/float64(chunkTotal),
-			"[%s] describing %d/%d (t=%.0fs)", p.base, c+1, p.chunks, t0)
+		a.prog(trackDescribe, span*float64(chunkOff+c)/float64(chunkTotal), "")
 
 		// past history rides along twice: the rolling STATE (what is true) and
 		// the last events (what just happened) -- together they let the model

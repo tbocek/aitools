@@ -17,7 +17,7 @@ func newTestEd(t *testing.T) *cutEditor {
 
 func TestCutUndoRestores(t *testing.T) {
 	ed := newTestEd(t)
-	ed.segs = []cutSeg{{10, 20}, {30, 40}, {50, 60}}
+	ed.segs = []cutSeg{{S: 10, E: 20}, {S: 30, E: 40}, {S: 50, E: 60}}
 
 	ed.pushUndo()
 	ed.removeRange(28, 42) // drops the middle scene
@@ -32,11 +32,11 @@ func TestCutUndoRestores(t *testing.T) {
 
 	ed.segs = ed.undo[len(ed.undo)-1]
 	ed.undo = ed.undo[:len(ed.undo)-1]
-	if len(ed.segs) != 2 || ed.segs[0] != (cutSeg{10, 20}) || ed.segs[1] != (cutSeg{50, 60}) {
+	if len(ed.segs) != 2 || ed.segs[0] != (cutSeg{S: 10, E: 20}) || ed.segs[1] != (cutSeg{S: 50, E: 60}) {
 		t.Fatalf("first undo gave %v, want [{10 20} {50 60}]", ed.segs)
 	}
 	ed.segs = ed.undo[len(ed.undo)-1]
-	if len(ed.segs) != 3 || ed.segs[1] != (cutSeg{30, 40}) {
+	if len(ed.segs) != 3 || ed.segs[1] != (cutSeg{S: 30, E: 40}) {
 		t.Fatalf("second undo gave %v, want the original three", ed.segs)
 	}
 }
@@ -46,14 +46,14 @@ func TestCutUndoRestores(t *testing.T) {
 // tracks the live cut, so Revert becomes a no-op or wipes the suggestion too.
 func TestCutRevertKeepsBaseline(t *testing.T) {
 	ed := newTestEd(t)
-	ed.segs = []cutSeg{{100, 120}, {200, 220}} // as if suggested
+	ed.segs = []cutSeg{{S: 100, E: 120}, {S: 200, E: 220}} // as if suggested
 	ed.setBase()
 	if !sameCut(ed.segs, ed.base) {
 		t.Fatal("baseline does not match the cut it was taken from")
 	}
 
-	ed.segs = append(ed.segs, cutSeg{300, 310}) // ten Adds, abridged
-	ed.segs = append(ed.segs, cutSeg{400, 410})
+	ed.segs = append(ed.segs, cutSeg{S: 300, E: 310}) // ten Adds, abridged
+	ed.segs = append(ed.segs, cutSeg{S: 400, E: 410})
 	ed.coalesce()
 	ed.persist()
 	ed.removeRange(195, 225) // and a hand Remove of a suggested scene
@@ -64,7 +64,7 @@ func TestCutRevertKeepsBaseline(t *testing.T) {
 	ed.pushUndo()
 	ed.segs = append([]cutSeg(nil), ed.base...)
 	ed.persist()
-	if !sameCut(ed.segs, []cutSeg{{100, 120}, {200, 220}}) {
+	if !sameCut(ed.segs, []cutSeg{{S: 100, E: 120}, {S: 200, E: 220}}) {
 		t.Fatalf("revert gave %v, want the suggestion back", ed.segs)
 	}
 
@@ -77,7 +77,7 @@ func TestCutRevertKeepsBaseline(t *testing.T) {
 
 func TestCutSegAt(t *testing.T) {
 	ed := newTestEd(t)
-	ed.segs = []cutSeg{{10, 20}, {30, 40}}
+	ed.segs = []cutSeg{{S: 10, E: 20}, {S: 30, E: 40}}
 	for _, c := range []struct {
 		t    float64
 		want int
@@ -90,7 +90,7 @@ func TestCutSegAt(t *testing.T) {
 
 func TestCutPersistRoundTrip(t *testing.T) {
 	ed := newTestEd(t)
-	ed.segs = []cutSeg{{1, 5}, {9, 12}}
+	ed.segs = []cutSeg{{S: 1, E: 5}, {S: 9, E: 12}}
 	ed.persist()
 	if !exists(filepath.Join(ed.a.cutDir(), "cut.json")) {
 		t.Fatal("persist wrote no cut.json")

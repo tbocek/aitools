@@ -272,6 +272,13 @@ func sortStamped(paths []string) {
 
 // sourceStart puts a file on the wall clock: filename timestamp first (both
 // videos and audio recorders may write one), else mtime minus duration.
+//
+// This is the only door: placing is done from nine different places -- the
+// lanes, the merged transcript, the describe pass, the render -- and they all
+// come through here, so the waveform and the sound cannot end up in two
+// different spots. There was briefly a per-file correction on top of it, for
+// recorders whose clocks disagree; the clocks do not disagree, and a knob for a
+// problem nobody has is a knob that can be left on by accident.
 func sourceStart(path string) (float64, error) {
 	dur, err := ffprobeDur(path)
 	if err != nil {
@@ -382,6 +389,7 @@ func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 	for _, s := range srcs {
 		total += (len(s.rows) + fixBlock - 1) / fixBlock
 	}
+	a.qPush(trackFix, total, "block")
 	done := 0
 	for _, s := range srcs {
 		fixed, err := a.fixRows(s, ctxFor, &done, total, span)
@@ -449,7 +457,7 @@ func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 	if err := os.WriteFile(filepath.Join(s3, "session.txt"), []byte(stx), 0o644); err != nil {
 		return err
 	}
-	a.prog(trackFix, span, "transcript done")
+	a.qDone(trackFix, span)
 	a.logfIdle(">>> session timeline: %d rows across %d source(s)", len(rows), len(srcs))
 	return nil
 }
@@ -476,8 +484,8 @@ func (a *App) fixRows(s *src, ctxFor func(*src, float64, float64) string,
 		if err := a.checkpoint(); err != nil {
 			return nil, err
 		}
-		a.prog(trackFix, span*float64(*done)/float64(total),
-			"[%s] fixing block %d/%d", s.base, b+1, nblocks)
+		a.qTake(trackFix)
+		a.prog(trackFix, span*float64(*done)/float64(total), "")
 		*done++
 
 		lo := b * fixBlock

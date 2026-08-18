@@ -749,7 +749,7 @@ func (p *publisher) reread() {
 	segs := p.a.produceSegs()
 	p.clips, p.clipSecs = len(segs), 0
 	for _, s := range segs {
-		p.clipSecs += s.E - s.S
+		p.clipSecs += s.length()
 	}
 	p.lines = 0
 	for _, e := range p.a.produceEntries() {
@@ -877,7 +877,10 @@ func pickShots(shots []pubShot, segs []cutSeg, n int) []string {
 		var kept []pubShot
 		for _, s := range shots {
 			for _, c := range segs {
-				if s.t >= c.S && s.t <= c.E {
+				// an insert covers session seconds without showing them, so a
+				// frame under one is not in the video at all -- picking a
+				// thumbnail from it would offer a shot no viewer ever sees
+				if !c.isInsert() && s.t >= c.S && s.t <= c.E {
 					kept = append(kept, s)
 					break
 				}
@@ -912,7 +915,7 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 	rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv"))
 	total := 0.0
 	for _, s := range segs {
-		total += s.E - s.S
+		total += s.length()
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "THE FINISHED VIDEO: %d clips, %d:%02d long.\n",
@@ -934,7 +937,7 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 				int(at+e.At)/60, int(at+e.At)%60, i+1, e.Text)
 			said++
 		}
-		at += s.E - s.S
+		at += s.length()
 	}
 	if said > 0 {
 		b.WriteString("\nTHE NARRATION SPOKEN OVER IT, at its time in the finished video:\n")
@@ -1080,10 +1083,7 @@ func (a *App) publishRun(textOnly bool) {
 	a.stopFlag.Store(false)
 	a.pauseFlag.Store(false)
 	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.progMu.Lock()
-	a.progParts = [2]float64{}
-	a.progTexts = [2]string{}
-	a.progMu.Unlock()
+	a.qReset()
 	a.updateRunControls()
 	a.logExp.SetExpanded(true)
 
@@ -1103,7 +1103,8 @@ func (a *App) publishRun(textOnly bool) {
 	// same needle, so the one that lasts has to be the one with real news --
 	// and reading progParts under its mutex is also the only way to ask this
 	// question from the GUI thread without racing the runner.
-	a.progress.SetText("thinking…")
+	a.qJob(trackSTT, "publish", 0, 0)
+	a.prog(trackSTT, 0, "thinking")
 	glib.TimeoutAdd(150, func() bool {
 		if !a.running {
 			return false
@@ -1143,7 +1144,7 @@ func (a *App) publishRun(textOnly bool) {
 		if needText {
 			brief := a.publishBrief(segs, entries)
 			a.logCtx("publish")
-			glib.IdleAdd(func() { a.progress.SetText("writing the title and the description…") })
+			a.prog(trackSTT, 0, "writing the title and the description")
 			title, desc, err := a.writeDescription(brief)
 			if err != nil {
 				failed = err
@@ -1164,7 +1165,7 @@ func (a *App) publishRun(textOnly bool) {
 		if textOnly {
 			return
 		}
-		a.prog(trackSTT, 0.5, "drawing the thumbnail…")
+		a.prog(trackSTT, 0.5, "drawing the thumbnail")
 		if err := a.drawThumbnail(st); err != nil {
 			failed = err
 			return
@@ -1301,7 +1302,7 @@ func (a *App) drawThumbnail(st pubSettings) error {
 			pubImgW, pubImgH, filepath.Base(base), len(imgs))
 	}
 	img, err := a.sdGenerate(a.runCtx, req, func(where string) {
-		a.prog(trackSTT, 0.5, "drawing the thumbnail (%s)", where)
+		a.prog(trackSTT, 0.5, "drawing (%s)", where)
 	})
 	if err != nil {
 		return err

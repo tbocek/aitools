@@ -85,39 +85,8 @@ func (a *App) checkpoint() error {
 	}
 }
 
-// prog feeds the shared bar from one of two concurrent tracks (0 = STT,
-// 1 = frames). Each track reports its own absolute contribution; the bar
-// shows the sum and both latest messages -- letting the tracks write raw
-// fractions would make the bar bounce between them.
-const (
-	trackSTT    = 0
-	trackFrames = 1
-	// the same two tracks under the names the Describe + Transcript step uses
-	// them for: its two jobs run one after the other, but each still owns half
-	// the bar and its own message
-	trackDescribe = trackSTT
-	trackFix      = trackFrames
-)
-
-func (a *App) prog(track int, f float64, format string, args ...any) {
-	txt := fmt.Sprintf(format, args...)
-	a.progMu.Lock()
-	a.progParts[track] = f
-	a.progTexts[track] = txt
-	total := math.Max(0, math.Min(1, a.progParts[0]+a.progParts[1]))
-	var parts []string
-	for _, t := range a.progTexts {
-		if t != "" {
-			parts = append(parts, t)
-		}
-	}
-	joined := strings.Join(parts, "  ·  ")
-	a.progMu.Unlock()
-	glib.IdleAdd(func() {
-		a.progress.SetFraction(total)
-		a.progress.SetText(joined)
-	})
-}
+// The tracks the two halves of the bar are reported on, and prog itself, live
+// in runqueue.go with the work queue they feed.
 
 // transport is what a page offers the run bar when it plays media rather than
 // running a pipeline. With it, ▶ and ⏹ mean the same thing on every step: ▶
@@ -135,7 +104,7 @@ type transport interface {
 func (a *App) pageTransport() transport {
 	switch a.stack.VisibleChildName() {
 	case "step3":
-		// ▶ here is Suggest cut, the page's long job, and it stays that way
+		// ▶ here suggests a cut, the page's long job, and it stays that way
 		// until the preview is actually running. The player is loaded the
 		// moment you click the timeline -- that cues a frame to look at, it is
 		// not playback, and it used to mean ▶ played the video on a page whose
@@ -194,15 +163,16 @@ func (a *App) playClicked() {
 	case "step2":
 		a.understandRun()
 	case "step3":
-		// per the spec: with a selection pending, play ADDS it; on an empty
-		// cut it asks for the first suggestion; otherwise it explains itself
-		switch {
-		case a.ed != nil && a.ed.sel.active:
-			a.addSelClicked()
-		case a.ed != nil && len(a.ed.segs) == 0:
+		// ▶ is this step's job, suggesting, exactly as it is on every other page.
+		// It used to be three things at once -- add the pending selection, or
+		// suggest but only into an empty cut, or else print a sentence explaining
+		// which of the two you had asked for -- because "Suggest cut" was also a
+		// button in the toolbar. That button is gone, so ▶ is the one way to run
+		// the step, and adding a selection is ＋ Add, which is where it always was.
+		// Suggesting over hand edits still refuses, in suggestClicked, and says to
+		// Revert first: that is a rule about the cut, not about which button ran.
+		if a.ed != nil {
 			a.suggestClicked()
-		default:
-			a.setStatus("drag a region and ▶ adds it; Suggest only fills an empty cut")
 		}
 	case "step4":
 		// the whole step in one press: write the narration if the cut has no
@@ -484,10 +454,7 @@ func (a *App) startStep1(videos, audios []string, interval float64, scaleName, s
 	a.stopFlag.Store(false)
 	a.pauseFlag.Store(false)
 	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.progMu.Lock()
-	a.progParts = [2]float64{}
-	a.progTexts = [2]string{}
-	a.progMu.Unlock()
+	a.qReset()
 	a.updateRunControls()
 	a.setStatus("step 1 running…")
 	a.logExp.SetExpanded(true)
@@ -538,17 +505,26 @@ func (a *App) step1(videos, audios []string, interval float64, scaleName, scaleV
 	// which do not contend, so they run as parallel tracks. Weighting them by
 	// file count instead gave whichever job had more inputs most of the bar,
 	// and the bar then crossed that job's share and sat still through the other.
+	//
+	// Both jobs run at once, so neither is "1 of 2": the bar names them instead
+	// and shows both lines. Each queues a task per file it was given, and the
+	// speech side queues more as it goes -- a recording's diarization windows
+	// are not countable until its length is known.
 	inputs := append(append([]string{}, videos...), audios...)
+	a.qJob(trackSTT, "speech", 0, 0)
+	a.qPush(trackSTT, len(inputs), "recording")
+	a.qJob(trackFrames, "frames", 0, 0)
+	a.qPush(trackFrames, len(videos), "video")
 	var unit, funit float64
 	if len(inputs) > 0 {
 		unit = 0.5 / float64(len(inputs))
 	} else {
-		a.prog(trackSTT, 0.5, "") // a job with nothing to do is done, or its
+		a.qDone(trackSTT, 0.5) // a job with nothing to do is done, or its
 	}
 	if len(videos) > 0 {
 		funit = 0.5 / float64(len(videos))
 	} else {
-		a.prog(trackFrames, 0.5, "") // half would never fill and neither would the bar
+		a.qDone(trackFrames, 0.5) // half would never fill and neither would the bar
 	}
 
 	var wg sync.WaitGroup
@@ -564,12 +540,13 @@ func (a *App) step1(videos, audios []string, interval float64, scaleName, scaleV
 			if framesErr = a.checkpoint(); framesErr != nil {
 				return
 			}
+			a.qTake(trackFrames)
 			if framesErr = a.extractFrames(v, interval, scaleName, scaleVF, s1, fb, funit); framesErr != nil {
 				return
 			}
 			fb += funit
 		}
-		a.prog(trackFrames, fb, "frames done")
+		a.qDone(trackFrames, fb)
 	}()
 
 	var sttErr error
@@ -578,6 +555,7 @@ func (a *App) step1(videos, audios []string, interval float64, scaleName, scaleV
 		if sttErr = a.checkpoint(); sttErr != nil {
 			break
 		}
+		a.qTake(trackSTT)
 		if sttErr = a.transcribe(in, s1, base, unit); sttErr != nil {
 			if !errors.Is(sttErr, errStopped) {
 				sttErr = fmt.Errorf("%s: %w", filepath.Base(in), sttErr)
@@ -587,7 +565,7 @@ func (a *App) step1(videos, audios []string, interval float64, scaleName, scaleV
 		base += unit
 	}
 	if sttErr == nil {
-		a.prog(trackSTT, base, "transcription done")
+		a.qDone(trackSTT, base)
 	}
 	wg.Wait()
 
@@ -636,7 +614,7 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 
 	wav := filepath.Join(out, "voice16k.wav")
 	if !exists(wav) {
-		a.prog(trackSTT, base+0.01*unit, "[%s] extracting audio", name)
+		a.prog(trackSTT, base+0.01*unit, "extracting audio")
 		a.logfIdle(">>> [%s] extracting 16 kHz mono", name)
 		if err := a.runCmd("ffmpeg", "-v", "error", "-y", "-i", input,
 			"-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav); err != nil {
@@ -653,7 +631,7 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 		return err
 	}
 	if !exists(filepath.Join(out, "words.json")) {
-		a.prog(trackSTT, base+0.05*unit, "[%s] speech recognition…", name)
+		a.prog(trackSTT, base+0.05*unit, "recognising speech")
 		a.logfIdle(">>> [%s] ASR (%s)", name, a.readConf().ASRModel)
 		body, text, err := a.asrJSON(wav)
 		if err != nil {
@@ -686,7 +664,7 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 		a.logfIdle(">>> [%s] diarization already done", name)
 	}
 
-	a.prog(trackSTT, base+0.98*unit, "[%s] building segments", name)
+	a.prog(trackSTT, base+0.98*unit, "building segments")
 	if err := a.mergeSegments(out); err != nil {
 		return fmt.Errorf("merge: %w", err)
 	}
@@ -709,8 +687,7 @@ func (a *App) diarize(out string, dur float64, name string, base, unit float64) 
 		if err := a.checkpoint(); err != nil {
 			return err
 		}
-		a.prog(trackSTT, base+(0.55+0.20*float64(i)/float64(nwin))*unit,
-			"[%s] voices: scanning window %d/%d", name, i+1, nwin)
+		a.prog(trackSTT, base+(0.55+0.20*float64(i)/float64(nwin))*unit, "finding voices")
 		start := float64(i) * diarScanHop
 		if err := a.runCmd("ffmpeg", "-v", "error", "-y",
 			"-ss", fmt.Sprint(start), "-t", fmt.Sprint(diarWin),
@@ -835,8 +812,7 @@ func (a *App) diarize(out string, dur float64, name string, base, unit float64) 
 		if err := a.checkpoint(); err != nil {
 			return err
 		}
-		a.prog(trackSTT, base+(0.75+0.22*float64(i)/float64(nwin))*unit,
-			"[%s] speakers: window %d/%d", name, i+1, nwin)
+		a.prog(trackSTT, base+(0.75+0.22*float64(i)/float64(nwin))*unit, "placing speakers")
 		start := float64(i) * hop
 		if err := a.runCmd("ffmpeg", "-v", "error", "-y",
 			"-ss", fmt.Sprint(start), "-t", fmt.Sprint(hop),
@@ -1115,7 +1091,7 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 			a.logfIdle(">>> [%s] %d frames renamed to the second they were shot in", name, n)
 		}
 		a.logfIdle(">>> [%s] frames already extracted (%gs, %s), skipping", name, interval, scaleName)
-		a.prog(trackFrames, base+unit, "[%s] frames ready", name)
+		a.prog(trackFrames, base+unit, "already extracted")
 		return nil
 	}
 	if interval == 0 {
@@ -1165,7 +1141,7 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 		}
 		args = append(args, "-q:v", "4", "-start_number", "1", pattern)
 		if err := a.ffmpegProgress(dur, func(f float64) {
-			a.prog(trackFrames, base+f*unit, "[%s] frames %.0f%%", name, f*100)
+			a.prog(trackFrames, base+f*unit, "extracting %.0f%%", f*100)
 		}, args...); err != nil {
 			return err
 		}
@@ -1181,7 +1157,7 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 				sum += f
 			}
 			mu.Unlock()
-			a.prog(trackFrames, base+sum*unit, "[%s] frames %.0f%%", name, sum*100)
+			a.prog(trackFrames, base+sum*unit, "extracting %.0f%%", sum*100)
 		}
 		var wg sync.WaitGroup
 		errs := make([]error, workers)

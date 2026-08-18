@@ -38,8 +38,23 @@ type Player struct {
 	// the GTK thread -- the bus watch dispatches there.
 	OnError func(string)
 
+	// the sink's own paintable, kept so that a picture put over the video (an
+	// insert; see ShowStill) can be taken away again
+	video   gdk.Paintabler
+	still   bool
 	loaded  string // file currently cued, so a caller can seek instead of reload
 	playing bool
+	// the separate recordings heard under this file, each its own pipeline
+	// (SetMix). Empty for every player but the cut editor's.
+	mix []*auxAudio
+	// the session's sound is off: the picture is not the session's. Set while a
+	// card is on the preview, where hearing the footage carry on underneath is
+	// how an insert ends up sounding exactly like the overwrite it is not.
+	muted bool
+	// an inserted video's own sound, its own pipeline for the same reason the
+	// recordings have theirs. Empty unless a video insert is on screen.
+	card     *auxAudio
+	cardFile string
 	// the stream ran to its end and is sitting on its last frame. Resuming
 	// there plays nothing, so ▶ starts the same segment over instead.
 	ended               bool
@@ -75,7 +90,7 @@ func NewPlayer() (*Player, error) {
 	pic.SetPaintable(paintable)
 	pic.SetContentFit(gtk.ContentFitContain)
 
-	p := &Player{pb: pb, Picture: pic, pendStart: -1, pendStop: -1}
+	p := &Player{pb: pb, Picture: pic, video: paintable, pendStart: -1, pendStop: -1}
 
 	// signal watch dispatches on the default main context, i.e. the GTK loop
 	bus := pb.GetBus()
@@ -138,6 +153,204 @@ func (p *Player) PlaySegment(file string, start, stop float64, play bool) {
 	// preroll paused; the bus watch seeks (and maybe plays) on AsyncDone
 	p.pb.SetState(gst.StatePaused)
 	p.setPlaying(false)
+	for _, a := range p.mix {
+		a.cue(start, play)
+	}
+}
+
+// ---- a picture in front of the video ----------------------------------------
+
+// ShowStill puts a picture where the video was: the card, title or still that
+// an insert plays instead of the footage. The stream underneath is not touched
+// -- it is what the timeline is scrolling against and what the clock is read
+// from, and the seconds it is playing are seconds the cut has already given
+// away to the insert.
+//
+// The swap is the paintable rather than a widget stacked over the picture: one
+// GtkPicture with one thing in it cannot get out of step with itself, and the
+// video's paintable is a live object that keeps rendering whether it is on
+// screen or not.
+func (p *Player) ShowStill(tex gdk.Paintabler) {
+	if tex == nil {
+		return
+	}
+	p.Picture.SetPaintable(tex)
+	p.still = true
+}
+
+// ShowVideo takes that picture away again. Cheap to call on every tick: it is
+// the playhead leaving an insert that has to reach it, and the playhead does not
+// know when that was.
+func (p *Player) ShowVideo() {
+	if !p.still {
+		return
+	}
+	p.Picture.SetPaintable(p.video)
+	p.still = false
+}
+
+// ---- the separate recordings ------------------------------------------------
+
+// Everything below is one sentence: what the cut plays is the session at that
+// moment, not the file that happens to have the pictures in it.
+//
+// The footage is a capture card's idea of the room -- game sound, and whoever
+// was close enough to the console -- and the recording that has the voices in it
+// is a different file with a different clock. Watching the cut while hearing
+// half of it is how a cut gets made against the wrong second, and the waveform
+// lanes underneath make that worse rather than better: they show a shout you
+// cannot hear.
+//
+// GStreamer offers no way to add a second file to a playbin, so each recording
+// is its own audio-only pipeline, seeked to ITS second of the same instant and
+// driven by the same transport. Two pipelines on one machine share the audio
+// clock, so they stay together for as long as anyone watches a preview; this is
+// a monitor mix, and the render still does its own arithmetic (clipMixes).
+type auxAudio struct {
+	pb gst.Element
+	// what to add to a time in the master's file to get the same instant in
+	// this one: (master's session start) - (this recording's session start).
+	delta float64
+	dur   float64 // so a seek past its end is simply not played
+	pend  int64   // nanoseconds; < 0 = nothing pending
+	play  bool
+}
+
+// mixTrack is one recording to be heard under the footage, as the cut editor
+// knows it: where the file is, and how the two clocks differ.
+type mixTrack struct {
+	path  string
+	delta float64
+	dur   float64
+}
+
+// SetMix replaces the recordings heard under whatever this player shows. The
+// pipelines are rebuilt rather than reused: the set changes when the session's
+// sources do, which is rare, and a stale uri playing under the wrong footage is
+// the one failure that would be hard to notice.
+func (p *Player) SetMix(tracks []mixTrack) {
+	for _, a := range p.mix {
+		a.pb.SetState(gst.StateNull)
+	}
+	p.mix = nil
+	for i, t := range tracks {
+		a := newAux(fmt.Sprintf("mix%d", i), t)
+		if a == nil {
+			return
+		}
+		a.pb.SetObjectProperty("mute", p.muted)
+		p.mix = append(p.mix, a)
+	}
+}
+
+// newAux builds one audio-only pipeline for a file and the bus watch that does
+// its seeking. nil when GStreamer will not give us a playbin, which is the one
+// failure a caller can do nothing about.
+func newAux(name string, t mixTrack) *auxAudio {
+	// playbin3 with no video sink of its own would put up a window; a fake
+	// one is how "audio only" is spelled without touching flags
+	pb := gst.ElementFactoryMake("playbin3", name)
+	if pb == nil {
+		return nil
+	}
+	if fake := gst.ElementFactoryMake("fakesink", name+"novideo"); fake != nil {
+		pb.SetObjectProperty("video-sink", fake)
+	}
+	pb.SetObjectProperty("uri", "file://"+t.path)
+	a := &auxAudio{pb: pb, delta: t.delta, dur: t.dur, pend: -1}
+	bus := pb.GetBus()
+	bus.AddSignalWatch()
+	bus.ConnectMessage(func(_ gst.Bus, msg *gst.Message) {
+		if msg.Type() != gst.MessageAsyncDone || a.pend < 0 {
+			return
+		}
+		at := a.pend
+		a.pend = -1
+		a.pb.Seek(1.0, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
+			gst.SeekTypeSet, at, gst.SeekTypeNone, 0)
+		if a.play {
+			a.pb.SetState(gst.StatePlaying)
+		}
+	})
+	return a
+}
+
+// SetMuted cuts the session's sound -- the footage and every recording heard
+// under it -- without stopping any of it. The clock still runs, the timeline
+// still scrolls, and the preview is simply not claiming that what you are
+// looking at is what you would be hearing.
+//
+// This is the preview's half of what an insert means. The render never puts
+// session audio under a card (clipMixes), so a preview that does is telling you
+// about a cut that will not exist.
+func (p *Player) SetMuted(v bool) {
+	if p.muted == v {
+		return
+	}
+	p.muted = v
+	p.pb.SetObjectProperty("mute", v)
+	for _, a := range p.mix {
+		a.pb.SetObjectProperty("mute", v)
+	}
+}
+
+// CardSound plays an inserted video's own audio, at seconds into it, which is
+// the other half: a sting that says something is a sting that says it out loud.
+// An empty file takes the sound away again.
+//
+// Its own pipeline, unmuted by SetMuted -- it is not the session's sound, it is
+// the insert's, and it is the one thing that should be audible while a card is
+// up. A card with no audio track simply plays nothing, so nothing here asks
+// whether it has one.
+func (p *Player) CardSound(file string, at float64, play bool) {
+	if file != p.cardFile {
+		p.dropCard()
+		if file == "" {
+			return
+		}
+		a := newAux("cardsound", mixTrack{path: file})
+		if a == nil {
+			return
+		}
+		p.card, p.cardFile = a, file
+	}
+	if p.card == nil {
+		return
+	}
+	p.card.cue(at, play)
+}
+
+// dropCard tears the insert's audio pipeline down. Not merely paused: the next
+// card is a different file, and a uri cannot be changed under a live pipeline.
+func (p *Player) dropCard() {
+	if p.card != nil {
+		p.card.pb.SetState(gst.StateNull)
+	}
+	p.card, p.cardFile = nil, ""
+}
+
+// cue puts this recording at the master's time t and either holds it there or
+// lets it run. A time this recording was not running at is silence, and silence
+// is a pipeline left in PAUSED rather than one seeked to its own edge, which
+// would play the wrong minute quietly under the picture.
+func (a *auxAudio) cue(t float64, play bool) {
+	at := t + a.delta
+	if at < 0 || (a.dur > 0 && at > a.dur) {
+		a.pend = -1
+		a.pb.SetState(gst.StatePaused)
+		return
+	}
+	a.pend = int64(at * 1e9)
+	a.play = play
+	a.pb.SetState(gst.StatePaused)
+}
+
+// running says whether this one has something to play at the master's time t,
+// which is what keeps a resume from starting a recording that had already
+// stopped when this second happened.
+func (a *auxAudio) running(t float64) bool {
+	at := t + a.delta
+	return at >= 0 && (a.dur <= 0 || at <= a.dur)
 }
 
 // setPlaying records the state and tells whoever is drawing a transport button
@@ -166,12 +379,47 @@ func (p *Player) Toggle() {
 	switch {
 	case p.playing:
 		p.pb.SetState(gst.StatePaused)
+		p.syncMix(false)
+		p.cardState(gst.StatePaused)
 		p.setPlaying(false)
 	case p.ended && p.loaded != "":
 		p.PlaySegment(p.loaded, p.lastStart, p.lastStop, true)
 	default:
 		p.pb.SetState(gst.StatePlaying)
+		p.syncMix(true)
+		// an insert's sound stops and starts with the transport like everything
+		// else on the page; where it is in the card is where it was left
+		p.cardState(gst.StatePlaying)
 		p.setPlaying(true)
+	}
+}
+
+// syncMix puts every recording back on the master's clock. It is called on
+// every transport change rather than only on the first one: two pipelines
+// started a minute apart agree to the millisecond and then drift as slowly as
+// their clocks differ, and a resync that costs a seek nobody hears is cheaper
+// than reasoning about how long that takes to be audible.
+func (p *Player) syncMix(play bool) {
+	if len(p.mix) == 0 {
+		return
+	}
+	pos, ok := p.Position()
+	if !ok {
+		return
+	}
+	for _, a := range p.mix {
+		if !a.running(pos) {
+			a.pb.SetState(gst.StatePaused)
+			continue
+		}
+		a.pend = -1
+		a.pb.Seek(1.0, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
+			gst.SeekTypeSet, int64((pos+a.delta)*1e9), gst.SeekTypeNone, 0)
+		if play {
+			a.pb.SetState(gst.StatePlaying)
+		} else {
+			a.pb.SetState(gst.StatePaused)
+		}
 	}
 }
 
@@ -179,14 +427,32 @@ func (p *Player) Toggle() {
 // start rather than a resume of something the user already ended.
 func (p *Player) Stop() {
 	p.pb.SetState(gst.StateReady)
+	for _, a := range p.mix {
+		a.pend = -1
+		a.pb.SetState(gst.StateReady)
+	}
 	p.loaded = ""
 	p.ended = false
+	p.dropCard()
+	p.SetMuted(false) // whatever was covering the sound is over with the stream
 	p.setPlaying(false)
 }
 
 func (p *Player) Pause() {
 	p.pb.SetState(gst.StatePaused)
+	for _, a := range p.mix {
+		a.pb.SetState(gst.StatePaused)
+	}
+	p.cardState(gst.StatePaused)
 	p.setPlaying(false)
+}
+
+// cardState moves the insert's audio pipeline, if there is one, and is silence
+// about it when there is not.
+func (p *Player) cardState(s gst.State) {
+	if p.card != nil {
+		p.card.pb.SetState(s)
+	}
 }
 
 // SeekTo jumps within the currently loaded file; while paused the new frame
@@ -196,6 +462,20 @@ func (p *Player) SeekTo(t float64) {
 	p.pb.Seek(1.0, gst.FormatTime,
 		gst.SeekFlagFlush|gst.SeekFlagAccurate,
 		gst.SeekTypeSet, int64(t*1e9), gst.SeekTypeNone, 0)
+	// the recordings land on the same instant, told in their own seconds --
+	// asking the master where it is would ask before this seek has taken
+	for _, a := range p.mix {
+		if !a.running(t) {
+			a.pb.SetState(gst.StatePaused)
+			continue
+		}
+		a.pend = -1
+		a.pb.Seek(1.0, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
+			gst.SeekTypeSet, int64((t+a.delta)*1e9), gst.SeekTypeNone, 0)
+		if p.playing {
+			a.pb.SetState(gst.StatePlaying)
+		}
+	}
 }
 
 // Position reports the current playback position in seconds.
