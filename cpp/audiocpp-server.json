@@ -14,6 +14,13 @@
       "mode": "offline"
     },
     {
+      "id": "nemotron-asr",
+      "family": "nemotron_asr",
+      "path": "/home/arch/audio.cpp/models/Nemotron-3.5-ASR-Streaming-0.6B-GGUF/nemotron-3.5-asr-streaming-0.6b-q8_0.gguf",
+      "task": "asr",
+      "mode": "offline"
+    },
+    {
       "id": "parakeet-tdt",
       "family": "parakeet_tdt",
       "path": "/home/arch/audio.cpp/models/Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf",

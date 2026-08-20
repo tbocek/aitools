@@ -70,7 +70,7 @@ func TestPlayRunsSuggestOnTheCutPage(t *testing.T) {
 // suggestClicked for that reason, and the message has to name a way out.
 func TestSuggestStillRefusesToEatHandEdits(t *testing.T) {
 	fn := funcBody(t, "step3.go", `func \(a \*App\) suggestClicked\(\) \{`)
-	if !strings.Contains(fn, "!sameCut(a.ed.segs, a.ed.base)") {
+	if !strings.Contains(fn, "!sameCut(a.ed.segs, a.ed.base.segs)") {
 		t.Error("suggestClicked no longer compares the cut against the last suggestion, " +
 			"so ▶ now silently discards hand edits")
 	}

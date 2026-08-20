@@ -346,9 +346,10 @@ func TestTheSplicedMarkerIsTheCardsLengthAtThisZoom(t *testing.T) {
 	if got, want := x1-x0, ed.xOf(24)-ed.xOf(20); math.Abs(got-want) > 0.01 {
 		t.Errorf("the 4 s card is %g px wide and 4 s of footage is %g px", got, want)
 	}
-	if mid := (x0 + x1) / 2; math.Abs(mid-ed.xOf(20)) > 0.01 {
-		t.Errorf("the marker sits at %g and the footage is cut open at %g -- it is not "+
-			"covering the footage either side, it is what they were pushed apart for", mid, ed.xOf(20))
+	if math.Abs(x0-ed.xOf(20)) > 0.01 {
+		t.Errorf("the marker starts at %g and the footage is cut open at %g -- the card "+
+			"begins where the red line stood when it was placed, and the footage that "+
+			"follows resumes after it", x0, ed.xOf(20))
 	}
 
 	// and what can be seen can be pressed: the marker IS the card's target
@@ -372,15 +373,15 @@ func TestASplicedCardIsScrubbedAcrossItsMarker(t *testing.T) {
 	ed := moveEd(t)
 	ed.segs = []cutSeg{{S: 0, E: 60}, {S: 20, E: 20, Ins: "card.svg", Dur: 4}}
 	mx0, mx1 := ed.spliceSpan(ed.segs[1])
-	w := (mx1 - mx0) / 2 / ed.pps // half the marker, in seconds of session time
+	w := (mx1 - mx0) / ed.pps // the whole marker, in seconds of session time
 
 	for _, c := range []struct {
 		at   float64
 		want float64 // seconds into the card, -1 for "not on the card at all"
 	}{
-		{at: 20 - w - 0.1, want: -1},
-		{at: 20 - w + 0.001, want: 0},
-		{at: 20, want: 2}, // the middle of the marker is the middle of the card
+		{at: 20 - 0.1, want: -1}, // before the cut is the footage ahead of it
+		{at: 20 + 0.001, want: 0},
+		{at: 20 + w/2, want: 2}, // the middle of the marker is the middle of the card
 		{at: 20 + w - 0.001, want: 4},
 		{at: 20 + w + 0.1, want: -1},
 	} {
@@ -576,7 +577,7 @@ func TestTheClipToolAndTheEditButtonAreWired(t *testing.T) {
 		"ed.moveSegTo(ed.tAtView(dragStartX+ox)-grabAt, true)", // ...drags it, without writing the file per motion
 		"ed.showSeg(true)",
 		"if ed.segDirty {\n\t\t\t\t\ted.persist()", // release: this is the cut that goes on disk
-		"if ed.segOn {\n\t\ted.nudgeSeg(n)",        // ‹f and f› are the clip's while one is held
+		"if ed.segOn && ed.nudgeSeg(n) {",          // ‹f and f› are the clip's while one is held
 		"ed.dropSeg()",
 		// the button is one button with two jobs, and which one it is doing
 		// follows what is held

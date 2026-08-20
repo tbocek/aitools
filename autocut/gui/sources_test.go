@@ -249,6 +249,26 @@ func TestLoadingRejectsTwoPeopleInOneSlot(t *testing.T) {
 	}
 }
 
+// The mic button cycles a row through the slots and back around to none -- a
+// project where the user looked at the tag and turned it off. That choice is
+// stored, and load used to run autoTag over it anyway, which cannot tell "the
+// user untagged everyone" from "nobody was ever asked" -- so the tag came back
+// on every restart. Roles come back exactly as stored; load re-tags only when
+// it had to strip a broken tag itself.
+func TestAnUntaggedProjectComesBackUntagged(t *testing.T) {
+	_, paths := mkSources(t, "screen.mp4", "b.flac")
+	s := &sourceList{}
+	s.load([]sourceItem{
+		{path: paths[0], footage: true},
+		{path: paths[1]},
+	})
+	for i, it := range s.items {
+		if it.narrator != 0 {
+			t.Errorf("row %d came back as narrator %d, want the stored none", i, it.narrator)
+		}
+	}
+}
+
 // autoTag fills the empty slot 1; it must never move somebody who is already
 // somebody. Re-casting the narration -- and freeing the slot they were in --
 // out from under an explicit tag is not something a list should do on its own.

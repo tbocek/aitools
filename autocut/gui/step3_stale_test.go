@@ -54,7 +54,7 @@ func TestCatchingUpClearsTheNote(t *testing.T) {
 	a.ed.vids = []tlVideo{{base: "v", path: "v.mkv", dur: 60}}
 	a.ed.stale = true
 
-	a.updateStep3Info() // no session.tsv under this outDir: nothing to load
+	a.updateStep3Info() // no frames under this outDir: nothing to load
 	if a.ed.stale {
 		t.Error("the page rebuilt itself and still says it is behind")
 	}
@@ -72,15 +72,15 @@ func TestClearTracksLeavesNothingBehind(t *testing.T) {
 	ed := a.ed
 	ed.vids = []tlVideo{{base: "v", path: "v.mkv", dur: 60}}
 	ed.segs = []cutSeg{{S: 1, E: 2}}
-	ed.undo = [][]cutSeg{{{S: 0, E: 1}}}
-	ed.base = []cutSeg{{S: 1, E: 2}}
+	ed.undo = []cutState{{segs: []cutSeg{{S: 0, E: 1}}}}
+	ed.base = cutState{segs: []cutSeg{{S: 1, E: 2}}}
 	ed.sel.active, ed.hasPlay, ed.hasIn, ed.edgeOn = true, true, true, true
 
 	ed.clearTracks()
 
-	if len(ed.vids) != 0 || len(ed.segs) != 0 || len(ed.undo) != 0 || len(ed.base) != 0 {
+	if len(ed.vids) != 0 || len(ed.segs) != 0 || len(ed.undo) != 0 || len(ed.base.segs) != 0 {
 		t.Errorf("clearTracks left state behind: %d vids, %d segs, %d undo, %d base",
-			len(ed.vids), len(ed.segs), len(ed.undo), len(ed.base))
+			len(ed.vids), len(ed.segs), len(ed.undo), len(ed.base.segs))
 	}
 	// a selection, a playhead or a held mark that outlives the timeline it was
 	// measured against points into a recording that is no longer on the page
@@ -145,16 +145,16 @@ func TestTheLaunchStillFillsTheCutPage(t *testing.T) {
 	if !strings.Contains(string(b), "a.updateStep3Info()") {
 		t.Error("build() no longer loads the cut editor at startup")
 	}
-	// the gate and the loader have to agree on what "there is a session" means,
-	// or the tab unlocks onto a page that declines to fill itself
-	if !strings.Contains(string(b), `"session.tsv"`) {
-		t.Error("updateGates no longer unlocks the Cut tab on session.tsv")
+	// the gate and the loader have to agree on what "there is something to cut"
+	// means, or the tab unlocks onto a page that declines to fill itself
+	if !strings.Contains(string(b), "a.step3Locked = !a.canCut()") {
+		t.Error("updateGates no longer unlocks the Cut tab on canCut")
 	}
 	s3, err := os.ReadFile("step3.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(s3), `"session.tsv"`) {
-		t.Error("updateStep3Info no longer checks the file the Cut tab is unlocked by")
+	if !strings.Contains(string(s3), "if !a.canCut() {") {
+		t.Error("updateStep3Info no longer checks what the Cut tab is unlocked by")
 	}
 }

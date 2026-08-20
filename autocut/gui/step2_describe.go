@@ -284,7 +284,7 @@ type videoPlan struct {
 
 func (a *App) planVideo(video, s2 string) (*videoPlan, error) {
 	base := baseName(video)
-	fdir := filepath.Join(a.outDir, "step1", "frames", base)
+	fdir := a.framesDir(base)
 	ents, err := os.ReadDir(fdir)
 	if err != nil {
 		return nil, fmt.Errorf("no frames for %s -- run step 1", base)

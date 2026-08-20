@@ -57,6 +57,19 @@ const (
 	minAnchorOv = 0.5  // anchor-block overlap to claim a slot
 	diarTurnGap = 0.5  // merge same-speaker turns closer than this
 
+	// The ASR encoders carry the same kind of position table, and a session
+	// is far past it: Nemotron refuses outright ("relative position frames
+	// exceed maximum") well before the 12 minutes a capture runs to, and the
+	// ones that do not refuse answer by running full context over the whole
+	// recording, which is not what any of them were trained for. Long audio
+	// goes in as chunks, cut where nobody is talking -- a cut through the
+	// middle of a word hands both halves to a decoder that never heard the
+	// other one.
+	asrChunkMax = 300.0 // longest audio in one ASR request
+	asrCutSeek  = 20.0  // how far from an even cut a silence is worth taking
+	asrQuietDB  = -35   // what counts as quiet, in dBFS
+	asrQuietMin = 0.4   // and for how long
+
 	// segment building
 	mergeGap     = 0.7  // silence that ends a segment
 	mergeMaxLen  = 12.0 // hard cap on segment length
@@ -633,9 +646,14 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 	if !exists(filepath.Join(out, "words.json")) {
 		a.prog(trackSTT, base+0.05*unit, "recognising speech")
 		a.logfIdle(">>> [%s] ASR (%s)", name, a.readConf().ASRModel)
-		body, text, err := a.asrJSON(wav)
+		body, text, err := a.asrLong(wav, dur, name, base, unit)
 		if err != nil {
 			return fmt.Errorf("ASR: %w", err)
+		}
+		if strings.TrimSpace(text) == "" {
+			// a real case, not an error: a screen capture with no mic behind
+			// it. The empty transcript is written and the step carries on
+			a.logfIdle(">>> [%s] no speech found -- an empty transcript", name)
 		}
 		if err := os.WriteFile(filepath.Join(out, "transcript.txt"),
 			[]byte(strings.TrimRight(text, "\n")+"\n"), 0o644); err != nil {
@@ -669,6 +687,179 @@ func (a *App) transcribe(input, s1 string, base, unit float64) error {
 		return fmt.Errorf("merge: %w", err)
 	}
 	return nil
+}
+
+// asrLong is one recording through the ASR, in as many requests as its length
+// needs. A recording that fits goes in whole and its answer is written through
+// untouched -- that is still the common case, and words.json stays the
+// server's own document. A long one is cut into pieces and the pieces are
+// stitched back into one answer of the same shape, which is all the rest of
+// the pipeline ever reads.
+//
+// The seams are the whole difficulty. Cutting on the clock cuts through
+// speech, so the cuts slide to the middle of a silence; each piece then starts
+// and ends in the quiet, where a decoder losing its context costs nothing.
+func (a *App) asrLong(wav string, dur float64, name string, base, unit float64) ([]byte, string, error) {
+	if dur <= asrChunkMax {
+		return a.asrJSON(wav)
+	}
+	edges := append(append([]float64{0}, asrCuts(dur, a.quietSpots(wav), asrChunkMax, asrCutSeek)...), dur)
+	n := len(edges) - 1
+	a.logfIdle(">>> [%s] %.0f s is past what one ASR request takes -- %d chunks", name, dur, n)
+
+	dir := filepath.Join(filepath.Dir(wav), "asr")
+	os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, "", err
+	}
+	defer os.RemoveAll(dir)
+
+	var words []any
+	var texts []string
+	for i := 0; i < n; i++ {
+		if err := a.checkpoint(); err != nil {
+			return nil, "", err
+		}
+		a.prog(trackSTT, base+(0.05+0.45*float64(i)/float64(n))*unit, "recognising speech")
+		a.logfIdle(">>> [%s] ASR chunk %d/%d (%.0f-%.0f s)", name, i+1, n, edges[i], edges[i+1])
+		part := filepath.Join(dir, fmt.Sprintf("c%02d.wav", i))
+		// -ss ahead of -i seeks the input, which on the pcm this stage wrote
+		// is exact rather than a keyframe away
+		if err := a.runCmd("ffmpeg", "-v", "error", "-y",
+			"-ss", fmt.Sprint(edges[i]), "-t", fmt.Sprint(edges[i+1]-edges[i]),
+			"-i", wav, "-c:a", "pcm_s16le", part); err != nil {
+			return nil, "", err
+		}
+		body, text, err := a.asrJSON(part)
+		if err != nil {
+			return nil, "", err
+		}
+		words = append(words, shiftWords(body, edges[i])...)
+		if t := strings.TrimSpace(text); t != "" {
+			texts = append(texts, t)
+		}
+	}
+	text := strings.Join(texts, " ")
+	b, err := json.MarshalIndent(map[string]any{"text": text, "words": words}, "", "  ")
+	if err != nil {
+		return nil, "", err
+	}
+	return append(b, '\n'), text, nil
+}
+
+// asrCuts divides dur into pieces and returns the times between them.
+//
+// Even pieces, not full ones: three of 250 s beat two of 300 s and a runt of
+// 150, which would be a whole extra request spent on almost nothing. Each cut
+// then slides up to seek seconds to the middle of the nearest silence, and the
+// pieces are sized so that even two cuts sliding apart from each other cannot
+// push the piece between them past max -- the ceiling is the reason any of
+// this exists, and a piece over it is the error this is here to avoid.
+func asrCuts(dur float64, quiet []span, max, seek float64) []float64 {
+	if dur <= max || max <= 0 {
+		return nil
+	}
+	if seek < 0 || 2*seek >= max {
+		seek = 0
+	}
+	n := int(math.Ceil(dur / (max - 2*seek)))
+	step := dur / float64(n)
+	if lim := step / 3; seek > lim {
+		seek = lim // cuts stay in order, and each stays inside its own piece
+	}
+	var out []float64
+	for i := 1; i < n; i++ {
+		want, at, best := step*float64(i), step*float64(i), seek
+		for _, q := range quiet {
+			if mid := (q.s + q.e) / 2; math.Abs(mid-want) < best {
+				at, best = mid, math.Abs(mid-want)
+			}
+		}
+		out = append(out, at)
+	}
+	return out
+}
+
+// shiftWords takes the words out of one chunk's answer and moves them to where
+// that chunk was in the whole recording. The objects are the server's own,
+// with the two sample counts rewritten, so whatever else a word carries rides
+// along instead of being dropped on the way through.
+//
+// A word whose times cannot be read travels too, unshifted. It is the merge
+// that has to notice the ASR answering in a shape nobody here understands, and
+// it cannot notice words that were quietly left behind.
+func shiftWords(body []byte, off float64) []any {
+	var v any
+	if json.Unmarshal(body, &v) != nil {
+		return nil
+	}
+	var out []any
+	walkObjects(v, func(m map[string]any) {
+		if _, ok := m["word"].(string); !ok {
+			return
+		}
+		for _, k := range []string{"start_sample", "end_sample"} {
+			if n, ok := m[k].(float64); ok {
+				m[k] = n + off*sampleRate
+			}
+		}
+		out = append(out, m)
+	})
+	return out
+}
+
+// quietSpots asks ffmpeg where the recording goes quiet. Best effort: finding
+// none, or ffmpeg refusing the file, means the cuts land on the clock, which
+// is a worse place to cut but never a reason to fail the step.
+func (a *App) quietSpots(wav string) []span {
+	cmd := exec.Command("ffmpeg", "-v", "info", "-nostats", "-i", wav,
+		"-af", fmt.Sprintf("silencedetect=n=%ddB:d=%g", asrQuietDB, asrQuietMin),
+		"-f", "null", "-")
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	a.ctlMu.Lock()
+	a.curCmds[cmd] = true
+	a.ctlMu.Unlock()
+	err := cmd.Run()
+	a.ctlMu.Lock()
+	delete(a.curCmds, cmd)
+	a.ctlMu.Unlock()
+	if err != nil {
+		return nil
+	}
+	return parseSilence(buf.String())
+}
+
+// parseSilence reads the report silencedetect writes to stderr:
+//
+//	[silencedetect @ 0x..] silence_start: 12.345
+//	[silencedetect @ 0x..] silence_end: 15.678 | silence_duration: 3.333
+//
+// A silence still open when the file ends has no end line and is dropped: the
+// end of the recording is not a place anything needs to be cut.
+func parseSilence(report string) []span {
+	var out []span
+	from, open := 0.0, false
+	for _, ln := range strings.Split(report, "\n") {
+		if i := strings.Index(ln, "silence_start:"); i >= 0 {
+			v, err := strconv.ParseFloat(strings.TrimSpace(ln[i+len("silence_start:"):]), 64)
+			from, open = v, err == nil
+			continue
+		}
+		i := strings.Index(ln, "silence_end:")
+		if i < 0 || !open {
+			continue
+		}
+		f := strings.TrimSpace(ln[i+len("silence_end:"):])
+		if j := strings.Index(f, "|"); j >= 0 {
+			f = strings.TrimSpace(f[:j])
+		}
+		if v, err := strconv.ParseFloat(f, 64); err == nil && v > from {
+			out = append(out, span{s: from, e: v})
+		}
+		open = false
+	}
+	return out
 }
 
 func (a *App) diarize(out string, dur float64, name string, base, unit float64) error {
@@ -952,16 +1143,23 @@ func (a *App) mergeSegments(out string) error {
 		w    string
 	}
 	var words []word
+	seen := 0
 	walkObjects(v, func(m map[string]any) {
 		w, ok := m["word"].(string)
+		if ok {
+			seen++
+		}
 		ss, okS := m["start_sample"].(float64)
 		es, okE := m["end_sample"].(float64)
 		if ok && okS && okE {
 			words = append(words, word{ss / sampleRate, es / sampleRate, w})
 		}
 	})
-	if len(words) == 0 {
-		return fmt.Errorf("no word entries in words.json")
+	// no words at all is silence, which becomes an empty transcript below; words
+	// whose times cannot be read is the ASR answer changing shape, which has to
+	// stop here rather than quietly emptying every transcript after it
+	if len(words) == 0 && seen > 0 {
+		return fmt.Errorf("words.json holds %d words but none carry start_sample/end_sample -- the ASR answer changed shape", seen)
 	}
 
 	turns, _ := loadSpans(filepath.Join(out, "turns.json"))

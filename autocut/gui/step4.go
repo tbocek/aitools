@@ -1064,7 +1064,11 @@ func cutPos(segs []cutSeg, t float64) float64 {
 			return acc
 		}
 		if t < s.E {
-			return acc + (t - s.S)
+			off := t - s.S
+			if s.Rate > 0 {
+				off /= s.Rate // slowed footage: a session second is 1/rate cut seconds
+			}
+			return acc + off
 		}
 		acc += math.Max(0, s.length())
 	}
@@ -1082,11 +1086,15 @@ func cutAt(segs []cutSeg, x float64) float64 {
 	for _, s := range segs {
 		d := math.Max(0, s.length())
 		if x < acc+d {
-			if s.spliced() {
-				// the card runs for d, but it happens AT a point of the session:
-				// there is no session time inside it to land on, only the moment
-				// the footage is cut open for it
+			if s.Dur > 0 {
+				// a card and a freeze run for d, but they happen AT a point of
+				// the session: there is no session time inside them to land on,
+				// only the moment the footage is cut open for them
 				return s.S
+			}
+			if s.Rate > 0 {
+				// slowed footage: the bar's seconds cover 1/rate of the session's
+				return s.S + math.Max(0, x-acc)*s.Rate
 			}
 			return s.S + math.Max(0, x-acc)
 		}
@@ -2043,6 +2051,16 @@ func refitEntries(segs []cutSeg, entries []narrEntry) (moved, orphan int) {
 // because a clip trimmed at the front leaves that start outside the very clip
 // the rest of the line plainly sits in.
 func clipFor(segs []cutSeg, e narrEntry) int {
+	if e.E <= e.S {
+		// a line written on a card or a freeze has no span to share: its clip
+		// is the zero-span seg still sitting at the same moment, if any
+		for i, s := range segs {
+			if s.E <= s.S && math.Abs(s.S-e.S) <= 0.05 {
+				return i
+			}
+		}
+		return -1
+	}
 	best, most := -1, 0.0
 	for i, s := range segs {
 		if o := math.Min(e.E, s.E) - math.Max(e.S, s.S); o > most {
@@ -2357,6 +2375,14 @@ func clipBriefs(segs []cutSeg, rows []tsvRow, narr string) string {
 		// instead: a card that says "a few moments later" wants no narration, and
 		// a ranking graphic wants the ranking read out, and the file's name is
 		// the only thing here that tells them apart.
+		if s.frozen() {
+			// the transcript lines below still print: unlike a card, the held
+			// frame IS a moment of the session, and what was being said around
+			// it is exactly the context a line spoken over it wants
+			fmt.Fprintf(&b, "  (not passing footage: the picture freezes on one frame for %.0f s. "+
+				"A line here is spoken over the held frame -- describe the moment it froze on, "+
+				"or say nothing)\n", s.Dur)
+		}
 		if s.isInsert() {
 			// deliberately the whole thing, parameters and all: "tier.svg" says
 			// nothing about what is on the card and "tier.svg?S=Dust II,Mirage"

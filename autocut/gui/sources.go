@@ -302,19 +302,25 @@ func (s *sourceList) prune() []string {
 }
 
 // load replaces the list wholesale -- a project being opened. Roles come from
-// the project as stored; autoTag only fills a gap it left.
+// the project as stored: a list with nobody in slot 1 is one the user untagged,
+// and it must come back untagged. autoTag runs only when a broken tag had to
+// be stripped -- filling the one kind of gap load itself leaves.
 func (s *sourceList) load(items []sourceItem) {
 	s.items = nil
+	stripped := false
 	for _, it := range items {
 		// a hand-edited project must not seat two people in one slot,
 		// or promise frames out of a file that has none
-		if it.narrator < 1 || it.narrator > narratorSlots || s.slotHolder(it.narrator) >= 0 {
+		if it.narrator != 0 && (it.narrator < 1 || it.narrator > narratorSlots || s.slotHolder(it.narrator) >= 0) {
 			it.narrator = 0
+			stripped = true
 		}
 		it.footage = it.footage && isVideo(it.path)
 		s.items = append(s.items, it)
 	}
-	s.autoTag()
+	if stripped {
+		s.autoTag()
+	}
 	s.changed()
 }
 

@@ -107,7 +107,7 @@ func TestAddInsertClearsTheFootageUnderIt(t *testing.T) {
 		t.Fatalf("addInsert gave %v,\nwant %v", ed.segs, want)
 	}
 	// undoable like every other edit
-	if len(ed.undo) != 1 || !sameCut(ed.undo[0], []cutSeg{{S: 0, E: 60}}) {
+	if len(ed.undo) != 1 || !sameCut(ed.undo[0].segs, []cutSeg{{S: 0, E: 60}}) {
 		t.Errorf("addInsert pushed %v for undo, want the cut as it was", ed.undo)
 	}
 	// the split halves must not then merge back over the insert

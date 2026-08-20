@@ -102,9 +102,9 @@ func (ed *cutEditor) insertAt(t float64) (*cutSeg, float64) {
 		case !s.isInsert():
 		case s.spliced():
 			x0, x1 := ed.spliceSpan(*s)
-			w := (x1 - x0) / 2 / math.Max(ed.pps, 0.001)
-			if t >= s.S-w && t < s.S+w {
-				return s, (t - s.S + w) / (2 * w) * s.Dur
+			w := (x1 - x0) / math.Max(ed.pps, 0.001)
+			if t >= s.S && t < s.S+w {
+				return s, (t - s.S) / w * s.Dur
 			}
 		case t >= s.S && t < s.E:
 			return s, t - s.S
@@ -312,7 +312,40 @@ func (ed *cutEditor) showInsert() {
 		}
 		return
 	}
+	// The frame for this instant is not drawn yet. Showing nothing here is not
+	// neutral: it leaves the paused FOOTAGE on screen, and an animated card
+	// whose rendering runs slower than its own clock -- which is the usual case,
+	// a frame takes longer to draw than 1/8th of a second -- then never catches
+	// up with the playhead and never appears at all. So the nearest frame that
+	// IS drawn goes up while this one is asked for: a card a little behind its
+	// clock, rather than no card.
+	if j, tex := f.nearest(i); tex != nil {
+		if f.shown != j || !ed.player.still {
+			ed.player.ShowStill(tex)
+			f.shown = j
+		}
+	}
 	ed.renderFrame(f, i)
+}
+
+// nearest is the rendered frame closest to i, preferring the one behind it: a
+// card seen slightly earlier in its run reads as the card arriving, one seen
+// ahead of its run is a jump backwards when the real frame lands.
+func (f *insFilm) nearest(i int) (int, *gdk.Texture) {
+	best, d := -1, 0
+	for j := range f.tex {
+		dj := i - j
+		if dj < 0 {
+			dj = (j - i) * 2 // ahead of the clock costs double
+		}
+		if best < 0 || dj < d {
+			best, d = j, dj
+		}
+	}
+	if best < 0 {
+		return -1, nil
+	}
+	return best, f.tex[best]
 }
 
 // newFilm decides how an insert moves, which is the only thing about it this

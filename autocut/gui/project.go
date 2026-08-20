@@ -301,17 +301,34 @@ const autosaveTick = 2000
 // decides whether tonight's work exists in the morning.
 //
 // A ticker rather than a debounce on every setter, for the reason projectJSON
-// gives. The tick costs one marshal of a few kB; the compare is what makes it
-// free in practice, since a session spends most of its time not changing
-// anything, and an unchanged project writes nothing at all.
+// gives. The tick costs one marshal of a few kB, and closing the window
+// flushes whatever the last tick has not seen yet.
 func (a *App) startAutosave() {
 	a.projSaved = a.projectJSON() // what the startup load already put in memory
 	glib.TimeoutAdd(autosaveTick, func() bool {
-		if b := a.projectJSON(); b != nil && !bytes.Equal(b, a.projSaved) {
-			a.saveProjectNow()
-		}
+		a.flushProject()
 		return true
 	})
+	// the tick leaves a gap of up to autosaveTick between a change and the
+	// file, and the change most likely to land in it is the LAST one -- you
+	// click it, you see it happen, you close the window. That gap is what made
+	// a narrator tag come back after it was taken off: the tick that caught
+	// the tagging ran, the one that would have caught the untagging never did.
+	if a.win != nil {
+		a.win.ConnectCloseRequest(func() bool {
+			a.flushProject()
+			return false // false lets the window close; this only writes
+		})
+	}
+}
+
+// flushProject writes the project if it differs from what is on disk. The
+// compare is what makes a tick free in practice: a session spends most of its
+// time not changing anything, and an unchanged project writes nothing at all.
+func (a *App) flushProject() {
+	if b := a.projectJSON(); b != nil && !bytes.Equal(b, a.projSaved) {
+		a.saveProjectNow()
+	}
 }
 
 func (a *App) loadProjectFrom(path string) {

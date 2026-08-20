@@ -123,7 +123,69 @@ func TestEveryPathThatMovesTheLineSaysSo(t *testing.T) {
 			"buttons and playback -- if one was removed, drop it from this count", n)
 	}
 	// and the label has to be on the bar, next to the buttons that move it
-	if !strings.Contains(string(b), "bar.Append(ed.clock)") {
+	if !strings.Contains(string(b), "bar.Append(col(linked(ed.playBtn, prev5, prevF, nextF, next5), ed.clock))") {
 		t.Error("the clock is built but never added to the toolbar")
+	}
+}
+
+// The marks' own readout, under the buttons that set them. Same contract as
+// the clock: the mm:ss.d spelling everything else uses, dashes exactly as wide
+// as a time while a mark is unset, and pushed from every path that changes a
+// mark -- which is two, setting one and clearing both.
+func TestTheMarksReadTheirTimesUnderTheirButtons(t *testing.T) {
+	if got, want := marksClock(0, 0, false, false), "--:--.- – --:--.-"; got != want {
+		t.Errorf("no marks read %q, want %q", got, want)
+	}
+	if got, want := marksClock(83.45, 0, true, false), "01:23.5 – --:--.-"; got != want {
+		t.Errorf("in only reads %q, want %q", got, want)
+	}
+	if got, want := marksClock(83.45, 3599.94, true, true), "01:23.5 – 59:59.9"; got != want {
+		t.Errorf("both marks read %q, want %q", got, want)
+	}
+	// every state is the same width; the bar must never twitch as marks come and go
+	blank := len(marksClock(0, 0, false, false))
+	if l := len(marksClock(83.45, 3599.94, true, true)); l != blank {
+		t.Errorf("full readout is %d bytes against %d empty -- the bar will twitch", l, blank)
+	}
+
+	b, err := os.ReadFile("step3.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	// both paths that change a mark push the label; a readout only one of them
+	// updates is right after ⟦ in and silently stale after ✕
+	lines := strings.Split(src, "\n")
+	set := regexp.MustCompile(`^\s*ed\.(markIn, ed\.hasIn|markOut, ed\.hasOut|hasIn, ed\.hasOut) = `)
+	n := 0
+	for i, ln := range lines {
+		if !set.MatchString(ln) {
+			continue
+		}
+		n++
+		told := false
+		for j := i; j < len(lines) && j < i+10; j++ {
+			if strings.Contains(lines[j], "ed.showMarks()") {
+				told = true
+				break
+			}
+		}
+		if !told {
+			t.Errorf("step3.go:%d changes a mark without calling showMarks() nearby:\n\t%s",
+				i+1, strings.TrimSpace(ln))
+		}
+	}
+	if n < 3 {
+		t.Errorf("found %d places that change a mark, expected ⟦ in, out ⟧ and the clear -- "+
+			"if one was removed, drop it from this count", n)
+	}
+	// and the label sits in the bar, in a column under its buttons, in small print
+	for _, want := range []string{
+		"bar.Append(col(linked(markIn, markOut, clearBtn), ed.marks))",
+		`ed.marks.SetMarkup("<small>" + marksClock(ed.markIn, ed.markOut, ed.hasIn, ed.hasOut) + "</small>")`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("step3.go no longer contains %q -- the marks readout came unwired", want)
+		}
 	}
 }

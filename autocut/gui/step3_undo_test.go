@@ -30,12 +30,12 @@ func TestCutUndoRestores(t *testing.T) {
 	ed.segs = append(ed.segs[:0], ed.segs[1:]...)
 	ed.persist()
 
-	ed.segs = ed.undo[len(ed.undo)-1]
+	ed.segs = ed.undo[len(ed.undo)-1].segs
 	ed.undo = ed.undo[:len(ed.undo)-1]
 	if len(ed.segs) != 2 || ed.segs[0] != (cutSeg{S: 10, E: 20}) || ed.segs[1] != (cutSeg{S: 50, E: 60}) {
 		t.Fatalf("first undo gave %v, want [{10 20} {50 60}]", ed.segs)
 	}
-	ed.segs = ed.undo[len(ed.undo)-1]
+	ed.segs = ed.undo[len(ed.undo)-1].segs
 	if len(ed.segs) != 3 || ed.segs[1] != (cutSeg{S: 30, E: 40}) {
 		t.Fatalf("second undo gave %v, want the original three", ed.segs)
 	}
@@ -48,7 +48,7 @@ func TestCutRevertKeepsBaseline(t *testing.T) {
 	ed := newTestEd(t)
 	ed.segs = []cutSeg{{S: 100, E: 120}, {S: 200, E: 220}} // as if suggested
 	ed.setBase()
-	if !sameCut(ed.segs, ed.base) {
+	if !sameCut(ed.segs, ed.base.segs) {
 		t.Fatal("baseline does not match the cut it was taken from")
 	}
 
@@ -57,19 +57,19 @@ func TestCutRevertKeepsBaseline(t *testing.T) {
 	ed.coalesce()
 	ed.persist()
 	ed.removeRange(195, 225) // and a hand Remove of a suggested scene
-	if sameCut(ed.segs, ed.base) {
+	if sameCut(ed.segs, ed.base.segs) {
 		t.Fatal("baseline followed the edits")
 	}
 
 	ed.pushUndo()
-	ed.segs = append([]cutSeg(nil), ed.base...)
+	ed.segs = append([]cutSeg(nil), ed.base.segs...)
 	ed.persist()
 	if !sameCut(ed.segs, []cutSeg{{S: 100, E: 120}, {S: 200, E: 220}}) {
 		t.Fatalf("revert gave %v, want the suggestion back", ed.segs)
 	}
 
 	// and the revert itself is undoable
-	ed.segs = ed.undo[len(ed.undo)-1]
+	ed.segs = ed.undo[len(ed.undo)-1].segs
 	if len(ed.segs) != 3 {
 		t.Fatalf("undo after revert gave %v, want the 3 edited segments", ed.segs)
 	}

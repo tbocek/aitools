@@ -575,18 +575,31 @@ func subsIndex(key string) int {
 // reads the cut through here, so they all see the same running order -- the one
 // the narration is written against and the one that gets rendered.
 func (a *App) produceSegs() []cutSeg {
+	segs, fx, _ := a.produceCut()
+	return applyFx(splitSpliced(segs), fx)
+}
+
+// produceCut is the raw cut the render works from -- the live editor when it
+// has one, the saved file otherwise -- with the effects and the aspect that
+// go with it. Everything above the segment level (the camera, the output
+// frame) reads it through here so it cannot disagree with produceSegs.
+func (a *App) produceCut() ([]cutSeg, []cutFx, string) {
 	if a.ed != nil && len(a.ed.segs) > 0 {
-		return splitSpliced(a.ed.segs)
+		return a.ed.segs, a.ed.fx, a.ed.aspect
 	}
 	b, err := os.ReadFile(a.cutPath())
 	if err != nil {
-		return nil
+		return nil, nil, ""
 	}
-	var c struct{ Segs []cutSeg }
+	var c struct {
+		Segs   []cutSeg
+		Fx     []cutFx
+		Aspect string
+	}
 	if json.Unmarshal(b, &c) != nil {
-		return nil
+		return nil, nil, ""
 	}
-	return splitSpliced(c.Segs)
+	return c.Segs, c.Fx, c.Aspect
 }
 
 func (a *App) produceEntries() []narrEntry {
@@ -692,6 +705,10 @@ type prodClip struct {
 	video *tlVideo
 	ins   string
 	local float64 // start inside that recording
+	// where this clip starts on the SESSION clock -- the clock the effects are
+	// placed on. The camera reads it off the recording (video.start + local);
+	// an insert has no recording, so it is kept here for both.
+	sessS float64
 	// the frame an insert is fitted into, so every clip in the concat list has
 	// the same dimensions (clipBox). Unset for footage, which sets its own.
 	boxW, boxH int
@@ -700,6 +717,19 @@ type prodClip struct {
 	tempo  float64
 	lines  []prodLine // empty = original audio only
 	mix    []prodMix  // separate recordings running under this clip
+
+	// the effects (step3_fx.go), already resolved into per-clip terms by the
+	// planning: rate is the playback rate (1 = normal, 0.5 = half speed --
+	// length is output seconds either way), freeze holds the clip's first
+	// frame for the whole length, and cam is the camera when an aspect or a
+	// view/zoom is in play (nil = the frame as shot).
+	rate   float64
+	freeze bool
+	cam    *camPath
+	// the text effects that fall inside this clip, in its own output seconds
+	// (textCues). Resolved in the planning beside the camera, because both
+	// need the frame the clip comes out at.
+	texts []textCue
 }
 
 // prodMix is a separate recording playing under one clip: a headset recorder, a
@@ -720,6 +750,16 @@ type prodMix struct {
 	at   float64
 	ss   float64
 	dur  float64
+}
+
+// speed is the clip's playback rate with the zero value meaning normal: the
+// planning always writes one, but a prodClip is also built by hand in tests
+// and the arithmetic below divides by this.
+func (c prodClip) speed() float64 {
+	if c.rate > 0 {
+		return c.rate
+	}
+	return 1
 }
 
 // name is what a clip is called in the log and in the clips folder.
@@ -849,22 +889,29 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				a.logfIdle("clip %d: %s is not there any more — skipped", i+1, file)
 				continue
 			}
-			c = prodClip{idx: i, ins: path + q.suffix(), tempo: 1, length: s.length()}
+			c = prodClip{idx: i, ins: path + q.suffix(), tempo: 1, rate: 1, length: s.length()}
 		default:
 			v := pickVideo(vids, s.S)
 			if v == nil {
 				a.logfIdle("clip %d at %.0f s falls in no recording — skipped", i+1, s.S)
 				continue
 			}
-			c = prodClip{idx: i, video: v, local: s.S - v.start, tempo: 1, length: s.length()}
-			if end := v.start + v.dur; s.E > end {
-				c.length = end - s.S
+			c = prodClip{idx: i, video: v, local: s.S - v.start, tempo: 1, rate: 1,
+				length: s.length(), freeze: s.frozen()}
+			if s.Rate > 0 {
+				c.rate = s.Rate
+			}
+			// the clamp is in session seconds -- what the recording has left --
+			// and the slot in output seconds, which under slow motion is longer
+			if end := v.start + v.dur; !c.freeze && s.E > end {
+				c.length = (end - s.S) / c.speed()
 				a.logfIdle("clip %d runs past the end of %s — shortened to %.1f s", i+1, v.base, c.length)
 			}
 		}
 		if c.length < 0.5 {
 			continue
 		}
+		c.sessS = s.S
 		matched := matchEntries(entries, s)
 		for _, e := range matched {
 			text := strings.TrimSpace(e.Text)
@@ -878,7 +925,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			// which is 20 s early: near the head of the clip, over whatever the
 			// line before it was saying. Identical arithmetic to Narrate's
 			// refit, and a no-op for a clip that has not moved.
-			at := e.S + e.At - s.S
+			at := (e.S + e.At - s.S) / c.speed() // under slow motion the moment lands later in the clip
 			ln := prodLine{text: text, at: math.Min(math.Max(0, at), math.Max(0, c.length-1))}
 			ln.delay = math.Max(narrLead, ln.at)
 			wav := a.ttsWav(*e)
@@ -890,7 +937,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			}
 			c.lines = append(c.lines, ln)
 		}
-		if len(c.lines) == 0 && len(entries) > 0 && len(matched) == 0 {
+		if len(c.lines) == 0 && len(entries) > 0 && len(matched) == 0 && s.E > s.S {
 			a.logfIdle("clip %d at %.0f s has no narration entry — it keeps its own audio", i+1, s.S)
 		}
 		// make the lines fit where the writer put them: each starts no earlier
@@ -917,8 +964,8 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				// footage runs out; an insert does not -- a still or a loop is
 				// as long as the slot asks for
 				if v := c.video; v != nil {
-					if end := v.start + v.dur; s.S+c.length > end {
-						c.length = end - s.S
+					if end := v.start + v.dur; s.S+c.length*c.speed() > end {
+						c.length = (end - s.S) / c.speed()
 					}
 				}
 			}
@@ -982,12 +1029,60 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		}
 	}
 	// every insert is fitted into the size the footage comes out at, which can
-	// only be known once it is settled which recordings are in (clipBox)
-	if boxW, boxH := clipBox(clips, st); boxW > 0 {
+	// only be known once it is settled which recordings are in (clipBox) --
+	// and when the cut names an aspect, that size is the aspect's own frame
+	// instead, for footage and inserts alike (outBox)
+	_, fx, aspect := a.produceCut()
+	boxW, boxH := outBox(clips, st, aspect)
+	if boxW > 0 {
+		// on every clip, not only the inserts that are fitted into it: a text
+		// overlay is drawn at the finished frame's size too, and it has to be
+		// the same size for footage as for a card or the words land elsewhere
 		for i := range clips {
-			if clips[i].ins != "" {
-				clips[i].boxW, clips[i].boxH = boxW, boxH
+			clips[i].boxW, clips[i].boxH = boxW, boxH
+		}
+	}
+	// the camera: with an aspect, a view or a zoom in play, every footage clip
+	// is taken through fxRectAt -- the same function the preview overlay draws
+	// -- sampled at every moment anything starts or stops moving (buildCam)
+	if fxHasCamera(aspect, fx) && boxW > 0 {
+		camFps := st.FPS
+		if camFps <= 0 {
+			camFps = 30
+		}
+		for i := range clips {
+			c := &clips[i]
+			if c.video == nil {
+				continue
 			}
+			sw, sh, err := ffprobeSize(c.video.path)
+			if err != nil {
+				return fmt.Errorf("%s: the camera needs the source frame size: %w", c.video.base, err)
+			}
+			span := c.length * c.speed()
+			if c.freeze {
+				span = 0 // a freeze is one session moment, not a stretch of it
+			}
+			c.cam = buildCam(fx, aspect, sw, sh, c.video.start+c.local, span,
+				c.speed(), c.length, boxW, boxH, camFps)
+			if c.cam != nil && c.cam.maxZoom() > 10 {
+				a.logfIdle("clip %d: the zoom goes deeper than ffmpeg's 10× — it is rendered at 10×", i+1)
+			}
+		}
+	}
+
+	// the words: the same session-to-clip mapping the camera just used, so a
+	// title and a camera move placed at the same second happen at the same
+	// second in the render. An insert or a freeze is one session moment held
+	// for a while (span 0), exactly as buildCam treats it.
+	if boxW > 0 {
+		for i := range clips {
+			c := &clips[i]
+			span := c.length * c.speed()
+			if c.freeze || c.ins != "" {
+				span = 0
+			}
+			c.texts = textCues(fx, c.sessS, span, c.speed(), c.length)
 		}
 	}
 
@@ -1141,9 +1236,20 @@ func insKind(path string) string {
 // a recording, a held still, and a baked SVG sequence.
 func (a *App) clipInput(c prodClip, st prodSettings) ([]string, bool, error) {
 	if c.ins == "" {
+		if c.freeze {
+			// one frame is all that is kept (trim=end_frame=1 in encodeClip),
+			// so half a second of input is plenty -- and a held frame has no
+			// sound of its own, so the anullsrc path supplies the silence
+			return []string{
+				"-ss", fmt.Sprintf("%.3f", math.Max(0, c.local)),
+				"-t", "0.5", "-i", c.video.path,
+			}, false, nil
+		}
+		// input seconds: a slowed clip reads rate·length of footage and
+		// stretches it to length on the way out
 		return []string{
 			"-ss", fmt.Sprintf("%.3f", math.Max(0, c.local)),
-			"-t", fmt.Sprintf("%.3f", c.length), "-i", c.video.path,
+			"-t", fmt.Sprintf("%.3f", c.length*c.speed()), "-i", c.video.path,
 		}, hasAudioStream(c.video.path), nil
 	}
 	rate := st.FPS
@@ -1279,13 +1385,21 @@ func clipBox(clips []prodClip, st prodSettings) (int, int) {
 // Inserts are left alone. A card is not a moment of the session -- it is time
 // added to the cut -- so there is no stretch of any recording that belongs
 // under it, and dropping the room audio in there would play a sentence that
-// was said somewhere else.
+// was said somewhere else. A freeze is the same kind of thing: a held frame is
+// added time, not a stretch of the session, so nothing was recorded under it.
+//
+// A slowed clip covers length·rate session seconds, and what was heard in
+// them is stretched to match the picture (atempo, in encodeClip) -- so the
+// numbers here are: the session span through the rate for where the clip
+// ends, the placement divided by it (a recording that came in 3 s into the
+// footage comes in 6 s into the half-speed clip), and dur left in file
+// seconds, because it is an input trim and the stretch happens in the graph.
 func clipMixes(c prodClip, recs []tlAudio) []prodMix {
-	if c.video == nil || len(recs) == 0 {
+	if c.video == nil || len(recs) == 0 || c.freeze {
 		return nil
 	}
 	s0 := c.video.start + c.local
-	s1 := s0 + c.length
+	s1 := s0 + c.length*c.speed()
 	var out []prodMix
 	for _, au := range recs {
 		t0 := math.Max(s0, au.start)
@@ -1294,7 +1408,7 @@ func clipMixes(c prodClip, recs []tlAudio) []prodMix {
 			continue
 		}
 		out = append(out, prodMix{base: au.base, path: au.path,
-			at: t0 - s0, ss: t0 - au.start, dur: t1 - t0})
+			at: (t0 - s0) / c.speed(), ss: t0 - au.start, dur: t1 - t0})
 	}
 	return out
 }
@@ -1342,14 +1456,52 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 		args = append(args, "-ss", fmt.Sprintf("%.3f", math.Max(0, m.ss)),
 			"-t", fmt.Sprintf("%.3f", m.dur), "-i", m.path)
 	}
+	// the words, last, for the same reason the recordings are last: a new one
+	// must not move an index an earlier filter was written against. Each is a
+	// still SVG the size of the finished frame (fxtext.go), looped for the
+	// clip's length -- ffmpeg reads SVG already, it is how the cards get in.
+	txtBase := mixBase + len(c.mix)
+	svgFps := st.FPS
+	if svgFps <= 0 {
+		svgFps = 30
+	}
+	for _, cue := range c.texts {
+		file := fmt.Sprintf("%s_t%02d.svg", strings.TrimSuffix(out, filepath.Ext(out)), cue.idx)
+		if err := os.WriteFile(file, textSVG(cue.fx, c.boxW, c.boxH), 0o644); err != nil {
+			return err
+		}
+		// a hair longer than the slot, so the last frame of the clip still has
+		// something to composite; the overlay's eof_action=pass covers the rest
+		args = append(args, "-loop", "1", "-framerate", fmt.Sprintf("%g", svgFps),
+			"-t", fmt.Sprintf("%.3f", c.length+0.2), "-i", file)
+	}
 
 	var vf []string
+	// the clock first: setpts stretches or squeezes the timestamps, and
+	// everything after it -- the fps grid, the camera -- works in that time,
+	// which is the clip's own output time
+	if c.ins == "" && !c.freeze && c.speed() != 1 {
+		vf = append(vf, fmt.Sprintf("setpts=PTS/%g", c.speed()))
+	}
+	if c.freeze {
+		// one decoded frame, held: everything after the first frame is cut and
+		// the frame is cloned out a hair past the slot (the output -t below is
+		// what makes the length exact)
+		vf = append(vf, "trim=end_frame=1,setpts=PTS-STARTPTS",
+			fmt.Sprintf("tpad=stop_mode=clone:stop_duration=%.3f", c.length+0.2))
+	}
 	// the fps FILTER is what pins a stream to a rate: it duplicates and drops
 	// frames until they land on that grid, whether the source was faster or
 	// slower. Under VFR the rate is a ceiling instead, which is the encoder's
 	// job and not a filter's (see fpsArgs).
 	if st.FPS > 0 && !st.VFR {
 		vf = append(vf, fmt.Sprintf("fps=%g", st.FPS))
+	} else if c.cam != nil && !c.cam.static() {
+		// zoompan places its window per frame, so a moving camera needs a grid
+		// even when the output is VFR; this clip gets one at the camera's rate
+		vf = append(vf, fmt.Sprintf("fps=%g", c.cam.fps))
+		a.logfIdle("%s: the moving camera needs a fixed frame rate — this clip is %g fps",
+			c.name(), c.cam.fps)
 	}
 	switch {
 	case c.ins != "":
@@ -1367,14 +1519,43 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 		// a video insert shorter than its slot would end the clip early and take
 		// the narration written over it with it; the last frame is held instead
 		vf = append(vf, fmt.Sprintf("tpad=stop_mode=clone:stop_duration=%.3f", c.length))
+	case c.cam != nil:
+		vf = append(vf, c.cam.chain()...)
 	case st.Height > 0:
 		vf = append(vf, fmt.Sprintf("scale=-2:%d", st.Height))
+	}
+	if len(c.texts) > 0 && c.ins == "" && c.cam == nil && st.Height <= 0 && c.boxW > 0 {
+		// nothing above has pinned this clip's size, and the overlay is drawn
+		// at the finished frame's -- so say the size out loud rather than hope
+		vf = append(vf, fmt.Sprintf("scale=%d:%d", c.boxW, c.boxH))
 	}
 	vf = append(vf, "setsar=1")
 	if cueFile != "" {
 		vf = append(vf, "subtitles="+ffEscape(cueFile))
 	}
-	fc := "[0:v]" + strings.Join(vf, ",") + "[v];"
+	vlab := "v"
+	fc := "[0:v]" + strings.Join(vf, ",")
+	if len(c.texts) > 0 {
+		// the words go on AFTER the camera and the subtitles: a title is put on
+		// the finished frame, and it holds still while the camera moves under it
+		fc += "[vcam];"
+		chain, last := textChain(c.texts, "vcam", txtBase)
+		fc += chain
+		vlab = last
+	} else {
+		fc += "[v];"
+	}
+	// footage off its own clock: everything recorded with the picture goes with
+	// it, pitch held (atempoChain) -- the capture's own sound here, each
+	// separate recording where it is prepared below
+	slow := ""
+	if c.ins == "" && !c.freeze && c.speed() != 1 {
+		slow = atempoChain(c.speed())
+		if srcSound {
+			fc += fmt.Sprintf("[%s]%s%s[slowgm];", game, audFmt, slow)
+			game = "slowgm"
+		}
+	}
 	// The bed is everything that was there: the picture's own sound, plus every
 	// separate recording that was running under it. They are one thing from
 	// here on -- ducked together under the narration, or heard as they are when
@@ -1387,7 +1568,7 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 	if len(c.mix) > 0 {
 		seps := ""
 		for k, m := range c.mix {
-			fc += fmt.Sprintf("[%d:a]%s", mixBase+k, audFmt)
+			fc += fmt.Sprintf("[%d:a]%s%s", mixBase+k, audFmt, slow)
 			// whole milliseconds, and only when there is a wait to honour: this
 			// is the same integer adelay the narration learned to hand over
 			if ms := int(math.Round(m.at * 1000)); ms > 0 {
@@ -1422,12 +1603,12 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 	} else {
 		fc += fmt.Sprintf("[%s]%s[a]", game, audFmt)
 	}
-	args = append(args, "-filter_complex", fc, "-map", "[v]", "-map", "[a]")
-	if c.ins != "" {
-		// the slot is what decides an insert's length, not the file: a still has
-		// no length of its own, a looped animation has too much, and tpad above
-		// gave a short video an endless tail. This is the only thing that stops
-		// any of the three.
+	args = append(args, "-filter_complex", fc, "-map", "["+vlab+"]", "-map", "[a]")
+	if c.ins != "" || c.freeze || c.speed() != 1 {
+		// the slot is what decides these clips' length, not the input: a still
+		// has no length of its own, a looped animation has too much, tpad gave
+		// a short video (and every freeze) an endless tail, and a rated clip's
+		// stretch only lands on the slot to rounding. This is what stops them.
 		args = append(args, "-t", fmt.Sprintf("%.3f", c.length))
 	}
 	args = append(args, fpsArgs(st)...)
@@ -1521,6 +1702,14 @@ func matchEntries(entries []narrEntry, s cutSeg) []*narrEntry {
 	var out []*narrEntry
 	for i := range entries {
 		e := &entries[i]
+		if s.E <= s.S {
+			// a card or a freeze occupies no span of the session, so overlap
+			// cannot find its lines: they are the entries written exactly on it
+			if math.Abs(e.S-s.S) <= 0.05 && math.Abs(e.E-s.E) <= 0.05 {
+				out = append(out, e)
+			}
+			continue
+		}
 		ov := math.Min(e.E, s.E) - math.Max(e.S, s.S)
 		shorter := math.Min(e.E-e.S, s.E-s.S)
 		if ov > 0 && (shorter <= 0 || ov >= shorter/2) {

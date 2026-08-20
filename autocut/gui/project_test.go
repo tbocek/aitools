@@ -258,6 +258,30 @@ func TestTheAutosaveWritesAndThenKnowsItIsUpToDate(t *testing.T) {
 	}
 }
 
+// The ticker is a poll, so there is always a window of up to autosaveTick in
+// which a change exists only in the widgets -- and the change most likely to
+// sit in that window is the last one made, because making it is what tells the
+// user they are done. Closing the window has to write, or the file keeps a
+// state the user already moved past: a narrator tag taken off, seen taken off,
+// and back the next morning because the tick that would have written it never
+// came. currentProject needs a built window, so the flush itself cannot run
+// here; what this holds is that both the tick and the close go through it.
+func TestClosingTheWindowWritesWhatTheTickHasNotSeen(t *testing.T) {
+	src, err := os.ReadFile("project.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"glib.TimeoutAdd(autosaveTick, func() bool {\n\t\ta.flushProject()",
+		"a.win.ConnectCloseRequest(func() bool {\n\t\t\ta.flushProject()",
+		"return false // false lets the window close; this only writes",
+	} {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("project.go no longer holds:\n%s", want)
+		}
+	}
+}
+
 // Narrate writes step4/ and nothing else, and no test writes into the live
 // session. Both halves of "there is a step5/ folder and I never opened
 // Produce": the renumbering that made Narrate step 4 left the old name in

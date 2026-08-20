@@ -189,9 +189,15 @@ func (a *App) audioRun(model string, req map[string]any) ([]byte, error) {
 //
 // The language goes as its own field: over HTTP it lands in the request
 // options directly, so the empty --text the CLI needed to carry it is gone.
-// Models that ignore it (parakeet is multilingual) simply ignore it. It comes
-// off the project, not off llm.conf -- what this session is spoken in is the
-// session's business, not the machine's.
+// Multilingual models (nemotron detects the language itself) simply ignore or
+// refine it. It comes off the project, not off llm.conf -- what this session
+// is spoken in is the session's business, not the machine's.
+//
+// An answer with NO words is returned as it is rather than failed: a screen
+// capture with no mic behind it is a silent recording, and a silent recording
+// is an empty transcript, not a broken step. The misconfigurations this used
+// to catch are caught before it -- ensureAudioModels checks the id and the
+// task before the first minute of ffmpeg runs.
 func (a *App) asrJSON(wav string) ([]byte, string, error) {
 	// absolute, always: the path is opened by the server, whose working
 	// directory is its own and is not ours
@@ -206,19 +212,10 @@ func (a *App) asrJSON(wav string) ([]byte, string, error) {
 		return nil, "", err
 	}
 	var out struct {
-		Text  string `json:"text"`
-		Words []struct {
-			Word string `json:"word"`
-		} `json:"words"`
+		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, "", fmt.Errorf("unreadable answer from %s: %w", c.ASRModel, err)
-	}
-	if len(out.Words) == 0 {
-		// every later step is built on word times; an answer without them is a
-		// failure here rather than an empty transcript three stages on
-		return nil, "", fmt.Errorf("%s returned no words for %s -- silence, or the wrong model for the job",
-			c.ASRModel, filepath.Base(wav))
 	}
 	return body, out.Text, nil
 }
@@ -251,7 +248,7 @@ func (a *App) ensureAudioModels() error {
 	}
 	c := a.readConf()
 	for _, want := range []struct{ id, def, task, pkg string }{
-		{c.ASRModel, defASRModel, "asr", "parakeet_tdt_q8_0"},
+		{c.ASRModel, defASRModel, "asr", "nemotron_asr_q8_0"},
 		{c.DiarModel, defDiarModel, "diar", "sortformer_diar_4spk_v1_q8_0"},
 	} {
 		m, ok := cat[want.id]

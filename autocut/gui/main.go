@@ -85,7 +85,7 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"want — a resumed run would describe the rest of the footage under the new " +
 			"wording and leave the first half under the old."},
 	{"step3", "Cut", "Choose the clips the video is made of",
-		"Finish Describe first — the cut works on the session timeline",
+		"Run Inputs first — the cut works on the footage and its frames",
 		"The footage over the session timeline, with everything the cut keeps tinted " +
 			"green over it, and a waveform lane per sound below. ▶ below asks " +
 			"the model to fill the ▶ target length from what Describe found; from then " +
@@ -93,9 +93,13 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"the suggestion. Once you have edited by hand ▶ says so rather than throwing " +
 			"the edits away — Revert first if you want a fresh suggestion. The scroll " +
 			"wheel zooms around the cursor.\n\nA left click " +
-			"drops the red playhead; the clock beside the transport buttons is where it " +
+			"drops the red playhead; the clock under the transport buttons is where it " +
 			"landed, in mm:ss.d of session time, and hovering it says which recording " +
-			"that is, which frame, and whether the cut keeps it.\n\nA clip's own " +
+			"that is, which frame, and whether the cut keeps it; the ⟦ in and out ⟧ marks " +
+			"print their times the same way, in small type under their own buttons. Over " +
+			"the picture and the toolbar the wheel steps frames instead of zooming — a " +
+			"notch is a frame, five with Shift — and stepping or playing past the view's " +
+			"edge scrolls the timeline to put the red line back in the middle.\n\nA clip's own " +
 			"edges are trimmed rather than re-selected, and that is two buttons: the " +
 			"right one picks a green border up — it turns white — and does nothing else, " +
 			"so the choice keeps while your hand moves. Then move it, either by dragging " +
@@ -189,7 +193,49 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"and add <!-- Input: name | Label | what it is --> beside it to have the dialog ask " +
 			"in your words rather than in the placeholder's. assets/CARDS.md is written into " +
 			"the folder with the cards and says all of it — the canvas, the placeholders, and " +
-			"how an animated one has to be written — for whoever, or whatever, writes the next one."},
+			"how an animated one has to be written — for whoever, or whatever, writes the next one.\n\n" +
+			"The aspect dropdown beside those buttons is for a video that is not the footage's " +
+			"shape — 9:16 for a short, 1:1, 4:5 — and \"source\" is the absence of the choice: " +
+			"nothing below applies until it is changed, and a cut that never touches it renders " +
+			"exactly as it always did. With one chosen, the height set on Produce names the " +
+			"output's height and the aspect names its width, and the video starts on the whole " +
+			"frame, black either side, because throwing footage away is a choice you make, not " +
+			"one made for you — until the first view: the moment one exists, the video is " +
+			"framed on it from the very start, wherever on the timeline it was placed.\n\n" +
+			"The four effects live in the ✚ Effect dropdown beside the aspect. " +
+			"▭ View is that choice: jump anywhere, pick it, and draw on " +
+			"the picture itself the region to show from there on. The rectangle keeps the cut's " +
+			"aspect while you drag, snaps flush when you reach the full width or height of the " +
+			"frame, and may be smaller — a crop, zoomed in — or larger, the frame with more " +
+			"black around it. The dialog then asks the one number: 0 switches the camera at " +
+			"that instant, seconds glide it over. Views chain — each one starts from wherever " +
+			"the camera is at that moment, mid-glide included — and the camera stays until the " +
+			"next one. ⊕ Zoom is a free drawing with a return ticket: any rectangle, not bound " +
+			"to the aspect — the camera closes in on the smallest output-shaped window that " +
+			"holds it — in over its own glide, held for its length, and back out over a separate " +
+			"glide to wherever the views say the camera belongs. " +
+			"⏩ Speed needs no drawing: it puts the seconds marked with in and out on a clock " +
+			"of their own — type the rate, a fifth for slow motion or up to 100× to run " +
+			"through the dead air of a long recording, the sound stretched or squeezed with " +
+			"the picture and the pitch kept. ⏸ Stop holds the frame under " +
+			"the playhead still for a time you type, which plays like a spliced card the " +
+			"session never filmed.\n\nEvery effect is a mark on the lane under the picture band — orange " +
+			"flags for views, teal brackets for zooms, rose bands for speed, rose also washed " +
+			"over the footage that is off its own clock — and the marks answer to the timeline's own " +
+			"verbs: the right button holds one (white) and on the held one opens its numbers, " +
+			"a left drag slides it, ‹f and f› " +
+			"nudge it a frame, ✎ Edit reopens its numbers, － Remove deletes it, Esc puts it " +
+			"down, and all of it shares the one Undo with the cut. A held view or zoom shows " +
+			"its rectangle on the picture: draw beside it to re-frame it, or grab inside it " +
+			"and slide it whole, its edges snapping onto the frame's top, left, right and " +
+			"bottom as they come close; the right button on or inside it asks its times " +
+			"again — a view's transition, a zoom's length and separate glides in and out — " +
+			"except on the first view, which has none to ask. Paused, the preview draws " +
+			"the camera as an outline over the full frame rather than cropping the picture — " +
+			"you frame against everything the camera could see; playing, it zooms for real, " +
+			"glides and all. It does not slow or " +
+			"freeze; the \"cut\" figure under the tracks counts that added time, and " +
+			"Produce renders it."},
 	{"step4", "Narrate", "The narration, and the voice it is spoken in",
 		"Finish Cut first — narration is written for the cut's clips",
 		"▶ below is the initial fill: it writes the narration once (again only if the " +
@@ -721,6 +767,39 @@ func (a *App) understandDir() string { return filepath.Join(a.outDir, "step2") }
 func (a *App) describeDir() string   { return filepath.Join(a.understandDir(), "describe") }
 func (a *App) transcriptDir() string { return filepath.Join(a.understandDir(), "transcript") }
 
+// framesDir is where step 1 leaves one video's frames: the Describe step reads
+// them and the Cut step waits for them, so the path is named once.
+func (a *App) framesDir(base string) string {
+	return filepath.Join(a.outDir, "step1", "frames", base)
+}
+
+// canCut is what the Cut page needs before it can show anything: frames, out
+// of a source marked as footage.
+//
+// It used to be session.tsv -- Describe's output -- which is not the same
+// thing. A silent screen capture has no words to fix and a session nobody
+// wants described is cut by hand; in both, Describe would be a step run for no
+// reason except to unlock the next one. The timeline is built from the sources
+// and their frames. What Describe adds is the text ON that timeline, and
+// having none of it is an empty track, not a locked page -- the page says so
+// itself, under the tracks, and the suggestion button says it again.
+func (a *App) canCut() bool {
+	vids, _ := a.snapSources()
+	for _, v := range vids {
+		ents, err := os.ReadDir(a.framesDir(baseName(v)))
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			// the same rule planVideo reads them by: jpgs, never the marker
+			if strings.HasSuffix(e.Name(), ".jpg") && !strings.HasPrefix(e.Name(), ".") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (a *App) setOutDir(dir string) {
 	a.outDir = dir
 	if a.outLabel != nil {
@@ -1160,7 +1239,10 @@ func (a *App) updateGates() {
 	// "there is a video in it": a session of recordings has nothing to see and
 	// still has everything to read.
 	a.step2Locked = len(a.loadMeta()) == 0
-	a.step3Locked = !exists(filepath.Join(a.transcriptDir(), "session.tsv"))
+	// the cut works on the footage and its frames, which is step 1's output.
+	// Describe's session timeline is what it prints on the tracks and what the
+	// suggestion reads, and a session can be cut by hand without it
+	a.step3Locked = !a.canCut()
 	a.step4Locked = !exists(a.cutPath())
 	a.step5Locked = !exists(a.cutPath())
 	for i, s := range steps {

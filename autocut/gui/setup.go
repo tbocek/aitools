@@ -74,7 +74,7 @@ type appConf struct {
 // with a message about nothing.
 const (
 	defVoices    = "/mnt/models/audiocpp/voices"
-	defASRModel  = "parakeet-tdt"
+	defASRModel  = "nemotron-asr"
 	defDiarModel = "sortformer-diar"
 	defTTSModel  = "index-tts2"
 )

@@ -294,7 +294,7 @@ func TestNarrationLandsWhereItWasPlaced(t *testing.T) {
 	// offset kept as written is 20 s early, which lands it on the head of the
 	// clip over the line before it. Produce reads the saved narration directly,
 	// so it cannot rely on Narrate having been visited to re-anchor them.
-	if !strings.Contains(src, "at := e.S + e.At - s.S") {
+	if !strings.Contains(src, "at := (e.S + e.At - s.S) / c.speed()") {
 		t.Error("the render places a line by its offset into a clip that may have moved underneath it")
 	}
 	// the format verb matters as much as the number: %g on 23376 would write

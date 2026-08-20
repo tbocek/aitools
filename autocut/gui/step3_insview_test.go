@@ -336,14 +336,14 @@ func TestTheInsertPreviewIsWired(t *testing.T) {
 	for file, wants := range map[string][]string{
 		"step3.go": {
 			// every path that moves the red line asks what is under it
-			"ed.showInsert()\n\ted.redrawTracks()",                              // a click / a seek
-			"ed.showInsert() // stepping through a card steps through the card", // ‹f and f›
+			"ed.showInsert()\n\ted.redrawTracks()",                                  // a click / a seek
+			"ed.showInsert()     // stepping through a card steps through the card", // ‹f and f›
 			"ed.film = nil // another project's card is not this one's",
 			// playback's own clock: a card the footage is cut open for stops it
 			// here, everything else is drawn as the line passes through it
 			"if s := ed.splicedCrossed(was, ed.playhead); s != nil {",
 			"ed.startHold(s)",
-			"\t\t\ted.showInsert()\n\t\t}\n\t\ted.redrawTracks()",
+			"\t\t\ted.showInsert()\n\t\t}\n\t\ted.revealPlayhead()",
 			"if ed.hold.on {\n\t\ted.tickHold()",
 			// and a hand on the line is the end of any hold
 			"ed.cancelHold()",

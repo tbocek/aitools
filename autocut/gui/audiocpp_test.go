@@ -51,7 +51,7 @@ func fakeAudio(t *testing.T, models string, run http.HandlerFunc) (*App, *[]map[
 }
 
 // the two models step 1 asks for, as a server that has them lists them
-const step1Models = `{"id":"parakeet-tdt","family":"parakeet_tdt","task":"asr"},` +
+const step1Models = `{"id":"nemotron-asr","family":"nemotron_asr","task":"asr"},` +
 	`{"id":"sortformer-diar","family":"sortformer_diar","task":"diar"}`
 
 func answer(body string) http.HandlerFunc {
@@ -110,16 +110,62 @@ func TestASRPostsOneJobAndKeepsTheAnswerWhole(t *testing.T) {
 	}
 }
 
-// TestASRWithoutWordsIsAFailure: every later step is built on word times, so an
-// answer without them has to stop step 1 here -- and, because words.json is
-// also the resume marker, must not leave a file behind that says this input is
-// done.
-func TestASRWithoutWordsIsAFailure(t *testing.T) {
+// TestASRWithoutWordsIsSilence: a recording with no speech in it is a real
+// input -- a screen capture with no mic behind it -- so an answer with no words
+// is an empty transcript, not a failed step. It used to stop step 1 here, and
+// what that stopped in practice was a project whose one source never had a
+// voice on it at all.
+func TestASRWithoutWordsIsSilence(t *testing.T) {
 	a, _ := fakeAudio(t, step1Models, answer(`{"text":"","words":[]}`))
-	if _, _, err := a.asrJSON(filepath.Join(a.outDir, "silence.wav")); err == nil {
-		t.Fatal("an answer with no words passed as a transcript")
-	} else if !strings.Contains(err.Error(), defASRModel) || !strings.Contains(err.Error(), "silence.wav") {
-		t.Errorf("the error names neither the model nor the file: %v", err)
+	body, text, err := a.asrJSON(filepath.Join(a.outDir, "silence.wav"))
+	if err != nil {
+		t.Fatalf("a silent recording failed step 1: %v", err)
+	}
+	if text != "" {
+		t.Errorf("silence transcribed as %q", text)
+	}
+	// the answer is still written whole: words.json is the resume marker, and
+	// silence recognised once must not be recognised again on every resume
+	if !strings.Contains(string(body), `"words"`) {
+		t.Errorf("the silent answer lost its shape: %s", body)
+	}
+}
+
+// TestSilenceMergesToAnEmptyTranscript is the same case one stage on. No words
+// at all means empty transcript files -- written, because later steps look for
+// them -- while words whose times cannot be read are the ASR answer changing
+// shape, which has to stop the step rather than quietly emptying every
+// transcript after it.
+func TestSilenceMergesToAnEmptyTranscript(t *testing.T) {
+	a, _ := fakeAudio(t, step1Models, answer(""))
+	out := filepath.Join(a.outDir, "step1", "clip")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(out, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("words.json", `{"text":"","words":[]}`)
+	write("turns.json", `{"speaker_turns":[]}`)
+	if err := a.mergeSegments(out); err != nil {
+		t.Fatalf("merging silence: %v", err)
+	}
+	for _, name := range []string{"transcript.tsv", "transcript.srt"} {
+		b, err := os.ReadFile(filepath.Join(out, name))
+		if err != nil {
+			t.Fatalf("%s was not written for a silent clip: %v", name, err)
+		}
+		if len(b) != 0 {
+			t.Errorf("%s of a silent clip holds %q", name, b)
+		}
+	}
+
+	// words present but under different keys: a format drift, not silence
+	write("words.json", `{"text":"hi","words":[{"word":"hi","start_ms":100,"end_ms":200}]}`)
+	if err := a.mergeSegments(out); err == nil || !strings.Contains(err.Error(), "changed shape") {
+		t.Errorf("unreadable word times merged without complaint: %v", err)
 	}
 }
 
@@ -253,7 +299,7 @@ func TestEnsureAudioModelsNamesWhatIsMissing(t *testing.T) {
 		defASRModel, "index-tts2", "audiocpp-server.json")
 	// the id is there but points at the wrong thing -- a copied entry with the
 	// task left as it was
-	fail(t, `{"id":"parakeet-tdt","family":"parakeet_tdt","task":"asr"},`+
+	fail(t, `{"id":"nemotron-asr","family":"nemotron_asr","task":"asr"},`+
 		`{"id":"sortformer-diar","family":"sortformer_diar","task":"asr"}`,
 		defDiarModel, "diar")
 }
@@ -263,15 +309,117 @@ func TestEnsureAudioModelsNamesWhatIsMissing(t *testing.T) {
 // something changed.
 func TestCatalogIDsIsStable(t *testing.T) {
 	cat := map[string]audioModel{}
-	for _, id := range []string{"sortformer-diar", "index-tts2", "parakeet-tdt"} {
+	for _, id := range []string{"sortformer-diar", "index-tts2", "nemotron-asr"} {
 		cat[id] = audioModel{ID: id}
 	}
 	for i := 0; i < 5; i++ {
-		if got, want := catalogIDs(cat), "index-tts2, parakeet-tdt, sortformer-diar"; got != want {
+		if got, want := catalogIDs(cat), "index-tts2, nemotron-asr, sortformer-diar"; got != want {
 			t.Fatalf("catalogIDs = %q, want %q", got, want)
 		}
 	}
 	if got := catalogIDs(nil); got != "nothing" {
 		t.Errorf("an empty catalog reads %q", got)
+	}
+}
+
+// A capture is twelve minutes and an ASR encoder is not: its position table
+// runs out somewhere in the middle, and Nemotron says so with a 500 rather
+// than transcribing what it can. So a long recording is cut up, and what the
+// cutting must not do is hand any piece back over the ceiling -- two cuts can
+// slide away from each other towards their nearest silences, and a piece that
+// grows past max is the very error the cutting exists to avoid.
+func TestALongRecordingIsCutIntoPiecesTheEncoderCanHold(t *testing.T) {
+	const max, seek = 300.0, 45.0
+	// silences all over, including two right where a cut would like to be
+	quiet := []span{{s: 100, e: 101}, {s: 180, e: 184}, {s: 300, e: 302},
+		{s: 370, e: 371}, {s: 500, e: 507}, {s: 600, e: 601}}
+	for _, dur := range []float64{301, 400, 751.8, 900, 3600, 7200} {
+		cuts := asrCuts(dur, quiet, max, seek)
+		at := 0.0
+		for _, c := range cuts {
+			if c <= at {
+				t.Errorf("%.1f s: cuts %v do not climb", dur, cuts)
+				break
+			}
+			if c-at > max {
+				t.Errorf("%.1f s: a piece of %.1f s is past the %.0f s ceiling (cuts %v)",
+					dur, c-at, max, cuts)
+			}
+			at = c
+		}
+		if dur-at > max {
+			t.Errorf("%.1f s: the last piece is %.1f s, past the %.0f s ceiling", dur, dur-at, max)
+		}
+	}
+	// a recording that fits is not cut at all -- it goes to the server whole
+	// and its answer is written through as it came
+	if got := asrCuts(300, quiet, max, seek); got != nil {
+		t.Errorf("a %s-second recording was cut at %v", "300", got)
+	}
+}
+
+// The point of looking for silence is that a cut lands where nobody is
+// talking. Within reach, the cut moves to the middle of the quiet; out of
+// reach, it stays on the clock rather than dragging the piece somewhere worse.
+func TestACutGoesToTheNearestSilenceOrStaysOnTheClock(t *testing.T) {
+	// 700 s at a 300 s ceiling with 20 s of reach: pieces are sized so the
+	// sliding cannot overflow, which puts two cuts near 233 and 467
+	cuts := asrCuts(700, []span{{s: 220, e: 230}}, 300, 20)
+	if len(cuts) != 2 {
+		t.Fatalf("700 s came back as %v, want two cuts", cuts)
+	}
+	if cuts[0] != 225 {
+		t.Errorf("the first cut is at %.1f s, want 225 -- the middle of the silence beside it", cuts[0])
+	}
+	// nothing quiet within reach of the second, so it stays where the clock put it
+	if cuts[1] < 450 || cuts[1] > 480 {
+		t.Errorf("the second cut ran to %.1f s with no silence to go to", cuts[1])
+	}
+	// and a silence nowhere near a cut moves nothing
+	far := asrCuts(700, []span{{s: 10, e: 20}}, 300, 20)
+	if far[0] != cuts[1]/2 {
+		t.Errorf("with the only silence at 15 s the cuts are %v, want them left on the clock", far)
+	}
+}
+
+// ffmpeg reports silence on stderr, in two lines that have to be paired up.
+func TestTheSilenceReportIsRead(t *testing.T) {
+	report := `[silencedetect @ 0x55] silence_start: 12.345
+[silencedetect @ 0x55] silence_end: 15.678 | silence_duration: 3.333
+size=N/A time=00:12:31.80 bitrate=N/A speed=1e+03x
+[silencedetect @ 0x55] silence_start: 700.5
+`
+	got := parseSilence(report)
+	if len(got) != 1 {
+		t.Fatalf("read %v, want the one closed silence -- the one still open at the end of the file is not a place to cut", got)
+	}
+	if got[0].s != 12.345 || got[0].e != 15.678 {
+		t.Errorf("read %.3f-%.3f, want 12.345-15.678", got[0].s, got[0].e)
+	}
+}
+
+// Every chunk answers in its own time, starting from zero, and the stitched
+// answer has to read as one recording. Anything else a word carries rides
+// along -- and a word whose times cannot be read rides along too, because the
+// merge is what has to notice an answer shape nobody here understands, and it
+// cannot notice what this dropped.
+func TestAChunksWordsComeBackWhereTheChunkWas(t *testing.T) {
+	body := []byte(`{"text":"hi there","words":[
+		{"word":"hi","start_sample":8000,"end_sample":16000,"confidence":0.9},
+		{"word":"there","start_sample":16000,"end_sample":24000},
+		{"word":"???"}]}`)
+	got := shiftWords(body, 300) // the chunk that started five minutes in
+	if len(got) != 3 {
+		t.Fatalf("got %d words, want all three", len(got))
+	}
+	first := got[0].(map[string]any)
+	if first["start_sample"] != float64(300*sampleRate+8000) {
+		t.Errorf("the first word starts at sample %v, want it moved by the chunk's own start", first["start_sample"])
+	}
+	if first["confidence"] != 0.9 {
+		t.Errorf("confidence came back as %v -- what a word carries travels with it", first["confidence"])
+	}
+	if last := got[2].(map[string]any); last["word"] != "???" {
+		t.Errorf("the word with no times was dropped: %v", got[2])
 	}
 }

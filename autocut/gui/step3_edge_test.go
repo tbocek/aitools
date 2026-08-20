@@ -174,9 +174,9 @@ func TestTheEdgeToolIsWired(t *testing.T) {
 		"ed.persist() // the drag is over", // release: this is the cut that goes on disk
 		"ed.dropEdge() // any other left click puts a held edge or clip down",
 		// arrows nudge, but only while something is held
-		"case (ed.edgeOn || ed.segOn) && (keyval == gdk.KEY_Left || keyval == gdk.KEY_Right):",
-		"case (ed.edgeOn || ed.segOn) && keyval == gdk.KEY_Escape:",
-		"if ed.edgeOn {\n\t\ted.nudgeEdge(n)",                                // ‹f and f› are the edge's while one is held
+		"case (ed.edgeOn || ed.segOn || ed.fxOn) && (keyval == gdk.KEY_Left || keyval == gdk.KEY_Right):",
+		"case (ed.edgeOn || ed.segOn || ed.fxOn || ed.fxArm != \"\") && keyval == gdk.KEY_Escape:",
+		"if ed.edgeOn && ed.nudgeEdge(n) {",                                  // ‹f and f› are the edge's while one is held
 		"if ed.edgeOn && !ed.playing() {\n\t\ted.setPlayhead(ed.edgeTime())", // ▶ plays from the held edge
 		"if ed.edgeOn && ed.edgeSeg < len(ed.segs) {",                        // ...and the held edge is drawn
 	} {
