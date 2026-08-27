@@ -1,0 +1,40 @@
+#versions shown: https://quay.io/repository/archlinux/archlinux?tab=tags
+FROM quay.io/archlinux/archlinux:base-20260827.0.581374
+
+RUN pacman -Sy --noconfirm && \
+    pacman -S --noconfirm \
+        git \
+        base-devel \
+        cmake \
+        ninja \
+        curl \
+        python3 \
+        uv \
+        nodejs \
+        npm \
+        pnpm \
+        vulkan-headers \
+        vulkan-icd-loader \
+        vulkan-radeon \
+        spirv-headers \
+        shaderc && \
+    pacman -Scc --noconfirm
+
+# Create non-root user and add to video, render, and wheel groups
+RUN useradd -m -s /bin/bash arch && \
+    usermod -aG video arch && \
+    usermod -aG render arch && \
+    usermod -aG wheel arch && \
+    echo '%wheel ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+
+USER arch
+WORKDIR /home/arch
+
+# Build yay from AUR
+RUN git clone https://aur.archlinux.org/yay-bin.git && \
+    cd yay-bin && \
+    makepkg -si --noconfirm && \
+    cd .. && rm -rf yay-bin
+
+# Install the AUR package
+RUN yay -S --noconfirm rocm-gfx1151-bin

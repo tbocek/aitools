@@ -1,0 +1,139 @@
+services:
+  llama:
+    build:
+      context: .
+      dockerfile: Dockerfile.llama
+    image: llama:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped
+    ports:
+      - "9001:9001"
+    volumes:
+      - /mnt/models:/mnt/models
+      - /tmp:/tmp
+    command: >-
+      /home/arch/llama.cpp/build/bin/llama-server
+      --device ${LLAMA_DEVICE:-ROCM0}
+      --device-draft ${LLAMA_DEVICE:-ROCM0}
+      --models-preset /mnt/models/config.ini
+      --models-max 1
+      --host 0.0.0.0
+      --port 9001
+  sd:
+    build:
+      context: .
+      dockerfile: Dockerfile.sd
+    image: sd:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ipc: host
+    environment:
+      - HIP_VISIBLE_DEVICES=${SD_HIP_VISIBLE-0}
+      - GGML_VK_VISIBLE_DEVICES=${SD_VK_VISIBLE-}
+    restart: unless-stopped
+    ports:
+      - "1234:1234"
+    volumes:
+      - /mnt/models/sd:/mnt/models/sd
+    # Only the flags that are true of any model live here. Steps, cfg-scale,
+    # sampler and flow-shift are properties of the checkpoint -- a turbo model
+    # wants 10 steps at cfg 1.0, an edit model wants 20 at cfg 2.5 -- so they
+    # travel with the weights in SD_ARGS (run.sh) instead. They used to be
+    # pinned here at Krea-2-Turbo's values, which silently underdrove every
+    # other model: cfg 1.0 is no guidance at all, so an edit instruction was
+    # barely followed.
+    command: >-
+      /home/arch/stable-diffusion.cpp/build/bin/sd-server
+      --listen-ip 0.0.0.0
+      --listen-port 1234
+      --diffusion-fa
+      --offload-to-cpu
+      ${SD_ARGS:-}
+  acestep:
+    build:
+      context: .
+      dockerfile: Dockerfile.acestep
+    image: acestep:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    volumes:
+      - /mnt/models/acestep:/mnt/models/acestep
+    command: >-
+      bash -c "export PATH=\"/home/arch/.local/bin:$$PATH\" &&
+      if [ ! -f /mnt/models/acestep/acestep-5Hz-lm-4B-Q8_0.gguf ]; then
+        echo 'Downloading ACE-Step models...' &&
+        hf download Serveurperso/ACE-Step-1.5-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf acestep-5Hz-lm-4B-Q8_0.gguf acestep-v15-turbo-Q8_0.gguf vae-BF16.gguf --local-dir /mnt/models/acestep;
+      fi &&
+      /home/arch/acestep.cpp.${ACE_BACKEND:-vulkan}/build/ace-server --models /mnt/models/acestep --host 0.0.0.0 --port 8082"
+  audio:
+    # One process: audiocpp_server serves both the HTTP API and the web UI, on
+    # the same port. This used to be two -- the server, plus a Python/Gradio
+    # WebUI on 7860 that had to be pointed at it -- until upstream compiled the
+    # UI into the binary and deleted the Python one.
+    build:
+      context: .
+      dockerfile: Dockerfile.audio
+    image: audio:latest
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped
+    ports:
+      # loopback only: this speaks for the GPU, nothing on the LAN needs it.
+      # API and browser UI both live here -- http://127.0.0.1:8765/
+      - "127.0.0.1:8765:8080"
+    environment:
+      # the backend comes from audiocpp-server.json ("hip"). The realtime
+      # capture path drives portaudio server-side, same as vc2.
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+    volumes:
+      # MODELS_ROOT is <repo>/models; GGUF packages land here from the UI's
+      # download manager and from tools/model_manager_v2.py, so persist them
+      # across recreates. voices/ lives under it too and is what the server
+      # config's voice_dir points at.
+      - /mnt/models/audiocpp:/home/arch/audio.cpp/models
+      # Existing RVC voices: the rvc family loads user .pth checkpoints and
+      # FAISS indexes directly via voice_model_path / retrieval_index_path.
+      - /mnt/models/vc:/mnt/models/vc:ro
+      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
+      - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
+      # Same path inside and out. voice_ref and the output wav travel as paths,
+      # not uploads, so the server has to resolve them exactly as autocut wrote
+      # them -- a /work-style mount would break the moment either side looked.
+      - ${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}:${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}
+      - ./audiocpp-server.json:/etc/audiocpp-server.json:ro
+    # --ui serves the browser UI off this same port; --ui-management lets it
+    # load and unload models, which is the only way to change what this server
+    # offers without editing audiocpp-server.json and recreating the service.
+    command: >-
+      build/bin/audiocpp_server
+      --config /etc/audiocpp-server.json
+      --ui
+      --ui-management

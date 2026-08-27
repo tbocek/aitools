@@ -1,0 +1,329 @@
+package main
+
+// The selection band.
+//
+// The selection used to be a tint over the thumbnails: something you could make
+// and act on, and nothing else. What is pinned here is that it is now an object
+// -- it has a row, ends that move on their own, a middle that moves the whole
+// of it, and a ✕ -- and that the ends land on the things a selection is
+// actually aimed at rather than wherever the hand let go.
+
+import (
+	"math"
+	"os"
+	"strings"
+	"testing"
+)
+
+func bandEd(t *testing.T) *cutEditor {
+	t.Helper()
+	ed := newTestEd(t) // pps 4: a session second is four px
+	ed.vids = []tlVideo{{base: "v", path: "v.mkv", start: 0, dur: 300, interval: 5, fps: 30}}
+	ed.relayout()
+	ed.segs = []cutSeg{{S: 20, E: 60}, {S: 100, E: 140}}
+	ed.sel.t0, ed.sel.t1, ed.sel.active = 200, 230, true
+	return ed
+}
+
+// ---- where it is ------------------------------------------------------------
+
+// Under the ruler's clock and over the pictures, which is where it was asked
+// for and also the only place it can go: the clock has to stay legible and the
+// band has to be next to the frames it is over.
+func TestTheBandSitsBetweenTheClockAndThePictures(t *testing.T) {
+	ed := bandEd(t)
+	if ed.selBandTop() != float64(rulerH) {
+		t.Errorf("the band starts at %g, want it flush under the ruler at %d",
+			ed.selBandTop(), rulerH)
+	}
+	if got, want := ed.picTop(), float64(rulerH+selBandH); got != want {
+		t.Errorf("the pictures start at %g, want %g — the band has no room", got, want)
+	}
+	for _, c := range []struct {
+		y    float64
+		want bool
+		what string
+	}{
+		{float64(rulerH) - 1, false, "in the ruler"},
+		{float64(rulerH) + 1, true, "the top of the band"},
+		{ed.picTop() - 1, true, "the bottom of the band"},
+		{ed.picTop() + 1, false, "on the pictures"},
+	} {
+		if got := ed.hitSelBand(c.y); got != c.want {
+			t.Errorf("y %g (%s) hits the band = %v, want %v", c.y, c.what, got, c.want)
+		}
+	}
+	// and the effects lane moved down with everything else rather than staying
+	// where it was and being drawn over
+	if ed.fxLaneTop() < ed.picTop()+float64(ed.thumbHt) {
+		t.Errorf("the effects lane starts at %g, inside the pictures that end at %g",
+			ed.fxLaneTop(), ed.picTop()+float64(ed.thumbHt))
+	}
+}
+
+// ---- what a press lands on --------------------------------------------------
+
+func TestTheEndsOfTheBandAreItsHandles(t *testing.T) {
+	ed := bandEd(t) // 200..230 s, 4 px/s, so 120..920 px, 120 px wide
+	x0, x1 := ed.selSpanPx()
+	for _, c := range []struct {
+		px   float64
+		want int
+		what string
+	}{
+		{x0, selStart, "on the left end"},
+		{x0 + selGripPx - 1, selStart, "just inside the left end"},
+		{x1, selEnd, "on the right end"},
+		{x1 - selGripPx + 1, selEnd, "just inside the right end"},
+		{(x0 + x1) / 2, selWhole, "in the middle"},
+		{x1 - selKillIn - selKillW/2, selKill, "on the ✕"},
+		{x0 - 20, selNone, "clear of it on the left"},
+		{x1 + 20, selNone, "clear of it on the right"},
+	} {
+		if got := ed.selPartAt(c.px); got != c.want {
+			t.Errorf("a press %s (px %g) takes part %d, want %d", c.what, c.px, got, c.want)
+		}
+	}
+	// the ✕ is inboard of the right grip and not under it: "throw it away" must
+	// not be reachable by a hand aiming at "make it a bit shorter"
+	if ed.selPartAt(x1-selGripPx+1) == selKill {
+		t.Error("the ✕ and the right handle are the same pixels")
+	}
+	// a band with no middle is all ends, rather than a middle you cannot escape
+	ed.sel.t1 = ed.sel.t0 + 1 // 4 px
+	if got := ed.selPartAt(ed.xOf(ed.sel.t0) + 2); got == selKill || got == selWhole {
+		t.Errorf("a four-pixel band answered %d in its middle, want an end", got)
+	}
+	// and when there is no selection there is nothing to press
+	ed.sel.active = false
+	if got := ed.selPartAt(x0); got != selNone {
+		t.Errorf("a press with no selection took part %d, want none", got)
+	}
+}
+
+// ---- moving it --------------------------------------------------------------
+
+func TestTheWholeBandSlidesWithoutChangingLength(t *testing.T) {
+	ed := bandEd(t)
+	ed.moveSelTo(250)
+	a, b := ed.selSpan()
+	if math.Abs(a-250) > 1e-9 || math.Abs(b-a-30) > 1e-9 {
+		t.Errorf("the band moved to %.2f..%.2f, want 250.00..280.00", a, b)
+	}
+	// and it cannot be pushed off the front of the session
+	ed.moveSelTo(-50)
+	if a, _ := ed.selSpan(); a < 0 {
+		t.Errorf("the band moved to %.2f, before the session starts", a)
+	}
+}
+
+func TestEitherEndMovesOnItsOwn(t *testing.T) {
+	ed := bandEd(t)
+	ed.resizeSelTo(true, 245) // the right end
+	if a, b := ed.selSpan(); a != 200 || b != 245 {
+		t.Errorf("moving the right end gave %.2f..%.2f, want 200.00..245.00", a, b)
+	}
+	ed.resizeSelTo(false, 210) // the left end
+	if a, b := ed.selSpan(); a != 210 || b != 245 {
+		t.Errorf("moving the left end gave %.2f..%.2f, want 210.00..245.00", a, b)
+	}
+	// dragged past the far end it stops short of it: a band of no length is
+	// invisible, cannot be grabbed again, and every action on it does nothing,
+	// so overshooting must not silently destroy the thing being adjusted
+	ed.resizeSelTo(true, 100)
+	a, b := ed.selSpan()
+	if b <= a {
+		t.Errorf("the right end was dragged past the left: %.3f..%.3f", a, b)
+	}
+	if b-a > 2*selMinLen {
+		t.Errorf("the band stopped %.3f s short, want about %.3f", b-a, selMinLen)
+	}
+}
+
+// The point of the snapping. A selection is nearly always aimed at something
+// that is already on the page -- a border of the cut, the seam between two
+// recordings, where the playhead is standing -- and at four pixels a second
+// none of those can be hit by hand.
+func TestTheEndsLandOnTheCuts(t *testing.T) {
+	ed := bandEd(t) // cuts at 20, 60, 100, 140; the recording runs 0..300
+	ed.hasPlay, ed.playhead = true, 250
+	tol := snapPx / ed.pps // 2 s at this zoom
+	for _, c := range []struct {
+		drag, want float64
+		what       string
+	}{
+		{60 + tol/2, 60, "a border of the cut"},
+		{140 - tol/2, 140, "the far border of the cut"},
+		{300 - tol/2, 300, "the end of the recording"},
+		{250 + tol/2, 250, "the playhead"},
+		{175, 175, "nothing in particular"},
+	} {
+		ed.sel.t0, ed.sel.t1 = 10, 15 // the end is dragged rightward from here
+		ed.resizeSelTo(true, c.drag)
+		if _, b := ed.selSpan(); math.Abs(b-c.want) > 1e-9 {
+			t.Errorf("an end let go at %.2f (%s) landed at %.2f, want %.2f",
+				c.drag, c.what, b, c.want)
+		}
+	}
+}
+
+// A band being slid along offers BOTH its ends to the landmarks. Snapping only
+// the leading end would mean a selection can be put flush against the cut on
+// its left and never on its right, which is half a feature -- and usually the
+// wrong half, because a selection is dragged leftward as often as rightward.
+func TestASlidingBandLandsByEitherEnd(t *testing.T) {
+	ed := bandEd(t)
+	ed.sel.t0, ed.sel.t1 = 150, 170 // twenty seconds long
+	tol := snapPx / ed.pps
+	// its END brought near the cut at 100: the band lands so the end is on it
+	ed.moveSelTo(80 - tol/2)
+	a, b := ed.selSpan()
+	if math.Abs(b-100) > 1e-9 {
+		t.Errorf("slid so its end was near the cut at 100, the band sits %.2f..%.2f", a, b)
+	}
+	if math.Abs(b-a-20) > 1e-9 {
+		t.Errorf("the band changed length while being slid: %.2f s, want 20", b-a)
+	}
+}
+
+// The band and the marks readout are one object seen twice: the marks are how
+// the rest of the page reads the band, so a band that could be dragged away
+// from them would leave the clock describing a selection that is nowhere.
+func TestMovingTheBandMovesTheMarks(t *testing.T) {
+	ed := bandEd(t)
+	ed.moveSelTo(250)
+	if !ed.hasIn || !ed.hasOut || ed.markIn != 250 || ed.markOut != 280 {
+		t.Errorf("after sliding the band the marks are %.2f..%.2f (%v,%v), want 250..280 set",
+			ed.markIn, ed.markOut, ed.hasIn, ed.hasOut)
+	}
+	ed.resizeSelTo(true, 260)
+	if ed.markOut != 260 {
+		t.Errorf("after moving the end the out mark is %.2f, want 260", ed.markOut)
+	}
+}
+
+// ✕ removes the SELECTION. ⌦ removes what the selection is over. Two different
+// removes on one object is worth keeping straight, so this pins the harmless
+// one: the footage must survive it.
+func TestTheXThrowsAwayTheSelectionAndNotTheFootage(t *testing.T) {
+	ed := bandEd(t)
+	before := len(ed.segs)
+	ed.killSel()
+	if ed.sel.active || ed.selOn {
+		t.Error("the selection survived its own ✕")
+	}
+	if ed.hasIn || ed.hasOut {
+		t.Error("the in/out marks survived the selection they came from")
+	}
+	if len(ed.segs) != before {
+		t.Errorf("✕ took %d segments of footage with it", before-len(ed.segs))
+	}
+}
+
+// ---- and it is on the page --------------------------------------------------
+
+// In pixels, because "it has a row" is a claim about the page.
+func TestTheBandIsDrawnInItsRow(t *testing.T) {
+	ed := bandEd(t)
+	ed.sel.t0, ed.sel.t1 = 20, 50 // 80..200 px, inside the 400 px we render
+	const w, h = 400, 200
+	at := renderTrack(t, ed, w, h)
+	x := int(ed.xOf(35)) // the middle of the selection
+	isBand := func(y int) bool {
+		r, _, b := at(x, y)
+		return b > 130 && int(b) > int(r)+40
+	}
+	if !isBand(rulerH + selBandH/2) {
+		t.Error("the selection is not drawn in its own row")
+	}
+	if isBand(rulerH - 4) {
+		t.Error("the band is drawn over the ruler's clock")
+	}
+	// clear of the selection the row is still there, as ground: an empty band
+	// is a place a selection could go, not a gap in the page
+	rx := int(ed.xOf(70))
+	r, g, b := at(rx, rulerH+selBandH/2)
+	if r < 25 || r > 60 || g < 25 || g > 60 || b < 25 || b > 70 {
+		t.Errorf("the empty part of the row painted rgb(%d,%d,%d), want the row's ground", r, g, b)
+	}
+	// and the handles are brighter than the fill, because what can be dragged
+	// has to look like it can be dragged
+	green := func(x, y int) uint8 { _, g, _ := at(x, y); return g }
+	fill := func(y int) uint8 { return green(x, y) }
+	end := func(y int) uint8 { return green(int(ed.xOf(50)), y) }
+	if end(rulerH+selBandH/2) <= fill(rulerH+selBandH/2) {
+		t.Error("the end of the band is no brighter than its middle — the handles do not read as handles")
+	}
+}
+
+func TestTheSelectionBandIsWired(t *testing.T) {
+	b, err := os.ReadFile("cut.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	for _, want := range []string{
+		// the row is drawn inside the source track, above the effects lane
+		"ed.drawSelBand(cr, vx0, vx1)",
+		// a press in the row is about the selection: ✕ first, then a part
+		"if area == ed.srcArea && ed.hitSelBand(y) {",
+		"if selPart = ed.selPartAt(x + ed.viewX); selPart == selKill {",
+		"ed.killSel()",
+		"ed.holdSel(selPart)",
+		// ...and a press clear of it in the row starts a new selection, which
+		// is what the fall-through to the rubber band does
+		"ed.dropSel() // clear of it: this is a new selection",
+		// the drag moves the whole or one end
+		"ed.moveSelTo(ed.tAtView(dragStartX+ox) - grabAt)",
+		"ed.resizeSelTo(selPart == selEnd, ed.tAtView(dragStartX+ox))",
+		// Esc puts it down, like everything else that can be held
+		"ed.dropSel()",
+		// and the pointer says what a press would do before it is pressed
+		"hover.ConnectMotion(func(x, y float64) { ed.hoverTracks(x, y) })",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the cut page no longer contains %q", want)
+		}
+	}
+}
+
+// Placing the red line inside a kept clip lights that clip up in the band: the
+// same green the tint over the thumbnails uses, in the same row the blue
+// selection bar lives in, so "where does the clip I am in begin and end" is
+// read where every other span on this page is read.
+func TestTheBandShowsTheKeptClipUnderThePlayhead(t *testing.T) {
+	ed := bandEd(t) // clips 20-60 and 100-140; selection 200-230
+	ed.sel.active = false
+	ed.playhead, ed.hasPlay = 40, true
+	const w, h = 1300, 200
+	y := int(ed.selBandTop()) + selBandH/2
+	green := func(at func(x, y int) (uint8, uint8, uint8), x int) bool {
+		r, g, b := at(x, y)
+		return int(g) > int(r)+30 && int(g) > int(b)+30
+	}
+
+	at := renderTrack(t, ed, w, h)
+	// sampled a few px off 40 s: the playhead's own red line is drawn over the
+	// band at exactly xOf(40), and a red pixel is the line, not a missing bar
+	if !green(at, int(ed.xOf(40))+3) {
+		t.Error("the playhead sits at 40 s inside the 20-60 clip and the band shows no green there")
+	}
+	// the bar is the clip's whole span, not a marker at the playhead...
+	if !green(at, int(ed.xOf(21))) || !green(at, int(ed.xOf(59))) {
+		t.Error("the green bar does not span its clip from 20 to 60")
+	}
+	// ...and it is that clip's alone
+	if green(at, int(ed.xOf(80))) || green(at, int(ed.xOf(120))) {
+		t.Error("the band is green over footage the playhead is not inside")
+	}
+
+	// no playhead, no bar -- and a playhead in a dropped stretch lights nothing
+	ed.hasPlay = false
+	if green(renderTrack(t, ed, w, h), int(ed.xOf(40))) {
+		t.Error("the band is green with no playhead on the page")
+	}
+	ed.playhead, ed.hasPlay = 80, true
+	if green(renderTrack(t, ed, w, h), int(ed.xOf(40))) {
+		t.Error("a playhead in a dropped stretch lit a clip it is not inside")
+	}
+}

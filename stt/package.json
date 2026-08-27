@@ -1,0 +1,48 @@
+{
+  "name": "voxtral-typescript-server",
+  "version": "1.0.0",
+  "description": "Real-time audio transcription server using Voxtral and llama.cpp",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc && cp .env dist && cp src/index.html dist",
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "lint": "eslint src --ext .ts",
+    "test": "jest"
+  },
+  "keywords": [
+    "voxtral",
+    "llama.cpp",
+    "audio",
+    "transcription",
+    "real-time",
+    "websocket",
+    "typescript"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "express": "^4.18.2",
+    "uuid": "^9.0.1",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^20.10.4",
+    "@types/uuid": "^9.0.7",
+    "@types/ws": "^8.5.9",
+    "@typescript-eslint/eslint-plugin": "^6.13.1",
+    "@typescript-eslint/parser": "^6.13.1",
+    "dotenv": "^17.2.1",
+    "eslint": "^8.54.0",
+    "nodemon": "^3.0.2",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

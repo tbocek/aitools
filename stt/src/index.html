@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Live Transcription</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    button { margin: 5px; padding: 10px 15px; }
+    pre { background: #f4f4f4; padding: 10px; border-radius: 5px; }
+  </style>
+</head>
+<body>
+  <h1>Live Transcription</h1>
+  <button id="startBtn">Start Recording</button>
+  <button id="stopBtn" disabled>Stop Recording</button>
+
+  <h2>Transcription Output</h2>
+  <pre id="output"></pre>
+
+  <script>
+    let ws;
+    let mediaRecorder;
+    let analyser;
+    let audioContext;
+    let sourceNode;
+    let gainNode;
+    let lastSpeechTime = 0;
+    let silenceMode = 0;
+    
+    const SILENCE_THRESHOLD = 5;
+    const SILENCE_DURATION = 1000;
+    const output = document.getElementById("output");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    
+    function checkSilence() {
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(dataArray);
+      
+      const average = dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length;
+      const volume = (average / 255) * 100;
+      
+      const now = Date.now();
+      console.log("volume", volume)
+      if (volume > SILENCE_THRESHOLD) {
+        if (silenceMode < 25) {
+          silenceMode ++;
+        } else {
+          ws.send(JSON.stringify({ type: "speech_detected" }));
+          lastSpeechTime = now;
+        }
+      } else if (now - lastSpeechTime > SILENCE_DURATION) {
+        ws.send(JSON.stringify({ type: "silence_detected" }));
+        lastSpeechTime = now;
+        silenceMode = 0;
+      }
+      
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        requestAnimationFrame(checkSilence);
+      }
+    }
+
+    function appendOutput(text) {
+      output.textContent += text + "\n";
+      output.scrollTop = output.scrollHeight;
+    }
+
+    startBtn.onclick = async () => {
+      ws = new WebSocket(`ws://${window.location.hostname}:8080`);
+
+      ws.onopen = () => {
+        appendOutput("✅ Connected to server");
+        ws.send(JSON.stringify({ type: "start_session" }));
+        mediaRecorder.start(500);
+        checkSilence();
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "partial") {
+          appendOutput("📝 " + msg.data.transcription);
+        } else if (msg.type === "session_complete") {
+          appendOutput("✅ Final: " + msg.data.transcription);
+        } else if (msg.type === "error") {
+          appendOutput("❌ Error: " + msg.error);
+        } else {
+          appendOutput("ℹ️ " + JSON.stringify(msg));
+        }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          autoGainControl: false,
+          noiseSuppression: false
+        }
+      });
+      // Create source from microphone
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      sourceNode = audioContext.createMediaStreamSource(stream);
+        
+      // Add gain node to control volume
+      gainNode = audioContext.createGain();
+      gainNode.gain.value = 1.0; // Fixed gain
+      sourceNode.connect(gainNode);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      sourceNode.connect(analyser);
+        
+      // Create a new destination for the recorder
+      const destination = audioContext.createMediaStreamDestination();
+      gainNode.connect(destination);
+        
+      // Create recorder with the processed stream
+      mediaRecorder = new MediaRecorder(destination.stream, { mimeType: "audio/webm" });
+
+      mediaRecorder.ondataavailable = async (e) => {
+        if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+          const buffer = await e.data.arrayBuffer();
+          const base64Audio = arrayBufferToBase64(buffer);
+          
+          ws.send(JSON.stringify({
+            type: "audio_chunk",
+            data: { audio_data: base64Audio }
+          }));
+        }
+      };
+
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      appendOutput("🎤 Recording started...");
+    };
+
+    stopBtn.onclick = () => {
+      mediaRecorder.stop();
+      ws.send(JSON.stringify({ type: "end_session" }));
+      appendOutput("🛑 Recording stopped");
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    };
+
+    function arrayBufferToBase64(buffer) {
+      let binary = '';
+      const bytes = new Uint8Array(buffer);
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        let chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode.apply(null, chunk);
+      }
+      return btoa(binary);
+    }
+  </script>
+</body>
+</html>

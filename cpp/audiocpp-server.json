@@ -1,0 +1,44 @@
+{
+  "host": "0.0.0.0",
+  "port": 8080,
+  "backend": "hip",
+  "device": 0,
+  "lazy_load": true,
+  "voice_dir": "/home/arch/audio.cpp/models/voices",
+  "models": [
+    {
+      "id": "index-tts2",
+      "family": "index_tts2",
+      "path": "/home/arch/audio.cpp/models/IndexTTS2.5-GGUF/index-tts2_5-q8_0.gguf",
+      "task": "clon",
+      "mode": "offline"
+    },
+    {
+      "id": "nemotron-asr",
+      "family": "nemotron_asr",
+      "path": "/home/arch/audio.cpp/models/Nemotron-3.5-ASR-Streaming-0.6B-GGUF/nemotron-3.5-asr-streaming-0.6b-q8_0.gguf",
+      "task": "asr",
+      "mode": "offline"
+    },
+    {
+      "id": "parakeet-tdt",
+      "family": "parakeet_tdt",
+      "path": "/home/arch/audio.cpp/models/Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf",
+      "task": "asr",
+      "mode": "offline",
+      "session_options": {
+        "parakeet_tdt.offline_mode": "long_form"
+      }
+    },
+    {
+      "id": "sortformer-diar",
+      "family": "sortformer_diar",
+      "path": "/home/arch/audio.cpp/models/Sortformer-Diar-4spk-v1-GGUF/sortformer-diar-4spk-v1-q8_0.gguf",
+      "task": "diar",
+      "mode": "offline",
+      "session_options": {
+        "sortformer_diar.graph_capacity_mode": "grow"
+      }
+    }
+  ]
+}

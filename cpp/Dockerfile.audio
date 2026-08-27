@@ -1,0 +1,65 @@
+FROM arch:latest
+
+#https://github.com/0xShug0/audio.cpp
+# portaudio/alsa are for the server's realtime capture path, same bridge as
+# Dockerfile.vc2: Arch's portaudio only has the ALSA/OSS host APIs, so audio
+# reaches the pipewire-pulse socket through the ALSA pulse plugin.
+#
+# python is for tools/model_manager_v2.py and nothing else. Inference and the
+# UI are Python-free; the model manager only downloads and converts weights,
+# and it imports the standard library alone -- so no venv, no pip, no wheels.
+RUN sudo pacman -Sy --noconfirm && \
+    sudo pacman -S --noconfirm ffmpeg libsndfile portaudio alsa-plugins alsa-lib python && \
+    sudo pacman -Scc --noconfirm
+
+# Pinned. This clone used to track master, and when upstream replaced the
+# Python/Gradio WebUI with a UI compiled into the server binary, a rebuild that
+# had changed nothing here stopped working: the files this Dockerfile patched
+# were gone. Moving forward is now a deliberate edit of this line.
+ARG AUDIOCPP_REF=04ba4375ed53bbd718bd2697e190007f6a19f426
+RUN git clone https://github.com/0xShug0/audio.cpp && \
+    cd audio.cpp && git checkout --detach ${AUDIOCPP_REF}
+
+# Same ROCm-from-AUR layout as Dockerfile.llama (rocm-gfx1151-bin in arch:latest).
+ENV ROCM_PATH=/opt/rocm/core \
+    HIP_PATH=/opt/rocm/core \
+    PATH="/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:${PATH}" \
+    ROCBLAS_USE_HIPBLASLT=1
+
+# HIP + Vulkan in one binary, like the llama build: the backend is picked at
+# runtime ("hip" / "vulkan" in the server config), so A/B-ing the two on
+# gfx1151 needs no rebuild. ENGINE_ENABLE_CUDA_GRAPHS=OFF is the project's own
+# guidance for UMA iGPUs (Strix Halo): each cached graph reserves its own
+# buffers out of shared memory and warmup can OOM.
+#
+# The UI needs no build step of its own: cmake embeds webui/native/dist as hex
+# bytes, and that dist is committed upstream. If it ever stops being committed
+# the server still links, serving a placeholder page instead -- so the guard
+# below fails the build loudly rather than shipping an empty UI.
+RUN test -s /home/arch/audio.cpp/webui/native/dist/index.html
+RUN cd /home/arch/audio.cpp && cmake -S . -B build \
+    -DENGINE_ENABLE_HIP=ON \
+    -DGPU_TARGETS=gfx1151 \
+    -DENGINE_ENABLE_VULKAN=ON \
+    -DENGINE_ENABLE_CUDA_GRAPHS=OFF \
+    -DCMAKE_C_COMPILER=/opt/rocm/core/lib/llvm/bin/clang \
+    -DCMAKE_CXX_COMPILER=/opt/rocm/core/lib/llvm/bin/clang++ \
+    -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --config Release --parallel
+
+# Same named-PCM routing as Dockerfile.vc2: "VoiceChanger" pins a stream to the
+# null sink whose monitor is the VoiceChangerMic capture device (OBS/Discord),
+# while "pulse"/"default" stay on the speakers.
+RUN printf '%s\n' \
+        'pcm.!default { type pulse }' \
+        'ctl.!default { type pulse }' \
+        'pcm.VoiceChanger {' \
+        '    type pulse' \
+        '    device "VoiceChanger"' \
+        '    hint { show on  description "VoiceChanger" }' \
+        '}' \
+    | sudo tee /etc/asound.conf >/dev/null
+
+WORKDIR /home/arch/audio.cpp
+# API and UI are the same port now -- there is no second web server.
+EXPOSE 8080
