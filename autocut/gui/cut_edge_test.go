@@ -188,12 +188,18 @@ func TestTheEdgeToolIsWired(t *testing.T) {
 			t.Errorf("the cut page no longer contains %q", want)
 		}
 	}
-	// the right button is gone from the timeline entirely
-	for _, gone := range []string{"gdk.BUTTON_SECONDARY", "edge.ConnectDragUpdate("} {
+	// the right button is not part of the CUT any more. It exists again, but
+	// for the timeline underneath it (cut_shift.go) -- so the pin is the one
+	// that matters: no gesture that edits a clip may be behind it.
+	for _, gone := range []string{"edge.ConnectDragUpdate(", "seg.ConnectDragUpdate("} {
 		if strings.Contains(src, gone) {
 			t.Errorf("the timeline is back on two buttons (%q) — hovering a border and "+
 				"pressing it is the whole gesture now", gone)
 		}
+	}
+	if n := strings.Count(src, "gdk.BUTTON_SECONDARY"); n != 1 {
+		t.Errorf("the right button is bound %d times, want exactly the one that slides "+
+			"the timeline — trimming and moving a clip are the left button's", n)
 	}
 }
 

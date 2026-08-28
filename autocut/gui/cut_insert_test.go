@@ -255,7 +255,10 @@ func TestACardAtThePlayheadIsInsertedAndOneOverASelectionCovers(t *testing.T) {
 		// and the dialog says which it is doing, as a pair of radio buttons
 		"between := gtk.NewCheckButtonWithLabel(",
 		"over.SetGroup(between)",
-		"out := insMode{splice: between.Active(), dur: m.dur,\n\t\t\tmute: m.mute, lane: m.lane, askMute: m.askMute}",
+		// ...three of them now: over the footage, between it, or beside it on a
+		// row of its own (cut_lane.go)
+		"own.SetGroup(between)",
+		"out := insMode{splice: between.Active(), asLane: own.Active(), dur: m.dur,\n\t\t\tmute: m.mute, lane: m.lane, askMute: m.askMute}",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the insert dialog no longer contains %q", want)
@@ -269,7 +272,7 @@ func TestACardAtThePlayheadIsInsertedAndOneOverASelectionCovers(t *testing.T) {
 func TestASplicedCardKeepsTheFootageAndLengthensTheCut(t *testing.T) {
 	ed := insertEd(t)
 	ed.segs = []cutSeg{{S: 0, E: 60}}
-	ed.addSplice("assets/tier.svg", 20, 3, false)
+	ed.addSplice("assets/tier.svg", 20, 3, false, 0)
 
 	// on the timeline: one clip of footage, still 60 s of it, and a card at a
 	// point inside it that takes none of it
@@ -334,7 +337,7 @@ func TestASplicedCardIsThreeSecondsOfVideoAndAnOverwritingOneIsNone(t *testing.T
 	ed.segs = []cutSeg{{S: 0, E: 60}}
 	was := ed.cutLen()
 
-	ed.addSplice("assets/tier.svg", 20, 3, false)
+	ed.addSplice("assets/tier.svg", 20, 3, false, 0)
 	if got := ed.cutLen(); got != was+3 {
 		t.Errorf("a 3 s spliced card made the cut %.1f s, was %.1f — it has to be %.1f",
 			got, was, was+3)

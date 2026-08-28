@@ -3,8 +3,8 @@ package main
 // Transcript: turn raw ASR into publishable, grounded text.
 //
 // Timestamps are the contract: every source's absolute start comes from its
-// filename (YYYYMMDD-HHMMSS) or mtime minus duration, so alignment is a
-// lookup, not a step. A content-based LLM aligner used to sit in align.go for
+// filename (YYYYMMDD-HHMMSS), or from the session's own start when the name
+// carries none (srcClock), so alignment is a lookup, not a step. A content-based LLM aligner used to sit in align.go for
 // the case where metadata lies; it was never wired to anything and is gone --
 // git has it if copied files or hand-set recorder clocks ever make it worth
 // reviving.
@@ -178,9 +178,10 @@ func parseStamp(m []string) (float64, error) {
 	return float64(t.Unix()), nil
 }
 
-// nameStamp reads the wall clock out of a file name, if it carries one. The
-// Inputs page asks it to warn about names that carry none; sourceStart asks it
-// to place the file. Every candidate the pattern finds gets a chance, so a
+// nameStamp reads the wall clock out of a file name, if it carries one. It is
+// the whole of what this app knows about when a recording happened: the Inputs
+// page asks it to warn about names that carry none, and srcClock asks it to
+// place the file. Every candidate the pattern finds gets a chance, so a
 // digit run that only resembles a date (a resolution, a serial) cannot mask a
 // real stamp sitting after it.
 func nameStamp(name string) (float64, bool) {
@@ -270,28 +271,61 @@ func sortStamped(paths []string) {
 	})
 }
 
-// sourceStart puts a file on the wall clock: filename timestamp first (both
-// videos and audio recorders may write one), else mtime minus duration.
+// srcClock puts a set of sources on one wall clock, and says where the
+// session's own second nought falls.
 //
-// This is the only door: placing is done from nine different places -- the
-// lanes, the merged transcript, the describe pass, the render -- and they all
-// come through here, so the waveform and the sound cannot end up in two
-// different spots. There was briefly a per-file correction on top of it, for
-// recorders whose clocks disagree; the clocks do not disagree, and a knob for a
-// problem nobody has is a knob that can be left on by accident.
-func sourceStart(path string) (float64, error) {
-	dur, err := ffprobeDur(path)
-	if err != nil {
-		return 0, err
+// A file that NAMES a moment is placed at it. That is the only timestamp worth
+// believing: whatever was recording wrote it at the moment it started, and it
+// survives every copy of the file afterwards.
+//
+// A file that names none is placed at the session's start -- the earliest
+// moment any of the others names. Not at its own mtime, which is when the file
+// was WRITTEN: for anything copied off a card, re-encoded, exported or
+// downloaded that is hours or weeks after it was shot, and a source dropped a
+// week down the timeline is a row nobody can find. At the session's start it is
+// at least on screen and next to the others, which is where the right drag can
+// line it up by ear (cut_shift.go).
+//
+// Where nothing names a moment there is no session clock to join and no order
+// worth guessing at, so they all start together and the session starts at 0:00.
+//
+// This is the only door. The lanes, the merged transcript, the describe pass,
+// the frame names and the render all come through here, so the waveform and the
+// sound cannot end up in two different spots -- and they hand it the whole
+// session rather than the two files they happen to hold, because the session's
+// start is the earliest moment ANYTHING in it names and a shorter list can put
+// that zero somewhere else. It reads names and nothing else: no stat, no
+// ffprobe, so unlike what it replaced it is cheap enough to ask on a redraw.
+// There was briefly a per-file correction on top of it, for recorders whose
+// clocks disagree; that is now the right drag, which is a thing you can see.
+func srcClock(paths []string) (map[string]float64, float64) {
+	at := make(map[string]float64, len(paths))
+	zero := math.Inf(1)
+	for _, p := range paths {
+		if t, ok := nameStamp(filepath.Base(p)); ok {
+			at[p], zero = t, math.Min(zero, t)
+		}
 	}
-	if t, ok := nameStamp(filepath.Base(path)); ok {
-		return t, nil
+	if math.IsInf(zero, 1) {
+		zero = 0 // nothing named a moment: the session starts at 0:00
 	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		return 0, err
+	for _, p := range paths {
+		if _, ok := at[p]; !ok {
+			at[p] = zero
+		}
 	}
-	return float64(fi.ModTime().Unix()) - dur, nil
+	return at, zero
+}
+
+// sourceStart is where one file sits on that same clock, for the steps that
+// hold a path and not the list. It IS srcClock, asked about the whole session
+// with this file in it -- so a file the session does not contain, a sting on a
+// cut lane say, is placed by the same rule as one it does.
+func (a *App) sourceStart(path string) float64 {
+	vids, auds := a.snappedSources()
+	all := append(append(append([]string{}, vids...), auds...), path)
+	at, _ := srcClock(all)
+	return at[path]
 }
 
 // one source with everything known about its place in the world
@@ -314,13 +348,11 @@ func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 
 	// place every source on the wall clock
 	var srcs []*src
-	for _, p := range append(append([]string{}, videos...), audios...) {
-		st, err := sourceStart(p)
-		if err != nil {
-			return fmt.Errorf("cannot place %s in time: %w", baseName(p), err)
-		}
+	all := append(append([]string{}, videos...), audios...)
+	at, _ := srcClock(all)
+	for _, p := range all {
 		dur, _ := ffprobeDur(p)
-		srcs = append(srcs, &src{path: p, base: baseName(p), start: st, dur: dur,
+		srcs = append(srcs, &src{path: p, base: baseName(p), start: at[p], dur: dur,
 			isVideo: len(videos) > 0 && contains(videos, p)})
 	}
 	var offTsv strings.Builder

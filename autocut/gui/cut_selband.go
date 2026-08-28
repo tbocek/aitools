@@ -338,6 +338,7 @@ func (ed *cutEditor) hoverTracks(x, y float64) {
 		ed.srcArea.QueueDraw()
 	}
 	ed.hoverSegKill(x, y)
+	ed.hoverLaneKill(x, y)
 	// no border glow under the ✕: the press there removes the scene rather
 	// than trimming the border it overlaps, so the border must not offer
 	ed.hoverEdge(x, x >= 0 && ed.hitPics(y) && !ed.killHovOn)
@@ -432,7 +433,7 @@ func (ed *cutEditor) wantCursor(x, y float64) string {
 	case ed.hitPics(y):
 		// the ✕ first, for the reason the press asks it first: it overlaps the
 		// border it sits beside, and a resize arrow over a button is a lie
-		if ed.segKillAt(x+ed.viewX, y) >= 0 {
+		if ed.segKillAt(x+ed.viewX, y) >= 0 || ed.laneKillAt(x+ed.viewX, y) != "" {
 			return "pointer"
 		}
 		if _, _, ok := ed.edgeAt(x + ed.viewX); ok {

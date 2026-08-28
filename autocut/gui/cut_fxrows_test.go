@@ -165,7 +165,7 @@ func TestTheRowsAreWired(t *testing.T) {
 	// the page asks for the height the rows need, and only when it changed:
 	// a SetSizeRequest from inside a draw is a resize loop
 	for _, want := range []string{
-		"h := int(ed.picTop()) + ed.thumbHt + 8 + int(ed.fxLaneHeight())",
+		"h := int(ed.picBottom()) + 4 + int(ed.fxLaneHeight())",
 		"if h == ed.srcHt {",
 		"ed.fitSrc() // the effects lane is as deep as the effects pile up",
 	} {

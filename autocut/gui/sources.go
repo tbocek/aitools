@@ -410,15 +410,16 @@ func (s *sourceList) row(i int) *gtk.Box {
 	row.Append(narr)
 	row.Append(lbl)
 	// sources align on the wall clock, and the clock comes out of the name --
-	// a file without one is placed by mtime minus duration, which the first
-	// copy quietly breaks. That deserves a flag on the row, not a failed run.
+	// a file without one is stacked at the session's start and has to be lined
+	// up by hand. That deserves a flag on the row, not a failed run.
 	if _, ok := nameStamp(it.name()); !ok {
 		warn := gtk.NewImageFromIconName("dialog-warning-symbolic")
 		warn.AddCSSClass("stamp-warn")
-		warn.SetTooltipText("No timestamp in the file name — this file is placed on the session\n" +
-			"clock by its file date instead, which goes wrong once the file has been\n" +
-			"copied. Rename it with when the recording STARTED, like\n" +
-			"clip_2026-08-08_19-55-15.mkv — most recorders already do.")
+		warn.SetTooltipText("No timestamp in the file name — this file starts where the\n" +
+			"session does, which is only right if it was rolling from the start.\n" +
+			"Rename it with when the recording STARTED, like\n" +
+			"clip_2026-08-08_19-55-15.mkv — most recorders already do — or drag it\n" +
+			"into place with the right mouse button on the Cut page.")
 		row.Append(warn)
 	}
 	row.Append(del)

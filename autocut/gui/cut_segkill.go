@@ -63,7 +63,7 @@ func (ed *cutEditor) segKillCentre(i int) (float64, float64, bool) {
 	if x1-x0 < segKillMin {
 		return 0, 0, false
 	}
-	return x1 - segKillIn, ed.picTop() + segKillTop, true
+	return x1 - segKillIn, ed.segTop(s) + segKillTop, true
 }
 
 // segKillAt is the kept scene whose ✕ is under a press at timeline-x px and

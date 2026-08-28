@@ -318,13 +318,16 @@ func (a *App) planVideo(video, descDir string) (*videoPlan, error) {
 
 // commentary puts every other recording's words on this video's clock, so the
 // person who was talking through the session is heard against the frames they
-// were talking about. Same arithmetic Cut uses for the session timeline:
-// a filename stamp when there is one, mtime minus duration when there is not.
+// were talking about. Same clock Cut lays its timeline out on (srcClock): a
+// filename stamp when there is one, and the earliest moment anything here
+// names when there is not.
 //
-// A source that cannot be placed in time is left out rather than guessed at.
 // Speech against the wrong frames is worse than no speech: the prompt tells the
 // model to trust the words over its own reading of a picture in every case
-// except outright contradiction, so a wrong offset is believed.
+// except outright contradiction, so a wrong offset is believed. That is why an
+// unstamped recording is put at the session's start and nowhere else -- it is
+// the one guess that is visible and correctable on the Cut page, by ear, with
+// the right drag.
 //
 // The offsets are logged for the same reason Cut logs them: when a
 // description talks about the wrong thing, this is the number to look at.
@@ -332,20 +335,19 @@ func (a *App) commentary(video string, audios []string) []speechSrc {
 	if len(audios) == 0 {
 		return nil
 	}
-	vidStart, err := sourceStart(video)
-	if err != nil {
-		a.logfIdle(">>> [%s] cannot be placed in time (%v) -- described without the other recordings",
-			baseName(video), err)
-		return nil
-	}
+	// the WHOLE session, not just this video and these recordings: the session's
+	// start is the earliest moment anything in it names, and a clock built from
+	// two files can put its zero somewhere the Cut page never would. Then an
+	// unstamped camera would hear the same recording at one offset here and
+	// another one there.
+	vids, auds := a.snappedSources()
+	all := append(append(append([]string{}, vids...), auds...), video)
+	at, _ := srcClock(append(all, audios...))
+	vidStart := at[video]
 	var out []speechSrc
 	for _, aud := range audios {
 		base := baseName(aud)
-		st, err := sourceStart(aud)
-		if err != nil {
-			a.logfIdle(">>> [%s] cannot be placed in time (%v) -- left out of the descriptions", base, err)
-			continue
-		}
+		st := at[aud]
 		rows := loadTSVRows(a.transcriptPath(base))
 		if len(rows) == 0 {
 			continue

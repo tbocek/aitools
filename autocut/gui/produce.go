@@ -645,31 +645,33 @@ func subsIndex(key string) int {
 // reads the cut through here, so they all see the same running order -- the one
 // the narration is written against and the one that gets rendered.
 func (a *App) produceSegs() []cutSeg {
-	segs, fx, _ := a.produceCut()
-	return applyFx(splitSpliced(segs), fx)
+	c := a.produceCut()
+	return applyFx(splitSpliced(c.Segs), c.Fx)
 }
 
-// produceCut is the raw cut the render works from -- the live editor when it
-// has one, the saved file otherwise -- with the effects and the aspect that
-// go with it. Everything above the segment level (the camera, the output
-// frame) reads it through here so it cannot disagree with produceSegs.
-func (a *App) produceCut() ([]cutSeg, []cutFx, string) {
-	if a.ed != nil && len(a.ed.segs) > 0 {
-		return a.ed.segs, a.ed.fx, a.ed.aspect
+// produceCut is the whole cut file the render works from -- the live editor
+// when it has one, what is saved otherwise. Everything above the segment level
+// (the camera, the output frame, the microphone, the timeline's own
+// corrections) reads it through here so it cannot disagree with produceSegs.
+//
+// The editor counts as having a cut when it has segments, a correction to the
+// timeline, or a row of its own: shifting a lane or adding one before cutting
+// anything is a real edit of a real project, and reading past it to a stale file
+// would render the old placement.
+func (a *App) produceCut() cutFile {
+	if ed := a.ed; ed != nil && (len(ed.segs) > 0 || len(ed.shift) > 0 || len(ed.cutLanes) > 0) {
+		return cutFile{ed.segs, ed.aspect, ed.fx, ed.snd, ed.shift, ed.rows, ed.cutLanes}
 	}
 	b, err := os.ReadFile(a.cutPath())
 	if err != nil {
-		return nil, nil, ""
+		return cutFile{}
 	}
-	var c struct {
-		Segs   []cutSeg
-		Fx     []cutFx
-		Aspect string
-	}
+	var c cutFile
 	if json.Unmarshal(b, &c) != nil {
-		return nil, nil, ""
+		return cutFile{}
 	}
-	return c.Segs, migrateFx(c.Fx), c.Aspect
+	c.Fx = migrateFx(c.Fx)
+	return c
 }
 
 func (a *App) produceEntries() []narrEntry {
@@ -690,13 +692,6 @@ func (a *App) produceEntries() []narrEntry {
 	return f.Entries
 }
 
-// sessionVideos places every selected video on the session timeline, using the
-// same zero as Cut (earliest start over ALL sources, video and audio).
-func (a *App) sessionVideos(vids, auds []string) ([]tlVideo, error) {
-	v, _, err := a.sessionTracks(vids, auds)
-	return v, err
-}
-
 // sessionTracks is the same placement for both kinds at once: the footage on
 // the timeline, and the separate recordings beside it on the same clock. The
 // render needs the second list for the same reason the cut page draws lanes
@@ -707,19 +702,17 @@ func (a *App) sessionTracks(vids, auds []string) ([]tlVideo, []tlAudio, error) {
 	if len(vids) == 0 {
 		return nil, nil, fmt.Errorf("no videos selected")
 	}
-	zero := math.MaxFloat64
 	type st struct {
 		path  string
 		start float64
 	}
+	// same zero convention as session.tsv: the earliest moment any source
+	// names, and 0:00 when none of them names one (srcClock)
 	var all []st
-	for _, p := range append(append([]string{}, vids...), auds...) {
-		s, err := sourceStart(p)
-		if err != nil {
-			return nil, nil, fmt.Errorf("cannot place %s in time: %w", baseName(p), err)
-		}
-		all = append(all, st{p, s})
-		zero = math.Min(zero, s)
+	paths := append(append([]string{}, vids...), auds...)
+	at, zero := srcClock(paths)
+	for _, p := range paths {
+		all = append(all, st{p, at[p]})
 	}
 	var out []tlVideo
 	for _, s := range all[:len(vids)] { // the videos are the leading entries
@@ -730,7 +723,6 @@ func (a *App) sessionTracks(vids, auds []string) ([]tlVideo, []tlAudio, error) {
 		out = append(out, tlVideo{base: baseName(s.path), path: s.path,
 			start: s.start - zero, wall: s.start, dur: dur, fps: ffprobeFPS(s.path)})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].start < out[j].start })
 
 	var rec []tlAudio
 	for _, s := range all[len(vids):] {
@@ -741,7 +733,34 @@ func (a *App) sessionTracks(vids, auds []string) ([]tlVideo, []tlAudio, error) {
 		rec = append(rec, tlAudio{base: baseName(s.path), path: s.path,
 			start: s.start - zero, dur: dur})
 	}
+	// the corrections the cut page made to these clocks, put on before anything
+	// is sorted or coloured. The render places its own tracks and would
+	// otherwise place them off the raw timestamps -- the ones the hand was
+	// dragging to correct in the first place.
+	c := a.produceCut()
+	for i := range out {
+		out[i].start += c.Shift[out[i].base]
+	}
+	for i := range rec {
+		rec[i].start += c.Shift[rec[i].base]
+	}
+	// and the rows the cut put on the band itself, which are in cut.json and in
+	// no source list -- the render has to be told about them or every scene cut
+	// to one would resolve to whatever recording was rolling at that second
+	// (cut_lane.go). They are placed by laneVideos and corrected here, exactly
+	// as the editor does it.
+	lanes := a.laneVideos(c.Lanes, out)
+	for i := range lanes {
+		lanes[i].start += c.Shift[lanes[i].base]
+	}
+	out = append(out, lanes...)
+	sort.Slice(out, func(i, j int) bool { return out[i].start < out[j].start })
 	sort.Slice(rec, func(i, j int) bool { return rec[i].start < rec[j].start })
+	// the rows, worked out the same way the cut page works them out, because a
+	// scene says which ROW its picture comes from (cutSeg.Cam) and the number
+	// has to mean the same thing on both sides. Without this every scene would
+	// resolve against row nought and a two-camera cut would render as one.
+	assignLanes(out, c.Rows)
 	return out, rec, nil
 }
 
@@ -1092,6 +1111,13 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 	}
 
 	// 2. plan every clip: which recording, how long, which voice file
+	//
+	// ...and which microphone. The lane the cut is heard on is one answer for
+	// the whole cut, read once here (soundOf): a scene's picture comes from
+	// the camera it says, and its sound from the lane that was picked, which
+	// on a session shot on one camera is the camera itself and changes
+	// nothing.
+	snd := a.produceCut().Sound
 	var clips []prodClip
 	for i, s := range segs {
 		var c prodClip
@@ -1101,12 +1127,12 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			// to cut from its recording, exactly as the segment it was copied
 			// from would be cut
 			from, _ := copySrc(s.Ins)
-			v := pickVideo(vids, from)
+			v := pickVideoOn(vids, s.Cam, from)
 			if v == nil {
 				a.logfIdle("clip %d copies footage at %.0f s that falls in no recording — skipped", i+1, from)
 				continue
 			}
-			c = copyClip(i, s, from, v)
+			c = hearOn(copyClip(i, s, from, v), vids, recs, snd, from)
 			if end := v.start + v.dur; from+c.length > end {
 				c.length = end - from
 				a.logfIdle("clip %d copies past the end of %s — shortened to %.1f s", i+1, v.base, c.length)
@@ -1122,7 +1148,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				a.logfIdle("clip %d: %s is not there any more — skipped", i+1, file)
 				continue
 			}
-			v := pickVideo(vids, s.S)
+			v := pickVideoOn(vids, s.Cam, s.S)
 			if v == nil {
 				a.logfIdle("clip %d at %.0f s falls in no recording — its sound has no picture, skipped", i+1, s.S)
 				continue
@@ -1146,18 +1172,18 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				continue
 			}
 			var note string
-			c, note = insClip(i, s, path+q.suffix(), vids)
+			c, note = insClip(i, s, path+q.suffix(), vids, recs, snd)
 			if note != "" {
 				a.logfIdle("clip %d %s", i+1, note)
 			}
 		default:
-			v := pickVideo(vids, s.S)
+			v := pickVideoOn(vids, s.Cam, s.S)
 			if v == nil {
 				a.logfIdle("clip %d at %.0f s falls in no recording — skipped", i+1, s.S)
 				continue
 			}
-			c = prodClip{idx: i, video: v, local: s.S - v.start, tempo: 1, rate: 1,
-				length: s.length()}
+			c = hearOn(prodClip{idx: i, video: v, local: v.at(s.S), tempo: 1, rate: 1,
+				length: s.length()}, vids, recs, snd, s.S)
 			if s.Rate > 0 {
 				c.rate = s.Rate
 			}
@@ -1309,7 +1335,8 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 	// only be known once it is settled which recordings are in (clipBox) --
 	// and when the cut names an aspect, that size is the aspect's own frame
 	// instead, for footage and inserts alike (outBox)
-	_, fx, aspect := a.produceCut()
+	cf := a.produceCut()
+	fx, aspect := cf.Fx, cf.Aspect
 	boxW, boxH := outBox(clips, st, aspect)
 	if boxW > 0 {
 		// on every clip, not only the inserts that are fitted into it: a text
@@ -1340,7 +1367,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			if c.freeze {
 				span = 0 // a freeze is one session moment, not a stretch of it
 			}
-			c.cam = buildCam(fx, aspect, sw, sh, c.video.start+c.local, span,
+			c.cam = buildCam(fx, aspect, sw, sh, c.video.sessionAt(c.local), span,
 				c.speed(), c.length, boxW, boxH, camFps)
 			if c.cam != nil && c.cam.maxZoom() > 10 {
 				a.logfIdle("clip %d: the zoom goes deeper than ffmpeg's 10× — it is rendered at 10×", i+1)
@@ -1379,7 +1406,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				continue
 			}
 			c.stills = append(c.stills, stillCue{s: cue.s, e: cue.e, fin: cue.fin,
-				fout: cue.fout, path: v.path, at: cue.fx.T - v.start,
+				fout: cue.fout, path: v.path, at: v.at(cue.fx.T),
 				mute: cue.fx.Mute})
 		}
 	}
@@ -1753,7 +1780,13 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 		if c.sndAt > 0 {
 			args = append(args, "-ss", fmt.Sprintf("%.3f", c.sndAt))
 		}
-		args = append(args, "-t", fmt.Sprintf("%.3f", c.length), "-i", c.snd)
+		// the trim is in SOURCE seconds and the slot is in output ones, so a
+		// clip played fast eats more of the file than it is long: without the
+		// speed the sound would run out partway and apad would finish the slot
+		// in silence. Slower than 1 takes less and the extra is simply
+		// decoded and dropped, which costs nothing worth a branch.
+		args = append(args, "-t", fmt.Sprintf("%.3f", c.length*math.Max(1, c.speed())),
+			"-i", c.snd)
 		game = "1:a"
 	case !srcSound:
 		args = append(args, "-f", "lavfi", "-t", fmt.Sprintf("%.3f", c.length),
@@ -2132,7 +2165,7 @@ func audioArgs(st prodSettings) []string {
 // stops the recording's own track reaching the mixer, noLanes stops every
 // separate recording being mixed in under it.
 func copyClip(i int, s cutSeg, from float64, v *tlVideo) prodClip {
-	return prodClip{idx: i, video: v, local: from - v.start, tempo: 1, rate: 1,
+	return prodClip{idx: i, video: v, local: v.at(from), tempo: 1, rate: 1,
 		length: s.length(), mute: s.Mute, noLanes: s.Mute}
 }
 
@@ -2145,7 +2178,7 @@ func copyClip(i int, s cutSeg, from float64, v *tlVideo) prodClip {
 // lane on the cut page like any other, so naming it is simply not naming a
 // separate recording, and laneRecorded is what tells the two apart.
 func sndClip(i int, s cutSeg, path string, v *tlVideo, recs []tlAudio) prodClip {
-	c := prodClip{idx: i, video: v, local: s.S - v.start, tempo: 1, rate: 1,
+	c := prodClip{idx: i, video: v, local: v.at(s.S), tempo: 1, rate: 1,
 		length: s.length(), freeze: s.spliced(), snd: path, sndAt: s.Ss,
 		noLanes: s.spliced() || s.Lane == ""}
 	if !s.spliced() && laneRecorded(recs, s.Lane) {
@@ -2154,12 +2187,32 @@ func sndClip(i int, s cutSeg, path string, v *tlVideo, recs []tlAudio) prodClip 
 	return c
 }
 
-func insClip(i int, s cutSeg, file string, vids []tlVideo) (prodClip, string) {
+func insClip(i int, s cutSeg, file string, vids []tlVideo, auds []tlAudio, snd string) (prodClip, string) {
 	c := prodClip{idx: i, ins: file, tempo: 1, rate: 1, length: s.length(), mute: s.Mute,
 		noLanes: !s.keepsSoundUnder()}
 	var note string
-	c.snd, c.sndAt, note = soundUnder(s, vids)
+	c.snd, c.sndAt, note = soundUnder(s, vids, auds, snd)
 	return c, note
+}
+
+// hearOn puts the chosen lane's sound on a clip that would otherwise be heard
+// with its own picture (soundOf). Footage and copied footage only: an insert
+// brings its own sound or keeps what was under it, and both were already
+// settled by the time this is asked.
+//
+// Nothing to do in the two ordinary cases -- no lane picked, or the picked lane
+// IS this clip's own recording -- and saying so here rather than at each call
+// site is what keeps a one-camera render byte for byte the render it was.
+func hearOn(c prodClip, vids []tlVideo, auds []tlAudio, snd string, t float64) prodClip {
+	if c.mute || c.video == nil {
+		return c // silent by choice, or nothing to swap the sound of
+	}
+	p, at := soundOf(vids, auds, snd, t)
+	if p == "" || p == c.video.path {
+		return c
+	}
+	c.snd, c.sndAt = p, at
+	return c
 }
 
 // laneRecorded says whether a named lane is one of the separately-recorded
@@ -2193,11 +2246,17 @@ func laneRecorded(recs []tlAudio, base string) bool {
 // that fall in no recording, and a recording with no sound in it. Both come out
 // silent, both look like the flag was ignored, and neither is something the eye
 // can find on the timeline.
-func soundUnder(s cutSeg, vids []tlVideo) (path string, at float64, note string) {
+func soundUnder(s cutSeg, vids []tlVideo, auds []tlAudio, snd string) (path string, at float64, note string) {
 	if !s.keepsSoundUnder() {
 		return "", 0, ""
 	}
-	v := pickVideo(vids, s.S)
+	// what is heard under it is what is heard anywhere else: the lane the cut
+	// was told to play on, and only failing that the camera the insert was
+	// placed over
+	if p, at := soundOf(vids, auds, snd, s.S); p != "" {
+		return p, at, ""
+	}
+	v := pickVideoOn(vids, s.Cam, s.S)
 	switch {
 	case v == nil:
 		return "", 0, fmt.Sprintf("covers the picture at %.0f s and keeps what is heard, "+
@@ -2206,7 +2265,7 @@ func soundUnder(s cutSeg, vids []tlVideo) (path string, at float64, note string)
 		return "", 0, fmt.Sprintf("covers the picture at %.0f s and keeps what is heard, "+
 			"but %s has no sound — it plays silent", s.S, v.base)
 	}
-	return v.path, s.S - v.start, ""
+	return v.path, v.at(s.S), ""
 }
 
 // matchEntries finds the narration written for a segment -- every line of it,

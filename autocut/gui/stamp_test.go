@@ -90,8 +90,9 @@ func TestFrameNamesFollowTheWallClock(t *testing.T) {
 		t.Skip("no ffprobe on PATH")
 	}
 	dir := t.TempDir()
-	// the name carries the start, so sourceStart never falls back to the mtime
+	// the caller reads the start off the name (srcClock); this is that moment
 	video := filepath.Join(dir, "cam-20260808-195900-0.mp4")
+	start := float64(time.Date(2026, 8, 8, 19, 59, 0, 0, time.Local).Unix())
 	if err := exec.Command("ffmpeg", "-v", "error", "-y", "-f", "lavfi",
 		"-i", "testsrc=size=64x64:rate=10:duration=4", video).Run(); err != nil {
 		t.Skipf("no usable ffmpeg: %v", err)
@@ -127,7 +128,7 @@ func TestFrameNamesFollowTheWallClock(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(fdir, ".interval"), []byte("1|original\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		n, err := stampFrames(fdir, video, c.interval)
+		n, err := stampFrames(fdir, video, start, c.interval)
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
@@ -154,7 +155,7 @@ func TestFrameNamesFollowTheWallClock(t *testing.T) {
 		// preprocessing re-runs over a finished folder, which is how an old one gets
 		// its names: the second pass must find nothing left to do rather than
 		// stamping the stamps again
-		if n, err := stampFrames(fdir, video, c.interval); err != nil || n != 0 {
+		if n, err := stampFrames(fdir, video, start, c.interval); err != nil || n != 0 {
 			t.Errorf("%s: a second pass renamed %d frames (%v), want none", c.name, n, err)
 		}
 	}

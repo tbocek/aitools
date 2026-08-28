@@ -187,7 +187,7 @@ func TestTheMarksReadTheSelectionUnderTheCutButtons(t *testing.T) {
 	// and the label sits in the bar, in a column under the buttons that act on
 	// what it describes, in small print
 	for _, want := range []string{
-		"bar.Append(col(linked(add, ed.copyBtn, ins), ed.marks))",
+		"bar.Append(col(linked(add, ed.copyBtn, ins, ed.laneBtn), ed.marks))",
 		`ed.marks.SetMarkup("<small>" + marksClock(ed.markIn, ed.markOut, ed.hasIn, ed.hasOut) + "</small>")`,
 	} {
 		if !strings.Contains(src, want) {

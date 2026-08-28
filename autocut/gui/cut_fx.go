@@ -707,10 +707,10 @@ func rateSpan(segs []cutSeg, t0, t1, rate float64) []cutSeg {
 // Everything below is the editor's half: the lane under the video track where
 // effects are seen and picked up, the toolbar controls that create them, and
 // the dialogs that ask the one or two numbers each kind needs. The gestures
-// are the timeline's own -- the right button picks an effect up exactly as it
-// picks up a clip, a left drag slides a held one along the lane, ‹f/f› nudge
-// it, Del removes it, Esc puts it down, and the Insert button reads ✎ Edit
-// while one is held. New nouns, old verbs.
+// are the timeline's own -- a press on a mark picks that effect up and the same
+// drag slides it along the lane, ‹f/f› nudge it, Del removes it, Esc puts it
+// down, and the Insert button reads ✎ Edit while one is held. New nouns, old
+// verbs.
 
 // fxLaneH is the height of the effects lane drawn under the picture band.
 // Always there, even empty: a lane that appears when the first effect does
@@ -722,7 +722,7 @@ func rateSpan(segs []cutSeg, t0, t1, rate float64) []cutSeg {
 const fxLaneH = 26
 
 // fxLaneTop is the lane's y inside the source-track area.
-func (ed *cutEditor) fxLaneTop() float64 { return ed.picTop() + float64(ed.thumbHt) + 6 }
+func (ed *cutEditor) fxLaneTop() float64 { return ed.picBottom() + 2 }
 
 // fxHitLane is whether a press in the source-track area lands in the lane.
 func (ed *cutEditor) fxHitLane(y float64) bool { return y >= ed.fxLaneTop() }

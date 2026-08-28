@@ -282,7 +282,7 @@ func (ed *cutEditor) cardInto(s *cutSeg, into float64) float64 {
 	}
 	if from, ok := copySrc(s.Ins); ok {
 		if v := ed.videoAt(from); v != nil {
-			into += from - v.start
+			into += v.at(from)
 		}
 	}
 	return into + s.Ss
@@ -493,7 +493,7 @@ func (a *App) insPNG(ins string, at float64) (png []byte, file string, err error
 		if v == nil {
 			return nil, "", fmt.Errorf("the copied footage falls in no recording")
 		}
-		out, err := ffmpegPNG("-ss", fmt.Sprintf("%.3f", from+at-v.start), "-i", v.path)
+		out, err := ffmpegPNG("-ss", fmt.Sprintf("%.3f", v.at(from+at)), "-i", v.path)
 		return out, "", err
 	}
 	src, q := insSplit(ins)

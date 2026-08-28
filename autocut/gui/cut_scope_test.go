@@ -41,12 +41,13 @@ func renderScope(t *testing.T, ed *cutEditor, w, h int) func(x, y int) (r, g, b 
 	}
 }
 
-// scopeSel is selEd with ten seconds selected on the pictures: at 4 px a
-// second the handle is 40 px wide, from x 40 to x 80.
+// scopeSel is selEd with twenty seconds selected on the pictures: at 4 px a
+// second the handle is 80 px wide, from x 20 to x 100, well clear of the
+// minimum width so that the tests below see the seconds and not the floor.
 func scopeSel(t *testing.T) (*App, *cutEditor) {
 	t.Helper()
 	a, ed := selEd(t)
-	ed.sel.t0, ed.sel.t1, ed.sel.active, ed.sel.aud = 10, 20, true, ""
+	ed.sel.t0, ed.sel.t1, ed.sel.active, ed.sel.aud = 5, 25, true, ""
 	return a, ed
 }
 
@@ -55,10 +56,10 @@ func scopeSel(t *testing.T) (*App, *cutEditor) {
 // it is about matters most, and it would otherwise be two pixels wide.
 func TestTheHandleStandsOnTheSelection(t *testing.T) {
 	_, ed := scopeSel(t)
-	if x0, x1, ok := ed.scopeBoxPx(); !ok || x0 != 40 || x1 != 80 {
-		t.Errorf("the handle is %.0f – %.0f (ok %v), want 40 – 80", x0, x1, ok)
+	if x0, x1, ok := ed.scopeBoxPx(); !ok || x0 != 20 || x1 != 100 {
+		t.Errorf("the handle is %.0f – %.0f (ok %v), want 20 – 100", x0, x1, ok)
 	}
-	ed.sel.t1 = 11 // one second: 4 px, under the minimum
+	ed.sel.t0, ed.sel.t1 = 10, 11 // one second: 4 px, under the minimum
 	x0, x1, ok := ed.scopeBoxPx()
 	if !ok || x1-x0 != scopeMinW {
 		t.Errorf("a one-second selection got a handle %.0f px wide, want %.0f", x1-x0, scopeMinW)
@@ -94,7 +95,7 @@ func TestASilentCaptureStillReachesThePictureAlone(t *testing.T) {
 	_, ed := scopeSel(t)
 	ed.auds = nil // no sound anywhere in the session
 
-	up, down := func() { ed.scopeClicked(60, 2) }, func() { ed.scopeClicked(60, 12) }
+	up, down := func() { ed.scopeClicked(60, 4) }, func() { ed.scopeClicked(60, 18) }
 	for i, c := range []struct {
 		press func()
 		name  string
@@ -118,7 +119,7 @@ func TestASilentCaptureStillReachesThePictureAlone(t *testing.T) {
 	if _, _, ok := ed.scopeBoxPx(); !ok {
 		t.Error("the handle went away with the lanes")
 	}
-	if got := ed.scopePartAt(60, 2); got != scopeUp {
+	if got := ed.scopePartAt(60, 4); got != scopeUp {
 		t.Errorf("the top half of the handle answers %d, want scopeUp", got)
 	}
 }
@@ -132,15 +133,45 @@ func TestTheHandleHasTwoHalvesAndNothingElse(t *testing.T) {
 		px, y float64
 		want  int
 	}{
-		{60, 1, scopeUp}, {60, 7, scopeUp},
-		{60, 9, scopeDown}, {60, 15, scopeDown},
-		{40, 4, scopeUp}, {80, 12, scopeDown}, // the very edges are still it
-		{39, 4, scopeNone}, {81, 12, scopeNone},
+		{60, 1, scopeUp}, {60, 11, scopeUp},
+		{60, 12, scopeDown}, {60, 23, scopeDown},
+		{20, 4, scopeUp}, {100, 18, scopeDown}, // the very edges are still it
+		{19, 4, scopeNone}, {101, 18, scopeNone},
 		{200, 4, scopeNone},
 	} {
 		if got := ed.scopePartAt(c.px, c.y); got != c.want {
 			t.Errorf("scopePartAt(%.0f, %.0f) = %d, want %d", c.px, c.y, got, c.want)
 		}
+	}
+}
+
+// The handle is pressed as often as anything in the toolbar and it is the only
+// control on the page with no button around it, so it has to be big enough to
+// hit without aiming. Two rungs share the strip's height, so half of it is what
+// the hand actually gets: at the sixteen the strip opened with that was eight
+// pixels tall, and thirty across on a short selection.
+func TestTheHandleIsBigEnoughToHit(t *testing.T) {
+	if half := scopeH / 2; half < 10 {
+		t.Errorf("a rung is %.0f px tall, which is a target you aim at", half)
+	}
+	if scopeMinW < 40 {
+		t.Errorf("the smallest handle is %.0f px across, which is not a press", scopeMinW)
+	}
+	// and the arrow grew with the rung: a rung with room for a bigger arrow
+	// drawn with the old small one is a big target that still LOOKS small, and
+	// the arrow is the whole of what the handle says. Read down the arrow's own
+	// column -- the handle stands from x 20, the arrow 13 px into it -- and
+	// count the white in the top rung.
+	_, ed := scopeSel(t)
+	at := renderScope(t, ed, 400, int(scopeH))
+	var tall int
+	for y := 0; y < int(scopeH)/2; y++ {
+		if r, g, b := at(33, y); r > 200 && g > 200 && b > 200 {
+			tall++
+		}
+	}
+	if tall < 6 {
+		t.Errorf("the arrow is %d px tall in a %.0f px rung", tall, scopeH/2)
 	}
 }
 
@@ -150,7 +181,7 @@ func TestTheHandleHasTwoHalvesAndNothingElse(t *testing.T) {
 // ever cycled the lanes would have no way out of them.
 func TestPressingDownWalksTheRecordings(t *testing.T) {
 	_, ed := scopeSel(t)
-	down := func() { ed.scopeClicked(60, 12) }
+	down := func() { ed.scopeClicked(60, 18) }
 
 	for _, want := range []string{"mic", "cam", "room", "", "mic"} { // and round again
 		down()
@@ -180,7 +211,7 @@ func TestPressingDownWalksTheRecordings(t *testing.T) {
 // so the top rung is reachable and escapable with the one arrow.
 func TestPressingUpClimbsTowardsThePicture(t *testing.T) {
 	_, ed := scopeSel(t)
-	up := func() { ed.scopeClicked(60, 2) }
+	up := func() { ed.scopeClicked(60, 4) }
 
 	ed.setSelScope("cam", false)
 	up()
@@ -221,7 +252,7 @@ func TestTheLiveHalfIsLit(t *testing.T) {
 	} {
 		ed.sel.aud, ed.sel.pic = c.aud, c.pic
 		at := renderScope(t, ed, 400, int(scopeH))
-		if up, down := blue(at, 4), blue(at, 12); up != c.up || down != c.down {
+		if up, down := blue(at, 6), blue(at, 18); up != c.up || down != c.down {
 			t.Errorf("on %s the handle is lit ▲%v ▼%v, want ▲%v ▼%v",
 				c.what, up, down, c.up, c.down)
 		}
@@ -236,12 +267,12 @@ func TestTheHandleChangesWhatCopyTakes(t *testing.T) {
 	if ed.copyAud != "" {
 		t.Errorf("a ▲ selection copied %q, want footage", ed.copyAud)
 	}
-	ed.scopeClicked(60, 12) // ▼ mic
+	ed.scopeClicked(60, 18) // ▼ mic
 	a.copyClicked()
 	if ed.copyAud != "mic" {
 		t.Errorf("a ▼ selection copied %q, want mic's sound", ed.copyAud)
 	}
-	if ed.copyFrom != 10 || ed.copyLen != 10 {
+	if ed.copyFrom != 5 || ed.copyLen != 20 {
 		t.Errorf("the seconds changed with the scope: %.0f for %.0f", ed.copyFrom, ed.copyLen)
 	}
 }
@@ -253,7 +284,7 @@ func TestTheHandleChangesWhatCopyTakes(t *testing.T) {
 func TestTheFootageVerbsRefuseASoundSelection(t *testing.T) {
 	a, ed := scopeSel(t)
 	ed.segs = []cutSeg{{S: 0, E: 30}, {S: 100, E: 200}}
-	ed.scopeClicked(60, 12) // ▼ mic
+	ed.scopeClicked(60, 18) // ▼ mic
 	was := append([]cutSeg(nil), ed.segs...)
 
 	a.removeSelClicked()
@@ -263,7 +294,7 @@ func TestTheFootageVerbsRefuseASoundSelection(t *testing.T) {
 
 	// and ▲ hands them back: the refusal is about the scope, not about the
 	// selection being unusable
-	ed.scopeClicked(60, 2)
+	ed.scopeClicked(60, 4)
 	a.removeSelClicked()
 	if len(ed.segs) == len(was) && ed.segs[0].E == was[0].E {
 		t.Errorf("⌦ did nothing on a ▲ selection either: %+v", ed.segs)

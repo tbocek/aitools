@@ -119,7 +119,7 @@ func (ed *cutEditor) renderStill(st *fxStill) {
 		return
 	}
 	st.busy = true
-	a, local, path := ed.a, st.t-v.start, v.path
+	a, local, path := ed.a, v.at(st.t), v.path
 	go func() {
 		png, err := ffmpegPNG("-ss", fmt.Sprintf("%.3f", local), "-i", path)
 		glib.IdleAdd(func() {

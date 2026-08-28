@@ -31,11 +31,15 @@ func TestTheDroppedStretchesAreTheOnesNotKept(t *testing.T) {
 		},
 	}
 	want := [][2]float64{
-		{0, 5},    // the run-up to the first clip
-		{20, 30},  // a hole
-		{55, 60},  // the tail of the first recording
-		{60, 70},  // the head of the second
-		{90, 100}, // and its tail
+		{0, 5},   // the run-up to the first clip
+		{20, 30}, // a hole
+		// one stretch and not two, though the seam between the recordings is
+		// in the middle of it: the axis is session time, the second camera
+		// starts where the first stopped, and there is no hole at 60 to break
+		// the scrim over. It used to be split there, back when the timeline
+		// was files laid end to end rather than a clock
+		{55, 70},
+		{90, 100}, // and the tail of the last recording
 	}
 	got := ed.droppedSpans()
 	if len(got) != len(want) {
@@ -60,6 +64,15 @@ func TestTheDroppedStretchesAreTheOnesNotKept(t *testing.T) {
 	whole := &cutEditor{vids: []tlVideo{{start: 0, dur: 60}}, segs: []cutSeg{{S: 0, E: 60}}}
 	if g := whole.droppedSpans(); len(g) != 0 {
 		t.Errorf("a cut that keeps the whole recording dropped %v", g)
+	}
+	// two cameras on the same minute are ONE minute of dropped time. Counted
+	// per recording it would be dropped twice, and the scrim would be painted
+	// twice over the same pixels -- harmless there, but the same count is what
+	// the zoom-to-fit is measured against, and that would fit the tracks into
+	// half the window
+	both := &cutEditor{vids: []tlVideo{{start: 0, dur: 60}, {start: 10, dur: 40}}}
+	if g := both.droppedSpans(); len(g) != 1 || g[0] != [2]float64{0, 60} {
+		t.Errorf("two overlapping recordings with nothing kept drop %v, want one span 0-60", g)
 	}
 }
 

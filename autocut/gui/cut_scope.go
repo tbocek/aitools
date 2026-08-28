@@ -64,11 +64,14 @@ const (
 )
 
 const (
-	scopeH = 16.0 // the strip's height, the selection band's, for one seam-wide row
+	// the strip's height. Two rungs share it, so half of this is what the hand
+	// actually gets -- at the sixteen it opened with, eight pixels, on a
+	// control pressed as often as anything in the bar.
+	scopeH = 24.0
 	// the handle is never narrower than this, however few seconds are selected:
 	// two stacked arrows need somewhere to be, and a selection of half a second
 	// is exactly when saying what it is about matters most.
-	scopeMinW = 30.0
+	scopeMinW = 44.0
 )
 
 // scopeBoxPx is the ▲▼ handle in timeline px, and whether there is one at all.
@@ -272,13 +275,13 @@ func (ed *cutEditor) drawScope(cr *cairo.Context, w, h int) {
 		} else {
 			cr.SetSourceRGBA(1, 1, 1, 0.45)
 		}
-		cx, cy, tip := x0+9, y+half/2, 2.5
+		cx, cy, tip := x0+13, y+half/2, 3.5
 		if !up {
 			tip = -tip
 		}
 		cr.MoveTo(cx, cy-tip)
-		cr.LineTo(cx+4, cy+tip)
-		cr.LineTo(cx-4, cy+tip)
+		cr.LineTo(cx+6, cy+tip)
+		cr.LineTo(cx-6, cy+tip)
 		cr.ClosePath()
 		cr.Fill()
 	}
@@ -287,12 +290,12 @@ func (ed *cutEditor) drawScope(cr *cairo.Context, w, h int) {
 	cr.SetSourceRGBA(0, 0, 0, 0.5)
 	cr.Rectangle(x0, half-0.5, x1-x0, 1)
 	cr.Fill()
-	// what it is pointing at, outside the handle rather than in it: the halves
-	// are eight pixels tall and a word in one would be a smudge, and the name
-	// is the answer to "which lane", which is a question about the lanes below
+	// what it is pointing at, outside the handle rather than in it: a word in
+	// half a strip would be a smudge at any height the seam can afford, and the
+	// name answers "which lane", which is a question about the lanes below
 	cr.SetFontSize(9)
 	cr.SetSourceRGBA(1, 1, 1, 0.7)
-	cr.MoveTo(x1+6, scopeH-5)
+	cr.MoveTo(x1+6, scopeH/2+4)
 	cr.ShowText(ed.scopeName())
 	cr.Restore()
 }

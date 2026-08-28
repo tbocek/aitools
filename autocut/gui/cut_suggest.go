@@ -28,7 +28,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -49,7 +48,7 @@ func (a *App) suggestClicked() {
 			"first if you want a fresh suggestion")
 		return
 	}
-	rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv"))
+	rows := a.sessionRows()
 	if len(rows) == 0 {
 		a.setStatus("run Describe first — the suggestion reads the session timeline, and there is none")
 		return

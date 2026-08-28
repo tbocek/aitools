@@ -1258,7 +1258,7 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 		// the pixels are already right; only a folder extracted before frames
 		// were named for their second has anything left to do, and that is a
 		// rename rather than the minutes of decoding a re-extract would cost
-		if n, err := stampFrames(fdir, video, interval); err != nil {
+		if n, err := stampFrames(fdir, video, a.sourceStart(video), interval); err != nil {
 			return err
 		} else if n > 0 {
 			a.logfIdle(">>> [%s] %d frames renamed to the second they were shot in", name, n)
@@ -1372,7 +1372,7 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 			return errStopped
 		}
 	}
-	if _, err := stampFrames(fdir, video, interval); err != nil {
+	if _, err := stampFrames(fdir, video, a.sourceStart(video), interval); err != nil {
 		return err
 	}
 	if err := os.WriteFile(marker, []byte(want+"\n"), 0o644); err != nil {
@@ -1393,10 +1393,15 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 // listing: a chunk that yields fewer frames than planned leaves a gap in the
 // numbering, and t = (n-1) * interval has to keep holding across it.
 //
+// start is where the session puts this video (a.sourceStart), passed in rather
+// than looked up: the caller already holds the whole source list, and a folder
+// of frames that disagrees with the row above it is a description talking
+// about the wrong moment.
+//
 // Nothing numbered left in the folder means there is nothing to do, which is
 // the normal case on a re-run -- so this is also what renames a folder
 // extracted before frames were stamped, without decoding it again.
-func stampFrames(fdir, video string, interval float64) (int, error) {
+func stampFrames(fdir, video string, start, interval float64) (int, error) {
 	ents, err := os.ReadDir(fdir)
 	if err != nil {
 		return 0, err
@@ -1415,10 +1420,6 @@ func stampFrames(fdir, video string, interval float64) (int, error) {
 	}
 	if len(fs) == 0 {
 		return 0, nil
-	}
-	start, err := sourceStart(video)
-	if err != nil {
-		return 0, err
 	}
 	if interval <= 0 {
 		// every-frame mode: the spacing is the video's own. Without a frame rate

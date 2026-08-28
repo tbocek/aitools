@@ -8,10 +8,10 @@ package main
 // something that happened at the same time. This matters because the audio was
 // recorded by a different machine -- a headset recorder, OBS's second track, a
 // phone on the table -- which started when it started and knows nothing about
-// when the capture card did. What lines them up is the wall clock (sourceStart:
-// a timestamp in the name, else mtime minus length), the same zero every other
-// part of this app places sources by, so a lane is drawn where the recording
-// actually was rather than from the left edge.
+// when the capture card did. What lines them up is the wall clock (srcClock: a
+// timestamp in the name, else the session's own start), the same zero every
+// other part of this app places sources by, so a lane is drawn where the
+// recording actually was rather than from the left edge.
 //
 // The consequence is that a lane is usually shorter than the timeline, and that
 // is the point: only the part of the recording that overlaps the footage is
@@ -47,6 +47,7 @@ import (
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/cairo"
+	"github.com/diamondburned/gotk4/pkg/glib/v2"
 )
 
 const (
@@ -78,11 +79,22 @@ const (
 type tlAudio struct {
 	base   string
 	path   string
-	start  float64 // session time of this recording's t=0
+	start  float64 // session time of the lane's first second
+	off    float64 // the second of the FILE that lands there; see at
 	dur    float64
 	chans  int  // 1 or 2 lanes; more than two is downmixed to a stereo picture
 	master bool // the footage's own track: heard by the preview already
 }
+
+// at is the second of the file heard at session second t, which is tlVideo.at
+// for sound and is a subtraction for the same reason: a lane's clock and the
+// session's differ by exactly where the lane was put.
+//
+// off is nought for a recording -- a recording IS its file, whole, and its
+// first second is the file's first second. A cut lane is a WINDOW opening
+// partway into a file (cut_lane.go), and its sound is that same window: the
+// row starts at second off of the file and runs dur from there.
+func (au tlAudio) at(t float64) float64 { return t - au.start + au.off }
 
 // soundAt says whether anything is audible at these seconds -- the capture's own
 // track or a separate recording running under it. ed.auds is the right list to
@@ -135,9 +147,52 @@ func masterLanes(vids []tlVideo) []tlAudio {
 			continue
 		}
 		out = append(out, tlAudio{base: v.base, path: v.path, start: v.start,
-			dur: v.dur, chans: ch, master: true})
+			off: v.off, dur: v.dur, chans: ch, master: true})
 	}
 	return out
+}
+
+// loadWaves gets an envelope for every lane that has not got one, in the
+// background and one goroutine each: decoding an hour of audio takes seconds,
+// and a page that waited for them would be a tab that does not open. A lane
+// whose envelope has not landed yet draws its ground and no wave, and the
+// redraw when it does is the whole of the arrival -- there is nothing to
+// recompute, because the audio is not part of the timeline's geometry.
+//
+// Asked again whenever the lanes change and not only on a reload: a cut lane
+// added by hand is a lane with sound under it from the moment it appears
+// (setLanes), and one that had to wait for the next visit to draw its wave
+// would look like a lane that has none.
+//
+// Keyed by the lane's name rather than its path, because that is what draws it,
+// and a copied shot is one file on two lanes with two windows on it. The second
+// decode is a read of the disk cache the first one left (loadWave).
+func (ed *cutEditor) loadWaves() {
+	if ed.audArea == nil {
+		return // no band to draw them in: an editor built for a test
+	}
+	if ed.waves == nil {
+		ed.waves = map[string]*waveform{}
+	}
+	a := ed.a
+	for _, au := range ed.auds {
+		if _, ok := ed.waves[au.base]; ok {
+			continue
+		}
+		au := au
+		go func() {
+			wf, err := loadWave(a.waveCache(), au.path, au.chans)
+			glib.IdleAdd(func() {
+				if err != nil {
+					a.logf("no waveform for %s: %v", au.base, err)
+					return
+				}
+				ed.waves[au.base] = wf
+				ed.fitAudio() // it may have come back on fewer lanes than the probe promised
+				ed.redrawTracks()
+			})
+		}()
+	}
 }
 
 // sortLanes is the order the lanes are read in: the footage's own first
@@ -151,6 +206,150 @@ func sortLanes(auds []tlAudio) {
 		}
 		return auds[i].start < auds[j].start
 	})
+}
+
+// ---- which lane the cut is heard on -----------------------------------------
+
+// A session shot on two cameras is HEARD on one of them.
+//
+// Every camera records its own sound, so two of them is the same room recorded
+// twice: a few frames apart, at two different distances from whoever is
+// talking, with two different rooms' worth of tone. Cutting the sound with the
+// picture would put a seam in the audio at every change of camera -- the tone
+// jumps, a word half-said in one recording is half-said differently in the
+// other -- and it sounds broken in a way nobody can point at.
+//
+// So which sound is heard is a choice, made once for the whole cut and not tied
+// to the picture at all: ↑ and ↓ walk the lanes, every scene is heard with the
+// one that is picked, and the pictures cut where they like underneath. The
+// empty choice is every scene heard with the camera that shot it, which is
+// exactly what a one-camera session has always done and is why it is the
+// default and why a cut.json without the field still renders as it did.
+//
+// The PREVIEW does not follow it: it is one pipeline playing one file, and its
+// sound is that file's. What says which lane is heard is the lane's own plate
+// on the waveforms (drawAudio), and the render.
+
+// soundOf is where a scene's sound comes from under that choice: the file and
+// the second inside it, or "" meaning "the picture's own" -- which is both the
+// default and the answer whenever the chosen lane was not running.
+//
+// A choice naming a camera names the ROW, not one file: a camera stopped and
+// started again is several recordings in a line, and the sound carries across
+// them exactly as the picture does.
+func soundOf(vids []tlVideo, auds []tlAudio, snd string, t float64) (string, float64) {
+	if strings.TrimSpace(snd) == "" {
+		return "", 0
+	}
+	for i := range vids {
+		if vids[i].base != snd {
+			continue
+		}
+		if v := videoOn(vids, vids[i].lane, t); v != nil {
+			return v.path, v.at(t)
+		}
+		return "", 0 // that camera was not rolling here
+	}
+	for _, au := range auds {
+		if au.base == snd && t >= au.start && t < au.start+au.dur {
+			return au.path, au.at(t)
+		}
+	}
+	return "", 0
+}
+
+// sndChoices is what ↑ and ↓ walk, in order: "" first -- every scene heard with
+// the camera that shot it -- then one entry per camera row, named by the first
+// recording on it, then every separately recorded lane.
+//
+// One entry per ROW rather than per file, because a camera is picked whole. And
+// no camera at all when there is only one row: "" already means that camera,
+// and an arrow that cycles between two spellings of the same answer reads as a
+// key that does not work.
+func sndChoices(vids []tlVideo, auds []tlAudio) []string {
+	out := []string{""}
+	var rows []string
+	seen := map[int]bool{}
+	for _, v := range vids {
+		if !seen[v.lane] {
+			seen[v.lane] = true
+			rows = append(rows, v.base)
+		}
+	}
+	if len(rows) > 1 {
+		out = append(out, rows...)
+	}
+	for _, au := range auds {
+		if !au.master {
+			out = append(out, au.base)
+		}
+	}
+	return out
+}
+
+// sndLabel is a choice in a sentence.
+func sndLabel(vids []tlVideo, snd string) string {
+	if strings.TrimSpace(snd) == "" {
+		return "each camera's own sound"
+	}
+	for _, v := range vids {
+		if v.base == snd {
+			return fmt.Sprintf("camera %d — %s", v.lane+1, v.base)
+		}
+	}
+	return snd
+}
+
+// heardOn says this lane is the one the cut is heard on. Every recording on a
+// chosen camera's row answers yes, not only the one the choice was written
+// down as, because the choice was the row.
+func (ed *cutEditor) heardOn(base string) bool {
+	if strings.TrimSpace(ed.snd) == "" {
+		return false
+	}
+	if base == ed.snd {
+		return true
+	}
+	row := -1
+	for _, v := range ed.vids {
+		if v.base == ed.snd {
+			row = v.lane
+		}
+	}
+	if row < 0 {
+		return false
+	}
+	for _, v := range ed.vids {
+		if v.base == base {
+			return v.lane == row
+		}
+	}
+	return false
+}
+
+// cycleSound is ↑ and ↓ on the timeline: the next lane along, or the previous
+// one, wrapping. Not an undo step -- it is one keystroke to put back, and a
+// history full of "changed my mind about the microphone" is a history that has
+// lost the edit before it.
+func (ed *cutEditor) cycleSound(d int) {
+	ch := sndChoices(ed.vids, ed.auds)
+	if len(ch) < 2 {
+		ed.a.setStatus("this session was shot on one camera with nothing recorded " +
+			"separately — there is no other lane to hear the cut on")
+		return
+	}
+	at := 0
+	for i, c := range ch {
+		if c == ed.snd {
+			at = i
+		}
+	}
+	ed.snd = ch[((at+d)%len(ch)+len(ch))%len(ch)]
+	ed.persist()
+	ed.redrawTracks()
+	ed.a.setStatus(fmt.Sprintf("the whole cut is heard on %s — ↑ and ↓ walk the lanes. "+
+		"The preview still plays the picture's own sound; the render uses this",
+		sndLabel(ed.vids, ed.snd)))
 }
 
 // waveform is the peak envelope: one byte per bucket per channel, the loudest
@@ -792,6 +991,21 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 				// the lane, not worked out from the order of the track above
 				name += " · video"
 			}
+			if ed.heardOn(au.base) {
+				// and which one the finished video is heard on, said on the
+				// lane itself: it is a choice with no other mark on the page,
+				// and a cut that came out sounding like the wrong microphone
+				// with nothing anywhere saying which was picked is a bug
+				// nobody can find
+				name += " · heard"
+			}
+			if d := ed.shiftOf(au.base); d != 0 {
+				// a corrected clock is a fact about the project that is
+				// otherwise invisible: the lane simply sits where it sits, and
+				// nothing distinguishes "the recorder was two seconds out" from
+				// "this is where the file says it starts"
+				name += fmt.Sprintf(" · %+.2f s", d)
+			}
 			plateText(cr, 4, y+12, name)
 			y += waveLaneH
 		}
@@ -896,5 +1110,5 @@ func (ed *cutEditor) drawLane(cr *cairo.Context, au tlAudio, wf *waveform, ch in
 // each of them started, which is what start holds and what makes this a
 // subtraction rather than an alignment problem.
 func (au tlAudio) timeAt(v tlVideo, pps, x float64) float64 {
-	return (v.start + (x-v.pxOrigin)/pps) - au.start
+	return au.at(v.start + (x-v.pxOrigin)/pps)
 }

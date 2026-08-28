@@ -272,7 +272,7 @@ func TestSlowAndFreezeComeOutTheRightLength(t *testing.T) {
 // the single line that makes effects render at all.
 func TestProduceRunsTheCutThroughTheEffects(t *testing.T) {
 	fn := funcBody(t, "produce.go", `func \(a \*App\) produceSegs\(\) \[\]cutSeg \{`)
-	if !strings.Contains(fn, "applyFx(splitSpliced(segs), fx)") {
+	if !strings.Contains(fn, "applyFx(splitSpliced(c.Segs), c.Fx)") {
 		t.Error("produceSegs no longer applies the speed effects — slows and freezes are edited but never rendered")
 	}
 }

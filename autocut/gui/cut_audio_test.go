@@ -424,16 +424,31 @@ func TestTheLanesAreWiredUnderTheCut(t *testing.T) {
 		// and the preview plays them: which recordings are under a piece of
 		// footage is settled when the file it is playing changes
 		"ed.player.SetMix(ed.mixUnder(v))",
-		// the envelopes arrive on their own time, and land on the GUI thread
-		"go func() {",
-		"wf, err := loadWave(a.waveCache(), au.path, au.chans)",
-		"ed.waves[au.base] = wf",
 		// zoom, scroll, the playhead and the edge all repaint the lanes too
 		"if ed.audArea != nil {\n\t\ted.audArea.QueueDraw()",
 		"for _, area := range []*gtk.DrawingArea{ed.srcArea, ed.audArea} {",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the cut page no longer contains %q", want)
+		}
+	}
+	// the envelopes arrive on their own time and land on the GUI thread, from
+	// wherever the lanes were last changed -- a reload, or a lane added by hand
+	for _, want := range []string{
+		"go func() {",
+		"wf, err := loadWave(a.waveCache(), au.path, au.chans)",
+		"ed.waves[au.base] = wf",
+	} {
+		if !strings.Contains(readSrc(t, "cut_audio.go"), want) {
+			t.Errorf("cut_audio.go no longer contains %q", want)
+		}
+	}
+	for _, want := range []string{"ed.loadWaves()"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the cut page no longer asks for the envelopes: %q", want)
+		}
+		if !strings.Contains(readSrc(t, "cut_lane.go"), want) {
+			t.Errorf("a lane added by hand no longer asks for its envelope: %q", want)
 		}
 	}
 	// the lanes are drawn against the video layout, not laid out themselves: a

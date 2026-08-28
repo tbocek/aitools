@@ -54,7 +54,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -831,17 +830,14 @@ type pubShot struct {
 // what they are named for -- and from the video's start plus the interval when
 // it does not, which is how folders extracted before the renaming look.
 //
-// Runner-side: it shells out to ffprobe once per source (sourceStart), so it
-// is not something to call from a page refresh.
+// Runner-side: it reads a frame folder per source, so it is not something to
+// call from a page refresh.
 func (a *App) publishShots() []pubShot {
 	vids, _ := a.snappedSources()
 	if len(vids) == 0 {
 		return nil
 	}
 	zero := a.sessionZero()
-	if zero == math.MaxFloat64 {
-		return nil
-	}
 	var out []pubShot
 	for _, v := range vids {
 		plan, err := a.planVideo(v, a.describeDir())
@@ -849,10 +845,7 @@ func (a *App) publishShots() []pubShot {
 			a.logfIdle("    publish: no frames for %s (%v)", baseName(v), err)
 			continue
 		}
-		start, err := sourceStart(v)
-		if err != nil {
-			start = zero // unplaceable: treat it as the session's own start
-		}
+		start := a.sourceStart(v) // its own stamp, or the session's start
 		for i, f := range plan.frames {
 			t := start - zero + float64(i)*plan.interval
 			if s, _, ok := readStamp(f); ok {
@@ -917,7 +910,7 @@ func pickShots(shots []pubShot, segs []cutSeg, n int) []string {
 // itself -- which is the tightest description of the finished video that
 // exists, because it was written to be spoken over exactly these clips.
 func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
-	rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv"))
+	rows := a.sessionRows()
 	total := 0.0
 	for _, s := range segs {
 		total += s.length()

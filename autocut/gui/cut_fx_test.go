@@ -419,7 +419,8 @@ func TestEffectsGoToDiskAndAPlainCutDoesNotChange(t *testing.T) {
 		{Kind: "speed", T: 12, Dur: 3, Rate: 0.5},
 	}
 	ed.persist()
-	segs, fx, aspect := ed.a.produceCut() // a.ed is nil: this is the file speaking
+	c := ed.a.produceCut() // a.ed is nil: this is the file speaking
+	segs, fx, aspect := c.Segs, c.Fx, c.Aspect
 	if len(segs) != 1 || segs[0] != ed.segs[0] {
 		t.Errorf("the cut came back as %v", segs)
 	}

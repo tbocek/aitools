@@ -1998,14 +1998,13 @@ func (n *narrator) synthWait(i int, e narrEntry, wav string) {
 	}()
 }
 
+// sessionZero is the session's own second nought on the wall clock: the
+// earliest moment any source names. It always answers -- a session where no
+// file names a moment starts at 0:00 -- so callers subtract it without asking
+// whether the sources could be placed at all.
 func (a *App) sessionZero() float64 {
-	zero := math.MaxFloat64
 	vids, auds := a.snappedSources()
-	for _, p := range append(append([]string{}, vids...), auds...) {
-		if s, err := sourceStart(p); err == nil {
-			zero = math.Min(zero, s)
-		}
-	}
+	_, zero := srcClock(append(append([]string{}, vids...), auds...))
 	return zero
 }
 
@@ -2474,7 +2473,7 @@ func narrEntriesDone(s string) int {
 }
 
 func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
-	rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv"))
+	rows := a.sessionRows()
 	// the box on the page is the whole system message: what used to be a
 	// separate context field is part of it now (see buildNarrate)
 	system := a.prompt("narrate")
