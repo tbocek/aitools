@@ -1,0 +1,63 @@
+Make /v1/audio/transcriptions answer with the timings it already computed.
+
+Applied against AUDIOCPP_REF in Dockerfile.audio (04ba4375). Upstream:
+https://github.com/0xShug0/audio.cpp
+
+The problem
+-----------
+audio.cpp has two ways in for a wav, and only one of them is an upload:
+
+  POST /v1/tasks/run              JSON, "audio" is a path the SERVER opens
+  POST /v1/audio/transcriptions   JSON path, or multipart/form-data upload
+
+Both run the same model and produce the same TaskResult -- text, speech
+segments, and per-word start_sample/end_sample. But the two serialise it
+differently. /v1/tasks/run returns all of it. /v1/audio/transcriptions
+hand-built a two-field object and threw the rest away:
+
+    {"text": "...", "timing": {...}}
+
+So the only endpoint that accepts an upload is also the only one that cannot
+tell you WHEN anything was said -- which pushes any client that needs word
+timings (autocut does: words.json, the transcript scrub, the cut suggestions)
+back onto the path-based endpoint, and therefore onto sharing a filesystem
+with the server and mounting its project folder into the container.
+
+The change
+----------
+run_transcription now returns task_result_json_with_timing(), the same
+serialiser /v1/tasks/run uses. Three lines of code.
+
+Backwards compatible: "text" is still the first field and still means what it
+did; segments/words/language are additive, and a client reading .text (Open
+WebUI, anything Whisper-shaped) sees no difference.
+
+Not covered by this patch
+-------------------------
+Diarization and voice cloning still have no upload route at all -- diar models
+are only reachable at /v1/tasks/run, and /v1/audio/speech takes voice_ref as a
+server-side path. Dropping the shared mount entirely needs multipart support
+on /v1/tasks/run, which is a bigger change than this one.
+
+diff --git a/app/server/runtime.cpp b/app/server/runtime.cpp
+index adbf4f3..ae4918e 100644
+--- a/app/server/runtime.cpp
++++ b/app/server/runtime.cpp
+@@ -1975,9 +1975,14 @@ HttpResponse ServerState::run_transcription(
+     if (!request.audio_input.has_value()) {
+         throw std::runtime_error("transcription timing requires audio_input");
+     }
+-    return json_response(
+-        "{\"text\":" + json_quote(result.text_output->text) +
+-        ",\"timing\":" + timing_json(timed_result.wall_ms, *request.audio_input) + "}");
++    // The same body /v1/tasks/run returns, not a two-field subset of it. An ASR
++    // model produces word_timestamps and speech_segments alongside the text, and
++    // this endpoint used to drop both on the floor -- so a client that uploaded
++    // its audio got a flat string and had to fall back to a server-side path to
++    // learn when anything was said. text stays the first field, and every other
++    // field is additive, so OpenAI-shaped clients read it exactly as before.
++    return json_response(task_result_json_with_timing(
++        result, timing_json(timed_result.wall_ms, *request.audio_input)));
+ }
+ 
+ HttpResponse ServerState::run_transcription_stream(

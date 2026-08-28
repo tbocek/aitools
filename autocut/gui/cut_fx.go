@@ -57,6 +57,11 @@ type cutFx struct {
 	// still fading up and down. 0 either side is a hard cut.
 	Trans float64 `json:"trans,omitempty"`
 	Tout  float64 `json:"tout,omitempty"`
+	// The shape both fades travel in: "" is the straight ramp, which is the
+	// only shape anything here draws (fxEases). Stored by name rather than by
+	// number so a cut written by a version that knows a curve this one does
+	// not still reads back as the effect it was.
+	Ease string `json:"ease,omitempty"`
 	// How long the effect runs, its fades included -- the bar on the lane,
 	// for every kind. speed: the session seconds it covers, and for a stop
 	// (Rate 0) the seconds the still stands over footage that keeps running,
@@ -1424,10 +1429,7 @@ func (ed *cutEditor) armFx(kind string) {
 		return
 	}
 	if ed.fxArm == kind {
-		ed.fxArm = "" // the button again is "never mind"
-		ed.syncFxCursor()
-		ed.syncPreviewZoom()
-		ed.a.setStatus("cancelled")
+		ed.disarmFx() // the button again is "never mind"
 		return
 	}
 	ed.fxArm = kind
@@ -1437,25 +1439,112 @@ func (ed *cutEditor) armFx(kind string) {
 	// box is drawn on the finished frame). Either way the layer must follow
 	// NOW, not at the next redraw.
 	ed.syncPreviewZoom()
-	switch kind {
-	// the two armed drags that are not a camera window: they are drawn on the
-	// finished frame, in any shape, and a click alone is enough
+	ed.a.setStatus(ed.fxArmWords())
+}
+
+// disarmFx puts the armed drag down again, from Cancel or from picking the
+// same kind twice.
+func (ed *cutEditor) disarmFx() {
+	if ed.fxArm == "" {
+		return
+	}
+	ed.fxArm = ""
+	ed.syncFxCursor() // which is also where the column's note is taken down
+	ed.syncPreviewZoom()
+	ed.a.setStatus("cancelled")
+}
+
+// fxArmWords is what an armed drag is waiting for, in one paragraph: the same
+// words the column shows and the status line says, so there is one wording to
+// keep true rather than two.
+func (ed *cutEditor) fxArmWords() string {
+	when := "It starts at the red line and runs 3 s; the form that opens says how long."
+	if t0, dur := ed.fxSpanNow(3); ed.fxMarked() {
+		when = fmt.Sprintf("It covers the marked stretch — %s – %s, %.1f s — which the "+
+			"form that opens can change.", mmss(t0), mmss(t0+dur), dur)
+	}
+	switch ed.fxArm {
 	case "text":
-		ed.a.setStatus("drag the box the words go in — anywhere on the picture, " +
-			"any shape. A click puts one across the lower third. Esc cancels")
-		return
+		return "Drag the box the words go in — anywhere on the picture, any shape. " +
+			"A click puts one across the lower third. " + when
 	case "svg":
-		ed.a.setStatus(fmt.Sprintf("drag the box %s goes in — anywhere on the picture, "+
-			"any shape; the drawing keeps its own shape inside it. A click puts one "+
-			"across the middle. Esc cancels", svgBase(ed.fxSrc)))
+		return fmt.Sprintf("Drag the box %s goes in — anywhere on the picture, any "+
+			"shape; the drawing keeps its own shape inside it. A click puts one "+
+			"across the middle. %s", svgBase(ed.fxSrc), when)
+	}
+	return "Drag a box on the video: the picture zooms there and comes back out on " +
+		"its own, or stays on it — the form that opens is where that is said. The " +
+		"box keeps the cut's shape; let go near the full width or height to snap " +
+		"to it. " + when
+}
+
+// fxSpanNow is where an effect placed now goes: the marked stretch if there is
+// one -- the rule ⏩ Speed already follows -- and def seconds from the red line
+// if there is not. Marking a stretch and then framing it is how the region a
+// zoom holds gets said without typing its length twice.
+func (ed *cutEditor) fxSpanNow(def float64) (float64, float64) {
+	if t0, t1 := ed.selOrdered(); ed.fxMarked() {
+		return t0, t1 - t0
+	}
+	return ed.playhead, def
+}
+
+// fxMarked is whether the band is worth placing an effect on. The same floor
+// ⏩ Speed uses: a band a fifth of a second wide is a click that shivered.
+func (ed *cutEditor) fxMarked() bool {
+	t0, t1 := ed.selOrdered()
+	return ed.sel.active && t1-t0 >= fxMinSel
+}
+
+// selOrdered is the band's ends the way round they are read, which is not the
+// way round they were drawn if the drag went right to left.
+func (ed *cutEditor) selOrdered() (float64, float64) {
+	if ed.sel.t1 < ed.sel.t0 {
+		return ed.sel.t1, ed.sel.t0
+	}
+	return ed.sel.t0, ed.sel.t1
+}
+
+// syncFxArm shows the armed drag in the column, and takes the note away again.
+//
+// Arming changes nothing else you can see. The pointer becomes a crosshair over
+// the preview and the words that say why go to setStatus -- a dim, ellipsized
+// line in the log header at the bottom of the window, which is not somewhere a
+// hand looks. Pick ⊕ Zoom with a region marked and, from the chair, nothing
+// happens at all: that is what it was reported as, and it was accurate.
+//
+// Called from syncFxCursor, which is the one thing every path that arms or
+// disarms already calls -- including Esc and the release that places the
+// effect, neither of which knows this note exists.
+func (ed *cutEditor) syncFxArm() {
+	if ed.formBox == nil {
+		return // headless, or a page with no column yet
+	}
+	if ed.fxArm == "" {
+		if ed.formArm != "" {
+			ed.hideForm()
+		}
 		return
 	}
-	what := "the camera sits from here on (0 seconds of glide is a hard cut)"
-	if kind == "zoom" {
-		what = "the picture zooms there and comes back on its own"
+	if ed.formArm == ed.fxArm {
+		return // already saying it
 	}
-	ed.a.setStatus(fmt.Sprintf("drag a box on the video — %s. The box keeps the cut's shape; "+
-		"let go near the full width or height to snap to it. Esc cancels", what))
+	title := map[string]string{"zoom": "⊕ Zoom", "text": "❝ Text", "svg": "▨ SVG"}[ed.fxArm]
+	words := gtk.NewLabel(ed.fxArmWords())
+	words.SetXAlign(0)
+	words.SetWrap(true)
+	body := gtk.NewBox(gtk.OrientationVertical, 8)
+	body.Append(words)
+	cancel := gtk.NewButtonWithLabel("Cancel")
+	cancel.SetTooltipText("put the drag down again — Esc does the same")
+	cancel.ConnectClicked(func() { ed.disarmFx() })
+	foot := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	foot.SetHAlign(gtk.AlignEnd)
+	foot.Append(cancel)
+	// after the show, not before: showing takes the last form out, and if that
+	// was this note its gone would clear the flag we had just set
+	ed.showFormFoot(title, body, foot, func() { ed.formArm = "" })
+	ed.formArm = ed.fxArm
 }
 
 // speedClicked is the ⏩ Speed entry: a stretch of footage put on a clock of
@@ -1468,11 +1557,8 @@ func (ed *cutEditor) armFx(kind string) {
 // for -- stand on this frame, here.
 func (a *App) speedClicked() {
 	ed := a.ed
-	t0, t1 := ed.sel.t0, ed.sel.t1
-	if t1 < t0 {
-		t0, t1 = t1, t0
-	}
-	marked := ed.sel.active && t1-t0 >= fxMinSel
+	t0, t1 := ed.selOrdered()
+	marked := ed.fxMarked()
 	if !marked {
 		if !ed.hasPlay {
 			a.setStatus("click a track or mark a stretch first — speed needs seconds to work on")
@@ -1549,24 +1635,24 @@ func (ed *cutEditor) updateFx(was, nf cutFx) {
 
 // ---- dialogs ----------------------------------------------------------------
 
-// fxWin is the form every effect dialog is: a line of explanation, whatever
-// rows the caller adds, and OK/Cancel. The verb is on the suggested button.
+// fxWin is the form every effect dialog is: whatever rows the caller adds, and
+// Cancel/OK pinned under them. The verb is on the suggested button.
 //
 // It was a modal window until the Cut page had a column to put it in
 // (cut_form.go), and an effect is the thing that most wanted the change: the
 // numbers being typed are seconds of a band that is drawn on a lane four inches
 // below, and a window over the page is exactly what stopped that band being
 // looked at while its length was being decided.
-func (a *App) fxWin(title, sub, verb string, rows []gtk.Widgetter, ok func()) {
+//
+// The buttons go in the column's pinned foot rather than at the bottom of the
+// form. In the column they had scrolled with it, and a Place button below the
+// fold of a panel full of entry boxes is one nobody finds: the effect is typed
+// out, Enter does nothing visible, and the kind reads as broken.
+func (a *App) fxWin(title, verb string, rows []gtk.Widgetter, ok func()) {
 	form := a.cutForm()
 	if form == nil {
 		return // no page, so no column and no effect to be editing
 	}
-	subL := gtk.NewLabel(sub)
-	subL.SetXAlign(0)
-	subL.SetWrap(true)
-	subL.AddCSSClass("dim-label")
-
 	okB := gtk.NewButtonWithLabel(verb)
 	okB.AddCSSClass("suggested-action")
 	okB.ConnectClicked(func() { form.hideForm(); ok() })
@@ -1574,38 +1660,199 @@ func (a *App) fxWin(title, sub, verb string, rows []gtk.Widgetter, ok func()) {
 	cancel.ConnectClicked(func() { form.hideForm() })
 	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	btns.SetHAlign(gtk.AlignEnd)
-	btns.SetMarginTop(8)
 	btns.Append(cancel)
 	btns.Append(okB)
 
 	box := gtk.NewBox(gtk.OrientationVertical, 8)
-	box.Append(subL)
 	for _, r := range rows {
 		box.Append(r)
 	}
-	box.Append(btns)
-	form.showForm(title, box, nil)
+	form.showFormFoot(title, box, btns, nil)
 }
 
-// fxNumRow is a labelled number entry, the one control these dialogs are made
-// of. Activate (Enter) is wired by the caller through the returned entry.
-func fxNumRow(label, tip string, val float64) (*gtk.Box, *gtk.Entry) {
-	l := gtk.NewLabel(label)
-	l.SetXAlign(1)
+// fxField is one question in a form: the label and the control that answers
+// it, kept apart until the grid puts them in. Apart is the point -- a column
+// of labels lines up with the column beside it only if the grid can see the
+// labels themselves, and a label sealed inside a row box is a label the grid
+// cannot measure.
+type fxField struct {
+	lbl *gtk.Label
+	ctl gtk.Widgetter
+}
+
+// setSensitive greys the whole question, not half of it: a live label over a
+// dead entry reads as a field that is simply refusing to be typed in.
+func (f fxField) setSensitive(on bool) {
+	f.lbl.SetSensitive(on)
+	gtk.BaseWidget(f.ctl).SetSensitive(on)
+}
+
+// fxGrid lays the questions out in two halves: what the effect IS on the left
+// -- its rate, its length -- and how it arrives and leaves on the right.
+// Stacked in one column instead, five rows are taller than the panel they are
+// in.
+//
+// A grid, and not two boxes of rows. Boxes could only line the labels up by
+// right-aligning them and letting them eat the slack, which put every entry in
+// the middle of its own half with a hand's width of nothing either side. The
+// grid gives the labels a column as wide as the longest of them and hands the
+// slack to the controls, so the two halves read as two halves instead of four
+// scattered pieces.
+func fxGrid(left, right []fxField) *gtk.Grid {
+	g := gtk.NewGrid()
+	g.SetRowSpacing(6)
+	g.SetColumnSpacing(8)
+	for c, col := range [][]fxField{left, right} {
+		for r, f := range col {
+			if c > 0 {
+				f.lbl.SetMarginStart(18) // the gutter down the middle
+			}
+			g.Attach(f.lbl, c*2, r, 1, 1)
+			g.Attach(f.ctl, c*2+1, r, 1, 1)
+		}
+	}
+	return g
+}
+
+// fxRowLabel is a field's label, with the field's own words on both halves of
+// it: the explanation is wanted while the pointer is over either one.
+func fxRowLabel(text, tip string, ctl gtk.Widgetter) *gtk.Label {
+	l := gtk.NewLabel(text)
+	l.SetXAlign(0)
+	if tip != "" {
+		l.SetTooltipText(tip)
+		gtk.BaseWidget(ctl).SetTooltipText(tip)
+	}
+	return l
+}
+
+// fxNumRow is a labelled number entry, the control these dialogs are mostly
+// made of. Activate (Enter) is wired by the caller through the returned entry.
+func fxNumRow(label, tip string, val float64) (fxField, *gtk.Entry) {
 	e := gtk.NewEntry()
 	e.SetText(strings.TrimSuffix(fmt.Sprintf("%.1f", val), ".0"))
-	e.SetMaxWidthChars(5)
-	e.SetWidthChars(5)
+	e.SetMaxWidthChars(6)
 	e.SetInputPurpose(gtk.InputPurposeNumber)
-	if tip != "" {
-		e.SetTooltipText(tip)
-		l.SetTooltipText(tip)
+	e.SetHExpand(true)
+	return fxField{fxRowLabel(label, tip, e), e}, e
+}
+
+// fxEases are the shapes a fade can travel in, and there is one of them: every
+// fade in this app is a straight ramp, in the preview and in the render alike.
+// It is asked on the form regardless, because "what shape does it fade in" is
+// a question the form was answering on your behalf without saying so -- and a
+// curve added later appears in this list rather than quietly changing what
+// every effect already placed does.
+var fxEases = []string{"Linear"}
+
+// fxEaseOf is the name a picked shape is stored under. The straight ramp
+// stores as "", so a cut saved with this row on disk is byte for byte the cut
+// that was saved before the row existed.
+func fxEaseOf(i uint) string {
+	if int(i) <= 0 || int(i) >= len(fxEases) {
+		return ""
 	}
-	row := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	row.Append(l)
-	row.Append(e)
-	row.SetHAlign(gtk.AlignStart)
-	return row, e
+	return strings.ToLower(fxEases[i])
+}
+
+func fxEaseIndex(name string) uint {
+	for i, e := range fxEases {
+		if strings.EqualFold(e, name) {
+			return uint(i)
+		}
+	}
+	return 0 // a shape this version has never heard of falls back to straight
+}
+
+// fxEaseRow is the fade-shape row, the same one in all four dialogs.
+func fxEaseRow(f cutFx) (fxField, *gtk.DropDown) {
+	dd := gtk.NewDropDownFromStrings(fxEases)
+	dd.SetSelected(fxEaseIndex(f.Ease))
+	dd.SetHExpand(true)
+	return fxField{fxRowLabel("Fade curve",
+		"the shape both fades travel in. Straight is all there is so far: the "+
+			"camera, the words or the clock move by the same amount every frame "+
+			"of the fade, start to finish", dd), dd}, dd
+}
+
+// fxRates are the speeds worth having on a list. The two ends of the range are
+// what makes the list a list and not the whole answer: the useful slow rates
+// are a handful and sit close together, while the fast ones run from "trim the
+// dead air a bit" to a hundred, so anything not here is typed instead.
+var fxRates = []float64{0, 0.25, 0.5, 0.75, 1, 1.5, 2, 4, 8, 20, 100}
+
+func fxRateLabels() []string {
+	out := make([]string, 0, len(fxRates)+1)
+	for _, r := range fxRates {
+		s := "×" + fxNum(r)
+		switch r {
+		case 0:
+			s += " — stop"
+		case 1:
+			s += " — as filmed"
+		}
+		out = append(out, s)
+	}
+	return append(out, "Custom…")
+}
+
+func fxRateIndex(v float64) uint {
+	for i, r := range fxRates {
+		if math.Abs(r-v) < 1e-9 {
+			return uint(i)
+		}
+	}
+	return uint(len(fxRates)) // Custom…
+}
+
+// ratePick is the Speed × control: the rates off a list, and a typed box for
+// the ones that are not on it. The box is only there for Custom -- shown
+// beside every pick it would be a second answer to a question already
+// answered, and the two would have to be kept agreeing with each other.
+type ratePick struct {
+	box *gtk.Box
+	dd  *gtk.DropDown
+	e   *gtk.Entry
+}
+
+func newRatePick(val float64, changed func()) *ratePick {
+	p := &ratePick{
+		box: gtk.NewBox(gtk.OrientationHorizontal, 6),
+		dd:  gtk.NewDropDownFromStrings(fxRateLabels()),
+		e:   gtk.NewEntry(),
+	}
+	p.e.SetText(fxNum(val)) // a rate is finer than the other rows' one decimal
+	p.e.SetInputPurpose(gtk.InputPurposeNumber)
+	p.e.SetMaxWidthChars(6)
+	p.e.SetWidthChars(6)
+	p.dd.SetHExpand(true)
+	p.box.SetHExpand(true)
+	p.box.Append(p.dd)
+	p.box.Append(p.e)
+	p.dd.SetSelected(fxRateIndex(val))
+	p.e.SetVisible(p.custom())
+	p.dd.Connect("notify::selected", func() {
+		if i := p.dd.Selected(); int(i) < len(fxRates) {
+			// so that switching to Custom starts from the rate on screen
+			// rather than from whatever was typed three picks ago
+			p.e.SetText(fxNum(fxRates[i]))
+		}
+		p.e.SetVisible(p.custom())
+		changed()
+	})
+	p.e.ConnectChanged(func() { changed() })
+	return p
+}
+
+func (p *ratePick) custom() bool { return int(p.dd.Selected()) >= len(fxRates) }
+
+// rate is the number the control is showing, def for a Custom box with
+// nothing usable typed in it.
+func (p *ratePick) rate(def float64) float64 {
+	if i := p.dd.Selected(); int(i) < len(fxRates) {
+		return fxRates[i]
+	}
+	return fxNumOf(p.e, def)
 }
 
 // fxNum prints a number as short as it can without lying. The one decimal the
@@ -1649,6 +1896,7 @@ func (a *App) askZoomParams(f cutFx, isNew bool, ok func(cutFx)) {
 		"how long the camera move lasts altogether, fades included", f.Dur)
 	oRow, o := fxNumRow("Fade out seconds",
 		"how long it takes to come back off the region again: 0 cuts straight back", f.Tout)
+	eRow, ec := fxEaseRow(f)
 
 	back := gtk.NewCheckButtonWithLabel(
 		"Pull back when it ends — the camera returns to the framing it came from")
@@ -1673,8 +1921,12 @@ func (a *App) askZoomParams(f cutFx, isNew bool, ok func(cutFx)) {
 	note.SetWrap(true)
 	note.AddCSSClass("dim-label")
 	sync := func() {
-		oRow.SetSensitive(!stay.Active())
-		gRow.SetSensitive(!(stay.Active() && first))
+		oRow.setSensitive(!stay.Active())
+		gRow.setSensitive(!(stay.Active() && first))
+		// the shape of a fade that does not happen: the earliest staying zoom
+		// has neither fade, so the row that asks how they travel goes quiet
+		// with them rather than sitting there live over two dead fields
+		eRow.setSensitive(!(stay.Active() && first))
 		msg := ""
 		switch {
 		case stay.Active() && first:
@@ -1690,12 +1942,12 @@ func (a *App) askZoomParams(f cutFx, isNew bool, ok func(cutFx)) {
 	sync()
 	back.ConnectToggled(sync)
 
-	a.fxWin(fmt.Sprintf("Zoom at %s", mmss(f.T)),
-		"The picture closes in on the framed region and holds it. When its seconds "+
-			"are up the camera either comes back out on its own or stays where it is.",
-		verb, []gtk.Widgetter{gRow, dRow, oRow, back, stay, note}, func() {
+	a.fxWin(fmt.Sprintf("Zoom at %s", mmss(f.T)), verb,
+		[]gtk.Widgetter{fxGrid([]fxField{dRow}, []fxField{gRow, oRow, eRow}),
+			back, stay, note}, func() {
 			f.Trans = fxNumOf(g, f.Trans)
 			f.Tout = fxNumOf(o, f.Tout)
+			f.Ease = fxEaseOf(ec.Selected())
 			f.Dur = math.Max(0.4, fxNumOf(d, f.Dur))
 			f.Stay = stay.Active()
 			clampFades(&f)
@@ -1733,20 +1985,15 @@ func (a *App) askTextParams(f cutFx, isNew bool, ok func(cutFx)) {
 		"how long they take to appear: 0 cuts them straight on", f.Trans)
 	oRow, o := fxNumRow("Fade out seconds",
 		"how long they take to go again: 0 cuts them straight off", f.Tout)
-	times := gtk.NewBox(gtk.OrientationHorizontal, 12)
-	times.Append(dRow)
-	times.Append(iRow)
-	times.Append(oRow)
-	a.fxWin(fmt.Sprintf("Text at %s", mmss(f.T)),
-		"The words are drawn over the finished video, fitted to the box on the "+
-			"preview — they keep their place on screen while the camera moves "+
-			"under them.", verb,
-		[]gtk.Widgetter{sc, times}, func() {
+	eRow, ec := fxEaseRow(f)
+	a.fxWin(fmt.Sprintf("Text at %s", mmss(f.T)), verb,
+		[]gtk.Widgetter{sc, fxGrid([]fxField{dRow}, []fxField{iRow, oRow, eRow})}, func() {
 			b := tv.Buffer()
 			f.Text = b.Text(b.StartIter(), b.EndIter(), false)
 			f.Dur = math.Max(0.3, fxNumOf(d, f.Dur))
 			f.Trans = fxNumOf(i, f.Trans)
 			f.Tout = fxNumOf(o, f.Tout)
+			f.Ease = fxEaseOf(ec.Selected())
 			clampFades(&f)
 			ok(f)
 		})
@@ -1779,12 +2026,17 @@ func (a *App) askSpeedParams(f cutFx, isNew bool, ok func(cutFx)) {
 	if isNew {
 		verb = "Place"
 	}
-	rRow, r := fxNumRow("Speed ×",
+	// the sound row below reads the rate, so the pick has to be able to tell
+	// it something changed; sync is declared before the pick and assigned
+	// after, because each of the two needs the other
+	var sync func()
+	rp := newRatePick(f.Rate, func() { sync() })
+	rRow := fxField{fxRowLabel("Speed ×",
 		"1 is the footage's own speed. Below it the footage is slowed (0.5 is half "+
 			"speed, 0.25 a quarter); above it it runs fast (4 for a brisk walkthrough, "+
 			"20 to skip through dead air, up to 100). 0 stops the picture altogether: "+
-			"the frame at the start stands over footage that keeps running", f.Rate)
-	r.SetText(fxNum(f.Rate)) // a rate is finer than the row's one decimal
+			"the frame at the start stands over footage that keeps running. Custom "+
+			"takes any rate at all", rp.box), rp.box}
 	lRow, l := fxNumRow("Length seconds",
 		"the session seconds it covers, fades included — the same seconds its "+
 			"bar covers on the lane", f.Dur)
@@ -1799,6 +2051,7 @@ func (a *App) askSpeedParams(f cutFx, isNew bool, ok func(cutFx)) {
 		"how long it takes to come back at the end, on the same terms: the clock "+
 			"easing back to normal speed, or the still fading off onto footage "+
 			"that has moved on underneath", f.Tout)
+	eRow, ec := fxEaseRow(f)
 	// the sound under a stop. Nothing else in the dialog changes with the
 	// rate, so this one row greys itself out when the rate is not 0 rather
 	// than appearing and disappearing under the hand.
@@ -1808,18 +2061,13 @@ func (a *App) askSpeedParams(f cutFx, isNew bool, ok func(cutFx)) {
 		"picture stands still, so the still lifts off a moment that is where the " +
 		"clock says it is. Off, those seconds are silent — a held beat rather " +
 		"than a held frame")
-	sync := func() { snd.SetSensitive(fxNumOf(r, f.Rate) <= 0) }
+	sync = func() { snd.SetSensitive(rp.rate(f.Rate) <= 0) }
 	sync()
-	r.ConnectChanged(sync)
-	a.fxWin(fmt.Sprintf("Speed %s – %s", mmss(f.T), mmss(f.T+f.Dur)),
-		"Those seconds play at the rate below — the sound with them, held at pitch "+
-			"— and the cut gets longer or shorter by the difference. At ×0 the "+
-			"picture stands still instead: the frame at the start covers the "+
-			"seconds, the footage runs on underneath, and the cut stays exactly "+
-			"as long as it was.", verb,
-		[]gtk.Widgetter{rRow, lRow, iRow, oRow, snd}, func() {
-			rate, dur := math.Max(0, fxNumOf(r, f.Rate)), fxNumOf(l, f.Dur)
+	a.fxWin(fmt.Sprintf("Speed %s – %s", mmss(f.T), mmss(f.T+f.Dur)), verb,
+		[]gtk.Widgetter{fxGrid([]fxField{rRow, lRow}, []fxField{iRow, oRow, eRow}), snd}, func() {
+			rate, dur := math.Max(0, rp.rate(f.Rate)), fxNumOf(l, f.Dur)
 			f.Trans, f.Tout = math.Max(0, fxNumOf(i, f.Trans)), math.Max(0, fxNumOf(o, f.Tout))
+			f.Ease = fxEaseOf(ec.Selected())
 			if rate <= 0 {
 				// a stop is not a rate: clampSpeed would hand it one, and the
 				// fades belong inside the band the way a title's do

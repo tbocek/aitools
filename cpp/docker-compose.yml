@@ -124,9 +124,11 @@ services:
       - /mnt/models/vc:/mnt/models/vc:ro
       - /run/user/1000/pulse/native:/run/user/1000/pulse/native
       - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
-      # Same path inside and out. voice_ref and the output wav travel as paths,
-      # not uploads, so the server has to resolve them exactly as autocut wrote
-      # them -- a /work-style mount would break the moment either side looked.
+      # Same path inside and out, for anything that still hands this server a
+      # path. autocut no longer does: it POSTs the bytes to /v1/ui/upload and
+      # names the path that comes back, which is why a project on /mnt/Recordings
+      # works without being listed here. Kept for the CLI and for driving the
+      # server by hand, where a path is still the only way in.
       - ${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}:${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}
       - ./audiocpp-server.json:/etc/audiocpp-server.json:ro
     # --ui serves the browser UI off this same port; --ui-management lets it

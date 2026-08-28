@@ -13,9 +13,11 @@ package main
 // Two things follow from talking to a server instead of running a program.
 //
 // Paths are the SERVER's. An "audio" field is a file the server opens itself,
-// not an upload, so the project folder must be visible to it at that same
-// absolute path -- which is exactly why the compose file mounts AUTOCUT_DIR at
-// its own path, and the same reason a voice_ref travels as a path.
+// and it is in a container, so the only paths it can open are its own. Autocut
+// therefore never names a file it holds: serverFile posts the bytes and the job
+// names the path that comes back. Which folders the compose file mounts stops
+// being autocut's business, which is the point -- it was never something a
+// recording folder could be expected to know about.
 //
 // A model id names everything else. Family, task, weights and session options
 // live in audiocpp-server.json against that id, so the knobs that used to be
@@ -65,13 +67,96 @@ func (a *App) configuredAudio() string {
 	return ""
 }
 
-// bearer puts an API key on a request, and a blank key nowhere: the local
-// stack has no auth, and sending "Bearer " to it is a header that means
-// nothing at best and a 401 from a strict proxy at worst.
+// bearer puts an API key on a request, and a blank key nowhere. It is the only
+// place this header is built -- the audio server, the LLM and both Settings
+// probes all come through here -- because the rule is easy to forget one client
+// at a time: the local stack has no auth, and sending "Bearer " with nothing
+// after it is a header that means nothing at best and a 401 from a strict proxy
+// at worst. An empty key is "this server wants none", not "the key is empty".
 func bearer(req *http.Request, key string) {
 	if k := strings.TrimSpace(key); k != "" {
 		req.Header.Set("Authorization", "Bearer "+k)
 	}
+}
+
+// serverFile gives the audio server a copy of a local file and returns the path
+// it wrote that copy to. Every file named in every request to that server comes
+// from here.
+//
+// The requests name files rather than carrying them: "audio" and "voice_ref"
+// are opened by the server itself. That only works if it can see what we can,
+// and it cannot -- it is in a container, and only the folders its compose entry
+// mounts exist inside it. Recording somewhere unmounted used to end in a 500
+// naming a file that is plainly here, which reads like autocut writing a path
+// it never wrote.
+//
+// So we stop assuming a shared filesystem. POST /v1/ui/upload takes the bytes
+// and answers with a path under the server's own temp folder, which it can
+// always open, and that is the path the request then names. Nothing about which
+// folders happen to be mounted matters any more.
+//
+// Uploaded every time, never remembered. The chunks and reference wavs are a
+// few hundred KB over loopback, the server sweeps its temp folder when it
+// stops, and a remembered path would be wrong the moment it restarted -- which
+// is a bug that would surface hours later, in exchange for saving a copy that
+// costs milliseconds.
+func (a *App) serverFile(path string) (string, error) {
+	// before the file, not after: this is now the first request of any job, so
+	// "nothing is listening" has to be answered here or it arrives as a bare
+	// dial error from a POST nobody was expecting to be the first one
+	if err := a.ensureAudioServer(); err != nil {
+		return "", err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	ctx := a.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", a.audioURL()+"/v1/ui/upload", f)
+	if err != nil {
+		return "", err
+	}
+	// the body is the file itself, not a form. Setting the length keeps Go from
+	// chunking it, which the server's own HTTP parser does not read.
+	req.ContentLength = fi.Size()
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Audiocpp-Filename", filepath.Base(path))
+	bearer(req, a.readConf().TTSKey)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		if a.stopFlag.Load() {
+			return "", errStopped
+		}
+		return "", err
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 403 {
+		return "", fmt.Errorf("%s will not take uploads, so it can only read files it "+
+			"already has: start it with --ui-management (cpp/docker-compose.yml, the "+
+			"audio service's command), or mount %s into the container at that same path",
+			a.audioURL(), filepath.Dir(path))
+	}
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("uploading %s to %s answered %s: %.400s",
+			filepath.Base(path), a.audioURL(), resp.Status, strings.TrimSpace(string(out)))
+	}
+	var got struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil || got.Path == "" {
+		return "", fmt.Errorf("%s took %s but did not say where it put it: %.200s",
+			a.audioURL(), filepath.Base(path), strings.TrimSpace(string(out)))
+	}
+	return got.Path, nil
 }
 
 // ensureAudioServer checks that something is listening, and says so when
@@ -219,15 +304,13 @@ func (a *App) audioRun(model string, req map[string]any) ([]byte, error) {
 // to catch are caught before it -- ensureAudioModels checks the id and the
 // task before the first minute of ffmpeg runs.
 func (a *App) asrJSON(wav string) ([]byte, string, error) {
-	// absolute, always: the path is opened by the server, whose working
-	// directory is its own and is not ours
-	path, err := filepath.Abs(wav)
+	c := a.readConf()
+	up, err := a.serverFile(wav)
 	if err != nil {
 		return nil, "", err
 	}
-	c := a.readConf()
 	body, err := a.audioRun(c.ASRModel, map[string]any{
-		"audio": path, "language": a.asrLanguage()})
+		"audio": up, "language": a.asrLanguage()})
 	if err != nil {
 		return nil, "", err
 	}
@@ -243,12 +326,12 @@ func (a *App) asrJSON(wav string) ([]byte, string, error) {
 // diarSpans runs one clip through diarization. A clip with no speech is not a
 // failure: it comes back with no turns, and no turns is silence.
 func (a *App) diarSpans(wav string) ([]span, error) {
-	path, err := filepath.Abs(wav)
+	c := a.readConf()
+	up, err := a.serverFile(wav)
 	if err != nil {
 		return nil, err
 	}
-	c := a.readConf()
-	body, err := a.audioRun(c.DiarModel, map[string]any{"audio": path})
+	body, err := a.audioRun(c.DiarModel, map[string]any{"audio": up})
 	if err != nil {
 		return nil, err
 	}

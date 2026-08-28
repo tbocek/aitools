@@ -264,18 +264,13 @@ func (a *App) askSvgParams(f cutFx, isNew bool, ok func(cutFx)) {
 		"how long it takes to appear: 0 cuts it straight on", f.Trans)
 	oRow, o := fxNumRow("Fade out seconds",
 		"how long it takes to go again: 0 cuts it straight off", f.Tout)
-	times := gtk.NewBox(gtk.OrientationHorizontal, 12)
-	times.Append(dRow)
-	times.Append(iRow)
-	times.Append(oRow)
-	a.fxWin(fmt.Sprintf("SVG at %s", mmss(f.T)),
-		"The drawing is laid over the finished video, fitted into the box on "+
-			"the preview and keeping its own shape. It changes nothing about "+
-			"the footage — an insert is the one that cuts the video.", verb,
-		[]gtk.Widgetter{fRow, times}, func() {
+	eRow, ec := fxEaseRow(f)
+	a.fxWin(fmt.Sprintf("SVG at %s", mmss(f.T)), verb,
+		[]gtk.Widgetter{fRow, fxGrid([]fxField{dRow}, []fxField{iRow, oRow, eRow})}, func() {
 			f.Dur = math.Max(0.3, fxNumOf(d, f.Dur))
 			f.Trans = fxNumOf(i, f.Trans)
 			f.Tout = fxNumOf(o, f.Tout)
+			f.Ease = fxEaseOf(ec.Selected())
 			clampFades(&f)
 			ok(f)
 		})

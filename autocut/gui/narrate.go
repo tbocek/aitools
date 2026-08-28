@@ -28,8 +28,9 @@ package main
 //
 // Voice on the fly (narrate_tts.go): audio.cpp's own audiocpp_server keeps
 // IndexTTS2 loaded, so per-line synthesis skips the model reload. This is the
-// same HTTP API the audio.cpp WebUI proxies to, called the same way (voice_ref
-// by path, since both sides share a filesystem). Autocut uses whatever server is listening
+// same HTTP API the audio.cpp WebUI proxies to, called the same way (the
+// reference goes up first and voice_ref names where the server put it, see
+// serverFile). Autocut uses whatever server is listening
 // (AUDIOCPP_SERVER or AUTOCUT_TTS_URL, default 127.0.0.1:8765) and never starts
 // one itself.
 // Synthesized lines are cached by hash of (voice, text, emotion). The pitch

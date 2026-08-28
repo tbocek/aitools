@@ -303,6 +303,7 @@ const fxGrab = 9.0
 // drag would mean something: armed, or holding a view/zoom to re-frame. The
 // rest of the time it must not take the click that toggles playback.
 func (ed *cutEditor) syncFxCursor() {
+	ed.syncFxArm() // the same state, said in the column where it can be read
 	if ed.fxArea == nil {
 		return
 	}
@@ -1174,7 +1175,11 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 			kind := ed.fxArm
 			ed.fxArm = ""
 			ed.syncFxCursor()
-			f := cutFx{Kind: kind, T: ed.playhead, Dur: 3, Trans: 0.3, Tout: 0.3}
+			// the marked stretch is the seconds it covers, exactly as it is
+			// for a speed: marking the words' moment and then drawing their
+			// box is two halves of one sentence
+			t0, dur := ed.fxSpanNow(3)
+			f := cutFx{Kind: kind, T: t0, Dur: dur, Trans: 0.3, Tout: 0.3}
 			b := fxTextDefault
 			if kind == "svg" {
 				f.Src, b = ed.fxSrc, fxSvgDefault
@@ -1231,8 +1236,9 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 			// else the ordinary close-up that comes back out is the guess.
 			// Either way the dialog shows the choice; neither is hidden.
 			stay := ed.aspect != "" && !ed.hasStay()
-			f := cutFx{Kind: "zoom", T: ed.playhead, Cx: cx, Cy: cy, Hf: hf,
-				Trans: 1, Tout: 1, Dur: 3, Stay: stay}
+			t0, dur := ed.fxSpanNow(3)
+			f := cutFx{Kind: "zoom", T: t0, Cx: cx, Cy: cy, Hf: hf,
+				Trans: 1, Tout: 1, Dur: dur, Stay: stay}
 			if stay {
 				f.Trans, f.Tout = 0, 0
 			}

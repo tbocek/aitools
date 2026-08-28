@@ -98,7 +98,7 @@ func (a *App) llmChatOn(msgs []map[string]any, thinking bool, onText func(string
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Key)
+	bearer(req, c.Key)
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)

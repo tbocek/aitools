@@ -338,9 +338,11 @@ func TestAStopChoosesWhatItsSoundDoes(t *testing.T) {
 // The wiring for the choice, on the live player and the real ffmpeg.
 func TestTheSilentStopWiringIsInPlace(t *testing.T) {
 	pins := map[string][]string{
-		// the dialog asks, greying the row out when the rate is not a stop
+		// the dialog asks, greying the row out when the rate is not a stop --
+		// on every way the rate can change, which since the rate became a
+		// list with a typed box under it is two ways (newRatePick)
 		"cut_fx.go": {`gtk.NewCheckButtonWithLabel("Keep playing the sound underneath")`,
-			"snd.SetSensitive(fxNumOf(r, f.Rate) <= 0)", "r.ConnectChanged(sync)",
+			"snd.SetSensitive(rp.rate(f.Rate) <= 0)", "rp := newRatePick(f.Rate, func() { sync() })",
 			"f.Rate, f.Dur, f.Mute = 0, math.Max(0.5, dur), !snd.Active()"},
 		// the render silences the window with a volume filter on the clip's
 		// own sound, before the mix and after the atempo

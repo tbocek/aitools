@@ -255,7 +255,7 @@ func fetchModels(server, key string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	bearer(req, key)
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -304,7 +304,7 @@ func llmRoundTrip(c appConf, content any, timeout time.Duration) (string, error)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Key)
+	bearer(req, c.Key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {

@@ -678,7 +678,15 @@ func (a *App) asrLong(wav string, dur float64, name string, base, unit float64) 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, "", err
 	}
-	defer os.RemoveAll(dir)
+	// the chunks are scratch and go when the answer is stitched -- but only
+	// then. A failed run keeps them, because the one thing worth having after
+	// "the server could not open c00.wav" is c00.wav.
+	done := false
+	defer func() {
+		if done {
+			os.RemoveAll(dir)
+		}
+	}()
 
 	var words []any
 	var texts []string
@@ -710,6 +718,7 @@ func (a *App) asrLong(wav string, dur float64, name string, base, unit float64) 
 	if err != nil {
 		return nil, "", err
 	}
+	done = true
 	return append(b, '\n'), text, nil
 }
 

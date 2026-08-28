@@ -368,10 +368,16 @@ func (a *App) speak(text, emotion string, seed uint32, out string) error {
 	}
 	opts := emoOpts(emotion)
 	opts["seed"] = strconv.FormatUint(uint64(seed), 10)
+	// the reference goes up like any other file the server has to open -- it is
+	// the same wav on every line, but see serverFile on why it is not remembered
+	ref, err := a.serverFile(a.refPath())
+	if err != nil {
+		return err
+	}
 	body, _ := json.Marshal(map[string]any{
 		"model":     model,
 		"input":     text,
-		"voice_ref": a.refPath(),
+		"voice_ref": ref,
 		"language":  "en",
 		"options":   opts,
 	})

@@ -8,6 +8,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,7 +30,17 @@ func fakeAudio(t *testing.T, models string, run http.HandlerFunc) (*App, *[]map[
 			w.Write([]byte(`{"status":"ok"}`))
 		case "/v1/models":
 			w.Write([]byte(`{"object":"list","data":[` + models + `]}`))
-		case "/v1/tasks/run":
+		case "/v1/ui/upload":
+			// the real server writes the body under its own temp folder and
+			// answers with the path it used; the name it echoes is what makes
+			// "the request named what the upload returned" checkable
+			name := r.Header.Get("X-Audiocpp-Filename")
+			n, _ := io.Copy(io.Discard, r.Body)
+			fmt.Fprintf(w, `{"path":%q,"bytes":%d}`, "/srv/uploads/"+name, n)
+		case "/v1/tasks/run", "/v1/audio/speech":
+			// one fake for one server: listening goes through tasks/run and
+			// speaking through audio/speech, but both take a JSON body naming
+			// files, which is the thing these tests are about
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("unreadable request body: %v", err)
@@ -51,6 +63,8 @@ func fakeAudio(t *testing.T, models string, run http.HandlerFunc) (*App, *[]map[
 }
 
 // the two models preprocessing asks for, as a server that has them lists them
+const ttsModels = `{"id":"index-tts2","family":"index_tts2","task":"clon"}`
+
 const asrModels = `{"id":"nemotron-asr","family":"nemotron_asr","task":"asr"},` +
 	`{"id":"sortformer-diar","family":"sortformer_diar","task":"diar"}`
 
@@ -72,7 +86,7 @@ const diarAnswer = `{"speaker_turns":[
 func TestASRPostsOneJobAndKeepsTheAnswerWhole(t *testing.T) {
 	a, seen := fakeAudio(t, asrModels, answer(asrAnswer))
 
-	body, text, err := a.asrJSON(filepath.Join(a.outDir, "voice16k.wav"))
+	body, text, err := a.asrJSON(srcWav(t, a.outDir, "voice16k.wav"))
 	if err != nil {
 		t.Fatalf("asr: %v", err)
 	}
@@ -117,7 +131,7 @@ func TestASRPostsOneJobAndKeepsTheAnswerWhole(t *testing.T) {
 // voice on it at all.
 func TestASRWithoutWordsIsSilence(t *testing.T) {
 	a, _ := fakeAudio(t, asrModels, answer(`{"text":"","words":[]}`))
-	body, text, err := a.asrJSON(filepath.Join(a.outDir, "silence.wav"))
+	body, text, err := a.asrJSON(srcWav(t, a.outDir, "silence.wav"))
 	if err != nil {
 		t.Fatalf("a silent recording failed to transcribe: %v", err)
 	}
@@ -174,7 +188,7 @@ func TestSilenceMergesToAnEmptyTranscript(t *testing.T) {
 // expressed by writing no file at all.
 func TestDiarSpansAreSecondsAndSilenceIsNotAnError(t *testing.T) {
 	a, seen := fakeAudio(t, asrModels, answer(diarAnswer))
-	spans, err := a.diarSpans(filepath.Join(a.outDir, "win.wav"))
+	spans, err := a.diarSpans(srcWav(t, a.outDir, "win.wav"))
 	if err != nil {
 		t.Fatalf("diar: %v", err)
 	}
@@ -186,7 +200,7 @@ func TestDiarSpansAreSecondsAndSilenceIsNotAnError(t *testing.T) {
 	}
 
 	quiet, _ := fakeAudio(t, asrModels, answer(`{"speaker_turns":[]}`))
-	spans, err = quiet.diarSpans(filepath.Join(quiet.outDir, "win.wav"))
+	spans, err = quiet.diarSpans(srcWav(t, quiet.outDir, "win.wav"))
 	if err != nil {
 		t.Fatalf("a window with no speech failed: %v", err)
 	}
@@ -207,7 +221,7 @@ func TestTheServersAnswersAreTheFilesPreprocessingKeeps(t *testing.T) {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body, text, err := a.asrJSON(filepath.Join(out, "voice16k.wav"))
+	body, text, err := a.asrJSON(srcWav(t, out, "voice16k.wav"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +257,7 @@ func TestAudioRunPassesTheServersRefusalBack(t *testing.T) {
 		w.WriteHeader(503)
 		w.Write([]byte(`{"error":{"message":"model busy: timed out after 30000 ms","type":"server_busy"}}`))
 	})
-	_, _, err := a.asrJSON(filepath.Join(a.outDir, "voice16k.wav"))
+	_, _, err := a.asrJSON(srcWav(t, a.outDir, "voice16k.wav"))
 	if err == nil {
 		t.Fatal("a 503 passed as a transcript")
 	}
@@ -261,7 +275,7 @@ func TestAudioRunNeedsAServer(t *testing.T) {
 	if err := a.writeConf(appConf{TTS: "http://127.0.0.1:1"}); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := a.asrJSON(filepath.Join(a.outDir, "voice16k.wav"))
+	_, _, err := a.asrJSON(srcWav(t, a.outDir, "voice16k.wav"))
 	if err == nil {
 		t.Fatal("a dead endpoint passed")
 	}
@@ -422,4 +436,207 @@ func TestAChunksWordsComeBackWhereTheChunkWas(t *testing.T) {
 	if last := got[2].(map[string]any); last["word"] != "???" {
 		t.Errorf("the word with no times was dropped: %v", got[2])
 	}
+}
+
+// A blank API key is "this server wants none", not "the key is empty". The
+// local stack has no auth at all, and an Authorization header with nothing
+// after the word Bearer is a header that means nothing to a server that ignores
+// it and is a 401 from a proxy that does not. Every client goes through the one
+// helper, because the rule is easy to forget one client at a time -- the audio
+// server had it right while the LLM chat and both Settings probes sent the
+// empty header for as long as they had existed.
+func TestABlankKeyIsNoHeaderAtAll(t *testing.T) {
+	req, err := http.NewRequest("GET", "http://example.invalid/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, blank := range []string{"", "   ", "\t\n"} {
+		bearer(req, blank)
+		if got := req.Header.Get("Authorization"); got != "" {
+			t.Errorf("a key of %q sent %q", blank, got)
+		}
+	}
+	// ...and a real one arrives trimmed: a key pasted out of a web page brings
+	// the newline with it, and a header value with a newline in it is refused
+	// by the transport rather than by the server
+	bearer(req, "  sk-abc\n")
+	if got := req.Header.Get("Authorization"); got != "Bearer sk-abc" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer sk-abc")
+	}
+
+	// one place builds it, so there is one rule rather than one per client
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f == "audiocpp.go" || strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		if strings.Contains(readSrc(t, f), `"Bearer "+`) {
+			t.Errorf("%s builds the Authorization header itself instead of calling bearer()", f)
+		}
+	}
+}
+
+// The chunks a long recording is cut into are scratch, and they used to be
+// swept up on the way out of asrLong whatever had happened. That is right when
+// the answer was stitched and exactly wrong when it was not: the one thing
+// worth having after "the server could not open c00.wav" is c00.wav.
+func TestAFailedASRKeepsTheChunkItFailedOn(t *testing.T) {
+	body := funcBody(t, "pipeline.go", `func \(a \*App\) asrLong\(`)
+	if !strings.Contains(body, "done := false") || !strings.Contains(body, "if done {") {
+		t.Fatalf("asrLong no longer decides whether to sweep the chunks up:\n%s", body)
+	}
+	// set on the way out and nowhere else: an early return is a failure, and
+	// every one of them is above this line
+	i, j := strings.Index(body, "done = true"), strings.Index(body, "return append(b, '\\n'), text, nil")
+	if i < 0 || j < 0 {
+		t.Fatal("asrLong no longer marks the run finished before it returns the answer")
+	}
+	if i > j {
+		t.Error("the chunks are swept up after the answer is built rather than with it")
+	}
+	if n := strings.Count(body, "os.RemoveAll(dir)"); n != 2 {
+		t.Errorf("asrLong removes the chunk folder %d times, want the stale one and the swept one", n)
+	}
+}
+
+// The audio server is in a container and can only open what its compose entry
+// mounts. Recording anywhere else used to end in a 500 naming a file that is
+// plainly on disk here, which reads like autocut naming a file it never wrote --
+// the one thing it is not.
+//
+// So autocut no longer names a file it holds. It posts the bytes to
+// /v1/ui/upload, which writes them under the server's own temp folder and
+// answers with that path, and the job names what came back. Which folders are
+// mounted stops mattering.
+func TestAFileGoesToTheServerBeforeItIsNamedToIt(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		call        func(*App, string)
+	}{
+		{"asr", "audio", func(a *App, w string) { a.asrJSON(w) }},
+		{"diar", "audio", func(a *App, w string) { a.diarSpans(w) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, seen := fakeAudio(t, asrModels, answer(`{"segments":[]}`))
+			if err := a.writeConf(appConf{TTS: a.configuredAudio(),
+				ASRModel: "nemotron-asr", DiarModel: "sortformer-diar"}); err != nil {
+				t.Fatal(err)
+			}
+			tc.call(a, srcWav(t, a.outDir, "voice16k.wav"))
+			if len(*seen) != 1 {
+				t.Fatalf("%d jobs posted, want 1", len(*seen))
+			}
+			req, _ := (*seen)[0]["request"].(map[string]any)
+			// the server's path for our bytes, not our path for our bytes
+			if got, _ := req[tc.field].(string); got != "/srv/uploads/voice16k.wav" {
+				t.Errorf("the job named %q, want the path the upload answered with", got)
+			}
+		})
+	}
+
+	// and the voice to clone, which does not go through audioRun at all
+	t.Run("tts", func(t *testing.T) {
+		a, seen := fakeAudio(t, ttsModels, func(w http.ResponseWriter, r *http.Request) {
+			w.Write(make([]byte, 2000))
+		})
+		if err := a.writeConf(appConf{TTS: a.configuredAudio(), TTSModel: "index-tts2"}); err != nil {
+			t.Fatal(err)
+		}
+		writeRef(t, a)
+		if err := a.speak("hello", "", 1, filepath.Join(t.TempDir(), "out.wav")); err != nil {
+			t.Fatal(err)
+		}
+		if len(*seen) != 1 {
+			t.Fatalf("%d speech requests, want 1", len(*seen))
+		}
+		if got, _ := (*seen)[0]["voice_ref"].(string); got != "/srv/uploads/voice_ref.wav" {
+			t.Errorf("the voice was asked for as %q, want the path the upload answered with", got)
+		}
+	})
+}
+
+// A server built without the UI refuses uploads, and then it really can only
+// read what it already has. That is the one case where the old advice is still
+// the advice, so the refusal has to carry both ways out rather than 403.
+func TestAServerThatRefusesUploadsSaysWhatToDoInstead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			w.Write([]byte(`{"status":"ok"}`))
+		case "/v1/ui/upload":
+			w.WriteHeader(403)
+			w.Write([]byte(`{"error":{"message":"UI uploads are disabled","type":"forbidden"}}`))
+		default:
+			t.Errorf("the job got as far as %s with nowhere to put the file", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	a := &App{root: dir, outDir: dir}
+	if err := a.writeConf(appConf{TTS: srv.URL, ASRModel: "nemotron-asr"}); err != nil {
+		t.Fatal(err)
+	}
+	wav := srcWav(t, filepath.Join(a.outDir, "step1", "clip"), "voice16k.wav")
+	_, _, err := a.asrJSON(wav)
+	if err == nil {
+		t.Fatal("a refused upload passed as a transcript")
+	}
+	for _, want := range []string{
+		"--ui-management",    // turn uploads on...
+		"docker-compose.yml", // ...here
+		filepath.Dir(wav),    // or make this folder visible to it
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error drops %q: %v", want, err)
+		}
+	}
+}
+
+// Nothing is listening is the message most likely to be read by someone who has
+// not started the stack, and the upload is now the first request of every job --
+// so it, not audioRun, is where a dead endpoint gets noticed.
+func TestADeadServerIsStillNamedBeforeAnyFileMoves(t *testing.T) {
+	a, _ := fakeAudio(t, asrModels, answer(asrAnswer))
+	if err := a.writeConf(appConf{TTS: "http://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := a.asrJSON(srcWav(t, a.outDir, "voice16k.wav"))
+	if err == nil {
+		t.Fatal("a dead endpoint passed")
+	}
+	if !strings.Contains(err.Error(), "docker compose up -d audio") {
+		t.Errorf("the error does not say how to start it: %v", err)
+	}
+}
+
+// writeRef puts a voice reference where speak expects one, so a test can reach
+// the server without ffmpeg cutting a real sample first.
+func writeRef(t *testing.T, a *App) {
+	t.Helper()
+	if err := os.MkdirAll(a.narrateDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{a.refBase(), a.refPath()} {
+		if err := os.WriteFile(f, []byte("RIFF"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// srcWav writes a stub recording and returns its path. Every file autocut names
+// to the audio server is now read here first and sent up, so a test that hands
+// over a path has to hand over a file.
+func srcWav(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("RIFF....WAVEfmt "), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

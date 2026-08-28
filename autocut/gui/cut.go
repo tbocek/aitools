@@ -496,12 +496,15 @@ type cutEditor struct {
 	// it shows when it is empty, the form in it and who to tell when that form
 	// is taken out. formBox nil means no page has been built, which is what
 	// every headless test is.
-	formBox   *gtk.Box
-	formHead  *gtk.Box
-	formTitle *gtk.Label
-	formIdle  *gtk.Label
-	formCur   gtk.Widgetter
-	formGone  func()
+	formBox     *gtk.Box
+	formHead    *gtk.Box
+	formFoot    *gtk.Box // pinned under the scroller: the form's buttons live here
+	formTitle   *gtk.Label
+	formIdle    *gtk.Label
+	formCur     gtk.Widgetter
+	formFootCur gtk.Widgetter
+	formGone    func()
+	formArm     string // the kind whose "now draw it" note the column is holding
 
 	thumbs map[string]*gdkpixbuf.Pixbuf
 	// the insert currently under the playhead, and its rendered frames. Nil
@@ -3863,11 +3866,28 @@ func (a *App) buildCut() gtk.Widgetter {
 			}
 			if ed.fxMoving {
 				ed.fxMoving, fxPart = false, fxWhole
+				moved := ed.fxDirty
 				if ed.fxDirty {
 					ed.persist()
 					ed.fxDirty = false
 				}
 				ed.fxStatus()
+				// a press that took an effect and put it straight back down is
+				// a CLICK on it, and a click on an effect asks for its numbers.
+				// They used to be behind a double click, which is a thing you
+				// have to be told about -- and a bar you can click, drag and
+				// resize but not open reads as an effect with no settings.
+				//
+				// Only when it did not move: a form is opened on the effect as
+				// it was at the press, and saving it looks that effect up by
+				// those numbers (updateFx). After a drag they are last second's
+				// numbers, and the save would find nothing to write to.
+				//
+				// On an idle, not here: the dialog must not open in the middle
+				// of the gesture it is answering.
+				if !moved && math.Abs(ox) < 5 && math.Abs(oy) < 5 {
+					glib.IdleAdd(func() { ed.a.editFx() })
+				}
 				return
 			}
 			if selPart != selNone {
@@ -3907,10 +3927,10 @@ func (a *App) buildCut() gtk.Widgetter {
 		// questions is written down with its reasons.
 		//
 		// The selection row is not part of this: up there the left button does
-		// the whole job. In the effects lane the second click means ✎ Edit --
-		// holding, sliding and resizing are all on the single press, so the
-		// double click is free, and "click it again to open its numbers" is
-		// what every file manager has taught the hand to expect.
+		// the whole job. Nor is the effects lane: a click there already holds
+		// the effect AND opens its numbers (see the drag's end), so the second
+		// click of a double one has nothing left to mean and the branch below
+		// is only there to keep the press off the playhead.
 		pick := gtk.NewGestureClick()
 		pick.SetButton(gdk.BUTTON_PRIMARY)
 		pick.ConnectPressed(func(n int, x, y float64) {
@@ -3919,14 +3939,7 @@ func (a *App) buildCut() gtk.Widgetter {
 			}
 			area.GrabFocus()
 			if area == ed.srcArea && ed.fxHitLane(y) {
-				if i := ed.fxIndexAt(x+ed.viewX, y); i >= 0 {
-					ed.holdFx(i)
-					// on an idle, not inline: the dialog must not open in the
-					// middle of the press it is answering, or the release
-					// never reaches the drag gesture underneath
-					glib.IdleAdd(func() { ed.a.editFx() })
-				}
-				return
+				return // the lane's own gesture, and it is on the single press
 			}
 			if area == ed.srcArea && !ed.hitPics(y) {
 				return
@@ -4842,9 +4855,11 @@ func (a *App) askInsertParams(verb, path string, fields []svgField, m insMode, o
 	cancel := gtk.NewButtonWithLabel("Cancel")
 	cancel.ConnectClicked(func() { form.hideForm() })
 
+	// pinned under the column's scroller, not at the foot of the form: six
+	// questions are taller than the panel, and the button that answers them
+	// had scrolled off the bottom of it
 	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	btns.SetHAlign(gtk.AlignEnd)
-	btns.SetMarginTop(8)
 	btns.Append(cancel)
 	btns.Append(insert)
 
@@ -4856,8 +4871,7 @@ func (a *App) askInsertParams(verb, path string, fields []svgField, m insMode, o
 	box.Append(over)
 	box.Append(keep)
 	box.Append(secBox)
-	box.Append(btns)
-	form.showForm(verb+" "+filepath.Base(path), box, nil)
+	form.showFormFoot(verb+" "+filepath.Base(path), box, btns, nil)
 	if len(entries) > 0 {
 		entries[0].GrabFocus()
 	}

@@ -30,7 +30,14 @@ import (
 
 // buildForm makes the column. It opens empty, saying what it is for -- an empty
 // panel with no explanation reads as a page that failed to load.
-func (ed *cutEditor) buildForm() *gtk.ScrolledWindow {
+//
+// Three pieces, and only the middle one scrolls. The heading is pinned to the
+// top and the buttons to the bottom, because a form whose Place button is below
+// the fold is a form that cannot be placed: the column is as tall as the video
+// beside it and no taller, a five-question form is taller than that, and a
+// scrollbar in a panel that is mostly entry boxes is not something a hand
+// reaches for. Pinned, the answer to "what do I press now" is always on screen.
+func (ed *cutEditor) buildForm() *gtk.Box {
 	ed.formTitle = gtk.NewLabel("")
 	ed.formTitle.SetXAlign(0)
 	ed.formTitle.SetHExpand(true)
@@ -56,16 +63,9 @@ func (ed *cutEditor) buildForm() *gtk.ScrolledWindow {
 	ed.formIdle.AddCSSClass("dim-label")
 
 	ed.formBox = gtk.NewBox(gtk.OrientationVertical, 8)
-	ed.formBox.SetMarginTop(10)
-	ed.formBox.SetMarginBottom(12)
-	ed.formBox.SetMarginStart(12)
-	ed.formBox.SetMarginEnd(12)
-	ed.formBox.Append(ed.formHead)
 	ed.formBox.Append(ed.formIdle)
-	ed.hideForm() // the heading belongs to a form, and there is none yet
 
-	// one scrollbar for the column: whatever is in it is given its full height
-	// by this viewport, so a form never scrolls against this one.
+	// one scrollbar for the column, and it is around the questions only.
 	//
 	// Not an overlay scrollbar, though it is the default: an overlay is drawn on
 	// top of whatever is under it, and what is under it here is the right-hand
@@ -76,11 +76,26 @@ func (ed *cutEditor) buildForm() *gtk.ScrolledWindow {
 	pane.SetChild(ed.formBox)
 	pane.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	pane.SetOverlayScrolling(false)
-	return pane
+	pane.SetVExpand(true)
+
+	ed.formFoot = gtk.NewBox(gtk.OrientationVertical, 0)
+
+	col := gtk.NewBox(gtk.OrientationVertical, 8)
+	col.SetMarginTop(10)
+	col.SetMarginBottom(12)
+	col.SetMarginStart(12)
+	col.SetMarginEnd(12)
+	col.Append(ed.formHead)
+	col.Append(pane)
+	col.Append(ed.formFoot)
+	ed.hideForm() // the heading belongs to a form, and there is none yet
+	return col
 }
 
-// showForm puts a form in the column, in place of whatever was there.
-func (ed *cutEditor) showForm(title string, body gtk.Widgetter, gone func()) {
+// showFormFoot puts a form in the column, in place of whatever was there, with
+// foot pinned under the scrolling part of it. Pass a nil foot for a form whose
+// buttons are its own business.
+func (ed *cutEditor) showFormFoot(title string, body, foot gtk.Widgetter, gone func()) {
 	if ed.formBox == nil {
 		return // headless: no page was built
 	}
@@ -90,6 +105,16 @@ func (ed *cutEditor) showForm(title string, body gtk.Widgetter, gone func()) {
 	ed.formIdle.SetVisible(false)
 	ed.formCur, ed.formGone = body, gone
 	ed.formBox.Append(body)
+	if foot != nil {
+		ed.formFootCur = foot
+		ed.formFoot.Append(foot)
+	}
+}
+
+// showForm is the same with nothing pinned: what the prompt editor shows is one
+// box of text that scrolls on its own.
+func (ed *cutEditor) showForm(title string, body gtk.Widgetter, gone func()) {
+	ed.showFormFoot(title, body, nil, gone)
 }
 
 // hideForm empties the column and puts its own words back.
@@ -107,6 +132,10 @@ func (ed *cutEditor) hideForm() {
 // is where widgets are let go of, and letting go of a widget that is still in
 // the box is how a dropdown ends up pointing at a text view nobody can see.
 func (ed *cutEditor) dropForm() {
+	if ed.formFootCur != nil {
+		ed.formFoot.Remove(ed.formFootCur)
+		ed.formFootCur = nil
+	}
 	if ed.formCur != nil {
 		ed.formBox.Remove(ed.formCur)
 		ed.formCur = nil

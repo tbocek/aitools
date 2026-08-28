@@ -20,6 +20,23 @@ ARG AUDIOCPP_REF=04ba4375ed53bbd718bd2697e190007f6a19f426
 RUN git clone https://github.com/0xShug0/audio.cpp && \
     cd audio.cpp && git checkout --detach ${AUDIOCPP_REF}
 
+# Local patches against that pinned tree, applied before it is built. Each file
+# carries its own header saying what it changes and why; read those, not this
+# comment.
+#
+# No --3way and no -C1: a patch that has stopped applying fails the build here,
+# loudly, rather than being fuzzed into the wrong place or skipped. That is the
+# same bargain as pinning AUDIOCPP_REF -- moving forward is a deliberate edit,
+# and a bumped ref means re-checking every patch in this folder.
+#
+# This COPY sits above the build on purpose, so editing a patch recompiles --
+# the whole compile, not an incremental one. There is no cheaper way to change a
+# source file, and a patch that did not force a rebuild would be worse.
+COPY *.patch /home/arch/patches/
+RUN cd /home/arch/audio.cpp && for p in /home/arch/patches/*.patch; do \
+        echo "applying $(basename $p)" && git apply --verbose "$p" || exit 1; \
+    done
+
 # Same ROCm-from-AUR layout as Dockerfile.llama (rocm-gfx1151-bin in arch:latest).
 ENV ROCM_PATH=/opt/rocm/core \
     HIP_PATH=/opt/rocm/core \
