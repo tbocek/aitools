@@ -152,7 +152,7 @@ func TestFrameNamesFollowTheWallClock(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(fdir, ".interval")); err != nil {
 			t.Errorf("%s: the marker file was renamed too: %v", c.name, err)
 		}
-		// preprocessing re-runs over a finished folder, which is how an old one gets
+		// Prepare re-runs over a finished folder, which is how an old one gets
 		// its names: the second pass must find nothing left to do rather than
 		// stamping the stamps again
 		if n, err := stampFrames(fdir, video, start, c.interval); err != nil || n != 0 {
@@ -162,7 +162,7 @@ func TestFrameNamesFollowTheWallClock(t *testing.T) {
 }
 
 // A project extracted before frames were timestamped keeps its f000001.jpg
-// names -- re-running preprocessing is minutes of decoding, and the marker file says
+// names -- re-running Prepare is minutes of decoding, and the marker file says
 // there is nothing to redo. Both namings therefore have to plan and order.
 func TestPlanVideoReadsBothFrameNamings(t *testing.T) {
 	for _, c := range []struct {

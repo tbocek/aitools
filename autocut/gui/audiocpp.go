@@ -1,7 +1,7 @@
 package main
 
 // The audio.cpp server: one endpoint, one GPU, every audio job. It listens --
-// speech recognition and diarization, for Preprocessing -- and it speaks --
+// speech recognition and diarization, for Prepare -- and it speaks --
 // the narration, for Narrate.
 //
 // Listening used to be a container run per job: docker run audiocpp_cli, one
@@ -338,7 +338,7 @@ func (a *App) diarSpans(wav string) ([]span, error) {
 	return spansFrom(body)
 }
 
-// ensureAudioModels is Preprocessing's preflight. The step is minutes of ffmpeg before
+// ensureAudioModels is Prepare's preflight. The step is minutes of ffmpeg before
 // the first model call, and "no such model" is worth hearing at the start of
 // that rather than at the end of it.
 func (a *App) ensureAudioModels() error {
@@ -369,7 +369,7 @@ func (a *App) ensureAudioModels() error {
 				a.audioURL(), catalogIDs(cat), want.id, how)
 		}
 		if m.Task != "" && m.Task != want.task {
-			return fmt.Errorf("%q on %s is declared task %q, but preprocessing needs %q there",
+			return fmt.Errorf("%q on %s is declared task %q, but Prepare needs %q there",
 				want.id, a.audioURL(), m.Task, want.task)
 		}
 	}

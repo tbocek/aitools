@@ -96,7 +96,7 @@ func TestTakingTheNextTaskDropsTheLastOnesWords(t *testing.T) {
 	}
 }
 
-// Preprocessing runs both halves at once, and the bar has to hold both without either
+// Prepare runs both halves at once, and the bar has to hold both without either
 // of them claiming all of it.
 func TestBothHalvesShareTheOneBar(t *testing.T) {
 	a := &App{}
@@ -178,9 +178,9 @@ func TestTheStepsQueueTheWorkTheyDo(t *testing.T) {
 		file, want, why string
 	}{
 		{"pipeline.go", `a.qPush(trackSTT, len(inputs), "recording")`,
-			"preprocessing queues the recordings it has to listen to"},
+			"Prepare queues the recordings it has to listen to"},
 		{"pipeline.go", `a.qPush(trackFrames, len(videos), "video")`,
-			"preprocessing queues the videos it has to open"},
+			"Prepare queues the videos it has to open"},
 		{"prep.go", `a.qJob(trackDescribe, "describe", 1, 2)`,
 			"describe is not named as the first of the step's two jobs"},
 		{"prep.go", `a.qJob(trackFix, "transcript", 2, 2)`,

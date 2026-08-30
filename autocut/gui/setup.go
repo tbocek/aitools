@@ -4,7 +4,7 @@ package main
 // no GUI-only syntax) so a shell can read it too. Both of the pipeline's HTTP
 // endpoints live here -- the LLM that writes (descriptions, cuts, narration)
 // and the audio.cpp server, which speaks the narration and does the listening
-// in preprocessing -- plus the handful of names the second one needs: which of its
+// in Prepare -- plus the handful of names the second one needs: which of its
 // models transcribes and which one tells speakers apart.
 //
 // What is deliberately NOT here any more is the language. This file is one
@@ -214,7 +214,7 @@ func (a *App) writeConf(c appConf) error {
 LLM_SERVER=%q
 LLM_MODEL=%q
 LLM_API_KEY=%q
-# audio.cpp server -- it speaks the narration and listens for preprocessing; empty
+# audio.cpp server -- it speaks the narration and listens for Prepare; empty
 # means 127.0.0.1:%d. Autocut only talks to it over HTTP, never starts it --
 # starting it is the job of whoever runs the stack.
 AUDIOCPP_SERVER=%q
@@ -392,7 +392,7 @@ func testVision(c appConf) (string, error) {
 	}
 	if !strings.Contains(strings.ToLower(reply), "red") {
 		return "", fmt.Errorf("shown a plain red square, %q answered %q -- it is not seeing the "+
-			"image. Preprocessing sends video frames to this model: it needs a vision model, served with "+
+			"image. Prepare sends video frames to this model: it needs a vision model, served with "+
 			"its mmproj/vision file", c.Model, reply)
 	}
 	return fmt.Sprintf("%s saw the red square in %.1f s: %q", c.Model, time.Since(start).Seconds(), reply), nil
@@ -805,7 +805,7 @@ func (a *App) setupDialog() {
 			func() (string, error) { return testFFmpeg(bin) }
 	})
 
-	// preprocessing's side of the same server: which of its models does which job.
+	// Prepare's side of the same server: which of its models does which job.
 	// Model ids, not paths -- what the weights are and how they run is settled
 	// in audiocpp-server.json, where the server can act on it.
 	entry := func(text, placeholder, tip string) *gtk.Entry {
@@ -999,7 +999,7 @@ func (a *App) setupDialog() {
 	grid.Attach(ffBadge.stack, 2, 10, 1, 1)
 	grid.Attach(testFFBtn, 3, 10, 1, 1)
 
-	// no server of its own: preprocessing talks to the one named above. What is left
+	// no server of its own: Prepare talks to the one named above. What is left
 	// is which of its models to ask -- what language to ask them in is the
 	// project's, on the Inputs page, where the footage it describes is
 	grid.Attach(head("Listening", "Speech-to-text and diarization -- who said what, and who "+

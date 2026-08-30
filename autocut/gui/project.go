@@ -237,29 +237,35 @@ func (a *App) projectFiles() []string {
 // on a small window.
 const projNameChars = 28
 
-// projLabelText is what the header bar says about a project path: the file's
-// name, and the whole path as the tooltip behind it. The name alone, not the
-// path -- every project in a session usually lives in the same folder, so the
-// leading directories are the part that is identical between them and the name
-// is the part that is not, and an ellipsized path would cut away exactly the
-// half worth reading.
-func projLabelText(path string) (name, tip string) {
-	if strings.TrimSpace(path) == "" {
-		return "no project file", "this session has not been saved to a project file yet"
+// projLabelText is what the header bar can say about a project path: the file's
+// name, the whole path, and the tooltip behind whichever of the two is on
+// screen. Which one is shown is a question of width and belongs to fitHeader;
+// this is only the wording, including the one for a session that has never been
+// saved -- a blank space where a file name goes reads as a bug rather than as
+// "nothing has been written yet". That case has no path to offer, so it gives
+// the same words twice and the bar is free to pick either.
+func projLabelText(p string) (name, full, tip string) {
+	if strings.TrimSpace(p) == "" {
+		none := "no project file"
+		return none, none, "this session has not been saved to a project file yet"
 	}
-	return filepath.Base(path), path
+	return filepath.Base(p), p, p
 }
 
-// showProject puts the open project's name in the header bar. Called from both
-// places that assign projPath, so the bar can never name a file the autosave
-// has stopped following.
+// showProject puts the open project in the header bar. Called from both places
+// that assign projPath, so the bar can never name a file the autosave has
+// stopped following. The name first and then the fit, because the fit is what
+// decides between the name and the path and it declines to answer at all
+// before the bar has been laid out -- at which point the name is the right
+// thing to be showing.
 func (a *App) showProject() {
 	if a.projLabel == nil {
 		return // headless (tests)
 	}
-	name, tip := projLabelText(a.projPath)
+	name, _, tip := projLabelText(a.projPath)
 	a.projLabel.SetText(name)
 	a.projLabel.SetTooltipText(tip)
+	a.fitHeader()
 }
 
 // saveProjectNow writes every target and remembers what it wrote. Quiet: it is
@@ -684,7 +690,7 @@ func (a *App) openFolder(dir string) {
 // ---- output inspection ------------------------------------------------------
 
 // summarizeOutputs is the one-line answer: how many files are under dir, and
-// how long ago the newest was written. Recursive, because preprocessing's output is
+// how long ago the newest was written. Recursive, because Prepare's output is
 // mostly frames in subdirectories -- a top-level count would say "3 entries"
 // about four thousand files. The age is what tells a finished step from a
 // stale one at a glance.
@@ -696,7 +702,7 @@ func summarizeOutputs(dir string) string {
 	return fmt.Sprintf("%d files, newest %s", n, humanAgo(newest))
 }
 
-// countOutputs is the same walk with the two halves kept apart. Preprocessing
+// countOutputs is the same walk with the two halves kept apart. Prepare
 // shows three of these at once and puts the age on hover: three sentences of
 // the form above, side by side, is a paragraph across the bottom of a page.
 func countOutputs(dir string) (n int, newest time.Time) {
@@ -730,7 +736,7 @@ func humanAgo(t time.Time) string {
 }
 
 // logListMax is how many files a directory gets to name before it becomes a
-// count. Preprocessing writes one frame per second of footage; a log carrying four
+// count. Prepare writes one frame per second of footage; a log carrying four
 // thousand f000123.jpg lines is a log nobody scrolls, and the run's own
 // messages would be buried in it.
 const logListMax = 12

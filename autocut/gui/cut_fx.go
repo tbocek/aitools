@@ -270,6 +270,14 @@ func (r fxRect) rect() (cx, cy, hf float64) { return r.cx, r.cy, r.hf }
 // it: a staying zoom becomes the framing every later zoom departs from and
 // returns to. Between zooms the camera is parked on that settled framing,
 // which begins as the whole frame (fullFill).
+//
+// Nothing reaches BACKWARDS. A staying zoom framed the video from its very
+// beginning for a while -- the thought being that a region chosen a minute in
+// was a choice about the whole video -- and it read as a bug every time: the
+// camera was already inside the close-up before the effect that makes it,
+// scrubbing to a second before the zoom showed the picture after it, and the
+// lane said the zoom was somewhere it plainly was not. An effect acts over
+// its own seconds and the seconds after it, never before.
 func fxRectAt(fx []cutFx, t float64, srcA, outA float64) fxRect {
 	return camRectAt(zoomsOf(fx), t, srcA, outA)
 }
@@ -277,18 +285,6 @@ func fxRectAt(fx []cutFx, t float64, srcA, outA float64) fxRect {
 // camRectAt is fxRectAt over the camera effects alone, already in order.
 func camRectAt(zooms []cutFx, t float64, srcA, outA float64) fxRect {
 	settled := fullFill(srcA, outA)
-	for _, z := range zooms {
-		if z.Stay {
-			// the earliest staying zoom frames the video from the very
-			// beginning: the centred crop only stands while no region has
-			// been chosen at all, so the opening seconds are never stuck on
-			// the default slice just because the region was framed a minute
-			// in. Its own glide in is then a no-op, there being nowhere else
-			// to glide from, which is exactly what it should be.
-			settled = fxRect{z.Cx, z.Cy, z.Hf}
-			break
-		}
-	}
 	// the zoom being walked: where it goes, where it came from, where it goes
 	// back to, and its shape in time
 	to, from, back := settled, settled, settled
@@ -392,23 +388,6 @@ func zoomsOf(fx []cutFx) []cutFx {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].T < out[j].T })
 	return out
-}
-
-// firstStay reports whether f is, or would become, the cut's earliest STAYING
-// zoom -- the one the opening rule pins to the very beginning. Its glide in
-// has nowhere to travel from, so it has no arrival to speak of. Works for a
-// zoom not yet placed (nothing earlier exists) and for one already in the list
-// (itself is not earlier than itself).
-func (ed *cutEditor) firstStay(f cutFx) bool {
-	if f.Kind != "zoom" || !f.Stay {
-		return false
-	}
-	for _, z := range zoomsOf(ed.fx) {
-		if z.Stay && z.T < f.T-1e-9 {
-			return false
-		}
-	}
-	return true
 }
 
 // hasStay is whether the cut has been given a lasting framing at all -- one
@@ -1196,16 +1175,9 @@ func (ed *cutEditor) nudgeFx(n int) bool {
 
 // removeHeldFx is ⌦ with an effect held.
 func (ed *cutEditor) removeHeldFx() {
-	f := ed.heldFx()
-	if f == nil {
-		return
+	if ed.heldFx() != nil {
+		ed.killFx(ed.fxSel) // one copy of the surgery, shared with the ✕
 	}
-	was := f.fxLabel()
-	ed.pushUndo()
-	ed.fx = append(ed.fx[:ed.fxSel], ed.fx[ed.fxSel+1:]...)
-	ed.dropFx()
-	ed.persist()
-	ed.a.setStatus("removed " + was + " — ↶ Undo takes it back")
 }
 
 // addFx puts a new effect in and holds it, so what was just made is the thing
@@ -1627,6 +1599,14 @@ func (ed *cutEditor) updateFx(was, nf cutFx) {
 		ed.a.setStatus("that effect is no longer in the cut — nothing was changed")
 		return
 	}
+	// the box belongs to the picture, not to the form. No dialog has a field
+	// for it -- a camera window and a caption's rectangle are only ever set by
+	// dragging them on the preview -- and the form sits in the page's column
+	// with that preview live beside it. So a box dragged bigger while the
+	// words were being typed is NEWER than the snapshot the form opened with,
+	// and writing the snapshot back is what made it spring to its old size on
+	// Save. Take those four from the effect as it stands now.
+	nf.Cx, nf.Cy, nf.Wf, nf.Hf = ed.fx[i].Cx, ed.fx[i].Cy, ed.fx[i].Wf, ed.fx[i].Hf
 	ed.pushUndo()
 	ed.fx[i] = nf
 	ed.persist()
@@ -1911,29 +1891,21 @@ func (a *App) askZoomParams(f cutFx, isNew bool, ok func(cutFx)) {
 		"This is how a vertical short is made out of widescreen footage — say where the " +
 		"action is, and say it again when it moves.")
 
-	// the earliest staying zoom frames the video from its very start, so it
-	// has nowhere to fade in FROM; and a camera that stays has no way back,
-	// so it has no fade out. Both rows say so by going quiet, which is the
-	// answer to "why has this effect only one of the two".
-	first := a.ed.firstStay(cutFx{Kind: "zoom", T: f.T, Stay: true})
+	// a camera that stays has no way back, so it has no fade out. That row
+	// says so by going quiet, which is the answer to "why has this effect
+	// only one of the two". The fade IN stays live whatever else is in the
+	// cut: every staying zoom arrives from the framing that was on screen the
+	// instant before it, and the earliest of them arrives from the plain
+	// centred slice -- it is not special, because nothing reaches backwards
+	// past its own T any more (camRectAt).
 	note := gtk.NewLabel("")
 	note.SetXAlign(0)
 	note.SetWrap(true)
 	note.AddCSSClass("dim-label")
 	sync := func() {
 		oRow.setSensitive(!stay.Active())
-		gRow.setSensitive(!(stay.Active() && first))
-		// the shape of a fade that does not happen: the earliest staying zoom
-		// has neither fade, so the row that asks how they travel goes quiet
-		// with them rather than sitting there live over two dead fields
-		eRow.setSensitive(!(stay.Active() && first))
 		msg := ""
-		switch {
-		case stay.Active() && first:
-			msg = "This is the cut's earliest staying zoom: the finished video is framed " +
-				"on this region from the very start, so there is nothing to fade in from. " +
-				"Place one earlier to give this one a fade in."
-		case stay.Active():
+		if stay.Active() {
 			msg = "A camera that stays has no way back, so it has no fade out."
 		}
 		note.SetText(msg)

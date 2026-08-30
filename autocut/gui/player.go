@@ -110,6 +110,10 @@ func NewPlayer() (*Player, error) {
 	}
 
 	p := &Player{pb: pb, Picture: pic, video: paintable, pendStart: -1, pendStop: -1, rate: 1, seekRate: 1}
+	// born at the volume the slider on the run bar says, like every pipeline
+	// in the app -- and on the roll it visits when that slider moves
+	pb.SetObjectProperty("volume", previewVol)
+	allPlayers = append(allPlayers, p)
 
 	// signal watch dispatches on the default main context, i.e. the GTK loop
 	bus := pb.GetBus()
@@ -280,6 +284,7 @@ func newAux(name string, t mixTrack) *auxAudio {
 		pb.SetObjectProperty("video-sink", fake)
 	}
 	pb.SetObjectProperty("uri", "file://"+t.path)
+	pb.SetObjectProperty("volume", previewVol)
 	a := &auxAudio{pb: pb, delta: t.delta, dur: t.dur, pend: -1, rate: 1}
 	bus := pb.GetBus()
 	bus.AddSignalWatch()
@@ -296,6 +301,35 @@ func newAux(name string, t mixTrack) *auxAudio {
 		}
 	})
 	return a
+}
+
+// The preview's loudness, one number for the whole app. Package state rather
+// than a Player field because the slider that sets it is on the run bar, which
+// is shared by every page -- five players answer to it, and a per-player volume
+// would be five sliders' worth of state behind one slider. 1 is the footage as
+// recorded; playbin treats it as a plain linear gain.
+var previewVol = 1.0
+
+// every player ever built, so a volume set on the run bar reaches pipelines
+// that already exist. Players are made once per page at startup and never torn
+// down, so the roll only ever holds those five.
+var allPlayers []*Player
+
+// SetPreviewVolume turns the whole preview up or down: every player, and inside
+// each one the footage, the separate recordings mixed under it and an insert's
+// own sound alike. One gain for all of them, because the slider's promise is
+// "quieter", not "rebalanced".
+func SetPreviewVolume(v float64) {
+	previewVol = math.Max(0, math.Min(1, v))
+	for _, p := range allPlayers {
+		p.pb.SetObjectProperty("volume", previewVol)
+		for _, a := range p.mix {
+			a.pb.SetObjectProperty("volume", previewVol)
+		}
+		if p.card != nil {
+			p.card.pb.SetObjectProperty("volume", previewVol)
+		}
+	}
 }
 
 // SetMuted cuts the session's sound -- the footage and every recording heard

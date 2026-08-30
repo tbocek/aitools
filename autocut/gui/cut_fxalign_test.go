@@ -1,13 +1,11 @@
 package main
 
 // Effects used to land beside the cut instead of inside it: the Shorts reply
-// proposed segments and fx together, the audit then fixed, dropped and added
-// segments, and the fx were never revisited -- so the page showed zooms in
-// the middle of stretches nobody kept. Two things end that. suggestFx chooses
-// the effects AFTER the audit, from a timeline filtered to what survived
-// (rowsInSegs); and clampFxToSegs holds whatever was proposed -- by that call
-// or by a project's edited cut prompt -- to the segments as applied, trimmed
-// to fit or dropped. The clamp is the guarantee, so it is what these test.
+// proposes segments and fx together, and the audit then fixes, drops and adds
+// segments under them. The audit is asked to revisit the effects too
+// (fxchecks), but that is a model being asked -- clampFxToSegs is the
+// guarantee, holding whatever was proposed to the segments as applied,
+// trimmed to fit or dropped. The clamp is what these test.
 
 import (
 	"math"
@@ -151,27 +149,5 @@ func TestPointAndCameraEffectsAreClampedToTheFootage(t *testing.T) {
 	}
 	if c.Trans > c.Dur/3+1e-9 || c.Tout > c.Dur/3+1e-9 {
 		t.Errorf("its fades %.2f/%.2f outgrew the trimmed band", c.Trans, c.Tout)
-	}
-}
-
-// What suggestFx shows the model: only the timeline lines that overlap a
-// footage segment, so every stamp in its vocabulary lies inside the cut.
-func TestTheEffectsCallSeesOnlyTheKeptTimeline(t *testing.T) {
-	rows := []tsvRow{
-		{s: 5, e: 8, spk: "EVENT", text: "before the cut"},
-		{s: 8, e: 12, spk: "SPEAKER_00", text: "overlaps the first edge"},
-		{s: 15, e: 18, spk: "EVENT", text: "inside the first"},
-		{s: 45, e: 50, spk: "SPEAKER_00", text: "in the gap"},
-		{s: 70, e: 72, spk: "EVENT", text: "inside the second"},
-		{s: 105, e: 106, spk: "EVENT", text: "under the insert alone"},
-	}
-	got := rowsInSegs(rows, fxAlignSegs)
-	if len(got) != 3 {
-		t.Fatalf("kept %d rows, want 3: %v", len(got), got)
-	}
-	for i, want := range []string{"overlaps the first edge", "inside the first", "inside the second"} {
-		if got[i].text != want {
-			t.Errorf("row %d is %q, want %q", i, got[i].text, want)
-		}
 	}
 }

@@ -151,7 +151,14 @@ func TestOnlyFootageCarriesAKillBadge(t *testing.T) {
 }
 
 // The wiring: drawn over everything else in the picture band, asked before the
-// border it overlaps, and the toolbar button it replaces is gone.
+// border it overlaps, and the toolbar button it replaces has not come back as
+// something that guesses.
+//
+// A － Remove IS on the bar again, for the job a per-scene ✕ cannot do -- a hole
+// in the middle of a scene, which leaves two scenes that did not exist to be
+// pressed. What must never come back is the guessing: this one reads the
+// selection and nothing else (cut_selrm.go), so the pin is on the handler it
+// calls, not on the button being absent.
 func TestTheKillBadgeIsWired(t *testing.T) {
 	src, err := os.ReadFile("cut.go")
 	if err != nil {
@@ -166,10 +173,9 @@ func TestTheKillBadgeIsWired(t *testing.T) {
 			t.Errorf("the cut page no longer contains %q", want)
 		}
 	}
-	for _, gone := range []string{"remBtn", `"－ Remove"`} {
-		if strings.Contains(string(src), gone) {
-			t.Errorf("the cut page still contains %q — the button is the ✕ now", gone)
-		}
+	if !strings.Contains(string(src), "ed.remBtn.ConnectClicked(func() { a.removeSelRange() })") {
+		t.Error("－ Remove is wired to something other than the selection's verb — " +
+			"a toolbar remove that guesses is what the ✕ was built to end")
 	}
 	// the draw comes after the inserts and the speed wash, or a card would
 	// paint over a control

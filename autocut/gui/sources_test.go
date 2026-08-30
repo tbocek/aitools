@@ -85,7 +85,7 @@ func TestSplitIsEverySourceExactlyOnce(t *testing.T) {
 }
 
 // Footage means frames come out of it, and an audio file has none to give: the
-// toggle must refuse, and so must a hand-edited project -- preprocessing would
+// toggle must refuse, and so must a hand-edited project -- Prepare would
 // otherwise point ffmpeg's frame extraction at a flac and fail half-way in.
 func TestOnlyAVideoCanBeFootage(t *testing.T) {
 	_, paths := mkSources(t, "voice.flac", "clip.mkv")

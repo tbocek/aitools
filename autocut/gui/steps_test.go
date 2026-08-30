@@ -114,27 +114,45 @@ func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
 		if strings.Contains(src, `inputs.AddCSSClass("dim-label")`) {
 			t.Errorf("%s dims its Inputs line where the other pages do not", f)
 		}
-		// The row at the other end of the page, the same way: what this step
-		// wrote, at the bottom right, with a way into the folder beside it.
-		// Produce answered neither question for a long time -- it had a "Output:"
-		// row that was the destination SETTING, one letter and one meaning away
-		// from the heading every other page ends on.
-		for _, want := range []string{
-			`outLbl := gtk.NewLabel("Outputs:")`,
-			`outLbl.AddCSSClass("heading")`,
-			`outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)`,
-			`outRow.SetHAlign(gtk.AlignEnd)`,
-			`outRow.Append(outLbl)`,
-		} {
-			if !strings.Contains(src, want) {
-				t.Errorf("%s's Outputs row is missing %s", f, want)
-			}
+		// The other half of the question -- what this step WROTE -- is not a
+		// page row at all any more. Every step writes files, so the count and
+		// the way into the folder ride the shared bottom bar and follow the
+		// visible tab (outStack in main.go). A page owns only its group,
+		// registered under its step name; a heading of its own would put a
+		// second "Outputs:" on screen beside the global one.
+		name := strings.TrimSuffix(f, ".go")
+		if !strings.Contains(src, `a.outStack.AddNamed(outRow, "`+name+`")`) {
+			t.Errorf("%s does not hand its Outputs group to the shared bar", f)
+		}
+		if strings.Contains(src, `gtk.NewLabel("Outputs:")`) {
+			t.Errorf("%s grew its own Outputs heading back beside the global one", f)
+		}
+	}
+	// ...and the bar itself: one heading, the pages' groups behind it, switched
+	// with the tabs so ▶, the progress text and the outputs are always about
+	// the same step. Non-homogeneous, or prep's three folders would reserve
+	// their width under every tab.
+	b, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainSrc := string(b)
+	for _, want := range []string{
+		`outLbl := gtk.NewLabel("Outputs:")`,
+		`outLbl.AddCSSClass("heading")`,
+		`ctlRow.Append(outLbl)`,
+		`ctlRow.Append(a.outStack)`,
+		`a.outStack.SetVisibleChildName(name)`,
+		`a.outStack.SetHhomogeneous(false)`,
+	} {
+		if !strings.Contains(mainSrc, want) {
+			t.Errorf("the shared Outputs group is missing %s", want)
 		}
 	}
 }
 
 // A screen capture with nobody talking over it has no words to fix and nothing
-// to correct, so the describing half of Preprocessing is run for one reason
+// to correct, so the describing half of Prepare is run for one reason
 // only: it wrote the file the Cut tab was unlocked by. It is not what the Cut
 // page reads. The tracks are built from the sources and the frames the first
 // half pulled out of them, and the session timeline is text printed ON those

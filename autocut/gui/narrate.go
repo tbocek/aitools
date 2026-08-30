@@ -576,19 +576,16 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	preview.Append(transport)
 	preview.Append(editRow)
 
-	// The prompt was a box filling the bottom half of this column. It is the
-	// dropdown above the video now (promptpick.go), and what took its place is
-	// the voice picker -- which used to sit on top of the narration lines and
-	// take a third of their column's height for a choice made once.
+	// The prompt was a box filling the bottom half of this column, then a
+	// dropdown above the video, and it is on Prepare with all the others now
+	// (prepedit.go). What took its place is the voice picker -- which used to
+	// sit on top of the narration lines and take a third of their column's
+	// height for a choice made once.
 	//
 	// That swap is the point of the page's shape: the lines are what you work
 	// on, they are sentences, and sentences want width. With the picker out of
-	// their column they have the whole of it, and the picker is under the video
-	// where it is read alongside the sample it plays.
-	promptRow := a.promptBar(nil, promptSlot{"narrate", "Narration",
-		"The rules, plus what this session was and what matters in it"})
-	promptRow.SetHAlign(gtk.AlignEnd)
-
+	// their column they have the whole of it, and it is under the video where it
+	// is read alongside the sample it plays.
 	voice := a.buildVoicePicker()
 	gtk.BaseWidget(voice).SetVExpand(true)
 
@@ -596,7 +593,6 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	right.SetMarginStart(12)
 	right.SetMarginEnd(12)
 	right.SetMarginBottom(8)
-	right.Append(promptRow)
 	right.Append(preview)
 	right.Append(voice)
 
@@ -609,8 +605,9 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	split.SetVExpand(true)
 	split.SetShrinkEndChild(false)
 
-	// What this step reads, at the top, and what it has written, at the bottom
-	// -- the two rows every other step has and this one did not.
+	// What this step reads, at the top -- the row every other step has and
+	// this one did not. What it has written goes to the shared bottom bar
+	// (outStack in main.go), like every step's.
 	n.inputs = gtk.NewLabel("")
 	n.inputs.SetXAlign(0)
 	n.inputs.SetHExpand(true)
@@ -628,20 +625,14 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	openOut.SetTooltipText("step4/ — narration.json, the voice reference and the synthesis cache")
 	openOut.ConnectClicked(func() { a.openFolder(a.narrateDir()) })
 	n.out = gtk.NewLabel("")
-	outLbl := gtk.NewLabel("Outputs:")
-	outLbl.AddCSSClass("heading")
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	outRow.SetHAlign(gtk.AlignEnd)
-	outRow.SetMarginEnd(12)
-	outRow.SetMarginBottom(6)
-	outRow.Append(outLbl)
 	outRow.Append(openOut)
 	outRow.Append(n.out)
+	a.outStack.AddNamed(outRow, "narrate")
 
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
 	page.Append(inRow)
 	page.Append(split)
-	page.Append(outRow)
 
 	n.load()
 	n.rebuildRows()
@@ -2501,7 +2492,7 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 		if err := a.checkpoint(); err != nil {
 			return nil, err
 		}
-		reply, err := a.llmChatRetryOn(msgs, true, onText)
+		reply, err := a.llmChatRetryOn("narrate", msgs, true, onText)
 		if err != nil {
 			return nil, err
 		}

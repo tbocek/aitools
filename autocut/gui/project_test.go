@@ -48,7 +48,7 @@ func TestEmptyFolderMeansRoot(t *testing.T) {
 	}
 }
 
-// Preprocessing's outputs are frames in per-recording subfolders, so the count has to
+// Prepare's outputs are frames in per-recording subfolders, so the count has to
 // be recursive: a top-level count would report "2 files" about a few thousand.
 func TestOutputSummaryCountsEveryFrame(t *testing.T) {
 	dir := t.TempDir()
@@ -335,33 +335,43 @@ func TestOnlyProduceWritesTheProduceFolder(t *testing.T) {
 
 // ---- the project name in the header bar --------------------------------------
 
-// What the title bar says about the open project. The name and not the path:
-// variants of a session live beside each other in one folder, so the leading
-// directories are the identical half and the file name is the half that tells
-// them apart. The unnamed case has to say something too -- a blank space where
-// a file name goes reads as a bug, not as "nothing has been saved yet".
+// What the title bar can say about the open project: the short form, the long
+// one, and the hover behind either. The short form is the file name, because
+// variants of a session live beside each other in one folder and the leading
+// directories are the identical half. The unnamed case has to say something
+// too -- a blank space where a file name goes reads as a bug, not as "nothing
+// has been saved yet" -- and it has no path to offer, so both forms are the
+// same words and the bar may show whichever it has room for.
 func TestTheHeaderBarNamesTheOpenProject(t *testing.T) {
-	name, tip := projLabelText("/home/tom/cuts/before-the-recut.json")
+	name, full, tip := projLabelText("/home/tom/cuts/before-the-recut.json")
 	if name != "before-the-recut.json" {
 		t.Errorf("the bar shows %q, want the file name alone", name)
 	}
-	if tip != "/home/tom/cuts/before-the-recut.json" {
-		t.Errorf("the tooltip shows %q, want the whole path -- it is the only place the path is readable", tip)
+	if full != "/home/tom/cuts/before-the-recut.json" {
+		t.Errorf("the long form is %q, want the whole path", full)
 	}
-	name, tip = projLabelText("  ")
+	if tip != "/home/tom/cuts/before-the-recut.json" {
+		t.Errorf("the tooltip shows %q, want the whole path -- it answers whichever form is on the bar", tip)
+	}
+	name, full, tip = projLabelText("  ")
 	if !strings.Contains(name, "no project") {
 		t.Errorf("with nothing saved the bar shows %q, want it to say so in words", name)
+	}
+	if full != name {
+		t.Errorf("with nothing saved the long form is %q and the short one %q -- a bar with "+
+			"room to spare would go blank on the difference", full, name)
 	}
 	if tip == "" {
 		t.Error("with nothing saved the tooltip is empty -- hovering must still answer")
 	}
 }
 
-// The wiring: the label is ellipsized and capped (a project buried in a long
-// name must not walk the centered tabs sideways), and both places that assign
-// projPath refresh it. The second half is the one that rots quietly -- a Save
-// As that renames the file the autosave follows while the bar keeps showing
-// the old name is worse than showing no name at all.
+// The wiring: the label is ellipsized (a project buried in a long name must not
+// walk the centered tabs sideways) and both places that assign projPath refresh
+// it. The second half is the one that rots quietly -- a Save As that renames
+// the file the autosave follows while the bar keeps showing the old name is
+// worse than showing no name at all. The cap is fitHeader's now, since it is
+// the backstop for one of that ladder's rungs and not for the other.
 func TestTheProjectNameFollowsSaveAndLoad(t *testing.T) {
 	src, err := os.ReadFile("main.go")
 	if err != nil {
@@ -369,7 +379,6 @@ func TestTheProjectNameFollowsSaveAndLoad(t *testing.T) {
 	}
 	for _, want := range []string{
 		"a.projLabel.SetEllipsize(pango.EllipsizeEnd)",
-		"a.projLabel.SetMaxWidthChars(projNameChars)",
 		"head.PackStart(a.projLabel)",
 	} {
 		if !strings.Contains(string(src), want) {
@@ -388,6 +397,15 @@ func TestTheProjectNameFollowsSaveAndLoad(t *testing.T) {
 		if !strings.Contains(string(body), "a.showProject()") {
 			t.Errorf("%s renames the project without telling the header bar", fn)
 		}
+	}
+	// showProject is also where a rename gets re-priced: a Save As from
+	// short.json to a path three folders deep may no longer fit as a path.
+	body := regexp.MustCompile(`(?s)func \(a \*App\) showProject\(\) \{.*?\n}\n`).Find(p)
+	if body == nil {
+		t.Fatal("showProject is gone")
+	}
+	if !strings.Contains(string(body), "a.fitHeader()") {
+		t.Error("showProject names the project without re-fitting the bar to it")
 	}
 }
 

@@ -190,7 +190,7 @@ func (ed *cutEditor) clampShift(want float64) float64 {
 }
 
 // freezeRows writes the rows down as they are now, once per project. Until the
-// first drag they stay derived, so adding a camera on Preprocessing still puts
+// first drag they stay derived, so adding a camera on Prepare still puts
 // it where the arithmetic says; from the first drag on they are the project's,
 // because cutSeg.Cam is a row number and it has to keep meaning the same camera.
 func (ed *cutEditor) freezeRows() {
@@ -260,6 +260,178 @@ func (ed *cutEditor) slideGreen(from []cutSeg, d float64) bool {
 	return true
 }
 
+// ---- moving a part onto another row -----------------------------------------
+
+// rowAt is the row of the picture band under y, counting a row's wave strip as
+// the row: for moving things between rows, grabbing a part by its sound is
+// grabbing the part.
+func (ed *cutEditor) rowAt(y float64) int {
+	if l := ed.laneAt(y); l >= 0 {
+		return l
+	}
+	return ed.pairAt(y)
+}
+
+// rowFits says whether every dragged source could sit on row `to` without
+// lying over something already there. Overlap in TIME is the one thing a row
+// cannot draw -- there is no x where both could be shown -- which is exactly
+// why assignLanes stacked them apart in the first place; everything else about
+// a row move is bookkeeping.
+func (ed *cutEditor) rowFits(srcs []string, to int) bool {
+	if len(srcs) == 0 || to < 0 || to >= ed.laneN {
+		return false
+	}
+	for i := range ed.vids {
+		m := &ed.vids[i]
+		if !contains(srcs, m.base) {
+			continue
+		}
+		if m.lane == to {
+			return false // already there: nothing to do, nothing to undo
+		}
+		for j := range ed.vids {
+			v := &ed.vids[j]
+			if v.lane != to || contains(srcs, v.base) {
+				continue
+			}
+			if m.start < v.start+v.dur-1e-9 && v.start < m.start+m.dur-1e-9 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// moveRow puts the dragged sources onto row `to`, when there is room. The row
+// is pinned (freezeRows) for the reason every hand-placed row is: cutSeg.Cam
+// is a row number, and a derived colouring would put the part right back the
+// moment the overlaps said so.
+//
+// The kept scenes that showed the moved footage go on showing it: a scene
+// wholly inside a moved source's stretch, naming the row that source is
+// leaving, is repointed at the row it lands on. A time drag deliberately does
+// NOT do this -- sliding a clock under the cut is what that gesture is FOR --
+// but a row drag changes no seconds, so a scene left behind would show a hole
+// where its own footage used to be, and nobody dragged it to mean that.
+//
+// The row left behind may come out empty. It stays: the drag that emptied it
+// can be dragged back, and closing it would renumber every scene on the rows
+// below (killLane does that work, on purpose, when a row is actually killed).
+func (ed *cutEditor) moveRow(srcs []string, to int) bool {
+	if !ed.rowFits(srcs, to) {
+		return false
+	}
+	from := -1
+	for i := range ed.vids {
+		if contains(srcs, ed.vids[i].base) {
+			from = ed.vids[i].lane
+			break
+		}
+	}
+	ed.freezeRows()
+	// the shape as it stands becomes the floor, so the vacated row survives
+	// the relayout below even when it is the bottom one: emptied on purpose,
+	// it stays until its ✕ says otherwise (killRow) -- the same wait an
+	// emptied middle row already gets from the pins holding the gap open
+	ed.nRows = max(ed.nRows, ed.laneN)
+	for _, b := range srcs {
+		ed.rows[b] = to
+	}
+	for i := range ed.segs {
+		s := &ed.segs[i]
+		if s.Cam != from || s.isInsert() {
+			continue
+		}
+		for j := range ed.vids {
+			m := &ed.vids[j]
+			if contains(srcs, m.base) && s.S >= m.start-1e-9 && s.E <= m.start+m.dur+1e-9 {
+				s.Cam = to
+				break
+			}
+		}
+	}
+	ed.relayout()
+	return true
+}
+
+// ---- snapping the drag ------------------------------------------------------
+
+// slideSnapSet is worked out once, at the press: which session seconds this
+// drag MOVES, and which still ones it might want to land exactly on. The
+// moving set is the edges of the dragged recordings -- or, on a green drag,
+// the borders of the scenes that will travel -- and the still set is
+// everything else a hand lines things up against: the selection's two edges
+// (the reason this exists: a part dragged along one row wants to start where
+// the selection above it does), the playhead, the effects' bands, and the
+// edges of every recording and scene that is staying put. Both are frozen
+// here because the drag recomputes from the press each update -- a target
+// that moved with the drag would drag the snap along with it.
+func (ed *cutEditor) slideSnapSet(srcs []string, green bool) (edges, targets []float64) {
+	// the session's own start, always: everything else here is only a target
+	// while something still sits on it, and the one recording that anchors 0
+	// stops offering it the moment it is the thing being dragged
+	targets = append(targets, 0)
+	a0, a1 := ed.selSpan()
+	if ed.sel.active {
+		targets = append(targets, a0, a1)
+	}
+	if ed.hasPlay {
+		targets = append(targets, ed.playhead)
+	}
+	for _, f := range ed.fx {
+		t0, t1 := f.fxSpan()
+		targets = append(targets, t0)
+		if t1 > t0 {
+			targets = append(targets, t1)
+		}
+	}
+	for _, v := range ed.vids {
+		if contains(srcs, v.base) {
+			edges = append(edges, v.start, v.start+v.dur)
+		} else {
+			targets = append(targets, v.start, v.start+v.dur)
+		}
+	}
+	for _, au := range ed.auds {
+		if au.master {
+			continue // it moves with its footage, and the footage was counted
+		}
+		if contains(srcs, au.base) {
+			edges = append(edges, au.start, au.start+au.dur)
+		} else {
+			targets = append(targets, au.start, au.start+au.dur)
+		}
+	}
+	for _, s := range ed.segs {
+		// the same wholly-inside rule slideGreen moves by: a scene that will
+		// travel offers its borders to the still ones, never to itself
+		if green && ed.sel.active && s.S >= a0-1e-9 && s.E <= a1+1e-9 {
+			edges = append(edges, s.S, s.E)
+		} else {
+			targets = append(targets, s.S, s.E)
+		}
+	}
+	return edges, targets
+}
+
+// slideSnap pulls a drag of d seconds onto the nearest exact meeting of a
+// moving edge with a still one, when the hand brings any pair within tol
+// seconds -- and otherwise changes nothing. Every moving edge is offered to
+// every target and the closest pair wins, the same bargain the selection band
+// and the effect bands make (snapSelSpan, snapFxSpan): flush on the left is
+// worth as much as flush on the right.
+func slideSnap(d float64, edges, targets []float64, tol float64) float64 {
+	best, bd := d, tol
+	for _, e := range edges {
+		for _, t := range targets {
+			if diff := math.Abs(t - (e + d)); diff < bd {
+				best, bd = t-e, diff
+			}
+		}
+	}
+	return best
+}
+
 // shiftLabel is what the drag leaves in the status line. Signed seconds,
 // because lining two waveforms up by eye is arithmetic nobody wants to do twice
 // -- the number is what makes it repeatable on the next project shot with the
@@ -326,7 +498,7 @@ func sameRows(a, b map[string]int) bool {
 }
 
 // sessionRows is the session timeline every step reads, put onto the timeline
-// the cut is actually made against. session.tsv is written by Preprocessing off
+// the cut is actually made against. session.tsv is written by Prepare off
 // the raw file clocks, and a clock corrected by hand afterwards is exactly the
 // thing it cannot know about: a line it places at 4:10 is where that recording
 // USED to be, so Suggest would be told the wrong seconds, and Narrate and

@@ -51,8 +51,9 @@ const (
 	selMinBand = 40.0
 )
 
-// selBandTop is the band's y inside the source-track area.
-func (ed *cutEditor) selBandTop() float64 { return float64(rulerH) }
+// selBandTop is the band's y inside the source-track area: under the scope
+// strip, which sits under the ruler (scopeTop).
+func (ed *cutEditor) selBandTop() float64 { return float64(rulerH) + scopeH }
 
 // hitSelBand is whether a press in the source-track area lands in the band.
 func (ed *cutEditor) hitSelBand(y float64) bool {
@@ -129,11 +130,18 @@ func (ed *cutEditor) bandClipIdx() int {
 
 // bandClipPartAt is what a press at timeline-x px takes hold of on the green
 // bar: which clip, and which part of it. The parts are the blue bar's own --
-// ends first, then the middle -- because the two bars share a row and have to
-// answer the hand the same way. No ✕, though: the blue's ✕ throws away a
-// selection, which costs nothing, and the only thing a ✕ here could mean is
-// deleting footage. The blue bar is asked before this one everywhere (press,
-// cursor, hover), exactly as it is drawn on top.
+// ends first, then the ✕, then the middle -- because the two bars share a row
+// and have to answer the hand the same way. The blue bar is asked before this
+// one everywhere (press, cursor, hover), exactly as it is drawn on top.
+//
+// The ✕ removes the clip, which is what the scene's own ✕ over the pictures
+// does (cut_segkill.go). It was left off this bar at first on the grounds that
+// deleting footage is not the cheap, undoable nothing that throwing away a
+// selection is -- but the scene badge already offers exactly that verb in
+// exactly that corner, and it is the blue bar drawn on top of this one that
+// splits the green in two and hides the badge underneath. A bar that answers
+// every other verb of the blue's and not this one is the odd one out, so it
+// answers this one too: same corner, same undo, same sentence in the status.
 func (ed *cutEditor) bandClipPartAt(px float64) (int, int) {
 	i := ed.bandClipIdx()
 	if i < 0 {
@@ -146,6 +154,8 @@ func (ed *cutEditor) bandClipPartAt(px float64) (int, int) {
 		return i, selStart
 	case math.Abs(px-x1) <= selGripPx:
 		return i, selEnd
+	case x1-x0 >= selMinBand && px >= x1-selKillIn-selKillW && px <= x1-selKillIn:
+		return i, selKill
 	case px > x0 && px < x1:
 		return i, selWhole
 	}
@@ -325,6 +335,8 @@ func (ed *cutEditor) holdSel(part int) {
 // stops being highlighted.
 func (ed *cutEditor) hoverTracks(x, y float64) {
 	ed.hoverFx(x, y)
+	ed.hoverFxKill(x, y)
+	ed.hoverScope(x, y) // the ▲▼ handle lives in this area now
 	on := x >= 0 && ed.hitSelBand(y) && ed.selPartAt(x+ed.viewX) != selNone
 	gOn := false
 	if x >= 0 && !on && ed.hitSelBand(y) {
@@ -404,6 +416,11 @@ func (ed *cutEditor) wantCursor(x, y float64) string {
 		return ""
 	}
 	switch {
+	case ed.hitScope(y):
+		// the ▲▼ handle is two buttons; everywhere else the strip is inert
+		if ed.scopePartAt(x+ed.viewX, y-ed.scopeTop()) != scopeNone {
+			return "pointer"
+		}
 	case ed.hitSelBand(y):
 		switch ed.selPartAt(x + ed.viewX) {
 		case selStart, selEnd:
@@ -413,13 +430,16 @@ func (ed *cutEditor) wantCursor(x, y float64) string {
 		case selKill:
 			return "pointer"
 		}
-		// clear of the blue, the green bar answers with the same two cursors:
-		// its ends trim the clip's borders, its middle moves the clip
+		// clear of the blue, the green bar answers with the same cursors: its
+		// ends trim the clip's borders, its middle moves the clip, its ✕
+		// removes it
 		switch _, part := ed.bandClipPartAt(x + ed.viewX); part {
 		case selStart, selEnd:
 			return "ew-resize"
 		case selWhole:
 			return "grab"
+		case selKill:
+			return "pointer"
 		}
 	case ed.fxHitLane(y):
 		i := ed.fxIndexAt(x+ed.viewX, y)
@@ -451,11 +471,8 @@ func (ed *cutEditor) setCursor(area *gtk.DrawingArea, name string) {
 		return
 	}
 	last := &ed.selCur
-	switch area {
-	case ed.audArea:
+	if area == ed.audArea {
 		last = &ed.audCur
-	case ed.scopeArea:
-		last = &ed.scopeCur
 	}
 	if *last == name {
 		return
@@ -500,6 +517,19 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 				cr.Rectangle(hx-1.5, y, 3, selBandH)
 			}
 			cr.Fill()
+			// the ✕ that removes the clip, in the corner the blue's sits in
+			// and drawn to the same recipe, because the hand that has learnt
+			// one bar has learnt both
+			if gx1-gx0 >= selMinBand {
+				kx := gx1 - selKillIn - selKillW/2
+				cr.SetSourceRGBA(1, 1, 1, 0.85)
+				cr.SetLineWidth(1.6)
+				for _, d := range [][2]float64{{-1, -1}, {-1, 1}} {
+					cr.MoveTo(kx+3*d[0], y+selBandH/2+3*d[1])
+					cr.LineTo(kx-3*d[0], y+selBandH/2-3*d[1])
+				}
+				cr.Stroke()
+			}
 			switch {
 			case (ed.segOn && ed.segSel == i) || (ed.edgeOn && ed.edgeSeg == i):
 				cr.SetSourceRGBA(1, 1, 1, 0.9)

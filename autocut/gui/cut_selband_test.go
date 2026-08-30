@@ -29,14 +29,15 @@ func bandEd(t *testing.T) *cutEditor {
 
 // Under the ruler's clock and over the pictures, which is where it was asked
 // for and also the only place it can go: the clock has to stay legible and the
-// band has to be next to the frames it is over.
+// band has to be next to the frames it is over. Between the two sits the ▲▼
+// scope strip -- the one row that reads across the whole page, over the bands
+// it scopes.
 func TestTheBandSitsBetweenTheClockAndThePictures(t *testing.T) {
 	ed := bandEd(t)
-	if ed.selBandTop() != float64(rulerH) {
-		t.Errorf("the band starts at %g, want it flush under the ruler at %d",
-			ed.selBandTop(), rulerH)
+	if got, want := ed.selBandTop(), float64(rulerH)+scopeH; got != want {
+		t.Errorf("the band starts at %g, want it under the ▲▼ strip at %g", got, want)
 	}
-	if got, want := ed.picTop(), float64(rulerH+selBandH); got != want {
+	if got, want := ed.picTop(), float64(rulerH)+scopeH+float64(selBandH); got != want {
 		t.Errorf("the pictures start at %g, want %g — the band has no room", got, want)
 	}
 	for _, c := range []struct {
@@ -45,7 +46,8 @@ func TestTheBandSitsBetweenTheClockAndThePictures(t *testing.T) {
 		what string
 	}{
 		{float64(rulerH) - 1, false, "in the ruler"},
-		{float64(rulerH) + 1, true, "the top of the band"},
+		{float64(rulerH) + 1, false, "in the ▲▼ strip"},
+		{ed.selBandTop() + 1, true, "the top of the band"},
 		{ed.picTop() - 1, true, "the bottom of the band"},
 		{ed.picTop() + 1, false, "on the pictures"},
 	} {
@@ -228,12 +230,13 @@ func TestTheBandIsDrawnInItsRow(t *testing.T) {
 	ed.sel.t0, ed.sel.t1 = 20, 50 // 80..200 px, inside the 400 px we render
 	const w, h = 400, 200
 	at := renderTrack(t, ed, w, h)
-	x := int(ed.xOf(35)) // the middle of the selection
+	x := int(ed.xOf(35))                     // the middle of the selection
+	mid := int(ed.selBandTop()) + selBandH/2 // the middle of the band's row
 	isBand := func(y int) bool {
 		r, _, b := at(x, y)
 		return b > 130 && int(b) > int(r)+40
 	}
-	if !isBand(rulerH + selBandH/2) {
+	if !isBand(mid) {
 		t.Error("the selection is not drawn in its own row")
 	}
 	if isBand(rulerH - 4) {
@@ -242,7 +245,7 @@ func TestTheBandIsDrawnInItsRow(t *testing.T) {
 	// clear of the selection the row is still there, as ground: an empty band
 	// is a place a selection could go, not a gap in the page
 	rx := int(ed.xOf(70))
-	r, g, b := at(rx, rulerH+selBandH/2)
+	r, g, b := at(rx, mid)
 	if r < 25 || r > 60 || g < 25 || g > 60 || b < 25 || b > 70 {
 		t.Errorf("the empty part of the row painted rgb(%d,%d,%d), want the row's ground", r, g, b)
 	}
@@ -251,7 +254,7 @@ func TestTheBandIsDrawnInItsRow(t *testing.T) {
 	green := func(x, y int) uint8 { _, g, _ := at(x, y); return g }
 	fill := func(y int) uint8 { return green(x, y) }
 	end := func(y int) uint8 { return green(int(ed.xOf(50)), y) }
-	if end(rulerH+selBandH/2) <= fill(rulerH+selBandH/2) {
+	if end(mid) <= fill(mid) {
 		t.Error("the end of the band is no brighter than its middle — the handles do not read as handles")
 	}
 }
@@ -270,6 +273,8 @@ func TestTheSelectionBandIsWired(t *testing.T) {
 		"if selPart = ed.selPartAt(x + ed.viewX); selPart == selKill {",
 		"ed.killSel()",
 		"ed.holdSel(selPart)",
+		// ...and on the green bar the same ✕ removes the clip it stands for
+		"ed.killSeg(i) // the scene badge's verb, in the band",
 		// ...and a press clear of it in the row starts a new selection, which
 		// is what the fall-through to the rubber band does
 		"ed.dropSel() // clear of it: this is a new selection",
@@ -325,5 +330,87 @@ func TestTheBandShowsTheKeptClipUnderThePlayhead(t *testing.T) {
 	ed.playhead, ed.hasPlay = 80, true
 	if green(renderTrack(t, ed, w, h), int(ed.xOf(40))) {
 		t.Error("a playhead in a dropped stretch lit a clip it is not inside")
+	}
+}
+
+// TestTheGreenBarsXRemovesThatClip: the green bar answers every verb the blue
+// one does, and that now includes the ✕. The scene badge over the pictures
+// already removes a stretch from exactly this corner -- and the blue bar,
+// drawn on top, is what splits the green in two and hides that badge -- so the
+// bar carries the verb itself.
+func TestTheGreenBarsXRemovesThatClip(t *testing.T) {
+	ed := bandEd(t) // clips 20-60 and 100-140
+	ed.sel.active = false
+	ed.playhead, ed.hasPlay = 40, true
+	x0, x1 := ed.xOf(20), ed.xOf(60)
+	for _, c := range []struct {
+		px   float64
+		want int
+		what string
+	}{
+		{x1 - selKillIn - selKillW/2, selKill, "on the ✕"},
+		{(x0 + x1) / 2, selWhole, "in the middle"},
+		{x0, selStart, "on the left end"},
+		{x1, selEnd, "on the right end"},
+	} {
+		if _, got := ed.bandClipPartAt(c.px); got != c.want {
+			t.Errorf("a press %s (px %g) takes part %d, want %d", c.what, c.px, got, c.want)
+		}
+	}
+	// the same guard the blue bar has: "remove this footage" must not be
+	// reachable by a hand aiming at "make it a bit shorter"
+	if _, got := ed.bandClipPartAt(x1 - selGripPx + 1); got == selKill {
+		t.Error("the green ✕ and the right handle are the same pixels")
+	}
+	// pressing it drops that clip and nothing else, undoably
+	before := len(ed.segs)
+	ed.killSeg(0)
+	if len(ed.segs) != before-1 {
+		t.Fatalf("%d clips left, want %d", len(ed.segs), before-1)
+	}
+	if ed.segs[0].S != 100 {
+		t.Errorf("the wrong clip went: the survivor starts at %g, want 100", ed.segs[0].S)
+	}
+	ed.undoLast()
+	if len(ed.segs) != before {
+		t.Error("↶ did not bring the removed clip back")
+	}
+}
+
+// TestTheGreenBarWearsItsXOnScreen: a verb the hand cannot see is a verb
+// nobody uses, so the mark is drawn -- and only on a bar with the room, the
+// same floor the blue bar's ✕ keeps.
+func TestTheGreenBarWearsItsXOnScreen(t *testing.T) {
+	ed := bandEd(t)
+	ed.sel.active = false
+	ed.playhead, ed.hasPlay = 40, true
+	const w, h = 1300, 200
+	y := int(ed.selBandTop()) + selBandH/2
+	kx := int(ed.xOf(60) - selKillIn - selKillW/2)
+	whitish := func(at func(x, y int) (uint8, uint8, uint8)) bool {
+		for dx := -3; dx <= 3; dx++ {
+			for dy := -3; dy <= 3; dy++ {
+				r, g, b := at(kx+dx, y+dy)
+				if r > 200 && g > 200 && b > 200 {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if !whitish(renderTrack(t, ed, w, h)) {
+		t.Error("no ✕ is drawn on the green bar")
+	}
+	// a clip too narrow to aim at keeps its colour instead: same floor as the
+	// blue. The playhead moves inside the shrunken clip -- outside it there
+	// would be no bar at all, and no bar draws no ✕ for the wrong reason.
+	ed.segs[0].E = ed.segs[0].S + (selMinBand-4)/ed.pps
+	ed.playhead = (ed.segs[0].S + ed.segs[0].E) / 2
+	if got := ed.bandClipIdx(); got != 0 {
+		t.Fatalf("the shrunken clip is not the bar (idx %d) -- the check below would pass for nothing", got)
+	}
+	kx = int(ed.xOf(ed.segs[0].E) - selKillIn - selKillW/2)
+	if whitish(renderTrack(t, ed, w, h)) {
+		t.Error("a bar under the width floor still drew a ✕")
 	}
 }

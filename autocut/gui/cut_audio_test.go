@@ -280,13 +280,20 @@ func TestALaneReadsItsOwnClock(t *testing.T) {
 // ---- the picture ------------------------------------------------------------
 
 // renderAudio paints the lanes into an image surface and hands back a reader
-// for its pixels. Cairo's ARGB32 is premultiplied and little-endian, so a byte
-// quad is B, G, R, A.
+// for its pixels.
 func renderAudio(t *testing.T, ed *cutEditor, w, h int) func(x, y int) (r, g, b uint8) {
+	t.Helper()
+	return renderInk(t, w, h, func(cr *cairo.Context) { ed.drawAudio(cr, w, h) })
+}
+
+// renderInk runs one painter over a fresh surface and hands back a reader for
+// its pixels. Cairo's ARGB32 is premultiplied and little-endian, so a byte
+// quad is B, G, R, A.
+func renderInk(t *testing.T, w, h int, paint func(cr *cairo.Context)) func(x, y int) (r, g, b uint8) {
 	t.Helper()
 	surf := cairo.CreateImageSurface(cairo.FormatARGB32, w, h)
 	cr := cairo.Create(surf)
-	ed.drawAudio(cr, w, h)
+	paint(cr)
 	surf.Flush()
 	data, stride := surf.Data(), surf.Stride()
 	pix := make([]byte, len(data))
@@ -302,6 +309,11 @@ func renderAudio(t *testing.T, ed *cutEditor, w, h int) func(x, y int) (r, g, b 
 // lane is a dark slate and the centre line is that ground with a third of the
 // blue over it, both far short of this.
 func isBlue(r, _, b uint8) bool { return b > 200 && r < 150 }
+
+// isDimBlue is the same ink in the paired strip's voice: at just over half
+// strength the columns land near b=153, still twice the strip's own baseline
+// (~70) and far over its ground (~28).
+func isDimBlue(r, _, b uint8) bool { return b > 110 && r < 90 }
 
 func waveEd(t *testing.T) *cutEditor {
 	t.Helper()
@@ -411,7 +423,7 @@ func TestTheLanesAreWiredUnderTheCut(t *testing.T) {
 	}
 	src := string(b)
 	for _, want := range []string{
-		"tracks.Append(ed.audArea)   // under the footage: the footage is the master",
+		"tracks.Append(ed.audArea) // the recorders' band: the sound nobody filmed",
 		"ed.audArea.SetDrawFunc(",
 		// every sound in the session gets a lane: the footage's own first, then
 		// the sources the Inputs step did NOT mark as footage, placed by the

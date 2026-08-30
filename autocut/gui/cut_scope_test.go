@@ -6,10 +6,12 @@ package main
 // the meaning was decided entirely by which band the hand landed on, written
 // nowhere, and unchangeable: a selection dragged on the thumbnails that turned
 // out to be about sound had to be thrown away and dragged again in a lane, by
-// eye, at the same seconds. The strip on the seam between the two bands is
-// where that choice is now said and changed. Three rungs: the picture alone,
-// picture and sound together, and one recording's sound. ▲ climbs towards the
-// picture, ▼ walks down through the lanes and round.
+// eye, at the same seconds. The strip is where that choice is said and
+// changed -- at the top of the timeline now, under the ruler's clock, since
+// the waves paired under their rows (cut_pair_test.go) dissolved the seam it
+// used to stand on. Three rungs: the picture alone, picture and sound
+// together, and one recording's sound. ▲ climbs towards the picture, ▼ walks
+// down through the lanes and round.
 //
 // These tests hold the handle's geography, the walk through the lanes, what the
 // two halves are painted on each of the three rungs, and the consequence: the
@@ -49,6 +51,36 @@ func scopeSel(t *testing.T) (*App, *cutEditor) {
 	a, ed := selEd(t)
 	ed.sel.t0, ed.sel.t1, ed.sel.active, ed.sel.aud = 5, 25, true, ""
 	return a, ed
+}
+
+// The strip's row is under the clock and over the selection band: first the
+// time, then what the selection means there, then the selection itself, read
+// top to bottom. hitScope is the row's own word on what is a press on it, and
+// the band below starts exactly where it ends -- an overlap would give one
+// press two meanings.
+func TestTheStripStandsUnderTheClock(t *testing.T) {
+	_, ed := scopeSel(t)
+	if got := ed.scopeTop(); got != float64(rulerH) {
+		t.Errorf("the strip starts at %g, want it under the ruler at %d", got, rulerH)
+	}
+	for _, c := range []struct {
+		y    float64
+		want bool
+		what string
+	}{
+		{float64(rulerH) - 1, false, "in the ruler"},
+		{float64(rulerH), true, "the top of the strip"},
+		{float64(rulerH) + scopeH - 1, true, "the bottom of the strip"},
+		{float64(rulerH) + scopeH, false, "in the selection band"},
+	} {
+		if got := ed.hitScope(c.y); got != c.want {
+			t.Errorf("hitScope(%g) (%s) = %v, want %v", c.y, c.what, got, c.want)
+		}
+	}
+	if got := ed.selBandTop(); got != ed.scopeTop()+scopeH {
+		t.Errorf("the selection band starts at %g, want it flush under the strip at %g",
+			got, ed.scopeTop()+scopeH)
+	}
 }
 
 // The handle stands on the seconds it is about, and it is never smaller than
@@ -317,16 +349,17 @@ func TestASelectionLosesASoundThatIsNoLongerThere(t *testing.T) {
 	}
 }
 
-// The seams: the strip's own row in the box, the redraw that keeps it in step
-// with the bands either side, the visibility that follows the lanes, and the
-// two verbs it greys.
+// The seams: the strip is a stretch of the source area now, under the ruler --
+// drawTrack lowers the pen onto it, the press and the cursor find it by
+// height, and a reload still drops a scope pointing at a recording that left.
 func TestTheScopeStripIsWired(t *testing.T) {
 	pins := map[string][]string{
 		"cut.go": {
-			"ed.scopeArea = ed.newScopeArea()",
-			"tracks.Append(ed.scopeArea) // the seam, and the handle that names it",
-			"if ed.scopeArea != nil {\n\t\ted.scopeArea.QueueDraw()",
-			"ed.fitScope() // the seam sits under the pictures, lanes or no lanes",
+			"cr.Translate(0, ed.scopeTop())", // drawn where hitScope looks
+			"ed.drawScope(cr, w, int(scopeH))",
+			"if area == ed.srcArea && ed.hitScope(y) {",
+			"ed.scopeClicked(x+ed.viewX, y-ed.scopeTop())",
+			"ed.fitScope() // a reload may have taken the recording ▼ scoped to",
 			"func (ed *cutEditor) syncSelBtns() {",
 			"ed.addBtn.SetSensitive(!snd)",
 			`case ed.sel.active && ed.sel.aud != "":`, // ⌦ refuses too
@@ -336,9 +369,11 @@ func TestTheScopeStripIsWired(t *testing.T) {
 			"return ed.auds[i+1].base",                             // ▼ walks
 			"lit := (up && !ed.selSnd()) || (!up && !ed.selPic())", // three rungs, two arrows
 			"cr.SetSourceRGBA(0.3, 0.55, 0.9, 0.85)",               // the selection's own blue
-			"ed.scopeArea.SetVisible(len(ed.vids) > 0)",
 		},
-		"cut_selband.go": {"case ed.scopeArea:"}, // its own cursor slot
+		"cut_selband.go": {
+			"case ed.hitScope(y):", // its own cursor slot
+			"ed.hoverScope(x, y) // the ▲▼ handle lives in this area now",
+		},
 	}
 	for file, want := range pins {
 		src, err := os.ReadFile(file)

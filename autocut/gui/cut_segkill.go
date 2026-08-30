@@ -9,7 +9,10 @@ package main
 // the playhead happened to sit on -- and a verb that guesses is a verb that
 // occasionally removes something nobody pointed at.
 //
-// So it moves onto the thing it acts on. Every stretch the cut keeps is tinted
+// So it moves onto the thing it acts on. (A － Remove is back on the bar since,
+// for the one job a per-scene ✕ cannot do -- cutting a hole in the middle of a
+// scene, which leaves two scenes that did not exist to be pressed. It guesses
+// nothing: it is the selection's verb alone. See cut_selrm.go.) Every stretch the cut keeps is tinted
 // green over the thumbnails; each one now carries a ✕ in its top-right corner,
 // and pressing it drops THAT stretch. There is no ambiguity left to resolve:
 // the scene you pressed is the scene that goes.

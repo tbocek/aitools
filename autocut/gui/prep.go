@@ -1,6 +1,6 @@
 package main
 
-// Preprocessing: everything that has to happen before there is anything to cut.
+// Prepare: everything that has to happen before there is anything to cut.
 //
 // It was two pages. Inputs held the list of files, ran the speech-to-text over
 // all of them and pulled a frame out of the footage every few seconds; Describe
@@ -11,22 +11,25 @@ package main
 // tab and one ▶: the transcripts and the frames, then the describing and the
 // fixing, in the order they have to happen anyway.
 //
-// The page is the sources on the left and this session's context on the right.
-// The two system prompts are in the dropdown along the bottom (promptpick.go):
-// a prompt is read once, edited rarely, and then left alone for the rest of the
-// project, and what is worth a permanent pixel is the ✎ that says this project
-// changed one -- not thirty lines of wording nobody is reading today.
+// The page is halves: the sources on the left, and on the right one box
+// switched by a menu -- this session's context first, then every system prompt
+// in the app, in the order the pipeline sends them (prepedit.go). Not just this
+// page's two. A prompt is read once, edited before the first run and then left
+// alone for the rest of the project, while the pages that send them are where
+// the session's work happens, so a prompt sitting on its own page cost that
+// page room all session for a control used in the first ten minutes. Here they
+// cost nothing and gain something: reading down the menu is reading the run.
 //
 // The jobs stay separate on disk -- step1/, step2/describe/ and
 // step2/transcript/ -- because the describer resumes per chunk and the fixer
 // does not, and because a folder layout that changes with the tabs orphans
 // every project made before the change.
 //
-// The context box is the third box and it is not a prompt: it is what the
+// The context is the box's first row and it is not a prompt: it is what the
 // editor knows about THIS session, and every step's requests carry it
-// (context.go). It lives here because this is the first page whose jobs can use
-// it, and because writing it beside the two prompts is what stops it being
-// written into them.
+// (context.go). It leads because it is the one row a session actually has to
+// write, and it sits among the prompts because writing it beside them is what
+// stops it being written into them.
 //
 // Runners: pipeline.go (transcripts and frames), describe.go (describe)
 // and cut.go (fix + session timeline).
@@ -78,28 +81,43 @@ func (a *App) buildPrep() gtk.Widgetter {
 	inRow.Append(inLbl)
 	inRow.Append(p.inputs)
 
-	// The session's files down the left, what the editor knows about the
-	// session down the right, and a handle between them.
+	// The session's files down the left, the context and every prompt the
+	// pipeline sends down the right (prepedit.go), and a handle between them,
+	// opening at the middle.
 	//
-	// The list resizes with the window and the context does not: the context is
-	// a paragraph or two of the user's own text, so a wider window is worth
-	// nothing to it and is worth a great deal to a column of paths. Dragging
-	// the handle is what makes it wider, and that drag is what makes the list
-	// narrower, which is what it is for.
+	// Half each, because neither side is a sidebar any more: the right box is
+	// where the context gets written and where every prompt in the run is read,
+	// which is as much of the work as the list of files is. Both sides resize with the
+	// window, so the 50/50 holds as the window grows, and the handle is still
+	// there for the sessions where one side earns more than half.
 	//
 	// Both sides stand the same distance off the handle, so neither frame runs
 	// into it on the side where the two are compared.
-	ctxPane := a.contextEditor()
-	gtk.BaseWidget(ctxPane).SetSizeRequest(280, -1)
-	gtk.BaseWidget(ctxPane).SetMarginStart(12)
+	bench := a.prepEditor()
+	gtk.BaseWidget(bench).SetMarginStart(12)
 	sources := a.buildSources()
 	sources.SetMarginEnd(12)
 
 	outer := gtk.NewPaned(gtk.OrientationHorizontal)
 	outer.SetStartChild(sources)
-	outer.SetEndChild(ctxPane)
+	outer.SetEndChild(bench)
 	outer.SetResizeStartChild(true)
-	outer.SetResizeEndChild(false)
+	outer.SetResizeEndChild(true)
+	// The handle opens at the middle. A Paned with no position set gives each
+	// child what it asks for, which here is whatever the file list happens to
+	// want -- so the split is set to half the real width once the pane is on
+	// screen and measured. Map fires again every time the tab is shown, hence
+	// the once guard; after that first placement the handle is the user's.
+	split := false
+	outer.ConnectMap(func() {
+		if split {
+			return
+		}
+		split = true
+		glib.IdleAdd(func() {
+			outer.SetPosition(outer.AllocatedWidth() / 2)
+		})
+	})
 	// Shrink off on both ends: shrink means a child may be allocated less than
 	// it needs, and what these two need includes a heading row and a button
 	// row. With it off, GtkPaned clamps the handle to what both children need,
@@ -112,22 +130,10 @@ func (a *App) buildPrep() gtk.Widgetter {
 	// tab over.
 	outer.SetMarginStart(12)
 	outer.SetMarginEnd(12)
-
-	// The two system prompts this page sends, in the order it sends them, one
-	// dropdown and one button. They used to be two boxes filling the page --
-	// sixty lines of wording, permanently, for something read once a project.
-	// The counts they used to spell out are compiled in and visible nowhere
-	// else, so they are the tooltip on the menu row rather than a heading.
-	promptRow := a.promptBar(nil,
-		promptSlot{"describe", "Describe", fmt.Sprintf(
-			"%d frames per request, plus the last %d descriptions and up to %d spoken "+
-				"lines either side as context. No frame is ever sent twice: those "+
-				"descriptions are the model's only memory of what it already saw.",
-			framesPerReq, recentEvents, ctxSegs)},
-		promptSlot{"fix", "Transcript", fmt.Sprintf(
-			"The fixer: %d transcript lines per request, each block given what every "+
-				"other source showed or said at the same moment.", fixBlock)})
-	promptRow.SetMarginStart(12)
+	// and 6 off the shared bar below, so the Freq row and the editor frame do
+	// not sit on the transport buttons -- the breathing room every other edge
+	// of the page already has
+	outer.SetMarginBottom(6)
 
 	// The three folders one press of ▶ writes, and no path above them: the
 	// output folder is set once, in the row under the list, and repeating it
@@ -137,15 +143,10 @@ func (a *App) buildPrep() gtk.Widgetter {
 	// they are the open-folder symbol under the name each half of the run calls
 	// its output, with how much is in it. The question they get asked before a
 	// run is whether this already happened and to which part; the age of the
-	// newest file answers "is that from today?" and is one hover away.
+	// newest file answers "is that from today?" and is one hover away. The
+	// group rides the shared bottom bar (outStack in main.go), like every
+	// step's, so this page holds only the three triples, not the heading.
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	outRow.SetHExpand(true)
-	outRow.SetHAlign(gtk.AlignEnd)
-	outRow.SetMarginEnd(12)
-	outRow.SetMarginBottom(6)
-	outLbl := gtk.NewLabel("Outputs:")
-	outLbl.AddCSSClass("heading")
-	outRow.Append(outLbl)
 	for i, o := range []struct {
 		name, tip string
 		dir       func() string
@@ -171,18 +172,14 @@ func (a *App) buildPrep() gtk.Widgetter {
 		outRow.Append(gtk.NewLabel(o.name + ":"))
 		outRow.Append(lbl)
 	}
-	// the prompts at one end of the last row and the outputs at the other: what
-	// the run is told, and what the last one left behind
-	foot := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	foot.Append(promptRow)
-	foot.Append(outRow)
+	a.outStack.AddNamed(outRow, "prep")
 
-	// Inputs at the top, work in the middle, prompts and Outputs at the bottom
-	// -- the three rows in the order and the spacing every other step has.
+	// Inputs at the top and the work below -- no prompt row at the bottom any
+	// more, because this page's prompts live in the right-hand box now, behind
+	// its menu. The Outputs group is on the shared bar below all of it.
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
 	page.Append(inRow)
 	page.Append(outer)
-	page.Append(foot)
 
 	p.refresh()
 	return page
@@ -242,10 +239,15 @@ func (a *App) buildSources() *gtk.Box {
 	// idea and it could not say the thing this page is mostly about: a screen
 	// recording is the footage AND a voice, and the voice on it is everyone
 	// else. Each row says what its file is for instead.
-	addBtn := gtk.NewButtonWithLabel("Add files…")
+	// The buttons say "source" so the list above them does not need a heading
+	// to. A "Sources" title over two buttons reading "Add files…" and a list
+	// of file names was a line of the page spent on a word the buttons were
+	// one adjective away from carrying themselves -- and this half of the page
+	// is the list, so there was nothing for the heading to tell it apart from.
+	addBtn := gtk.NewButtonWithLabel("Add source files…")
 	addBtn.SetTooltipText("Add recordings or footage — several at once")
 	addBtn.ConnectClicked(a.addFilesDialog)
-	addDirBtn := gtk.NewButtonWithLabel("Add folder…")
+	addDirBtn := gtk.NewButtonWithLabel("Add source folder…")
 	addDirBtn.SetTooltipText("Add everything playable in a folder")
 	addDirBtn.ConnectClicked(a.addFolderDialog)
 	// what the symbols on a row mean, once, above the rows -- a tooltip answers
@@ -273,17 +275,13 @@ func (a *App) buildSources() *gtk.Box {
 	addRow.Append(addDirBtn)
 	addRow.Append(legend)
 
-	head := gtk.NewLabel("Sources")
-	head.SetXAlign(0)
-	head.SetEllipsize(pango.EllipsizeEnd)
-	head.AddCSSClass("heading")
-	head.SetTooltipText("Every file here is transcribed, and placed on the session clock by the timestamp in its name")
 	listScroll := gtk.NewScrolledWindow()
 	listScroll.SetChild(a.srcList.box)
 	listScroll.SetVExpand(true)
+	// what the heading used to say, kept on the thing it was about
+	listScroll.SetTooltipText("Every file here is transcribed, and placed on the session clock by the timestamp in its name")
 	sources := gtk.NewBox(gtk.OrientationVertical, 4)
 	sources.SetVExpand(true)
-	sources.Append(head)
 	sources.Append(addRow)
 	sources.Append(listScroll)
 
@@ -333,9 +331,9 @@ func (p *preproc) refresh() {
 	// which is the one thing the three counts above cannot say at a glance,
 	// since a project can have transcripts and no frames.
 	if frames, _ := os.ReadDir(filepath.Join(p.a.inputsDir(), "frames")); len(frames) > 0 {
-		p.a.progress.SetText(fmt.Sprintf("preprocessed (%d frame set(s))", len(frames)))
+		p.a.progress.SetText(fmt.Sprintf("prepared (%d frame set(s))", len(frames)))
 	} else {
-		p.a.progress.SetText("preprocessing has not run yet")
+		p.a.progress.SetText("Prepare has not run yet")
 	}
 }
 
@@ -503,19 +501,19 @@ func (a *App) startPrep(videos, audios []string, interval float64, scaleName, sc
 	a.runCtx, a.runCancel = context.WithCancel(context.Background())
 	a.qReset()
 	a.updateRunControls()
-	a.setStatus("preprocessing…")
+	a.setStatus("preparing…")
 	a.logExp.SetExpanded(true)
 	// what went in, by name -- the page has room for a count and nothing more
-	a.logf(">>> preprocessing: %d input files", len(videos)+len(audios))
+	a.logf(">>> prepare: %d input files", len(videos)+len(audios))
 	for _, f := range append(append([]string{}, videos...), audios...) {
 		a.logf("    %s", f)
 	}
 	if _, detail := a.inputsSummary(); detail != "" {
 		a.logf("%s", detail)
 	}
-	a.logCtx("preprocessing")
+	a.logCtx("prepare")
 	go func() {
-		described, err := a.preprocess(videos, audios, interval, scaleName, scaleVF)
+		described, err := a.prepare(videos, audios, interval, scaleName, scaleVF)
 		glib.IdleAdd(func() {
 			a.running = false
 			a.updateRunControls()
@@ -527,18 +525,18 @@ func (a *App) startPrep(videos, audios []string, interval float64, scaleName, sc
 				// transcribing arms nothing
 				a.undRestart = described
 				a.progress.SetText("stopped — finished work is kept; ⏸ was the way to keep a place")
-				a.setStatus("preprocessing stopped")
+				a.setStatus("preparing stopped")
 			case err != nil:
-				a.logf("preprocessing FAILED: %v", err)
+				a.logf("prepare FAILED: %v", err)
 				a.progress.SetText("failed — see log")
-				a.setStatus("preprocessing failed")
+				a.setStatus("preparing failed")
 			default:
 				a.progress.SetFraction(1)
-				a.logf(">>> preprocessing wrote:")
+				a.logf(">>> prepare wrote:")
 				n := a.logOutputs("inputs", a.inputsDir()) +
 					a.logOutputs("describe", a.describeDir()) +
 					a.logOutputs("transcript", a.transcriptDir())
-				a.setStatus(fmt.Sprintf("preprocessing done — %d files", n))
+				a.setStatus(fmt.Sprintf("prepared — %d files", n))
 			}
 			a.prep.refresh()
 			a.updateGates()
@@ -559,14 +557,14 @@ func (a *App) startPrep(videos, audios []string, interval float64, scaleName, sc
 // requirement -- what a progress bar owes you is a direction, not an ETA.
 const prepInputsShare = 0.3
 
-// preprocess is the whole press: the transcripts and the frames, then the
+// prepare is the whole press: the transcripts and the frames, then the
 // describing and the fixing. It reports whether the second half had begun,
 // which is what a ⏹ needs to know -- that is the half a restart throws away.
 //
 // Neither half knows the other exists: each still divides its own work into two
 // tracks that add up to a whole bar. qPhase is what puts each of them in its
 // own slice of it, so the needle crosses the middle once and never goes back.
-func (a *App) preprocess(videos, audios []string, interval float64, scaleName, scaleVF string) (bool, error) {
+func (a *App) prepare(videos, audios []string, interval float64, scaleName, scaleVF string) (bool, error) {
 	a.qPhase(0, prepInputsShare)
 	if err := a.ingest(videos, audios, interval, scaleName, scaleVF); err != nil {
 		return false, err

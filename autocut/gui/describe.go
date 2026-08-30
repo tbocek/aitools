@@ -287,7 +287,7 @@ func (a *App) planVideo(video, descDir string) (*videoPlan, error) {
 	fdir := a.framesDir(base)
 	ents, err := os.ReadDir(fdir)
 	if err != nil {
-		return nil, fmt.Errorf("no frames for %s -- run Preprocessing", base)
+		return nil, fmt.Errorf("no frames for %s -- run Prepare", base)
 	}
 	p := &videoPlan{base: base, video: video, dir: filepath.Join(descDir, base)}
 	for _, e := range ents {
@@ -310,7 +310,7 @@ func (a *App) planVideo(video, descDir string) (*videoPlan, error) {
 		}
 	}
 	if p.interval <= 0 {
-		return nil, fmt.Errorf("%s was extracted as every-frame; describe needs a fixed interval — rerun Preprocessing with e.g. 1s", base)
+		return nil, fmt.Errorf("%s was extracted as every-frame; describe needs a fixed interval — rerun Prepare with e.g. 1s", base)
 	}
 	p.chunks = (len(p.frames) + framesPerReq - 1) / framesPerReq
 	return p, nil
@@ -567,7 +567,7 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 			content = append(content, txtPart(fmt.Sprintf("[%+.1fs] FRAME %d of %d",
 				float64(i)*p.interval, i+1, hi-lo)), part)
 		}
-		reply, err := a.llmChatRetry([]map[string]any{
+		reply, err := a.llmChatRetry("describe", []map[string]any{
 			msg("system", a.prompt("describe")), msg("user", content),
 		}, false)
 		if err != nil {

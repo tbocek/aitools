@@ -47,6 +47,44 @@ func TestTheTitleTravelsInTheInstruction(t *testing.T) {
 	}
 }
 
+// The thumbnail came back with the last line printed twice.
+//
+// The instruction said "2 lines: 1st line X, 2nd line Y", the title was Y, and
+// editInstruction appended its own "Write the exact text \"Y\"" sentence
+// underneath -- so the model was asked for Y once inside the layout and once
+// more on its own, and an edit model that letters well obliges with both. The
+// page showed nothing wrong: the instruction box said two lines, the picture
+// had three.
+//
+// It got worse, not better, when the model started writing the instruction:
+// asked for a title and a thumbnail line in one reply, it naturally puts the
+// title into the line. So an instruction that already names the title is left
+// exactly as it is -- it is already asking for those words, in the layout that
+// was asked for, which is more than the appended sentence knows how to say.
+func TestATitleAlreadyInTheInstructionIsNotAskedForTwice(t *testing.T) {
+	const title = "500 Wins Badge Awarded"
+	laid := "Big red text in the middle of the picture in 2 lines: " +
+		"1st line: Slap Battles Tower Defense 2nd line: " + title
+	got := editInstruction(pubSettings{Prompt: laid, Title: title})
+	if got != laid {
+		t.Errorf("the title was asked for a second time:\n%s", got)
+	}
+
+	// case is not the difference: a model writes "500 wins badge awarded" in a
+	// sentence and Title-Cases it in the title box, and those are the same words
+	lower := "big red text reading 500 wins badge awarded across the bottom"
+	if got := editInstruction(pubSettings{Prompt: lower, Title: title}); got != lower {
+		t.Errorf("a differently-cased title was appended anyway:\n%s", got)
+	}
+
+	// and an instruction that does NOT name it still gets the sentence: this is
+	// the rule doing its job rather than switching itself off
+	edit := "brighten the character and blur the background"
+	if got := editInstruction(pubSettings{Prompt: edit, Title: title}); !strings.Contains(got, `"`+title+`"`) {
+		t.Errorf("an instruction that never mentions the title lost it:\n%s", got)
+	}
+}
+
 // The four candidates have to come from the video the viewer will see. A
 // thumbnail painted over a moment the cut removed advertises a video that does
 // not exist -- and it is exactly the moments a cut removes (the loading, the
@@ -102,26 +140,52 @@ func TestTheCandidateFramesComeFromTheCut(t *testing.T) {
 	}
 }
 
-// One model call now writes both the title and the description, and the only
-// thing separating them in the reply is a line the model was asked to prefix.
-// It will forget that line, wrap the whole answer in a fence, or put the title
-// in quotes -- none of which is worth a failed run. What must not happen is the
-// TITLE: line surviving into the description box, or a forgotten line costing
-// the description that was written underneath it.
-func TestTheTitleIsPeeledOffTheDescription(t *testing.T) {
+// One model call writes the title, the thumbnail instruction and the
+// description, and the only thing separating them in the reply is a line the
+// model was asked to prefix. It will forget a line, wrap the whole answer in a
+// fence, or put the title in quotes -- none of which is worth a failed run.
+// What must not happen is a label surviving into the description box, or a
+// forgotten line costing the description written underneath it.
+func TestTheLabelledLinesArePeeledOffTheDescription(t *testing.T) {
 	const body = "We went in for the chest and came out with nothing.\n\n#tarkov #raid"
-	for _, c := range []struct{ name, reply, title, desc string }{
-		{"as asked", "TITLE: The Door Was A Lie\n\n" + body, "The Door Was A Lie", body},
-		{"lowercase key", "title: The Door Was A Lie\n\n" + body, "The Door Was A Lie", body},
-		{"quoted title", "TITLE: \"The Door Was A Lie\"\n\n" + body, "The Door Was A Lie", body},
-		{"fenced", "```\nTITLE: The Door Was A Lie\n\n" + body + "\n```", "The Door Was A Lie", body},
-		// no line at all: the description is still the product, so it is kept
-		// whole and the title box is simply left for the user to fill
-		{"no title line", body, "", body},
+	const head = "TITLE: The Door Was A Lie\nTHUMBNAIL: a raider holding an empty case\n\n"
+	for _, c := range []struct{ name, reply, title, instr, desc string }{
+		{"as asked", head + body, "The Door Was A Lie", "a raider holding an empty case", body},
+		{"lowercase keys", strings.ToLower(head[:len(head)-2]) + "\n\n" + body,
+			"the door was a lie", "a raider holding an empty case", body},
+		{"quoted title", "TITLE: \"The Door Was A Lie\"\n\n" + body, "The Door Was A Lie", "", body},
+		{"fenced", "```\n" + head + body + "\n```", "The Door Was A Lie", "a raider holding an empty case", body},
+		// order is what the prompt asks for, not what it gets: a model that
+		// answers the two labels the other way round is still answering
+		{"swapped", "THUMBNAIL: a raider holding an empty case\nTITLE: The Door Was A Lie\n\n" + body,
+			"The Door Was A Lie", "a raider holding an empty case", body},
+		// no lines at all: the description is still the product, so it is kept
+		// whole and the other two boxes are simply left as they were
+		{"no labels", body, "", "", body},
+		// and one label without the other is half an answer, not a failed one
+		{"title only", "TITLE: The Door Was A Lie\n\n" + body, "The Door Was A Lie", "", body},
 	} {
-		title, desc := splitTitle(c.reply)
-		if title != c.title || desc != c.desc {
-			t.Errorf("%s: splitTitle = (%q, %q), want (%q, %q)", c.name, title, desc, c.title, c.desc)
+		title, instr, desc := splitUpload(c.reply)
+		if title != c.title || instr != c.instr || desc != c.desc {
+			t.Errorf("%s: splitUpload = (%q, %q, %q), want (%q, %q, %q)",
+				c.name, title, instr, desc, c.title, c.instr, c.desc)
+		}
+	}
+}
+
+// Nothing the model writes is allowed to empty a box the user filled. A reply
+// that forgets a label loses that line and nothing else, which is why the two
+// suggestions land conditionally and the description -- always present, since
+// whatever is left over IS the description -- lands flat.
+func TestAForgottenLabelKeepsWhatWasAlreadyThere(t *testing.T) {
+	body := funcBody(t, "publish.go", `func \(a \*App\) publishRun\(textOnly bool\) \{`)
+	for _, want := range []string{
+		`if title != "" {`,
+		`if instr != "" {`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("publishRun is missing %s -- a reply that forgot one label "+
+				"would blank a box the user had filled", want)
 		}
 	}
 }
@@ -203,7 +267,7 @@ func TestPromotingAnImageIsWhatMakesItTheBase(t *testing.T) {
 // -- while a missing reference is only ever named in passing, and losing the
 // mention beats losing the run.
 func TestTheWholeRowIsSentInOrder(t *testing.T) {
-	body := funcBody(t, "publish.go", `func \(a \*App\) drawThumbnail\(st pubSettings\) error \{`)
+	body := funcBody(t, "publish.go", `func \(a \*App\) drawThumbnail\(`)
 	if !strings.Contains(body, "range st.Frames") {
 		t.Error("drawThumbnail no longer walks the row, so references never reach the model")
 	}
@@ -297,28 +361,27 @@ func TestThePublishPromptIsEditable(t *testing.T) {
 			"the job it belonged to is gone, so it is a prompt nobody sends")
 	}
 	src := readSrc(t, "publish.go")
-	for _, want := range []string{
-		`promptSlot{"youtube"`, // in the dropdown, opened by its Edit button
-		`a.prompt("youtube")`,
-	} {
-		if !strings.Contains(src, want) {
-			t.Errorf("step6 is missing %s -- an editable prompt that is not sent is a lie", want)
-		}
+	// the page sends it; the box that edits it is on Prepare (prepedit.go)
+	if !strings.Contains(src, `a.prompt("youtube")`) {
+		t.Error(`step6 no longer sends a.prompt("youtube") -- an editable prompt that is not sent is a lie`)
+	}
+	if strings.Contains(src, "a.promptBar(") || strings.Contains(src, "promptSlot{") {
+		t.Error("step6 builds a prompt editor again -- every prompt lives in the one box on Prepare")
 	}
 	if strings.Contains(src, `"thumbnail"`) {
 		t.Error("step6 still names the thumbnail prompt, which no longer exists")
 	}
 }
 
-// What the one remaining prompt must and must not ask for. It writes two things
-// in one reply, so the separator has to be spelled out exactly -- without the
-// TITLE: line splitTitle has nothing to peel and the title arrives as the first
-// paragraph of the description. And asking for JSON would throw away good prose
-// over one unescaped quote.
+// What the one remaining prompt must and must not ask for. It writes three
+// things in one reply, so the separators have to be spelled out exactly --
+// without the labelled lines splitUpload has nothing to peel and the title
+// arrives as the first paragraph of the description. And asking for JSON would
+// throw away good prose over one unescaped quote.
 func TestThePublishPromptMatchesHowTheAnswerIsUsed(t *testing.T) {
 	for _, want := range []string{
-		"TITLE: ",     // the separator splitTitle looks for, verbatim
-		"first line",  // ...and where it will look for it
+		"TITLE: ",     // the separators splitUpload looks for, verbatim
+		"THUMBNAIL: ", // ...both of them
 		"Four to sev", // a title short enough to be lettered across a thumbnail
 		"No JSON",     // which models volunteer even when asked for prose
 	} {
@@ -329,13 +392,55 @@ func TestThePublishPromptMatchesHowTheAnswerIsUsed(t *testing.T) {
 	if strings.Contains(youtubeSystem, "strict JSON") {
 		t.Error("the upload-text prompt asks for JSON; the answer is prose and is read as prose")
 	}
-	// The edit instruction is the user's to write now. A prompt that also wrote
-	// one would put a second, unasked-for instruction into a box the user had
-	// already filled.
-	for _, gone := range []string{"base_frame", "negative_prompt", "EDIT INSTRUCTION"} {
+	// The thumbnail line must not ask for lettering. The title is appended to
+	// the instruction by editInstruction, so a model that asks for the title in
+	// the picture as well is asking for it twice -- which is exactly what an
+	// edit model gives you.
+	low := strings.ToLower(youtubeSystem)
+	if !strings.Contains(low, "no text") && !strings.Contains(low, "no lettering") {
+		t.Error("the upload-text prompt does not tell the model to keep words out of the " +
+			"thumbnail instruction -- the title is added to it afterwards")
+	}
+	// and it is an instruction for an edit model, not a caption of the frame
+	if !strings.Contains(low, "instruction") {
+		t.Error("the upload-text prompt does not say the thumbnail line is an instruction")
+	}
+	// what belonged to the deleted frame-picking job stays deleted: this job
+	// writes words, it does not choose an image or set sampler knobs
+	for _, gone := range []string{"base_frame", "negative_prompt"} {
 		if strings.Contains(youtubeSystem, gone) {
 			t.Errorf("the upload-text prompt still asks for %q, which belonged to the deleted job", gone)
 		}
+	}
+}
+
+// One call, three answers, against a local fake server. The split is tested
+// above on strings; what this adds is that the call actually returns all three
+// -- a reader wired to two of them and dropping the third is the kind of thing
+// that only shows up as an empty box.
+func TestOneCallAnswersWithAllThreeParts(t *testing.T) {
+	a := chatFake(t, 200, `{"choices":[{"message":{"content":`+
+		`"TITLE: The Door Was A Lie\nTHUMBNAIL: the raider holding an empty case\n\nWe went in for the chest.\n\n#tarkov"}}]}`)
+	title, instr, desc, err := a.writeUpload("THE CLIPS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "The Door Was A Lie" {
+		t.Errorf("title = %q", title)
+	}
+	if instr != "the raider holding an empty case" {
+		t.Errorf("instruction = %q", instr)
+	}
+	if desc != "We went in for the chest.\n\n#tarkov" {
+		t.Errorf("description = %q", desc)
+	}
+
+	// and a reply with nothing in it is an error rather than three empty boxes:
+	// the description is the part with no fallback, so it is what is checked
+	a = chatFake(t, 200, `{"choices":[{"message":{"content":"TITLE: A Title\n"}}]}`)
+	if _, _, _, err := a.writeUpload("THE CLIPS"); err == nil {
+		t.Error("a reply with no description was accepted -- the run would land an empty box " +
+			"on the page and call it done")
 	}
 }
 
@@ -346,7 +451,7 @@ func TestThePublishPromptMatchesHowTheAnswerIsUsed(t *testing.T) {
 // after rewording the instruction.
 func TestPublishWritesTheTextBeforeItDraws(t *testing.T) {
 	body := funcBody(t, "publish.go", `func \(a \*App\) publishRun\(textOnly bool\) \{`)
-	iDesc := strings.Index(body, "writeDescription")
+	iDesc := strings.Index(body, "a.writeUpload(brief)")
 	iDraw := strings.Index(body, "drawThumbnail")
 	if iDesc < 0 || iDraw < 0 {
 		t.Fatalf("publishRun no longer does both: %d %d", iDesc, iDraw)
@@ -399,10 +504,9 @@ func TestThePageIsSplitBetweenTheDrawingAndTheWords(t *testing.T) {
 			t.Errorf("the drawing column is missing %s", want)
 		}
 	}
-	// right: the prompt that writes the words, then the words
+	// right: the words themselves, and only those -- the prompt that writes
+	// them is on Prepare
 	for _, want := range []string{
-		`a.promptBar(nil, promptSlot{"youtube"`,
-		"text.Append(promptRow)",
 		"said.Append(p.title)",
 		"said.Append(descBox)",
 	} {
@@ -410,12 +514,16 @@ func TestThePageIsSplitBetweenTheDrawingAndTheWords(t *testing.T) {
 			t.Errorf("the text column is missing %s", want)
 		}
 	}
-	// and the two lines that belong to neither stay top and bottom, full width
+	// and the Inputs line that belongs to neither column stays above the
+	// split, full width; the Outputs group left the page for the shared
+	// bottom bar (outStack in main.go)
 	iRun := strings.Index(body, "page.Append(inRow)")
 	iOuter := strings.Index(body, "page.Append(outer)")
-	iOut := strings.Index(body, "page.Append(outRow)")
-	if iRun < 0 || iOuter < 0 || iOut < 0 || !(iRun < iOuter && iOuter < iOut) {
-		t.Errorf("Inputs/Outputs are no longer above and below the split: %d %d %d", iRun, iOuter, iOut)
+	if iRun < 0 || iOuter < 0 || iRun > iOuter {
+		t.Errorf("the Inputs row is no longer above the split: %d %d", iRun, iOuter)
+	}
+	if strings.Contains(body, "page.Append(outRow)") {
+		t.Error("the Outputs row is back on the page beside the one on the shared bar")
 	}
 }
 

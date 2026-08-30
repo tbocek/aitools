@@ -123,7 +123,7 @@ func TestEveryPathThatMovesTheLineSaysSo(t *testing.T) {
 			"buttons and playback -- if one was removed, drop it from this count", n)
 	}
 	// and the label has to be on the bar, next to the buttons that move it
-	if !strings.Contains(string(b), "bar.Append(col(linked(ed.playBtn, prev5, prevF, nextF, next5), ed.clock))") {
+	if !strings.Contains(string(b), "bar.Append(col(linked(ed.playBtn, ed.cutPlayBtn, prev5, prevF, nextF, next5), ed.clock))") {
 		t.Error("the clock is built but never added to the toolbar")
 	}
 }
@@ -187,7 +187,7 @@ func TestTheMarksReadTheSelectionUnderTheCutButtons(t *testing.T) {
 	// and the label sits in the bar, in a column under the buttons that act on
 	// what it describes, in small print
 	for _, want := range []string{
-		"bar.Append(col(linked(add, ed.copyBtn, ins, ed.laneBtn), ed.marks))",
+		"bar.Append(col(linked(add, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))",
 		`ed.marks.SetMarkup("<small>" + marksClock(ed.markIn, ed.markOut, ed.hasIn, ed.hasOut) + "</small>")`,
 	} {
 		if !strings.Contains(src, want) {

@@ -186,8 +186,10 @@ func TestTheAudioInsertIsWired(t *testing.T) {
 		},
 		"cut_audio.go": {
 			"if !s.audioIns() {", // the lanes draw exactly these
-			"hatchStrokes(cr, x0, x1-x0, 0, fh)",
-			`markPlate(cr, tx, fh-6, "sound", fmt.Sprintf("%s  %.1fs", insName(s), s.Dur))`,
+			// one painter for the band and the rows' paired strips
+			"func (ed *cutEditor) sndInsMark(",
+			"hatchStrokes(cr, x0, x1-x0, y, h)",
+			`markPlate(cr, tx, y+h-6, "sound", fmt.Sprintf("%s  %.1fs", insName(s), s.Dur))`,
 		},
 		"cut_insview.go": {
 			"if s == nil || s.audioIns() {", // the preview keeps the session's picture

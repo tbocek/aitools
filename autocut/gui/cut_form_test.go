@@ -3,69 +3,48 @@ package main
 import (
 	"strings"
 	"testing"
-
-	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
 // The three prompts the Cut page sends held the right-hand half of its top row,
 // permanently, for every session -- three boxes of thirty lines each that a
-// working cut never touches. They are one dropdown in the toolbar now, and the
-// place to check is the toolbar: the menu has to be left of the view buttons,
-// which is where the user asked for it and also the only place it can be. Past
-// the rule are the controls that change what you SEE and never what is saved,
-// and a prompt is the opposite of that -- it is what Suggest sends.
-func TestTheCutPromptsAreOneMenuLeftOfTheViewButtons(t *testing.T) {
+// working cut never touches. They became a dropdown in the toolbar, and then
+// they left the page: every prompt in the app is one box on Prepare now
+// (prepedit.go). A prompt is written once, before the first run, and this bar
+// is where the session's actual work happens.
+//
+// What stayed is the STYLE -- highlights, a rating, a Short -- because that is
+// not a prompt, it is a choice made before every suggest run, and it belongs
+// next to the button it changes.
+func TestTheCutPageSendsPromptsItDoesNotEdit(t *testing.T) {
 	src := readSrc(t, "cut.go")
 
-	// the menu, in the order the run makes the calls: the rules, then the read
-	// back of what they produced, then the decoration inside the result
-	order := []string{
-		`promptSlot{"cut", "Cut",`,
-		`promptSlot{"audit", "Audit",`,
-		`promptSlot{"effects", "Effects",`,
-	}
-	at := -1
-	for _, want := range order {
-		i := strings.Index(src, want)
-		if i < 0 {
-			t.Fatalf("cut.go does not offer %s in its prompt menu", want)
-		}
-		if i < at {
-			t.Errorf("%s is out of order in the menu -- reading down it is reading the run", want)
-		}
-		at = i
-	}
-	if !strings.Contains(src, "promptRow := a.promptBar(ed,") {
-		t.Error("the Cut page does not pass itself as the form host, so its prompts open in a window " +
-			"over the timeline they are about")
-	}
-
-	// left of the − + pairs, and on the side of the rule where things change
-	// the cut
-	for _, after := range []string{
-		"bar.Append(rule()) // past here nothing changes the cut",
-		"viewRow.Append(linked(zoomOut, zoomIn))",
-		"viewRow.Append(linked(thumbMinus, thumbPlus))",
+	// no editor, no dropdown, no Edit button: a second way to reach the same
+	// prompt is a second place to fix when the storage behind it changes
+	for _, gone := range []string{
+		`a.promptEditor("cut"`, `a.promptEditor("audit"`, "promptBox",
+		"a.promptBar(", "promptSlot{", "bar.Append(promptRow)",
 	} {
-		i, j := strings.Index(src, "bar.Append(promptRow)"), strings.Index(src, after)
-		if i < 0 {
-			t.Fatal("the prompt menu is not in the bar at all")
-		}
-		if j < 0 {
-			t.Fatalf("cut.go no longer has %q", after)
-		}
-		if i > j {
-			t.Errorf("the prompt menu is built after %q -- it belongs left of the view controls", after)
+		if strings.Contains(src, gone) {
+			t.Errorf("cut.go still builds %s beside the video -- the prompts are on Prepare", gone)
 		}
 	}
 
-	// and the wall of boxes it replaced is gone rather than merely hidden: a
-	// second way to reach the same prompt is a second place to fix when the
-	// storage behind it changes
-	for _, gone := range []string{`a.promptEditor("cut"`, `a.promptEditor("audit"`, "promptBox"} {
-		if strings.Contains(src, gone) {
-			t.Errorf("cut.go still builds %s beside the video", gone)
-		}
+	// and the page says where they went, because the next person to look for
+	// them will look here first
+	if !strings.Contains(src, "prepedit.go") {
+		t.Error("cut.go drops the prompts without pointing at where they live now")
+	}
+
+	// the style bar is on the side of the rule where things change the cut
+	i, j := strings.Index(src, `a.styleBar("cut", "Style"`), strings.Index(src, "bar.Append(rule()) // past here nothing changes the cut")
+	if i < 0 {
+		t.Fatal("the Cut page no longer offers the style choice on its bar")
+	}
+	if j < 0 {
+		t.Fatal("cut.go no longer marks where the bar stops changing the cut")
+	}
+	if i > j {
+		t.Error("the style menu is built past the rule, among the controls that only change what you see")
 	}
 }
 
@@ -122,68 +101,6 @@ func TestOneColumnMeansTheFormBeforeItIsToldItIsGone(t *testing.T) {
 		}
 	}
 
-	// what being told is FOR, which is testable without a display: the picker
-	// drops the editor it had open, so showPromptStyle stops filling a box
-	// nobody can see and the next editor for that key is the one on screen
-	a := &App{
-		promptViews: map[string]*gtk.TextView{"cut": nil, "audit": nil},
-		promptRows:  map[string]promptRow{"cut": {}, "audit": {}},
-	}
-	p := &promptPicker{a: a, open: "cut"} // no dropdown: sync is a no-op here
-	p.closed()
-	if _, ok := a.promptViews["cut"]; ok {
-		t.Error("the closed editor is still registered")
-	}
-	if _, ok := a.promptRows["cut"]; ok {
-		t.Error("the closed editor's wording row is still registered")
-	}
-	if _, ok := a.promptViews["audit"]; !ok {
-		t.Error("closing one editor forgot another one")
-	}
-	if p.open != "" {
-		t.Errorf("the picker still thinks %q is open", p.open)
-	}
-	p.closed() // idempotent: the column is emptied by Close and by the next form
-	if _, ok := a.promptViews["audit"]; !ok {
-		t.Error("a second close forgot an editor that was never opened here")
-	}
-}
-
-// Swapping one prompt form for another is the one order in this file that is
-// load-bearing, and getting it wrong shows up nowhere.
-//
-// Both editors are registered under their prompt KEY (promptEditor writes
-// a.promptViews[key]; forgetPromptEditor deletes it), the column holds one form,
-// and putting the second one up takes the first one down. So if the picker
-// records the incoming key before showForm runs, the outgoing form's `gone`
-// fires with the wrong name in hand and forgets the editor that is now on
-// screen. Nothing visibly happens: the box is drawn and filled, and it is only
-// LATER -- when a different wording is picked in it, or a project is loaded --
-// that showPromptStyle writes to a widget nobody is holding and the box on
-// screen sits there unchanged.
-//
-// And re-opening the prompt already in the column is the same trap from the
-// other side: the fresh editor takes the key, then the old one's closing takes
-// it away again. There is nothing to rebuild, so it is not rebuilt.
-func TestSwappingOnePromptFormForAnotherForgetsTheOutgoingOne(t *testing.T) {
-	body := funcBody(t, "promptpick.go", `func \(p \*promptPicker\) openPicked\(`)
-	iShow := strings.Index(body, "p.host.showForm(")
-	iOpen := strings.Index(body, "p.open = s.key")
-	if iShow < 0 || iOpen < 0 {
-		t.Fatalf("openPicked no longer puts the form up and remembers it:\n%s", body)
-	}
-	if iOpen < iShow {
-		t.Error("openPicked names the incoming prompt before the outgoing form is taken " +
-			"down -- its `gone` would forget the editor that just went on screen")
-	}
-	if !strings.Contains(body, `if p.host != nil && p.open == s.key {`) {
-		t.Errorf("openPicked rebuilds the prompt already in the column:\n%s", body)
-	}
-	// the build has to come after the early return, or the discarded editor has
-	// already overwritten the registration of the one on screen
-	if i := strings.Index(body, "p.a.promptEditor("); i >= 0 && i < strings.Index(body, "p.open == s.key") {
-		t.Error("openPicked builds the editor before deciding whether it needs one")
-	}
 }
 
 // An effect form is not a window. It opens in the page's column with the
@@ -368,9 +285,11 @@ func TestTheFormsTwoHalvesAreAGrid(t *testing.T) {
 	if !strings.Contains(fx, "oRow.setSensitive(!stay.Active())") {
 		t.Error("the staying zoom no longer greys its fade out row")
 	}
-	// and the shape row goes quiet with the two fades it is about
-	if n := strings.Count(fx, "etSensitive(!(stay.Active() && first))"); n != 2 {
-		t.Errorf("%d rows go quiet on the zoom that has no fades at all, want 2", n)
+	// and only that row: the fade IN row stays live for every zoom, because
+	// no framing reaches back before its own T any more and so every one of
+	// them has a picture to travel from
+	if strings.Contains(fx, "stay.Active() && first") {
+		t.Error("the zoom dialog still greys a fade in for the cut's earliest framing")
 	}
 }
 

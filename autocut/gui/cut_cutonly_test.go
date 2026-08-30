@@ -112,9 +112,10 @@ func TestTheCutOnlyPreviewIsWired(t *testing.T) {
 		"ed.setPlayhead(ed.segs[next].S)",
 		// ▶ never opens on a frame the cut throws away
 		"ed.cutOnlySnap()",
-		// the button, and the flag it drives
-		"ed.cutBtn = gtk.NewToggleButton()",
-		"ed.cutOnly = ed.cutBtn.Active()",
+		// the second play button, and the flag that follows it
+		"ed.cutPlayBtn = gtk.NewButtonWithLabel(\"▶✂\")",
+		"func (ed *cutEditor) playAs(cut bool) {",
+		"ed.cutOnly = cut",
 		// the clock changes meaning with it
 		"t = cutPos(ed.segs, ed.playhead)",
 		// and the track says which seconds are about to be skipped
@@ -152,8 +153,9 @@ func TestAnEmptyCutHasNothingToPlay(t *testing.T) {
 	}
 	src := string(b)
 	for _, want := range []string{
-		// the one rule, in the one place that draws it
-		"ed.playBtn.SetSensitive(!ed.cutOnly || len(ed.segs) > 0)",
+		// the one rule, in the one place that draws it -- and it greys ▶✂,
+		// never plain ▶: the recording is always there to play
+		"ed.cutPlayBtn.SetSensitive(len(ed.segs) > 0)",
 		// ...and toggle refuses on the same rule, saying why
 		"the cut is empty — add a clip to play it",
 		// the toolbar clock stays on the SESSION's time too: an empty cut's own
@@ -170,5 +172,69 @@ func TestAnEmptyCutHasNothingToPlay(t *testing.T) {
 	// added, or stay live after the last is removed
 	if n := strings.Count(src, "ed.syncPlayBtn()"); n < 2 {
 		t.Errorf("syncPlayBtn is called from %d places, want the ✂ toggle and syncButtons both", n)
+	}
+}
+
+// Two play buttons instead of a mode toggle: ▶ plays the recording, ▶✂ plays
+// the cut, and the flag the old toggle set now simply follows whichever was
+// pressed. The presses run headless (no player, so nothing actually rolls);
+// what must hold is the state each press leaves behind.
+func TestEachPlayButtonBringsItsOwnPreview(t *testing.T) {
+	ed := &cutEditor{a: &App{}, hasPlay: true}
+	ed.segs = []cutSeg{{S: 10, E: 20}}
+
+	// ▶✂ makes the preview the cut -- and delivers kept material immediately:
+	// a playhead parked in a dropped stretch moves to the first kept frame
+	ed.playAs(true)
+	if !ed.cutOnly {
+		t.Error("▶✂ did not make the preview the cut")
+	}
+	if ed.playhead != 10 {
+		t.Errorf("playhead = %v after ▶✂ from a dropped stretch, want snapped to 10", ed.playhead)
+	}
+
+	// plain ▶ takes the preview back to the recording
+	ed.playAs(false)
+	if ed.cutOnly {
+		t.Error("▶ did not take the preview back to the recording")
+	}
+
+	// pressing the button whose preview is already current is a plain
+	// play/pause, not a re-switch: the flag stays put
+	ed.playAs(false)
+	if ed.cutOnly {
+		t.Error("a second ▶ flipped the preview to the cut")
+	}
+}
+
+// The wiring of the pair: each button's face answers only for its own preview,
+// and the ▶✂ face stays lit while the preview is the cut at all. Buttons and
+// CSS are live widgets, so the seam is pinned in the source.
+func TestTheTwoPlayButtonsAreWired(t *testing.T) {
+	src := readSrc(t, "pipeline.go")
+	for _, want := range []string{
+		// plain ▶ wears ⏸ only while the RECORDING runs...
+		"setPlayIcon(a.ed.playBtn, a.ed.playing() && !a.ed.cutOnly,",
+		// ...and ▶✂ is redrawn beside it on every state change
+		"a.ed.syncCutPlay()",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("pipeline.go no longer contains %q", want)
+		}
+	}
+	src = readSrc(t, "cut.go")
+	for _, want := range []string{
+		// ⏸✂ only while the cut itself is running
+		"if ed.playing() && ed.cutOnly {",
+		"ed.cutPlayBtn.SetLabel(\"⏸✂\")",
+		// the lamp: a lit face for as long as the preview is the cut
+		"ed.cutPlayBtn.AddCSSClass(\"suggested-action\")",
+		// each button hands its own idea of the preview to the shared press
+		"ed.playBtn.ConnectClicked(func() { ed.playAs(false) })",
+		"ed.cutPlayBtn.ConnectClicked(func() { ed.playAs(true) })",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut.go no longer contains %q", want)
+		}
 	}
 }

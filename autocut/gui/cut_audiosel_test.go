@@ -53,13 +53,14 @@ func selEd(t *testing.T) (*App, *cutEditor) {
 // hand was on a waveform.
 func TestEveryPointInTheLanesNamesARecording(t *testing.T) {
 	_, ed := selEd(t)
-	// lanes: mic L 3-33, mic R 33-63, gap, cam 67-97, gap, room 101-131
+	// lanes: mic L 3-33, mic R 33-63, gap, room 67-97 -- and no cam anywhere:
+	// the footage's own sound is paired under its pictures now, not down here
 	for _, c := range []struct {
 		y    float64
 		want string
 	}{
 		{0, "mic"}, {10, "mic"}, {40, "mic"}, {62, "mic"},
-		{64, "cam"}, {70, "cam"}, {96, "cam"},
+		{64, "room"}, {70, "room"}, {96, "room"},
 		{100, "room"}, {120, "room"}, {400, "room"},
 	} {
 		if got := ed.audAtY(c.y); got != c.want {
@@ -80,7 +81,7 @@ func TestEveryPointInTheLanesNamesARecording(t *testing.T) {
 // have to agree or the brighter wash lands on the wrong recording.
 func TestALaneKnowsWhereItIs(t *testing.T) {
 	_, ed := selEd(t)
-	for _, base := range []string{"mic", "cam", "room"} {
+	for _, base := range []string{"mic", "room"} {
 		y0, y1, ok := ed.audLaneSpan(base)
 		if !ok {
 			t.Fatalf("audLaneSpan(%q) found no lanes", base)
@@ -95,6 +96,11 @@ func TestALaneKnowsWhereItIs(t *testing.T) {
 	if y0, y1, ok := ed.audLaneSpan("gone"); ok {
 		t.Errorf("audLaneSpan of a recording that is not here = %.0f-%.0f, want no span", y0, y1)
 	}
+	// the master is in the session but not in the band: its wave lives under
+	// its own row of pictures, and a wash aimed at it must land there instead
+	if y0, y1, ok := ed.audLaneSpan("cam"); ok {
+		t.Errorf("audLaneSpan of the footage's own sound = %.0f-%.0f in the band, want none", y0, y1)
+	}
 	// two lanes are twice a lane: a stereo recording's wash covers both
 	y0, y1, _ := ed.audLaneSpan("mic")
 	if y1-y0 != 2*waveLaneH {
@@ -104,12 +110,11 @@ func TestALaneKnowsWhereItIs(t *testing.T) {
 	// above the first, the gap between each pair, and nothing left over at the
 	// bottom. The bright wash is drawn from these numbers, so a layout that
 	// drifts from the drawing's puts it over the wrong waveform.
-	c0, _, _ := ed.audLaneSpan("cam")
-	_, r1, _ := ed.audLaneSpan("room")
-	if y0 != wavePad || c0-y1 != waveGap || r1+wavePad != float64(ed.audioHeight()) {
+	r0, r1, _ := ed.audLaneSpan("room")
+	if y0 != wavePad || r0-y1 != waveGap || r1+wavePad != float64(ed.audioHeight()) {
 		t.Errorf("the lanes start at %.0f, leave %.0f between recordings and end at %.0f in "+
 			"an area %d high — want a %.0f pad and a %.0f gap",
-			y0, c0-y1, r1, ed.audioHeight(), wavePad, waveGap)
+			y0, r0-y1, r1, ed.audioHeight(), wavePad, waveGap)
 	}
 }
 

@@ -7,12 +7,15 @@ package main
 // are on the other recorder -- was neither audible nor comparable to anything:
 // a lane on its own is a smear, and whether it sits where it belongs is not a
 // question one waveform can answer. What is pinned here is the pair that makes
-// it answerable: the footage's own sound is a lane too, drawn from the same
-// clock, and everything else in the session is played under it.
+// it answerable: the footage's own sound is drawn too -- under its own row of
+// pictures now -- from the same clock, and everything else in the session is
+// played under it.
 
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/diamondburned/gotk4/pkg/cairo"
 )
 
 // ---- the picture ------------------------------------------------------------
@@ -72,19 +75,25 @@ func TestTheSameInstantIsDrawnInTheSameColumn(t *testing.T) {
 		ed.waves[au.base] = wf
 	}
 
-	at := renderAudio(t, ed, 500, ed.audioHeight())
+	// the two waves are no longer rows of one band: the footage's own sound
+	// is the paired strip under its pictures, in the dim voice, and only the
+	// recorder is in the band below. Same clock, two painters -- so each is
+	// rendered by its own, over the same 500 px, and asked the same question.
+	pairAt := renderInk(t, 500, int(waveLaneH), func(cr *cairo.Context) {
+		ed.drawPairStrip(cr, ed.vids[0], ed.auds[0], 0, 0, 500)
+	})
+	bandAt := renderAudio(t, ed, 500, ed.audioHeight())
 	// the loud part of each lane, in px. Read across the row just above the
 	// lane's floor, which a column of any height at all covers -- the fill
 	// stands up from there -- so what separates sound from silence on that row
 	// is the ink and not the height. The quiet stretches have the baseline
-	// under them, and the baseline is a third of the blue over dark ground,
-	// well short of what isBlue will take.
-	span := func(lane int) (int, int) {
+	// under them, and the baseline is a fraction of the blue over dark ground,
+	// well short of what either isBlue will take.
+	span := func(at func(x, y int) (r, g, b uint8), y int, blue func(r, g, b uint8) bool) (int, int) {
 		t.Helper()
-		y := int(wavePad+float64(lane)*(waveLaneH+waveGap)+waveLaneH) - 2
 		lo, hi := -1, -1
 		for x := 0; x < 500; x++ {
-			if r, g, b := at(x, y); isBlue(r, g, b) {
+			if r, g, b := at(x, y); blue(r, g, b) {
 				if lo < 0 {
 					lo = x
 				}
@@ -93,8 +102,8 @@ func TestTheSameInstantIsDrawnInTheSameColumn(t *testing.T) {
 		}
 		return lo, hi
 	}
-	m0, m1 := span(0) // the footage's own sound
-	r0, r1 := span(1) // the separate recording
+	m0, m1 := span(pairAt, int(waveLaneH)-2, isDimBlue)      // the footage's own sound
+	r0, r1 := span(bandAt, int(wavePad+waveLaneH)-2, isBlue) // the separate recording
 	t.Logf("footage tone at px %d..%d, recording tone at px %d..%d", m0, m1, r0, r1)
 
 	// 40 px/s, and the footage's own tone starts 2 s into it

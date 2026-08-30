@@ -2,9 +2,9 @@ package main
 
 // The Cut page's form column.
 //
-// It is the space the three prompt boxes used to fill. They are behind the
-// toolbar's dropdown now (promptpick.go), which left the right-hand half of the
-// top row empty -- and that half is exactly the shape a form wants: a column,
+// It is the space the three prompt boxes used to fill. Every prompt is on
+// Prepare now (prepedit.go), which left the right-hand half of the top row
+// empty -- and that half is exactly the shape a form wants: a column,
 // as tall as the video beside it, wide enough for a labelled entry and a line
 // of explanation under it.
 //
@@ -19,9 +19,8 @@ package main
 // Which is what gone is for. Every form is built by whoever opens it and holds
 // widgets this column has been handed; when the column is given to something
 // else, that owner has to hear about it. Showing a second form takes the first
-// one down, and taking one down calls its gone -- the prompt picker forgets its
-// editor there (promptpick.go), and a dialog that was waiting for an answer
-// learns it will not get one.
+// one down, and taking one down calls its gone, so a dialog that was waiting
+// for an answer learns it will not get one.
 
 import (
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
@@ -109,12 +108,6 @@ func (ed *cutEditor) showFormFoot(title string, body, foot gtk.Widgetter, gone f
 		ed.formFootCur = foot
 		ed.formFoot.Append(foot)
 	}
-}
-
-// showForm is the same with nothing pinned: what the prompt editor shows is one
-// box of text that scrolls on its own.
-func (ed *cutEditor) showForm(title string, body gtk.Widgetter, gone func()) {
-	ed.showFormFoot(title, body, nil, gone)
 }
 
 // hideForm empties the column and puts its own words back.

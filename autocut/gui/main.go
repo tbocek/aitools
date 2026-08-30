@@ -47,6 +47,9 @@ import (
 // short because five of them sit side by side in the header bar, where the
 // width they ask for is a floor under the whole window -- what each step
 // actually does is on hover, which is where the sidebar's longer titles went.
+// icon is what the tab shows beside the label, and alone once the bar runs out
+// of room for words (headfit.go): five icons fit a window no width of text
+// would, and a tab that has shrunk to its icon is still a tab you can hit.
 // wait is what the tab says instead while the step cannot be entered: it names
 // the step to finish rather than its number, since the numbering has moved
 // twice already and a hint pointing at the wrong tab is worse than none.
@@ -55,8 +58,8 @@ import (
 // to sit at the top of each page. A page explains itself once and is then
 // shorter by three lines forever: the paragraph is behind the ⓘ in the header
 // bar, which shows the open page's and only that.
-var steps = []struct{ name, label, tip, wait, help string }{
-	{"prep", "Preprocessing", "The sources, their transcripts, their frames, and what the models make of them", "",
+var steps = []struct{ name, label, icon, tip, wait, help string }{
+	{"prep", "Prepare", "view-list-symbolic", "The sources, their transcripts, their frames, and what the models make of them", "",
 		"Add this session's files — footage, voice recordings, or one screen capture " +
 			"that is both. Each row says what its file is for: the camera means frames " +
 			"come out of it and it can be cut, and the microphone tags who is speaking, " +
@@ -78,19 +81,28 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"the piece of work it is doing, counted against everything queued so far. " +
 			"Which file that piece came from is in the log; hover the bar for how many " +
 			"tasks are still waiting.\n\n" +
-			"The two prompts the models are sent are in the dropdown at the bottom of " +
-			"the page — they are read once and then left alone, so they are behind a " +
-			"button, and a ✎ beside a name means this project says something of its own " +
-			"there. The box on the right is not a prompt: it is what you want the editor " +
-			"to know about this session, and every later step's requests carry it too.\n\n" +
+			"The box on the right is everything the models are told, one row of its " +
+			"menu at a time. The first row is not a prompt: it is what you want the " +
+			"editor to know about this session — who is in it, how names are spelled, " +
+			"what has to end up in the video — and every request this project makes " +
+			"carries it. Behind it, in the order the pipeline sends them, is every " +
+			"system prompt in the app: this step's two, the cut and the audit that " +
+			"reads it back, the narration, the upload text. They are here rather than " +
+			"on the pages that send them because a prompt is written before the first " +
+			"run and then left alone, while those pages are where the session's work " +
+			"happens — and reading down the menu is reading the whole run. A ✎ beside " +
+			"a name means this project says something of its own there; the list " +
+			"beside it is which wording that prompt uses, ＋ saves what is in the box " +
+			"under a new name, and the button after it puts a built-in back or deletes " +
+			"one you added.\n\n" +
 			"This is the long one, so the two run buttons mean different things here. ⏸ " +
 			"parks it between requests and ▶ carries on from the same frame; ⏹ ends it, " +
 			"and if the describing had started the next ▶ describes the session from the " +
 			"beginning. Edit a prompt and it is ⏹ you want — a resumed run would describe " +
 			"the rest of the footage under the new wording and leave the first half " +
 			"under the old."},
-	{"cut", "Cut", "Choose the clips the video is made of",
-		"Run Preprocessing first — the cut works on the footage and its frames",
+	{"cut", "Cut", "edit-cut-symbolic", "Choose the clips the video is made of",
+		"Run Prepare first — the cut works on the footage and its frames",
 		"The footage over the session timeline, with everything the cut keeps tinted " +
 			"green over it, and a waveform lane per sound below. Each green stretch carries " +
 			"an ✕ in its top-right corner, and pressing it drops that scene — ⌦ does the " +
@@ -147,14 +159,19 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"ground — the minutes before you started the capture card are visibly not there " +
 			"rather than stretched to fit. The waveforms appear a moment after the page does; " +
 			"each is decoded once and kept.\n\n" +
-			"The three prompts this step sends — the cut, the audit that reads it back, " +
-			"and the effects a Shorts cut is decorated with — are in the bar's Prompts " +
-			"dropdown, and Edit opens the picked one in the column beside the video. A ✎ " +
-			"beside a name means this project says something of its own there. Inside, " +
-			"what ▶ asks for is a wording you pick: Highlights (fill the length with the " +
-			"best moments) and Rating / tier list (line the subjects up, visit each one, " +
-			"end on the verdict). ＋ adds your own, and an edited wording is kept in the " +
-			"project under its name.\n\n" +
+			"The two prompts this step sends — the cut, and the audit that reads it " +
+			"back — are on Prepare, in the box that holds every prompt in the app. " +
+			"What stays on this bar is the choice they are sent with: Style is what ▶ " +
+			"asks for. General is the one to start on — it works out what the session " +
+			"is before it cuts, and it is what a new project uses. The other three " +
+			"already know what they are looking at, and cut better than General when " +
+			"they are right: Highlights fills the length with the best moments of a " +
+			"gaming session; Rating / tier list lines the subjects up, visits each one " +
+			"and ends on the verdict; YouTube Shorts cuts a vertical video of half a " +
+			"minute and decorates it with effects. Whichever you pick, what the cut is " +
+			"actually about comes from the User Context on Prepare. It is the same " +
+			"choice as the wording list beside the Cut prompt there — one store, two " +
+			"views — so ＋ adds your own on Prepare and it appears here.\n\n" +
 			"That column is where every form on this page opens — the insert's questions, " +
 			"an effect's numbers — rather than in a window over the timeline, so the band " +
 			"or the card a question is about stays on screen, and live, while it is " +
@@ -263,7 +280,7 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"glides and all. It does not slow or " +
 			"freeze; the \"cut\" figure under the tracks counts that added time, and " +
 			"Produce renders it."},
-	{"narrate", "Narrate", "The narration, and the voice it is spoken in",
+	{"narrate", "Narrate", "audio-input-microphone-symbolic", "The narration, and the voice it is spoken in",
 		"Finish Cut first — narration is written for the cut's clips",
 		"▶ below is the initial fill: it writes the narration once (again only if the " +
 			"cut moves) and speaks every line not cached yet. After that the lines are " +
@@ -314,7 +331,7 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"with surprise mixed into it, which is what excitement sounds like " +
 			"and what plain happiness does not. Any name none of these knows sends the " +
 			"line back to the judge rather than guessing at an axis."},
-	{"produce", "Produce", "Render the video and write the upload text",
+	{"produce", "Produce", "applications-multimedia-symbolic", "Render the video and write the upload text",
 		"Finish Cut first — there is no cut to produce a video from",
 		"▶ below renders the final video: every clip is cut from its own recording, " +
 			"the narration is laid over ducked game audio, and the whole thing is " +
@@ -332,7 +349,7 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"again, and ⏹ hands ▶ back to producing. The row at the top says what " +
 			"is going in — the cut, the lines, and how many of them still have to " +
 			"be spoken — and the row at the foot says what is on disk."},
-	{"publish", "Publish", "Draw the thumbnail and write the upload text",
+	{"publish", "Publish", "send-to-symbolic", "Draw the thumbnail and write the upload text",
 		"Finish Cut first — there is nothing to make a thumbnail of yet",
 		"The two things a finished video still needs: a thumbnail, and the text " +
 			"under it on the upload page. The page is split the same way — the " +
@@ -365,7 +382,7 @@ var steps = []struct{ name, label, tip, wait, help string }{
 			"spells reliably. Leave it empty and the picture comes back without any."},
 }
 
-// stepLocked reports whether a tab's prerequisites are missing. Preprocessing
+// stepLocked reports whether a tab's prerequisites are missing. Prepare
 // never is -- it is where the sources are added, so a project with nothing in
 // it still has to be able to open it -- and an unknown name (there is none, but
 // the lookup can fail) counts as open rather than as locked: refusing to show a
@@ -414,8 +431,9 @@ func (a *App) showStep(name string) {
 	}
 	a.tabGuard = false
 	a.stack.SetVisibleChildName(name)
-	a.updateRunControls() // ▶ ⏹ belong to the new page's playback now
-	a.syncHelp()          // and so does the ⓘ
+	a.outStack.SetVisibleChildName(name) // the Outputs group on the shared bar is this page's
+	a.updateRunControls()                // ▶ ⏹ belong to the new page's playback now
+	a.syncHelp()                         // and so does the ⓘ
 	// Cut's Inputs row lists what Suggest will be sent, and one of those things
 	// is the context box on Describe -- the page you have usually just come
 	// from. Refreshed on arrival rather than on every keystroke over there,
@@ -515,12 +533,16 @@ type App struct {
 	helpBody      *gtk.Label
 	player        *Player // the Produce preview
 	log           *gtk.TextView
+	linkTag       *gtk.TextTag      // paths in the log that open on a click (logPath)
+	linkPaths     map[string]string // what a tagged path displays -> where it really is
+	llmMu         sync.Mutex        // guards llmSeq; describe calls from worker goroutines
+	llmSeq        int               // per-run counter naming the llm/ exchange files
 	status        *gtk.Label
 	running       bool
 	audioNoted    string // the audio.cpp server already reported in the log
 	ttsModel      string // the model id that server serves, asked for once
 
-	// The Preprocessing page's own controls -- the settings a run reads off it,
+	// The Prepare page's own controls -- the settings a run reads off it,
 	// which is everything on that page a runner needs and nothing it draws.
 	srcList   *sourceList // the session's files, and what each one is for
 	interval  *freqPick
@@ -550,6 +572,7 @@ type App struct {
 	progress *gtk.ProgressBar
 	playBtn  *gtk.Button
 	stopBtn  *gtk.Button
+	outStack *gtk.Stack // the visible step's Outputs group; each page adds its own by step name
 
 	// pipeline control: pause parks the runners at the next checkpoint, stop
 	// kills the in-flight subprocesses; finished stages stay on disk either
@@ -588,11 +611,11 @@ type App struct {
 	// the picker widgets, and the flag that stops filling them from reading as
 	// the user editing them. GUI thread only, so no lock (showPromptStyle).
 	promptRows  map[string]promptRow
+	styleDrops  map[string]styleDrop // wording dropdowns surfaced on a page (styleBar), by key
 	promptQuiet bool
-	// the dropdowns that stand in for the boxes on the step pages, so the ✎
-	// marks can be redrawn when a project load or an edit changes what the
-	// project is holding (promptpick.go)
-	promptPickers []*promptPicker
+	// redraws the ✎ marks on the bench's menu when a project load or an edit
+	// changes what the project is holding (prepedit.go)
+	prepSync func()
 	// every text box's heading row, so a row with a Reset button and a row with
 	// a bare label are the same height and the boxes under them line up
 	// (editorBody). GUI thread only, like the views.
@@ -600,12 +623,16 @@ type App struct {
 	// what langEntry says, for the runner to read; guarded like ctxTxt below and
 	// for the same reason
 	langTxt string
-	// what the editor says about THIS session, typed on Describe and read by
+	// what the editor says about THIS session, typed on Prepare and read by
 	// every step (context.go). Under promptMu for the same reason as the
 	// prompts: the box belongs to the GUI thread, the string is what a runner
 	// reads. Not in promptTxt -- it is not a prompt and it is stored in full,
 	// whereas a prompt is stored only when it differs from the built-in.
-	ctxTxt  string
+	ctxTxt string
+	// the bench's box while it is showing the context row, and nil while it is
+	// showing a prompt (prepedit.go). Nil is normal, not a "page not built
+	// yet": a project loaded while a prompt is on screen writes the cache
+	// only, and the box rereads it on the next switch.
 	ctxView *gtk.TextView
 
 	// the project file, and what was last written to it. projPath is the named
@@ -616,6 +643,21 @@ type App struct {
 	projPath  string
 	projSaved []byte
 	projLabel *gtk.Label
+
+	// the header bar and the parts of it that give up words when the window is
+	// narrow (headfit.go). headBtns is the six icon buttons at the two ends --
+	// they never change size, so what they take is simply subtracted; tabWords
+	// is the word inside each tab, hidden as a group when only the icons fit.
+	// tabWordsOn says which of the two states the row is in, because the row's
+	// own measurement cannot tell us and both states have to be priced from
+	// either one. All GUI-thread, like every widget here.
+	head       *gtk.HeaderBar
+	headBtns   []gtk.Widgetter
+	tabRow     *gtk.Box
+	tabWords   []*gtk.Label
+	tabWordsOn bool
+	headFitQ   bool
+	headWatch  bool
 
 	// one progress bar fed by both tracks: summed fractions, and the work each
 	// of them still has queued (runqueue.go)
@@ -686,7 +728,7 @@ func (a *App) projectLanguage() string {
 	return strings.TrimSpace(a.langTxt)
 }
 
-// asrLanguage is the same value with the default filled in: what preprocessing puts in
+// asrLanguage is the same value with the default filled in: what Prepare puts in
 // the request. Callable from a runner's goroutine, which is the whole reason
 // the string is cached beside the widget rather than read off it -- the box is
 // the GUI thread's (same rule as sessionCtx).
@@ -798,7 +840,7 @@ func (f *freqPick) parse() {
 
 // Where each step writes. The folders keep their stepN names although the tabs
 // no longer do: renaming them would orphan every project already on disk, and a
-// folder name is not a label anyone reads twice. Preprocessing owns the first
+// folder name is not a label anyone reads twice. Prepare owns the first
 // two -- step1/ for the transcripts and frames, step2/ for what the models made
 // of them -- and inside step2/ the two jobs get a folder each, because the
 // describer resumes per chunk and the fixer does not.
@@ -809,7 +851,7 @@ func (a *App) understandDir() string { return filepath.Join(a.outDir, "step2") }
 func (a *App) describeDir() string   { return filepath.Join(a.understandDir(), "describe") }
 func (a *App) transcriptDir() string { return filepath.Join(a.understandDir(), "transcript") }
 
-// framesDir is where the first half of Preprocessing leaves one video's frames:
+// framesDir is where the first half of Prepare leaves one video's frames:
 // the describer reads them and the Cut page waits for them, so the path is
 // named once.
 func (a *App) framesDir(base string) string {
@@ -931,7 +973,7 @@ func main() {
 
 // loadMeta reads step1/meta.env: the primary video and recording of the last
 // run, and the frame settings it ran with. Its existence is also the marker
-// that preprocessing has run at all -- either of the two files may be missing from a
+// that Prepare has run at all -- either of the two files may be missing from a
 // legitimate session, so the keys are not that marker.
 func (a *App) loadMeta() map[string]string {
 	m := map[string]string{}
@@ -1043,6 +1085,7 @@ func (a *App) build(app *gtk.Application) {
 	a.win.SetDefaultSize(1240, 740)
 
 	head := gtk.NewHeaderBar()
+	a.head = head
 	// Symbols, like everything else in this bar. Two spelled-out labels took
 	// more of the title bar than the four icon buttons at the other end put
 	// together, for the two things pressed least often in the app -- and they
@@ -1069,16 +1112,20 @@ func (a *App) build(app *gtk.Application) {
 	// the title bar was the five tabs and nothing else, so the only way to find
 	// out was to open the Save dialog and read the name it proposed.
 	//
-	// Ellipsized rather than wrapped or left to grow: the tabs are the title
-	// widget and sit centered, so a project with a long name must not push them
-	// off center or shove the buttons at the other end off the bar. The label
-	// therefore asks for at most projNameChars characters and ends in "…" when
-	// the name is longer -- the CSS text-overflow: ellipsis of the web app --
-	// and the tooltip carries the whole path for when the tail is the part you
-	// needed to read.
+	// The whole path when the bar has room for it, the file name alone when it
+	// does not (fitHeader). The name alone used to be all it ever showed, on
+	// the argument that variants of one session share a folder and the leading
+	// directories are the identical half -- true, but not the only question
+	// asked of this label. "Which of the three tom.json on this machine is
+	// open" is the other one, and it is the one you ask after loading from a
+	// dialog that started somewhere else. So the path when it is free, and the
+	// name when it costs the tab row its words.
+	//
+	// Ellipsized either way: the tabs are the title widget and sit centered, so
+	// a project with a long name must not push them off center or shove the
+	// buttons at the other end off the bar.
 	a.projLabel = gtk.NewLabel("")
 	a.projLabel.SetEllipsize(pango.EllipsizeEnd)
-	a.projLabel.SetMaxWidthChars(projNameChars)
 	a.projLabel.AddCSSClass("dim-label")
 	a.projLabel.SetMarginStart(6)
 	head.PackStart(a.projLabel)
@@ -1097,6 +1144,8 @@ func (a *App) build(app *gtk.Application) {
 	info.SetTooltipText("What this step does")
 	info.SetPopover(a.helpPopover())
 	head.PackEnd(info)
+	// what the bar spends on things other than the tabs and the project name
+	a.headBtns = []gtk.Widgetter{newP, loadP, saveP, rescan, setup, info}
 	a.win.SetTitlebar(head)
 
 	// run controls exist BEFORE the pages: page builders refresh their info
@@ -1120,6 +1169,16 @@ func (a *App) build(app *gtk.Application) {
 	a.progress.SetTooltipText("The run: the job, which of the run's jobs it is, and the task it is on")
 	a.progress.SetHExpand(true)
 	a.progress.SetVAlign(gtk.AlignCenter)
+
+	// What the visible step has written -- how many files, newest when, and a
+	// way into the folder. Every step answers that, and each used to answer it
+	// on a row of its own at the page's bottom edge: five copies of the same
+	// line, each costing its page a line of height. The answer lives once now,
+	// at the right end of the shared bottom bar, and follows the visible tab
+	// the way ▶ and ⏹ do. Built here with the other run controls because the
+	// pages fill it as they are built.
+	a.outStack = gtk.NewStack()
+	a.outStack.SetHhomogeneous(false) // prep's three folders must not set the width for every tab
 
 	a.stack = gtk.NewStack()
 	a.stack.SetTransitionType(gtk.StackTransitionTypeCrossfade)
@@ -1145,9 +1204,20 @@ func (a *App) build(app *gtk.Application) {
 	// to gray out and say what is missing, which the stock widget cannot do.
 	tabRow := gtk.NewBox(gtk.OrientationHorizontal, 0)
 	tabRow.AddCSSClass("linked") // one segmented control, not five loose buttons
-	for i, s := range steps {
-		i, b := i, gtk.NewToggleButtonWithLabel(s.label)
-		b.SetTooltipText(s.tip)
+	a.tabRow, a.tabWordsOn = tabRow, true
+	for i, st := range steps {
+		// icon and word, the word being the part that goes when the bar runs
+		// short (fitHeader). The icon is always drawn, so the row never
+		// changes how many things are in it -- only how wide they are, which
+		// is what keeps a tab in the same place across a resize.
+		i, b := i, gtk.NewToggleButton()
+		row := gtk.NewBox(gtk.OrientationHorizontal, tabGap)
+		row.Append(gtk.NewImageFromIconName(st.icon))
+		word := gtk.NewLabel(st.label)
+		row.Append(word)
+		b.SetChild(row)
+		a.tabWords = append(a.tabWords, word)
+		b.SetTooltipText(st.tip)
 		if i > 0 {
 			b.SetGroup(a.tabs[0]) // radio behaviour: some page is always current
 		}
@@ -1171,6 +1241,7 @@ func (a *App) build(app *gtk.Application) {
 		tabRow.Append(b)
 	}
 	head.SetTitleWidget(tabRow)
+	a.watchHeadWidth()
 	a.showStep("prep")
 
 	// shared log + status across all pages: one bottom row, the status text
@@ -1204,7 +1275,25 @@ func (a *App) build(app *gtk.Application) {
 	ctlRow.SetMarginBottom(2)
 	ctlRow.Append(a.playBtn)
 	ctlRow.Append(a.stopBtn)
+	// how loud the preview is, next to the button that starts one. One slider
+	// for the whole app (SetPreviewVolume): the players live one per page, but
+	// the ear they play to is the same one, and a volume that reset on every
+	// tab switch would be five settings pretending to be one.
+	volIcon := gtk.NewImageFromIconName("audio-volume-high-symbolic")
+	vol := gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 100, 1)
+	vol.SetValue(100)
+	vol.SetSizeRequest(120, -1)
+	vol.SetTooltipText("preview volume — the players only; nothing that is rendered")
+	vol.ConnectValueChanged(func() { SetPreviewVolume(vol.Value() / 100) })
+	ctlRow.Append(volIcon)
+	ctlRow.Append(vol)
 	ctlRow.Append(a.progress)
+	// the one Outputs heading in the app; the group behind it is the visible
+	// page's own, swapped by showStep
+	outLbl := gtk.NewLabel("Outputs:")
+	outLbl.AddCSSClass("heading")
+	ctlRow.Append(outLbl)
+	ctlRow.Append(a.outStack)
 
 	bottom := gtk.NewBox(gtk.OrientationVertical, 0)
 	// a hard edge above the control/log rows, so the page ending there reads as
@@ -1277,7 +1366,7 @@ func (a *App) updateGates() {
 		return
 	}
 	// the cut works on the footage and its frames, which is the first half of
-	// Preprocessing's output. Describe's session timeline is what it prints on
+	// Prepare's output. Describe's session timeline is what it prints on
 	// the tracks and what the suggestion reads, and a session can be cut by
 	// hand without it
 	a.cutLocked = !a.canCut()

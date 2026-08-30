@@ -446,15 +446,10 @@ func (a *App) buildProduce() gtk.Widgetter {
 	openOut.SetTooltipText("Open the folder holding the produced file (step5/ beside it holds the per-clip encodes)")
 	openOut.ConnectClicked(func() { a.openFolder(filepath.Dir(p.outFile)) })
 	p.out = gtk.NewLabel("")
-	outLbl := gtk.NewLabel("Outputs:")
-	outLbl.AddCSSClass("heading")
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	outRow.SetHAlign(gtk.AlignEnd)
-	outRow.SetMarginEnd(12)
-	outRow.SetMarginBottom(6)
-	outRow.Append(outLbl)
 	outRow.Append(openOut)
 	outRow.Append(p.out)
+	a.outStack.AddNamed(outRow, "produce") // the shared bar's Outputs group; see outStack in main.go
 
 	box := gtk.NewBox(gtk.OrientationVertical, 10)
 	box.SetMarginTop(10)
@@ -478,7 +473,6 @@ func (a *App) buildProduce() gtk.Widgetter {
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
 	page.Append(inRow)
 	page.Append(scroll)
-	page.Append(outRow)
 	return page
 }
 
@@ -660,7 +654,7 @@ func (a *App) produceSegs() []cutSeg {
 // would render the old placement.
 func (a *App) produceCut() cutFile {
 	if ed := a.ed; ed != nil && (len(ed.segs) > 0 || len(ed.shift) > 0 || len(ed.cutLanes) > 0) {
-		return cutFile{ed.segs, ed.aspect, ed.fx, ed.snd, ed.shift, ed.rows, ed.cutLanes}
+		return cutFile{ed.segs, ed.aspect, ed.fx, ed.snd, ed.shift, ed.rows, ed.cutLanes, ed.nRows}
 	}
 	b, err := os.ReadFile(a.cutPath())
 	if err != nil {

@@ -96,7 +96,7 @@ func TestEveryPromptIsExposed(t *testing.T) {
 // wrong; the only thing that does is the person using it.
 func TestEveryTextBoxIsTheSameBox(t *testing.T) {
 	src := map[string]string{}
-	for _, f := range []string{"prompts.go", "context.go"} {
+	for _, f := range []string{"prompts.go", "prepedit.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -128,27 +128,20 @@ func TestEveryTextBoxIsTheSameBox(t *testing.T) {
 		t.Errorf("editorBody no longer lines the heading rows up over the shared box:\n%s", body)
 	}
 
-	// ...and both boxes still come out of it, rather than growing their own
-	// scroller again alongside it. The prompt takes the frame WITHOUT the size
-	// group -- it opens in a window or in the Cut page's form column now, and a
-	// size group holds its members to the tallest one, so a heading row in a
-	// window that has since been closed would keep the context box on the page
-	// stretched to match it.
-	for _, fn := range []struct{ file, name, builds string }{
-		{"prompts.go", "promptEditor", "editorFrame(head, tv)"},
-		{"context.go", "contextEditor", "a.editorBody(head, tv)"},
-	} {
-		f := regexp.MustCompile(`(?s)func \(a \*App\) ` + fn.name + `\(.*?\n}\n`).FindString(src[fn.file])
-		if f == "" {
-			t.Fatalf("%s is gone", fn.name)
-		}
-		if !strings.Contains(f, fn.builds) {
-			t.Errorf("%s builds its own box instead of the shared one (%s)", fn.name, fn.builds)
-		}
-		if strings.Contains(f, "NewScrolledWindow()") {
-			t.Errorf("%s grew a second scroller: whichever of the two is edited next, "+
-				"the pair stops matching", fn.name)
-		}
+	// ...and the one box that shows every prompt still comes out of it, rather
+	// than growing its own scroller alongside it. It takes the size-grouped
+	// form, because it is a box on a step page beside other boxes on that page
+	// and their heading rows have to line up.
+	f := regexp.MustCompile(`(?s)func \(a \*App\) prepEditor\(.*?\n}\n`).FindString(src["prepedit.go"])
+	if f == "" {
+		t.Fatal("prepEditor is gone")
+	}
+	if !strings.Contains(f, "a.editorBody(head, tv)") {
+		t.Error("prepEditor builds its own box instead of the shared one")
+	}
+	if strings.Contains(f, "NewScrolledWindow()") {
+		t.Error("prepEditor grew a second scroller: whichever of the two is edited next, " +
+			"the pair stops matching")
 	}
 }
 
@@ -282,11 +275,12 @@ func TestALegacyPromptLoadsAsAnEditOfTheDefaultStyle(t *testing.T) {
 }
 
 // The cut is the one job that ships more than one wording, because what makes a
-// good segment is a property of the footage and not of this tool.
+// good segment is a property of the footage and not of this tool: a generic
+// one, and three shapes to pick once you know which one you have.
 func TestTheCutShipsMoreThanOneWording(t *testing.T) {
 	got := promptDefFor("cut").builtins()
 	if len(got) < 2 {
-		t.Fatalf("the cut ships %d wording(s), want the highlights one and the rating one", len(got))
+		t.Fatalf("the cut ships %d wording(s), want the generic one and the shapes", len(got))
 	}
 	if got[0].Text != promptDefFor("cut").def {
 		t.Error("the default is not first -- a project that never picked would open on the wrong one")
@@ -307,6 +301,70 @@ func TestTheCutShipsMoreThanOneWording(t *testing.T) {
 	for _, want := range []string{"chronological", "ranking", "every item"} {
 		if !strings.Contains(rating, want) {
 			t.Errorf("the rating cut never mentions %q", want)
+		}
+	}
+}
+
+// The wording a project gets before anyone chooses one has to be the wording
+// that assumes least. Highlights was the default and says "gaming session" in
+// its first sentence: point it at a woodworking video and it goes looking for
+// wins and disasters, and it finds some, and they are the wrong sixty seconds.
+// A shape is worth picking once you know you have one -- it is not worth
+// guessing on a project's first run.
+func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
+	d := promptDefFor("cut")
+	def := strings.TrimSpace(d.def)
+	if def != strings.TrimSpace(genericSystem) {
+		t.Fatalf("the cut ships %q as its default, want the generic wording", d.styleName())
+	}
+
+	// no genre in it, and none of the three shaped wordings' vocabulary either
+	low := strings.ToLower(def)
+	for _, guess := range []string{"gaming", "game session", "tier list", "ranking", "short"} {
+		if strings.Contains(low, guess) {
+			t.Errorf("the default cut wording says %q -- it is a shape, and the "+
+				"default is the one that has not decided on a shape yet", guess)
+		}
+	}
+	// it asks what the session is instead of assuming, and the notes are where
+	// the answer comes from when there is one
+	for _, want := range []string{"about this session", "work it out"} {
+		if !strings.Contains(low, want) {
+			t.Errorf("the default cut wording never says %q -- with no genre to fall "+
+				"back on, reading the session first is the whole method", want)
+		}
+	}
+
+	// the shaped wordings stay reachable and stay themselves: this adds a
+	// wording, it does not replace one
+	names := map[string]bool{}
+	for _, st := range d.builtins() {
+		names[st.Name] = true
+	}
+	for _, want := range []string{"Highlights", "Rating / tier list", shortsStyleName} {
+		if !names[want] {
+			t.Errorf("the %q wording is gone -- moving the default is not the same as "+
+				"dropping the one it replaced", want)
+		}
+	}
+	// and Highlights is still the gaming one, so a project that had picked it
+	// gets what it had
+	if !strings.Contains(strings.ToLower(suggestSystem), "gaming session") {
+		t.Error("the Highlights wording is no longer the gaming one; a project that " +
+			"picked it by name would silently get something else")
+	}
+
+	// the contract every cut wording shares, because the parser and the audit
+	// read the same reply whichever one wrote it
+	for _, want := range []string{
+		`{"segments":[{"start":<sec>,"end":<sec>}]}`, // what suggestParse reads
+		"session seconds", // on which clock
+		"target length",   // the length the run checks
+		"EVENT lines",     // a span without them has no footage
+	} {
+		if !strings.Contains(def, want) {
+			t.Errorf("the default cut wording never says %q -- the reply is read by the "+
+				"same code whichever wording asked for it", want)
 		}
 	}
 }
@@ -457,13 +515,13 @@ func short(s string) string {
 // popup. What can be checked without one is that the handler stays on its side
 // of the split.
 func TestChoosingAWordingDoesNotRebuildTheMenuUnderItself(t *testing.T) {
-	b, err := os.ReadFile("prompts.go")
+	b, err := os.ReadFile("prepedit.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(b)
 
-	m := regexp.MustCompile(`(?s)pick\.NotifyProperty\("selected".*?\n\t\}\)`).FindString(src)
+	m := regexp.MustCompile(`(?s)wording\.NotifyProperty\("selected".*?\n\t\}\)`).FindString(src)
 	if m == "" {
 		t.Fatal("the dropdown no longer connects notify::selected — find where a pick lands now")
 	}
@@ -475,22 +533,28 @@ func TestChoosingAWordingDoesNotRebuildTheMenuUnderItself(t *testing.T) {
 	}
 	// the half that may touch the model has to still exist as its own function,
 	// or the split is only a rename away from being undone
+	store := readSrc(t, "prompts.go")
 	for _, want := range []string{
 		"func (a *App) pickPromptStyle(key, name string)",
 		"func (a *App) showPromptStyle(key, name string)",
 	} {
-		if !strings.Contains(src, want) {
+		if !strings.Contains(store, want) {
 			t.Errorf("%s is gone — the two jobs are one again", want)
 		}
 	}
 	// and the rebuild that does happen is one emission, not one per item: a
 	// Remove loop empties the model an item at a time, and an empty model is a
 	// selection GTK moves for you at every step
-	if strings.Contains(src, "row.names.Remove(") {
+	if strings.Contains(store, ".names.Remove(") {
 		t.Error("the menu is rebuilt by removing items one at a time; Splice replaces it in one go")
 	}
-	if !strings.Contains(src, "row.names.Splice(") {
+	if !strings.Contains(store, ".names.Splice(") {
 		t.Error("the menu is no longer replaced in a single items-changed")
+	}
+	// the prep menu itself is spliced for the same reason: syncPromptMarks
+	// redraws it on every project load
+	if !strings.Contains(src, "menu.Splice(") {
+		t.Error("the row menu is no longer replaced in a single items-changed")
 	}
 }
 
@@ -539,4 +603,26 @@ func sameStringsSlice(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestTheEditorRegistriesInitIndependently: promptViews and promptRows used to
+// be created together, guarded by promptViews alone, and a box that filled one
+// without the other then panicked on the first write into a nil map. There is
+// one box now, so both are filled from the same place -- but they are still
+// separate maps written on separate lines, and the guard has to match: a map
+// created because the OTHER one was nil is the same bug with the names
+// swapped.
+func TestTheEditorRegistriesInitIndependently(t *testing.T) {
+	ed := funcBody(t, "prepedit.go", `func \(a \*App\) prepEditor\(`)
+	for _, want := range []string{
+		"if a.promptViews == nil {",
+		"if a.promptRows == nil {",
+	} {
+		if !strings.Contains(ed, want) {
+			t.Errorf("prepEditor lacks %q -- one registry existing must not stand in for the other", want)
+		}
+	}
+	if strings.Contains(ed, "a.promptViews = map[string]*gtk.TextView{}\n\t\ta.promptRows") {
+		t.Error("the registries are created together again, guarded by one of them")
+	}
 }

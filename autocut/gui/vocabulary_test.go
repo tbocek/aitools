@@ -89,7 +89,10 @@ func TestEveryPromptDescribesTheSameThreeLabels(t *testing.T) {
 	}{
 		{"describe", describeSystem},
 		{"fix", fixSystem},
-		{"cut", suggestSystem},
+		{"cut (general)", genericSystem},
+		{"cut (highlights)", suggestSystem},
+		{"cut (rating)", ratingSystem},
+		{"cut (shorts)", shortsSystem},
 		{"audit", auditSystem},
 		{"narrate", narrSystem},
 	} {

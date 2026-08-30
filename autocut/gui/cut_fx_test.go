@@ -75,19 +75,38 @@ func TestZoomsChainFromMidGlide(t *testing.T) {
 	}
 }
 
-// The earliest STAYING zoom frames the video from the very beginning. The
-// letterboxed full frame -- the shape where the source does not match the cut
-// -- only stands while NO region has been chosen at all; the moment there is
-// one, the opening seconds wear it too, and its fade in has nowhere to travel
-// from. A zoom that pulls back is not a choice of framing and does not do this.
-func TestTheFirstStayingZoomFramesTheVideoFromTheStart(t *testing.T) {
+// A staying zoom holds the camera for the rest of the video and for none of it
+// before. It used to reach backwards -- the earliest one framed the video from
+// second zero, on the theory that a region chosen a minute in was a statement
+// about the whole thing -- and every time it was read as the zoom being stuck:
+// scrub to a second BEFORE the effect and the picture was already inside it.
+// The framing starts where its band starts, like every other effect on the
+// lane, and the seconds ahead of it wear the plain centred slice.
+func TestAStayingZoomFramesNothingBeforeItself(t *testing.T) {
 	srcA, outA := 16.0/9, 9.0/16
-	v := cutFx{Kind: "zoom", T: 30, Trans: 2, Dur: 2, Stay: true, Cx: 0.3, Cy: 0.5, Hf: 0.6}
+	full := fullFill(srcA, outA)
+	v := cutFx{Kind: "zoom", T: 30, Dur: 2, Stay: true, Cx: 0.3, Cy: 0.5, Hf: 0.6}
 	vr := fxRect{v.Cx, v.Cy, v.Hf}
-	for _, tt := range []float64{0, 29.9, 31, 100} {
-		if got := fxRectAt([]cutFx{v}, tt, srcA, outA); !rectNear(got, vr) {
-			t.Errorf("with one framing the camera at %.1f s is %+v, want its own %+v", tt, got, vr)
+	for _, tt := range []float64{0, 29.9} {
+		if got := fxRectAt([]cutFx{v}, tt, srcA, outA); !rectNear(got, full) {
+			t.Errorf("at %.1f s, before the framing, the camera is %+v, want fullFill %+v",
+				tt, got, full)
 		}
+	}
+	for _, tt := range []float64{30, 31, 100} {
+		if got := fxRectAt([]cutFx{v}, tt, srcA, outA); !rectNear(got, vr) {
+			t.Errorf("at %.1f s the camera is %+v, want the framing %+v", tt, got, vr)
+		}
+	}
+	// and the fade in of that first framing is a real journey now, from the
+	// centred slice to the region, not a number with nowhere to travel
+	g := cutFx{Kind: "zoom", T: 30, Trans: 2, Dur: 4, Stay: true, Cx: 0.3, Cy: 0.5, Hf: 0.6}
+	if got, want := fxRectAt([]cutFx{g}, 31, srcA, outA),
+		lerpRect(full, vr, 0.5); !rectNear(got, want) {
+		t.Errorf("halfway into the first framing's glide the camera is %+v, want %+v", got, want)
+	}
+	if !camMoving([]cutFx{g}, 31) {
+		t.Error("the first framing's glide does not count as the camera moving")
 	}
 	// a second framing still glides away from the first, exactly as before
 	w := cutFx{Kind: "zoom", T: 50, Trans: 2, Dur: 2, Stay: true, Cx: 0.7, Cy: 0.5, Hf: 0.4}
@@ -96,38 +115,24 @@ func TestTheFirstStayingZoomFramesTheVideoFromTheStart(t *testing.T) {
 	if !rectNear(got, want) {
 		t.Errorf("mid-glide to the second framing the camera is %+v, want %+v", got, want)
 	}
-	// a zoom that comes back out leaves the opening alone: the video starts on
-	// the whole frame and the close-up happens when it happens
+	// a zoom that comes back out leaves the opening alone too
 	pull := cutFx{Kind: "zoom", T: 30, Trans: 2, Dur: 6, Tout: 2, Cx: 0.3, Cy: 0.5, Hf: 0.6}
-	if got := fxRectAt([]cutFx{pull}, 0, srcA, outA); !rectNear(got, fullFill(srcA, outA)) {
+	if got := fxRectAt([]cutFx{pull}, 0, srcA, outA); !rectNear(got, full) {
 		t.Errorf("a pull-back zoom framed the opening: %+v, want fullFill", got)
 	}
 	// and no camera effects at all still means the letterboxed full frame
-	if got := fxRectAt(nil, 0, srcA, outA); !rectNear(got, fullFill(srcA, outA)) {
+	if got := fxRectAt(nil, 0, srcA, outA); !rectNear(got, full) {
 		t.Errorf("with no zooms the camera is %+v, want fullFill", got)
 	}
 }
 
-// firstStay is the predicate behind the dialog that stops asking for a fade
-// in: the earliest staying zoom is first, a later one is not, and a NEW one
-// placed before every existing one takes the title with it.
-func TestTheFirstStayingZoomIsKnown(t *testing.T) {
+// hasStay is whether the cut has been given a lasting framing at all, which is
+// what the first box drawn on a reshaped cut opens as.
+func TestALastingFramingIsKnownFromAPassingOne(t *testing.T) {
 	ed := &cutEditor{fx: []cutFx{
 		{Kind: "zoom", T: 20, Stay: true, Cx: 0.5, Cy: 0.5, Hf: 0.5},
 		{Kind: "zoom", T: 5, Dur: 2, Cx: 0.5, Cy: 0.5, Hf: 0.3},
 	}}
-	if !ed.firstStay(ed.fx[0]) {
-		t.Error("the cut's only framing does not count as first")
-	}
-	if ed.firstStay(cutFx{Kind: "zoom", T: 30, Stay: true}) {
-		t.Error("a framing after an existing one claims to be first")
-	}
-	if !ed.firstStay(cutFx{Kind: "zoom", T: 10, Stay: true}) {
-		t.Error("a new framing placed before every existing one is not first")
-	}
-	if ed.firstStay(cutFx{Kind: "zoom", T: 0}) {
-		t.Error("a zoom that pulls back counts as a framing -- it gives the camera back")
-	}
 	if !ed.hasStay() {
 		t.Error("a cut with a staying zoom says it has no lasting framing")
 	}

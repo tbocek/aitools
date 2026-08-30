@@ -22,7 +22,6 @@ import (
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
-	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
 // promptStyle is one named wording for a job -- what the box shows when that
@@ -90,13 +89,18 @@ func (d promptDef) builtins() []promptStyle {
 var promptDefs = []promptDef{
 	{key: "describe", def: strings.TrimSpace(describeSystem)},
 	{key: "fix", def: strings.TrimSpace(fixSystem)},
-	{key: "cut", def: strings.TrimSpace(suggestSystem), style: "Highlights",
-		alts: []promptStyle{{"Rating / tier list", strings.TrimSpace(ratingSystem)},
+	// four wordings, the generic one first: it is what a project that has never
+	// picked gets, and it is the only one that does not already believe it
+	// knows what the footage is (see genericSystem).
+	{key: "cut", def: strings.TrimSpace(genericSystem), style: "General",
+		alts: []promptStyle{{"Highlights", strings.TrimSpace(suggestSystem)},
+			{"Rating / tier list", strings.TrimSpace(ratingSystem)},
 			{shortsStyleName, strings.TrimSpace(shortsSystem)}}},
 	{key: "audit", def: strings.TrimSpace(auditSystem)},
-	// only the Shorts style sends this one: the effects call suggestFx makes
-	// once the audit has settled the segments
-	{key: "effects", def: strings.TrimSpace(effectsSystem)},
+	// "effects" was here: the third call that decorated the audited cut. The
+	// effects ride the Shorts cut reply again and the audit checks them, so
+	// the key is gone the way "thumbnail" below went -- a project's edited
+	// copy is a dead key nobody reads.
 	{key: "narrate", def: strings.TrimSpace(narrSystem)},
 	// "thumbnail" was here: a second Publish prompt that picked which frame to
 	// edit and wrote the instruction for it. Removed, not renamed -- the key is
@@ -310,131 +314,6 @@ func (a *App) applyPromptStyles(styles map[string][]promptStyle, pick map[string
 	}
 }
 
-// promptEditor is the box a step page shows -- title, then the box, and no
-// disclosure triangle: a prompt you cannot see is a prompt you forget you
-// changed, and not knowing what the model was told is how a baffling result
-// stays baffling. title says which job this prompt belongs to; tip carries the
-// detail that would otherwise make the title a paragraph -- batch sizes and
-// what else rides along are compiled in and visible nowhere else, so they have
-// to be somewhere, just not somewhere that costs a line of the page.
-func (a *App) promptEditor(key, title, tip string) gtk.Widgetter {
-	d := promptDefFor(key)
-
-	tv := gtk.NewTextView()
-	tv.SetWrapMode(gtk.WrapWord)
-	tv.SetMonospace(true)
-	tv.SetTopMargin(4)
-	tv.SetBottomMargin(4)
-	tv.SetLeftMargin(6)
-	tv.SetRightMargin(6)
-	// Editing this box is what stops the project from tracking the shipped
-	// wording -- a real consequence with nothing to show for it on screen, and
-	// the whole reason there used to be a second "notes" box beside it. Say it
-	// instead, right next to the button that undoes it.
-	mark := gtk.NewLabel("")
-	mark.AddCSSClass("dim-label")
-	mark.SetTooltipText("Your wording is stored in the project, so a newer built-in " +
-		"prompt will not replace it. Reset puts it back.")
-
-	names := gtk.NewStringList(nil)
-	pick := gtk.NewDropDown(names, nil)
-	pick.SetTooltipText("Which wording this project uses for this job.\n" +
-		"＋ copies what is in the box to a new name; the button beside it " +
-		"undoes your edits to a built-in wording, or deletes one you added.")
-	drop := gtk.NewButtonWithLabel("Reset")
-	drop.AddCSSClass("flat")
-
-	// the cache the runners read, refreshed on every keystroke: cheap at a few
-	// kB, and it means no step has to remember to snapshot the box before it
-	// goes async
-	tv.Buffer().ConnectChanged(func() {
-		b := tv.Buffer()
-		s := b.Text(b.StartIter(), b.EndIter(), false)
-		if a.promptQuiet {
-			return // showPromptStyle is filling the box; it marks the row itself
-		}
-		a.setPrompt(key, s)
-		a.markPromptRow(key)
-	})
-	if a.promptViews == nil {
-		a.promptViews = map[string]*gtk.TextView{}
-		a.promptRows = map[string]promptRow{}
-	}
-	a.promptViews[key] = tv
-	a.promptRows[key] = promptRow{pick: pick, names: names, mark: mark, drop: drop}
-
-	// Selecting is showing: the box follows the dropdown, and because every
-	// keystroke has already been stored under the name being left, switching
-	// away and back is lossless.
-	//
-	// pickPromptStyle, not showPromptStyle: this runs inside GtkDropDown's own
-	// notify::selected, with the popup still closing, and rebuilding the list
-	// model from there hangs the list view that is drawing it (see the note on
-	// showPromptStyle). The name comes out of the model rather than out of a
-	// freshly computed list, so it is the row the user actually clicked even if
-	// the two ever drift.
-	pick.NotifyProperty("selected", func() {
-		if a.promptQuiet {
-			return
-		}
-		if i := pick.Selected(); i < names.NItems() {
-			a.pickPromptStyle(key, names.String(i))
-		}
-	})
-	drop.ConnectClicked(func() {
-		name := a.promptPickName(key)
-		if a.shippedPromptStyle(key, name) {
-			a.dropPromptStyle(key, name) // revert: the shipped wording is still called this
-			a.showPromptStyle(key, name)
-			return
-		}
-		a.confirm("Remove the “"+name+"” wording?",
-			"It is stored in this project and nowhere else, so this is the only copy. "+
-				"The box goes back to “"+d.styleName()+"”.",
-			"Remove", func() {
-				a.dropPromptStyle(key, name)
-				a.showPromptStyle(key, d.styleName())
-			})
-	})
-
-	add := gtk.NewButtonWithLabel("＋")
-	add.AddCSSClass("flat")
-	add.SetTooltipText("Save what is in the box under a new name")
-	add.ConnectClicked(func() {
-		a.askName("Name this wording", "It joins the list for "+title+" in this project.",
-			func(name string) {
-				b := tv.Buffer()
-				a.savePromptStyle(key, name, b.Text(b.StartIter(), b.EndIter(), false))
-				a.showPromptStyle(key, name)
-			})
-	})
-
-	a.showPromptStyle(key, a.promptPickName(key))
-
-	lbl := gtk.NewLabel(title)
-	lbl.SetXAlign(0)
-	lbl.SetHExpand(true)
-	// Ellipsized, not wrapped. The heading row is one line high everywhere --
-	// that is the premise the alignment in editorBody rests on -- and a title
-	// that wraps in a column dragged narrow would make one page's rows taller
-	// than another's. These titles are a word or two and the tooltip has the
-	// rest, so there is nothing here worth a second line.
-	lbl.SetEllipsize(pango.EllipsizeEnd)
-	lbl.AddCSSClass("heading")
-	if tip != "" {
-		lbl.SetTooltipText(tip)
-	}
-
-	head := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	head.Append(lbl)
-	head.Append(mark)
-	head.Append(pick)
-	head.Append(add)
-	head.Append(drop)
-
-	return editorFrame(head, tv)
-}
-
 // shippedPromptStyle says whether a name is one of the built-ins for a job --
 // which decides whether the button beside the dropdown reverts or deletes.
 func (a *App) shippedPromptStyle(key, name string) bool {
@@ -470,6 +349,36 @@ func (a *App) pickPromptStyle(key, name string) {
 		a.promptQuiet = false
 	}
 	a.markPromptRow(key)
+	a.styleTarget(key, name) // a wording with a length of its own corrects the ▶ target box
+	a.syncStylePicks(key, name)
+}
+
+// syncStylePicks lands a pick in every dropdown that shows this key's wording
+// -- the editor's and the surfaced one on the page (styleBar). Selection
+// only, never the lists: this runs inside one of their own notify::selected
+// handlers, where replacing the model hangs the view drawing the closing
+// popup (see showPromptStyle). Setting the OTHER dropdown's selection is
+// safe, and setting one that is already set is a no-op.
+func (a *App) syncStylePicks(key, name string) {
+	land := func(names *gtk.StringList, pick *gtk.DropDown) {
+		for i := uint(0); i < names.NItems(); i++ {
+			if names.String(i) != name {
+				continue
+			}
+			if pick.Selected() != i {
+				a.promptQuiet = true
+				pick.SetSelected(i)
+				a.promptQuiet = false
+			}
+			return
+		}
+	}
+	if row, ok := a.promptRows[key]; ok {
+		land(row.names, row.pick)
+	}
+	if bar, ok := a.styleDrops[key]; ok {
+		land(bar.names, bar.pick)
+	}
 }
 
 // showPromptStyle is pickPromptStyle plus the menu itself, for the places where
@@ -488,8 +397,9 @@ func (a *App) pickPromptStyle(key, name string) {
 func (a *App) showPromptStyle(key, name string) {
 	a.pickPromptStyle(key, name)
 
-	row, ok := a.promptRows[key]
-	if !ok {
+	row, rowOK := a.promptRows[key]
+	bar, barOK := a.styleDrops[key]
+	if !rowOK && !barOK {
 		return
 	}
 	list := a.promptStyleList(key)
@@ -501,15 +411,26 @@ func (a *App) showPromptStyle(key, name string) {
 			sel = i
 		}
 	}
+	drops := []styleDrop{}
+	if rowOK {
+		drops = append(drops, styleDrop{row.names, row.pick})
+	}
+	if barOK {
+		drops = append(drops, bar)
+	}
 	a.promptQuiet = true
 	// only when the names really moved: a plain switch does not change them,
 	// and a model replaced for nothing is a menu that flickers and a selection
-	// that bounces through every index on the way
-	if !sameStrings(row.names, fresh) {
-		row.names.Splice(0, row.names.NItems(), fresh)
-	}
-	if row.pick.Selected() != uint(sel) {
-		row.pick.SetSelected(uint(sel))
+	// that bounces through every index on the way. The same refresh lands on
+	// the editor's dropdown and the page's (styleBar) -- two views of the one
+	// stored choice.
+	for _, d := range drops {
+		if !sameStrings(d.names, fresh) {
+			d.names.Splice(0, d.names.NItems(), fresh)
+		}
+		if d.pick.Selected() != uint(sel) {
+			d.pick.SetSelected(uint(sel))
+		}
 	}
 	a.promptQuiet = false
 	// no markPromptRow here: pickPromptStyle already did it, and nothing the
@@ -535,7 +456,7 @@ func (a *App) markPromptRow(key string) {
 	// thing this row does -- "the project is holding something here" -- and it
 	// is the only place that says it once the boxes are behind a button, so it
 	// cannot depend on a box being open (promptpick.go).
-	a.syncPromptPickers()
+	a.syncPromptMarks()
 
 	row, ok := a.promptRows[key]
 	if !ok {

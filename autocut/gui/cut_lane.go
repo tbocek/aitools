@@ -2,14 +2,14 @@ package main
 
 // ---- a lane the cut put there -----------------------------------------------
 //
-// Every other row of the picture band is a recording. Preprocessing was pointed
+// Every other row of the picture band is a recording. Prepare was pointed
 // at a file, the file was transcribed and described and given a waveform, and
 // the row is that work showing. This is the other kind: a shot copied from
 // somewhere else in the session, or a video that was never a source at all, put
 // on a row of its own so the green can cut to it and back.
 //
 // Cut-only, and that is the whole of the difference. It lives in cut.json and
-// nowhere else: nothing transcribes it and nothing describes it. Preprocessing
+// nowhere else: nothing transcribes it and nothing describes it. Prepare
 // decides what the SOURCES are and this decides what the CUT has to work with,
 // and those are not the same list -- reload builds the sources and then lays
 // these over the top of them.
@@ -52,7 +52,7 @@ type cutLane struct {
 // source: a copied shot is one recording seen twice, and its frames were
 // extracted the first time round. A file from outside the session has none, and
 // its row draws its name and no pictures -- extracting frames for it would be
-// exactly the Preprocessing pass this lane exists to do without.
+// exactly the Prepare pass this lane exists to do without.
 func (a *App) laneVideos(lanes []cutLane, vids []tlVideo) []tlVideo {
 	// the wall clock of session second nought, for a lane whose file has no
 	// stamp of its own to read. Only the output clips are named off this.
@@ -281,45 +281,7 @@ func (ed *cutEditor) killLane(name string) {
 		ed.persist()
 		return
 	}
-	for b, r := range ed.rows {
-		if r > row {
-			ed.rows[b] = r - 1
-		}
-	}
-	var segs []cutSeg
-	for _, s := range ed.segs {
-		switch {
-		case s.Cam == row:
-			continue // it showed that row, and that row has gone
-		case s.Cam > row:
-			s.Cam--
-		}
-		segs = append(segs, s)
-	}
-	// the two live row numbers that are not written in the cut. A selection and
-	// a copy in hand each name a ROW, and a row number that quietly came to mean
-	// the camera below is the same silent repointing the pins exist to prevent
-	// -- except here it would put the green, or the next paste, on footage
-	// nobody chose. What named the row that has gone lets go instead.
-	switch {
-	case ed.sel.lane == row:
-		ed.sel.active = false
-	case ed.sel.lane > row:
-		ed.sel.lane--
-	}
-	switch {
-	case !ed.copyOn || ed.copyAud != "": // a copied SOUND names a lane, not a row
-	case ed.copyCam == row:
-		ed.copyOn = false
-	case ed.copyCam > row:
-		ed.copyCam--
-	}
-	ed.laneHov = "" // the badge under the pointer went with it
-	ed.segs = segs
-	ed.dropSeg()
-	ed.dropEdge()
-	ed.syncSelBtns()
-	ed.syncInsertBtn() // ⇲ Lane goes off the bar with the copy it would have used
+	ed.closeRow(row)
 	ed.relayout()
 	ed.persist()
 	ed.a.setStatus(fmt.Sprintf("removed the %s lane and everything the cut took from it "+
@@ -336,7 +298,7 @@ func cutLaneIdx(lanes []cutLane, name string) int {
 	return -1
 }
 
-// isCutLane says this row was put there by the cut rather than by Preprocessing.
+// isCutLane says this row was put there by the cut rather than by Prepare.
 func (ed *cutEditor) isCutLane(base string) bool { return cutLaneIdx(ed.cutLanes, base) >= 0 }
 
 // ---- the ✕ that takes one away ----------------------------------------------
@@ -377,12 +339,13 @@ func (ed *cutEditor) laneKillAt(px, y float64) string {
 // hoverLaneKill lights the badge under the pointer. x below zero means the
 // pointer has left the band.
 func (ed *cutEditor) hoverLaneKill(x, y float64) {
-	name := ""
+	name, row := "", -1
 	if x >= 0 && ed.hitPics(y) {
 		name = ed.laneKillAt(x+ed.viewX, y)
+		row = ed.rowKillAt(x+ed.viewX, y)
 	}
-	if name != ed.laneHov {
-		ed.laneHov = name
+	if name != ed.laneHov || row != ed.rowHov {
+		ed.laneHov, ed.rowHov = name, row
 		if ed.srcArea != nil {
 			ed.srcArea.QueueDraw()
 		}
@@ -417,6 +380,162 @@ func (ed *cutEditor) drawLaneKill(cr *cairo.Context, vx0, vx1 float64) {
 	}
 }
 
+// closeRow brings the rows above `row` down one and renumbers everything that
+// names a row: the pins, the scenes, the selection, a copy in hand, and the
+// watch. The one piece of row-removal killLane and killRow share -- and it is
+// shared rather than copied because a scene whose Cam came down while its
+// footage stayed put would silently show the wrong camera, which is the exact
+// lie the pins exist to prevent.
+//
+// Every source is pinned first. The decrement below is only TRUE of a source
+// whose row is written down: an unpinned one is re-coloured greedily at the
+// next relayout and could land in the closed gap, desynced from the very Cam
+// numbers this function just adjusted to match it.
+func (ed *cutEditor) closeRow(row int) {
+	if ed.rows == nil {
+		ed.rows = map[string]int{}
+	}
+	for _, v := range ed.vids {
+		if _, ok := ed.rows[v.base]; !ok {
+			ed.rows[v.base] = v.lane
+		}
+	}
+	for b, r := range ed.rows {
+		if r > row {
+			ed.rows[b] = r - 1
+		}
+	}
+	var segs []cutSeg
+	for _, s := range ed.segs {
+		switch {
+		case s.Cam == row:
+			continue // it showed that row, and that row has gone
+		case s.Cam > row:
+			s.Cam--
+		}
+		segs = append(segs, s)
+	}
+	// the live row numbers that are not written in the cut. A selection, a copy
+	// in hand and the watch each name a ROW, and a row number that quietly came
+	// to mean the camera below is the same silent repointing the pins exist to
+	// prevent -- except here it would put the green, the next paste, or the
+	// preview on footage nobody chose. What named the row that has gone lets go
+	// instead.
+	switch {
+	case ed.sel.lane == row:
+		ed.sel.active = false
+	case ed.sel.lane > row:
+		ed.sel.lane--
+	}
+	switch {
+	case !ed.copyOn || ed.copyAud != "": // a copied SOUND names a lane, not a row
+	case ed.copyCam == row:
+		ed.copyOn = false
+	case ed.copyCam > row:
+		ed.copyCam--
+	}
+	switch {
+	case ed.monRow-1 == row: // monRow is 1-based, 0 for off
+		ed.monRow = 0
+	case ed.monRow-1 > row:
+		ed.monRow--
+	}
+	if ed.nRows > 0 {
+		ed.nRows-- // one row fewer is one row less of floor to hold
+	}
+	ed.laneHov, ed.rowHov = "", -1 // the badge under the pointer went with it
+	ed.segs = segs
+	ed.dropSeg()
+	ed.dropEdge()
+	ed.syncSelBtns()
+	ed.syncInsertBtn() // ⇲ Lane goes off the bar with the copy it would have used
+}
+
+// ---- the ✕ on a row with nothing on it ---------------------------------------
+//
+// A right-drag that moves a part onto another row leaves the old row standing
+// empty on purpose (moveRow): closing it there would renumber every scene's
+// camera as a side effect of a drag that meant something else. But an empty
+// row is still a row of space on the band, and the only way to be rid of one
+// was to know that truth about moveRow. So it wears the same ✕ a cut lane
+// does, at its left edge -- there is no footage to put it beside, so it sits at
+// the edge of the VIEW and rides the scroll, where a lane's sits at the lane's
+// own start.
+
+// rowEmpty says nothing is drawn on row r.
+func (ed *cutEditor) rowEmpty(r int) bool {
+	for i := range ed.vids {
+		if ed.vids[i].lane == r {
+			return false
+		}
+	}
+	return true
+}
+
+// rowKillAt is the empty row whose ✕ is under a press, or -1. Timeline px, so
+// the centre is the view's left edge plus the badge's inset. Not offered on the
+// last row standing: with no footage at all the one row IS the band, and an ✕
+// there would remove nothing.
+func (ed *cutEditor) rowKillAt(px, y float64) int {
+	if ed.laneN <= 1 {
+		return -1
+	}
+	for r := 0; r < ed.laneN; r++ {
+		if !ed.rowEmpty(r) {
+			continue
+		}
+		cx, cy := ed.viewX+segKillIn, ed.laneTop(r)+segKillTop
+		if math.Abs(px-cx) <= segKillHit && math.Abs(y-cy) <= segKillHit {
+			return r
+		}
+	}
+	return -1
+}
+
+// drawRowKill paints them, in drawTrack's own translation like drawLaneKill.
+func (ed *cutEditor) drawRowKill(cr *cairo.Context, vx0 float64) {
+	if ed.laneN <= 1 {
+		return
+	}
+	for r := 0; r < ed.laneN; r++ {
+		if !ed.rowEmpty(r) {
+			continue
+		}
+		cx, cy := vx0+segKillIn, ed.laneTop(r)+segKillTop
+		if ed.rowHov == r {
+			cr.SetSourceRGBA(0.85, 0.24, 0.28, 0.95)
+		} else {
+			cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.55)
+		}
+		cr.Arc(cx, cy, segKillR+segKillPad, 0, 2*math.Pi)
+		cr.Fill()
+		cr.SetSourceRGBA(1, 1, 1, 0.9)
+		cr.SetLineWidth(1.6)
+		for _, d := range [][2]float64{{-1, -1}, {-1, 1}} {
+			cr.MoveTo(cx+segKillR*d[0], cy+segKillR*d[1])
+			cr.LineTo(cx-segKillR*d[0], cy-segKillR*d[1])
+		}
+		cr.Stroke()
+	}
+}
+
+// killRow takes an empty row away: the rows below come up one and every scene
+// keeps the camera it was showing. Only an EMPTY row -- a row with footage has
+// its own ways off the band (a cut lane's ✕, Prepare) and each of those
+// says what happens to the footage, which this deliberately has no answer for.
+func (ed *cutEditor) killRow(row int) {
+	if row < 0 || row >= ed.laneN || ed.laneN <= 1 || !ed.rowEmpty(row) {
+		return
+	}
+	ed.pushUndo()
+	ed.closeRow(row)
+	ed.relayout()
+	ed.persist()
+	ed.a.setStatus(fmt.Sprintf("removed the empty row %d — the rows below it came up one; "+
+		"↶ Undo takes it back", row+1))
+	ed.redrawTracks()
+}
+
 // setLanes puts the cut's own rows on the band, replacing whatever was there.
 // Rebuilt rather than patched: a load is putting them there for the first time,
 // and an undo may be putting one back, taking one away, or doing both at once.
@@ -425,7 +544,7 @@ func (ed *cutEditor) drawLaneKill(cr *cairo.Context, vx0, vx1 float64) {
 // right-dragged like any other row (cut_shift.go), and its correction is held in
 // the same map under the same key as a recording's.
 func (ed *cutEditor) setLanes(lanes []cutLane) {
-	// what is on the band because Preprocessing put it there, picture and
+	// what is on the band because Prepare put it there, picture and
 	// sound. Asked before ed.cutLanes is replaced, so a lane being TAKEN away
 	// is still known to be one: read after, its name is in neither list and it
 	// would survive as a row of a file nothing on the page mentions.

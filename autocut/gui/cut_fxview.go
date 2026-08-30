@@ -74,14 +74,14 @@ func (ed *cutEditor) camInForce(t float64) *cutFx {
 // an effect needs: holdFx takes an index, and a pointer into a slice that undo
 // may replace wholesale is not one.
 //
-// Three answers, in order. A zoom whose band covers t owns the picture for
-// those seconds, and the latest such wins. Otherwise it is the staying zoom in
-// force -- the last one at or before t. Before any staying zoom at all it is
-// the earliest of them, because the earliest staying zoom frames the video
-// from the very start (camRectAt). -1 when none of the three exists, which is
-// the camera parked on the whole frame: a framing no effect can be edited by.
+// Two answers, in order. A zoom whose band covers t owns the picture for those
+// seconds, and the latest such wins. Otherwise it is the staying zoom in force
+// -- the last one at or before t. -1 when there is neither, which is the camera
+// parked on the whole frame: a framing no effect can be edited by, and that is
+// the honest answer everywhere before the cut's first zoom, because no effect
+// reaches back to seconds ahead of its own T (camRectAt).
 func (ed *cutEditor) camIndexInForce(t float64) int {
-	band, stay, first := -1, -1, -1
+	band, stay := -1, -1
 	for i := range ed.fx {
 		f := &ed.fx[i]
 		if f.Kind != "zoom" {
@@ -90,43 +90,26 @@ func (ed *cutEditor) camIndexInForce(t float64) int {
 		if f.T <= t+1e-9 && t < f.T+math.Max(f.Dur, 0) && (band < 0 || f.T >= ed.fx[band].T) {
 			band = i
 		}
-		if !f.Stay {
-			continue
-		}
-		if first < 0 || f.T < ed.fx[first].T {
-			first = i
-		}
-		if f.T <= t+1e-9 && (stay < 0 || f.T >= ed.fx[stay].T) {
+		if f.Stay && f.T <= t+1e-9 && (stay < 0 || f.T >= ed.fx[stay].T) {
 			stay = i
 		}
 	}
-	switch {
-	case band >= 0:
+	if band >= 0 {
 		return band
-	case stay >= 0:
-		return stay
 	}
-	return first
+	return stay
 }
 
 // camMoving is whether the camera is MID-MOVE at t -- inside some zoom's fade
 // in or fade out, on its way between two framings.
 //
-// The earliest staying zoom's fade in is excluded: it has nowhere to travel
-// from and camRectAt makes it a no-op, so the camera is standing still there
-// whatever the number says.
+// Every fade in counts, the cut's first included: it travels from the plain
+// centred slice the video opens on, which is a journey like any other now that
+// no zoom reaches back before its own T (camRectAt).
 func camMoving(fx []cutFx, t float64) bool {
-	zooms := zoomsOf(fx)
-	firstStay := -1
-	for i, z := range zooms {
-		if z.Stay {
-			firstStay = i
-			break
-		}
-	}
-	for i, z := range zooms {
+	for _, z := range zoomsOf(fx) {
 		tin, tout := z.zoomGlides()
-		if tin > 0 && i != firstStay && t >= z.T && t < z.T+tin {
+		if tin > 0 && t >= z.T && t < z.T+tin {
 			return true
 		}
 		if !z.Stay && tout > 0 && t >= z.T+math.Max(z.Dur, 0)-tout && t < z.T+math.Max(z.Dur, 0) {
@@ -1243,16 +1226,11 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 				f.Trans, f.Tout = 0, 0
 			}
 			fxClampRect(&f)
-			first := ed.firstStay(f)
 			ed.a.askZoomParams(f, true, func(nf cutFx) {
 				ed.addFx(nf)
 				msg := " — ↶ Undo takes it back"
 				if nf.Stay {
 					msg = " — the video shows this region from here on; ↶ Undo takes it back"
-					if first && nf.Stay {
-						msg = " — the video is framed like this from the very start; " +
-							"↶ Undo takes it back"
-					}
 				}
 				ed.a.setStatus(nf.fxLabel() + msg)
 			})

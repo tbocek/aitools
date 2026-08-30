@@ -1,6 +1,6 @@
 package main
 
-// Preprocessing's half of the audio.cpp server, against a fake one. Nothing here
+// Prepare's half of the audio.cpp server, against a fake one. Nothing here
 // reaches a real server or a GPU: what is being pinned is the contract between
 // the two, which is where moving ASR and diarization off the CLI could go
 // wrong quietly -- a request the server does not understand, or an answer read
@@ -62,7 +62,7 @@ func fakeAudio(t *testing.T, models string, run http.HandlerFunc) (*App, *[]map[
 	return a, &seen
 }
 
-// the two models preprocessing asks for, as a server that has them lists them
+// the two models Prepare asks for, as a server that has them lists them
 const ttsModels = `{"id":"index-tts2","family":"index_tts2","task":"clon"}`
 
 const asrModels = `{"id":"nemotron-asr","family":"nemotron_asr","task":"asr"},` +
@@ -209,11 +209,11 @@ func TestDiarSpansAreSecondsAndSilenceIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestTheServersAnswersAreTheFilesPreprocessingKeeps is the point of the port: the two
+// TestTheServersAnswersAreTheFilesPrepareKeeps is the point of the port: the two
 // answers, written to disk exactly as they arrive, are read by the code that
 // used to read the CLI's output files -- same names, same numbers, same
 // segments out the other end.
-func TestTheServersAnswersAreTheFilesPreprocessingKeeps(t *testing.T) {
+func TestTheServersAnswersAreTheFilesPrepareKeeps(t *testing.T) {
 	a, _ := fakeAudio(t, asrModels, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(asrAnswer)) // this one only ever gets the ASR job
 	})

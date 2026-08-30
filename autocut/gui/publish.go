@@ -24,13 +24,19 @@ package main
 // afterwards, and it takes any number of references, so an instruction may
 // borrow from any of the others.
 //
-// One model job and one prompt on the page, same rule as every other step: the
-// box IS what the model is told, and an edited one is kept in the project. It
-// writes the title and the description; the edit instruction is typed, not
-// generated. There was a second job that picked a frame and wrote the
-// instruction for it, and it was removed because it did neither well -- the
-// pick was guesswork and the instruction it wrote was worse than the one you
-// would have typed.
+// One model job, and its prompt lives on Prepare with all the others
+// (prepedit.go) -- this page shows only the two boxes that describe THIS
+// picture, because they are about the frame in front of you rather than about
+// the video. The job writes the title, the edit instruction and the
+// description in one reply.
+//
+// The instruction used to be typed and only typed. A separate job once picked
+// a frame AND wrote an instruction for it, and it was removed because it did
+// neither well -- the pick was guesswork and the instruction was worse than
+// one you would have typed. What is different now is that the job already
+// reads the whole session to write the title: asking the same reply for one
+// more line costs nothing, it knows what the clips actually contain, and it
+// starts the box off with something to edit instead of an empty field.
 //
 // What comes back is a suggestion in an editable field, never a decision --
 // the title, the instruction and the description are all yours to rewrite, and
@@ -38,10 +44,9 @@ package main
 //
 // The page is two columns. Left is the picture and everything that makes it:
 // the images, the edit instruction, the negative prompt, the result. Right is
-// the words: the prompt that writes them, then the title, then the
-// description. They are worked on separately -- rewording the instruction and
-// redrawing has nothing to do with the description -- so they do not share a
-// column and fight for its height.
+// the words: the title and the description. They are worked on separately --
+// rewording the instruction and redrawing has nothing to do with the
+// description -- so they do not share a column and fight for its height.
 //
 // step6/thumbnail.png        the upload
 // step6/thumbnail-plain.png  the same picture, kept so a failed re-roll does
@@ -65,10 +70,6 @@ import (
 )
 
 const (
-	// YouTube's own thumbnail size. Asked for, not guaranteed: a model with a
-	// fixed latent size hands back what it hands back.
-	pubImgW, pubImgH = 1280, 720
-
 	// How many frames the FIRST run takes from the cut. Only a starting point:
 	// the row is a list you add to and remove from, so a session can end up
 	// with none, one, or several. Two is what a first run is worth -- enough
@@ -94,7 +95,7 @@ You are given what the video is made of -- its clips, what was seen and said in 
 
 The request may open with a block headed ABOUT THIS SESSION: the editor's own notes, written by someone who was there. Every name, spelling and fact in it outranks what you would otherwise have guessed, and what it singles out is what the description should lead with.
 
-Return the title on the first line, prefixed exactly "TITLE: ", then a blank line, then the description text itself. No JSON, no code fence, no heading, no commentary about the task.
+Return three parts in this order, with a blank line between them: the title on one line prefixed exactly "TITLE: ", the thumbnail instruction on one line prefixed exactly "THUMBNAIL: ", then the description text itself. No JSON, no code fence, no heading, no commentary about the task.
 
 The title.
 
@@ -102,6 +103,13 @@ The title.
 - Say the specific thing that happens in THIS video: the moment, the mistake, the win, the thing nobody expected. A title that would fit any session of this game is a wasted title.
 - Plain words people say out loud. No colons splitting a subtitle off, no clickbait punctuation, no ALL CAPS -- it is drawn in large letters already.
 - Never promise something the clips do not contain.
+
+The thumbnail instruction.
+
+- One or two sentences on a single line, telling an image model what to CHANGE about a frame taken from this video so that it reads as a thumbnail.
+- It is an instruction, not a description. Anything you do not mention is left alone, so describing the whole scene gets a picture of something else instead of the moment that was filmed. Say what to brighten, blur, push forward, or clear out of the way.
+- Name only things the clips contain. "Add the dragon" to a video with no dragon in it is a thumbnail that lies about the video.
+- Ask for no text, no lettering, no title and no logo. The title is appended to your instruction automatically as its own sentence, and asking for it here prints it twice.
 
 The description.
 
@@ -139,10 +147,34 @@ type pubSettings struct {
 	// one into the other, and nothing writes it again.
 	Base int `json:"base,omitempty"`
 
+	// Where the thumbnail's frame sits on the base image: the centre of the
+	// crop box, in fractions of that image (publish_crop.go). A pointer, and
+	// nil is the middle -- the box that has never been dragged -- because 0,0
+	// is a legitimate place to drag one TO and a project written before the
+	// box existed must not read as "pushed into the top-left corner".
+	Crop *pubPoint `json:"crop,omitempty"`
+
 	Title    string `json:"title,omitempty"`
 	Prompt   string `json:"prompt,omitempty"`
 	Negative string `json:"negative,omitempty"`
 	Desc     string `json:"description,omitempty"`
+}
+
+// pubPoint is a place on a picture, as fractions of it.
+type pubPoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+// cropRect is the crop box this project asks for on a base image of aspect
+// srcA, for a thumbnail of aspect outA. Everything about its size comes from
+// the two aspects; only the centre is the user's.
+func (st pubSettings) cropRect(srcA, outA float64) fxRect {
+	cx, cy := 0.5, 0.5
+	if st.Crop != nil {
+		cx, cy = st.Crop.X, st.Crop.Y
+	}
+	return pubCropAt(srcA, outA, cx, cy)
 }
 
 // basePath is the picture being edited, or "" when the row is empty -- which is
@@ -187,6 +219,14 @@ type publisher struct {
 	frames    []string
 	framesBox *gtk.Box
 	addFrame  *gtk.Button
+
+	// where the thumbnail's frame sits on the base image, and the shape that
+	// frame is. crop is nil until the box has been dragged, which is the same
+	// "never chosen" the project file stores; aspect is the cut's, cached by
+	// reread because the crop box is redrawn on every pointer move and reading
+	// cut.json per frame is not a thing to do in a draw handler.
+	crop   *pubPoint
+	aspect string
 
 	title *gtk.Entry
 	// The four editable boxes, split by column: prompt and neg are the drawing
@@ -274,9 +314,10 @@ func (a *App) buildPublish() gtk.Widgetter {
 	// that outgrows one line the moment a picture goes wrong in a new way.
 	var promptBox, negBox, descBox *gtk.ScrolledWindow
 	p.prompt, promptBox = p.textBox(4, "What the image model is told to CHANGE about the first image. "+
+		"Written by the same call that writes the title, and yours to rewrite. "+
 		"Plain sentences: \"blur the background\", \"add the ship from the second image behind them\". "+
 		"Anything you do not mention is left alone, so describing the whole scene gets you a different one. "+
-		"The title is added after this automatically — do not ask for it here.")
+		"The title is added after this automatically — ask for it here and it is lettered twice.")
 	p.neg, negBox = p.textBox(2, "What must stay out of the picture — watermarks, logos, extra limbs. "+
 		"Not \"text\" any more: the title is lettering this model is being asked for on purpose.")
 
@@ -292,14 +333,15 @@ func (a *App) buildPublish() gtk.Widgetter {
 
 	// LEFT: everything that makes the picture, in the order it happens --
 	// choose the images, say what to change, say what to keep out, look at what
-	// came back. Nothing on this side calls the language model any more.
+	// came back. Nothing on this side calls the language model: the instruction
+	// arrives from the one call the other side makes, and is then this page's.
 	draw := gtk.NewBox(gtk.OrientationVertical, 6)
 	draw.SetMarginTop(4)
 	draw.SetMarginStart(12)
 	draw.SetMarginEnd(6)
 	draw.Append(framesHead)
 	draw.Append(p.framesBox)
-	draw.Append(p.heading("Edit instruction", "What to change about the first image, sent to sd.cpp with the whole row"))
+	draw.Append(p.heading("Edit instruction", "What to change about the first image, sent to sd.cpp with the whole row — ▶ writes one, and it is yours to rewrite"))
 	draw.Append(promptBox)
 	draw.Append(p.heading("Negative prompt", "What must not appear"))
 	draw.Append(negBox)
@@ -332,14 +374,15 @@ func (a *App) buildPublish() gtk.Widgetter {
 	p.desc, descBox = p.textBox(8, "The text under the video on the YouTube page. Written by the "+
 		"prompt above, and yours to rewrite.")
 
-	// ↻ sits on the Title heading because the title and the description are
-	// what it rewrites -- and it is the only thing that rewrites them: ▶ writes
-	// them once and then never touches them again
+	// ↻ sits on the Title heading because the title is the first thing it
+	// rewrites -- it is one call and it writes all three, the instruction on the
+	// other side of the page included -- and it is the only thing that rewrites
+	// them: ▶ writes them once and then never touches them again
 	p.suggest = gtk.NewButtonWithLabel("Suggest again")
 	p.suggest.AddCSSClass("flat")
-	p.suggest.SetTooltipText("Ask the model for a fresh title and description — the only thing " +
-		"that does. ▶ never rewrites text that has already been written, and nothing here " +
-		"redraws the picture; ▶ does that")
+	p.suggest.SetTooltipText("Ask the model for a fresh title, thumbnail instruction and " +
+		"description — the only thing that does. ▶ never rewrites text that has already been " +
+		"written, and nothing here redraws the picture; ▶ does that")
 	p.suggest.ConnectClicked(func() { a.publishRun(true) })
 
 	said := gtk.NewBox(gtk.OrientationVertical, 6)
@@ -352,16 +395,12 @@ func (a *App) buildPublish() gtk.Widgetter {
 	descBox.SetVExpand(true)
 
 	// The prompt was a box above these two, taking about half the column for
-	// something a project touches once. It is the dropdown at the top of the
-	// column now (promptpick.go), and the title and the description have the
-	// height it was using.
-	promptRow := a.promptBar(nil, promptSlot{"youtube", "Upload text",
-		"Gets the cut and the narration — no images — and answers with the title and the description."})
-	promptRow.SetMarginStart(6)
-	promptRow.SetMarginTop(4)
-
+	// something a project touches once; then a dropdown at the top of the
+	// column. It is on Prepare with all the others now (prepedit.go). What is
+	// left on this page is the two image boxes, which are not prompts in that
+	// sense at all -- they are this thumbnail's instructions, rewritten and
+	// redrawn as often as it takes to get the picture right.
 	text := gtk.NewBox(gtk.OrientationVertical, 6)
-	text.Append(promptRow)
 	text.Append(said)
 	said.SetVExpand(true)
 	text.SetVExpand(true)
@@ -381,20 +420,14 @@ func (a *App) buildPublish() gtk.Widgetter {
 	openOut.SetTooltipText("step6/ — the thumbnail, the title and the description")
 	openOut.ConnectClicked(func() { a.openFolder(a.publishDir()) })
 	p.out = gtk.NewLabel("")
-	outLbl := gtk.NewLabel("Outputs:")
-	outLbl.AddCSSClass("heading")
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	outRow.SetHAlign(gtk.AlignEnd)
-	outRow.SetMarginEnd(12)
-	outRow.SetMarginBottom(6)
-	outRow.Append(outLbl)
 	outRow.Append(openOut)
 	outRow.Append(p.out)
+	a.outStack.AddNamed(outRow, "publish") // the shared bar's Outputs group; see outStack in main.go
 
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
 	page.Append(inRow)
 	page.Append(outer)
-	page.Append(outRow)
 
 	p.refresh()
 	return page
@@ -526,7 +559,8 @@ func (s *pubSlot) build() gtk.Widgetter {
 	// supposed to avoid.
 	pic.SetSizeRequest(-1, 200)
 	pic.SetFilename(s.path)
-	pf := videoFrame(pic)
+	// the base wears the thumbnail's own frame, draggable (publish_crop.go)
+	pf := videoFrame(s.cropOverlay(pic))
 
 	// The position, spelled out. "Base" and "Ref 2" say what the image model
 	// is going to do with each picture, which "1" and "2" do not -- and the
@@ -606,7 +640,7 @@ func (s *pubSlot) choose() {
 	})
 }
 
-// pickImage opens the file chooser. An empty start folder means the one preprocessing
+// pickImage opens the file chooser. An empty start folder means the one Prepare
 // extracted frames into, which is the only place worth opening on by default.
 func (p *publisher) pickImage(title, start string, done func(string)) {
 	a := p.a
@@ -646,7 +680,7 @@ func (p *publisher) pickImage(title, start string, done func(string)) {
 // rule as snapSources: a goroutine never touches a widget, and a value copied
 // out before the run is a value the run cannot see change under it.
 func (p *publisher) snapshot() pubSettings {
-	st := pubSettings{Frames: append([]string(nil), p.frames...)}
+	st := pubSettings{Frames: append([]string(nil), p.frames...), Crop: p.crop}
 	st.Title = strings.TrimSpace(p.title.Text())
 	st.Prompt = strings.TrimSpace(viewText(p.prompt))
 	st.Negative = strings.TrimSpace(viewText(p.neg))
@@ -659,6 +693,7 @@ func (p *publisher) snapshot() pubSettings {
 func (p *publisher) apply(st pubSettings) {
 	p.guard = true
 	defer func() { p.guard = false; p.updateInputs() }()
+	p.crop = st.Crop
 	p.putFrames(st.Frames)
 	p.title.SetText(st.Title)
 	setViewText(p.prompt, st.Prompt)
@@ -684,7 +719,7 @@ func (a *App) currentPublish() *pubSettings {
 		st.Frames[i] = a.relToRoot(f)
 	}
 	// nothing chosen and nothing written is not worth a key in the file
-	if len(st.Frames) == 0 && st.Title == "" && st.Prompt == "" && st.Desc == "" {
+	if len(st.Frames) == 0 && st.Crop == nil && st.Title == "" && st.Prompt == "" && st.Desc == "" {
 		return nil
 	}
 	return &st
@@ -718,6 +753,10 @@ func (p *publisher) refresh() {
 		return
 	}
 	p.reread()
+	// the row is rebuilt, not just re-read: the base wears a crop box of the
+	// CUT's shape, and the cut is the thing most likely to have been reshaped
+	// since this page was last looked at
+	p.rebuildFrames()
 	p.updateInputs()
 	p.updateOut()
 	p.showShot()
@@ -762,6 +801,7 @@ func (p *publisher) reread() {
 		}
 	}
 	p.sdWhere = p.a.sdURL()
+	p.aspect = p.a.produceCut().Aspect
 }
 
 func (p *publisher) updateInputs() {
@@ -801,13 +841,14 @@ func (p *publisher) updateInputs() {
 	}
 	p.inputs.SetText(fmt.Sprintf("%d clips, %d:%02d · %d narration lines · %s · %s",
 		p.clips, int(p.clipSecs)/60, int(p.clipSecs)%60, p.lines, imgs, todo))
+	tw, th := pubBox(p.aspect)
 	p.inputs.SetTooltipText(fmt.Sprintf(
 		"The thumbnail is edited from the first image by sd.cpp at %s, %dx%d, following "+
 			"the instruction below — including the title, which this model letters into "+
 			"the picture itself. The rest of the row goes with it, unchanged, for the "+
 			"instruction to refer to.\n"+
 			"The title and the description are written by the LLM from the clips and the narration.",
-		p.sdWhere, pubImgW, pubImgH))
+		p.sdWhere, tw, th))
 }
 
 func (p *publisher) updateOut() {
@@ -825,7 +866,7 @@ type pubShot struct {
 	t    float64
 }
 
-// publishShots is every frame preprocessing extracted, on the session's clock. The
+// publishShots is every frame Prepare extracted, on the session's clock. The
 // times come from the frame's own filename when it has a stamp -- which is
 // what they are named for -- and from the video's start plus the interval when
 // it does not, which is how folders extracted before the renaming look.
@@ -946,68 +987,107 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 	return b.String()
 }
 
-// ---- the two model jobs ----------------------------------------------------------
+// ---- the model job ----------------------------------------------------------
 
-// writeDescription asks for the upload text: the title and the description, in
-// one reply. No JSON on purpose -- the description IS prose, and wrapping prose
-// in JSON only adds a way for a reply that is otherwise perfectly good to be
-// thrown away over an unescaped quote. The title rides in front of it on a
-// labelled line, which costs one string operation and cannot fail that way.
+// writeUpload asks for everything this page's words are: the title, the
+// instruction for the picture, and the description, in one reply. No JSON on
+// purpose -- the description IS prose, and wrapping prose in JSON only adds a
+// way for a reply that is otherwise perfectly good to be thrown away over an
+// unescaped quote. The other two ride in front of it on labelled lines, which
+// costs one string operation and cannot fail that way.
 //
-// This is now the only model call this page makes. There used to be a second
-// one, with the images attached, that picked which frame to edit and wrote the
-// instruction for it; it was removed because it did neither well -- the frame
-// it chose was rarely the one a person would, and the instructions it wrote
-// described pictures instead of asking for changes. Both are decisions worth
-// twenty seconds of a human's attention, and the page is built around making
-// them by hand now.
-func (a *App) writeDescription(brief string) (title, desc string, err error) {
+// The instruction used to be excluded on principle. A second call, with the
+// images attached, once picked which frame to edit AND wrote the instruction
+// for it, and it was removed because it did neither well -- the frame it chose
+// was rarely the one a person would, and the instructions it wrote described
+// pictures instead of asking for changes.
+//
+// Picking the frame is still the user's, and that is the half that mattered:
+// the page is built around choosing a base image by eye. The instruction came
+// back because this call is not that call. It reads the whole session in order
+// to write the title, so it knows what the clips contain, and asking the same
+// reply for one more line costs nothing and starts the box off with something
+// to edit rather than empty. It is a suggestion in a box, like the title above
+// it -- rewrite it and press ▶ again.
+func (a *App) writeUpload(brief string) (title, instr, desc string, err error) {
 	msgs := []map[string]any{
 		msg("system", a.prompt("youtube")),
 		msg("user", a.ctxBlock()+brief),
 	}
 	if err := a.checkpoint(); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	reply, err := a.llmChatRetry(msgs, true)
+	reply, err := a.llmChatRetry("publish", msgs, true)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	title, desc = splitTitle(reply)
+	title, instr, desc = splitUpload(reply)
 	if desc == "" {
-		return "", "", fmt.Errorf("the model answered with nothing")
+		return "", "", "", fmt.Errorf("the model answered with nothing")
 	}
-	return title, desc, nil
+	return title, instr, desc, nil
 }
 
-// splitTitle peels the "TITLE: ..." line off the front. A reply without one is
-// not an error: the description is the part that matters, and a missing title
-// leaves the box for the user to fill rather than throwing away good prose over
-// a header the model forgot. The rest goes through cleanDescription either way.
-func splitTitle(reply string) (title, desc string) {
-	s := strings.TrimSpace(reply)
-	// A fenced reply puts the fence before the title line, so the fence has to
-	// come off here rather than in cleanDescription: by the time the TITLE:
-	// line is peeled the text no longer *starts* with a fence, and the closing
-	// one would be left sitting at the bottom of the description.
-	if strings.HasPrefix(s, "```") {
-		if i := strings.IndexByte(s, '\n'); i >= 0 {
-			s = s[i+1:]
+// splitUpload peels the labelled lines off the front of the reply: the title,
+// and the instruction for the picture. A reply missing either is not an error --
+// the description is the part that matters, and an empty box is easier to notice
+// and to fill than a wrong line is to spot. The rest goes through
+// cleanDescription either way.
+//
+// Order-insensitive, because it costs one loop and the alternative is a run
+// thrown away over a model that answered with its two headers the other way
+// round.
+func splitUpload(reply string) (title, instr, desc string) {
+	// A fenced reply puts the fence before the labelled lines, so it has to come
+	// off here rather than in cleanDescription: by the time they are peeled the
+	// text no longer *starts* with a fence, and the closing one would be left
+	// sitting at the bottom of the description.
+	s := unfence(strings.TrimSpace(reply))
+	for i := 0; i < 2; i++ {
+		if v, rest, ok := peelLabel(s, "title:"); ok {
+			title, s = v, rest
+			continue
 		}
-		if i := strings.LastIndex(s, "```"); i >= 0 {
-			s = s[:i]
+		if v, rest, ok := peelLabel(s, "thumbnail:"); ok {
+			instr, s = v, rest
+			continue
 		}
-		s = strings.TrimSpace(s)
+		break
 	}
+	return title, instr, cleanDescription(s)
+}
+
+// peelLabel takes "NAME: value" off the front when the first line carries it,
+// and says whether it did. The quotes come off the value: a model asked for a
+// title on a labelled line very often gives it to you in quotation marks, and
+// those would be lettered into the picture.
+func peelLabel(s, name string) (val, rest string, ok bool) {
 	line := s
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		line = s[:i]
 	}
-	if t := strings.TrimSpace(line); len(t) > 6 && strings.EqualFold(t[:6], "title:") {
-		title = strings.Trim(strings.TrimSpace(t[6:]), `"“”`)
-		s = strings.TrimSpace(strings.TrimPrefix(s, line))
+	t := strings.TrimSpace(line)
+	if len(t) <= len(name) || !strings.EqualFold(t[:len(name)], name) {
+		return "", s, false
 	}
-	return title, cleanDescription(s)
+	val = strings.Trim(strings.TrimSpace(t[len(name):]), `"“”`)
+	return val, strings.TrimSpace(strings.TrimPrefix(s, line)), true
+}
+
+// unfence takes a ```-fenced block down to what is inside it. A chat model
+// wraps prose it was asked for bare often enough that both readers of a reply
+// need this, and a fence left in the box is a fence in the YouTube description.
+func unfence(s string) string {
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
+	}
+	if i := strings.LastIndex(s, "```"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 // cleanDescription strips the wrapping a chat model puts around prose it was
@@ -1015,16 +1095,7 @@ func splitTitle(reply string) (title, desc string) {
 // first line. What is left is what goes in the box, verbatim -- the text is
 // the product here, so nothing else is touched.
 func cleanDescription(reply string) string {
-	s := strings.TrimSpace(reply)
-	if strings.HasPrefix(s, "```") {
-		if i := strings.IndexByte(s, '\n'); i >= 0 {
-			s = s[i+1:]
-		}
-		if i := strings.LastIndex(s, "```"); i >= 0 {
-			s = s[:i]
-		}
-		s = strings.TrimSpace(s)
-	}
+	s := unfence(strings.TrimSpace(reply))
 	if line, rest, ok := strings.Cut(s, "\n"); ok {
 		l := strings.TrimSpace(line)
 		if len(l) < 40 && strings.HasSuffix(l, ":") {
@@ -1061,6 +1132,10 @@ func (a *App) publishRun(textOnly bool) {
 	}
 	st := p.snapshot()
 	entries := a.produceEntries()
+	// the cut's shape, read once on this thread: the thumbnail comes out the
+	// shape the video does, and the goroutine below must not go reading the
+	// editor for it
+	aspect := a.produceCut().Aspect
 
 	// The model writes this page's text -- the title and the description --
 	// once per session and then never again. ▶ is the redraw button: press it
@@ -1087,10 +1162,10 @@ func (a *App) publishRun(textOnly bool) {
 
 	switch {
 	case textOnly:
-		a.logf(">>> publish: rewriting the title and the description — one thinking call")
+		a.logf(">>> publish: rewriting the title, the thumbnail instruction and the description — one thinking call")
 	case needText:
-		a.logf(">>> publish: writing the title and the description once, "+
-			"then drawing the thumbnail on %s", a.sdURL())
+		a.logf(">>> publish: writing the title, the thumbnail instruction and the "+
+			"description once, then drawing the thumbnail on %s", a.sdURL())
 	default:
 		a.logf(">>> publish: redrawing the thumbnail on %s from what the boxes say — "+
 			"the text is already written, no thinking calls", a.sdURL())
@@ -1142,19 +1217,25 @@ func (a *App) publishRun(textOnly bool) {
 		if needText {
 			brief := a.publishBrief(segs, entries)
 			a.logCtx("publish")
-			a.prog(trackSTT, 0, "writing the title and the description")
-			title, desc, err := a.writeDescription(brief)
+			a.prog(trackSTT, 0, "writing the title, the instruction and the description")
+			title, instr, desc, err := a.writeUpload(brief)
 			if err != nil {
 				failed = err
 				return
 			}
-			// a reply that forgot its TITLE: line still has a good description
-			// in it, and an empty title box is easier to notice than a wrong one
+			// a reply that forgot one of its labelled lines still has a good
+			// description in it, and an empty box is easier to notice than a
+			// wrong line -- so a missing part leaves what was there rather than
+			// clearing it
 			if title != "" {
 				st.Title = title
 			}
+			if instr != "" {
+				st.Prompt = instr
+			}
 			st.Desc = desc
-			a.logfIdle("    publish: title %q, description %d characters", st.Title, len(desc))
+			a.logfIdle("    publish: title %q, instruction %d characters, description %d characters",
+				st.Title, len(st.Prompt), len(desc))
 			a.landPublish(st)
 		}
 		if err := a.writePublishFiles(st); err != nil {
@@ -1164,7 +1245,7 @@ func (a *App) publishRun(textOnly bool) {
 			return
 		}
 		a.prog(trackSTT, 0.5, "drawing the thumbnail")
-		if err := a.drawThumbnail(st); err != nil {
+		if err := a.drawThumbnail(st, aspect); err != nil {
 			failed = err
 			return
 		}
@@ -1211,15 +1292,24 @@ func (a *App) writePublishFiles(st pubSettings) error {
 }
 
 // editInstruction is what the image model is actually sent: the edit the
-// suggestion box describes, then the title as its own sentence.
+// instruction box describes, then the title as its own sentence.
 //
 // They are joined here rather than stored joined so that the title stays one
 // editable field. Retyping four words should not mean rewriting the paragraph
-// that surrounds them, and the model that suggests them is not asked again.
+// that surrounds them, and the model that wrote them is not asked again.
 func editInstruction(st pubSettings) string {
 	edit := strings.TrimSpace(st.Prompt)
 	title := strings.TrimSpace(st.Title)
 	if title == "" {
+		return edit
+	}
+	// Never twice. An instruction that already names the title is asking for
+	// those words itself -- either because the model wrote both in one reply, or
+	// because the hand that typed the instruction laid the lines out in it -- and
+	// appending the sentence below asks for them a second time. The model obliges:
+	// a request for two lines of lettering comes back with three, the last one
+	// repeated, and nothing on the page says why.
+	if edit != "" && strings.Contains(strings.ToLower(edit), strings.ToLower(title)) {
 		return edit
 	}
 	// The quotes matter. Qwen-Image-Edit reproduces quoted spans literally,
@@ -1247,7 +1337,13 @@ func editInstruction(st pubSettings) string {
 // kept because it is what the page shows while a new one is being made, and
 // because losing the previous render to a failed re-roll is worse than a few
 // hundred kB.
-func (a *App) drawThumbnail(st pubSettings) error {
+//
+// aspect is the cut's, and it decides both halves of the shape question: the
+// frame the model draws into, and how much of the base frame is handed to it
+// (publish_crop.go). Sending a widescreen frame and asking for a portrait
+// picture is asking the model to choose the crop, and it chooses badly and
+// differently every time.
+func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 	// An empty row is allowed: with no references this is plain text-to-image,
 	// which is what a session with nothing worth editing actually wants. What
 	// is not allowed is a base that has been deleted since it was chosen --
@@ -1266,17 +1362,37 @@ func (a *App) drawThumbnail(st pubSettings) error {
 		return err
 	}
 
+	w, h := pubBox(aspect)
+	outA := float64(w) / float64(h)
+
 	// In row order, which IS the answer: the first is the picture being edited
 	// and the rest are what "the second image" in the instruction refers to.
 	// A reference that has gone missing is skipped rather than fatal -- it is
 	// only ever named in passing, and losing the mention beats losing the run.
+	//
+	// The crop is applied to the FIRST one alone. That is the picture being
+	// composed; a reference is there to be named in a sentence, and cutting it
+	// down would only take away the part of it the sentence might mean.
 	var imgs []string
+	cropped := ""
 	for i, f := range st.Frames {
 		if !exists(f) {
 			a.logfIdle("    publish: reference %d is gone, drawing without it: %s", i+1, f)
 			continue
 		}
-		u, err := sdRefImage(f)
+		var u string
+		var err error
+		if i == 0 {
+			srcA := imageAspect(f)
+			r := st.cropRect(srcA, outA)
+			if !pubWholeFrame(r, srcA, outA) {
+				cropped = fmt.Sprintf(", base cropped to %.0f%% of its width around %.2f,%.2f",
+					100*pubCropW(r.hf, srcA, outA), r.cx, r.cy)
+			}
+			u, err = pubCropRefImage(f, r, srcA, outA)
+		} else {
+			u, err = sdRefImage(f)
+		}
 		if err != nil {
 			return fmt.Errorf("image %s: %w", filepath.Base(f), err)
 		}
@@ -1286,18 +1402,18 @@ func (a *App) drawThumbnail(st pubSettings) error {
 	req := sdRequest{
 		Prompt:        instr,
 		Negative:      st.Negative,
-		Width:         pubImgW,
-		Height:        pubImgH,
+		Width:         w,
+		Height:        h,
 		Seed:          -1, // a fresh draw every time ▶ is pressed, which is the point
 		RefImages:     imgs,
 		AutoResizeRef: true,
 		Format:        "png",
 	}
 	if base == "" {
-		a.logfIdle("    publish: %dx%d drawn from the instruction alone, no images", pubImgW, pubImgH)
+		a.logfIdle("    publish: %dx%d drawn from the instruction alone, no images", w, h)
 	} else {
-		a.logfIdle("    publish: %dx%d editing %s, %d image(s) sent",
-			pubImgW, pubImgH, filepath.Base(base), len(imgs))
+		a.logfIdle("    publish: %dx%d editing %s, %d image(s) sent%s",
+			w, h, filepath.Base(base), len(imgs), cropped)
 	}
 	img, err := a.sdGenerate(a.runCtx, req, func(where string) {
 		a.prog(trackSTT, 0.5, "drawing (%s)", where)

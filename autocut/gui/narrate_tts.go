@@ -39,7 +39,7 @@ import (
 )
 
 //
-// The server itself lives in audiocpp.go: it does the listening for preprocessing too,
+// The server itself lives in audiocpp.go: it does the listening for Prepare too,
 // and the parts below are only what speaking adds to it.
 
 // ttsModelID is the model the narration is spoken through: the id set in

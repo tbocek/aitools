@@ -54,7 +54,7 @@ func TestAStreamedReplyIsReadableWhileItIsWritten(t *testing.T) {
 	a, _, streamed := sseServer(t, parts...)
 
 	var seen []string
-	reply, err := a.llmChatOn([]map[string]any{msg("user", "write it")}, true,
+	reply, err := a.llmChatOn("narrate", []map[string]any{msg("user", "write it")}, true,
 		func(s string) { seen = append(seen, s) })
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestAServerThatWillNotStreamStillAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := 0
-	reply, err := a.llmChatOn([]map[string]any{msg("user", "x")}, true,
+	reply, err := a.llmChatOn("narrate", []map[string]any{msg("user", "x")}, true,
 		func(string) { called++ })
 	if err != nil {
 		t.Fatal(err)

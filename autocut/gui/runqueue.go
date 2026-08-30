@@ -31,7 +31,7 @@ import (
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 )
 
-// The two tracks are the two halves of the bar. They are concurrent in preprocessing
+// The two tracks are the two halves of the bar. They are concurrent in Prepare
 // (speech recognition on the GPU, frame extraction on the CPU) and sequential
 // on Describe + Transcript, but the arithmetic is the same either way: each
 // track reports its own absolute contribution and the bar shows the sum.
@@ -117,7 +117,7 @@ func (a *App) qReset() {
 // the queue for them.
 //
 // A press that is one step's work never calls it: the two tracks ARE the bar
-// and they add up to the whole of it. Preprocessing's ▶ is two steps back to
+// and they add up to the whole of it. Prepare's ▶ is two steps back to
 // back, and neither half knows the other exists -- each still says "half the
 // bar each" and reports its own absolute contribution. So the run says where
 // each half goes and the scaling happens here, rather than in the twenty places
@@ -138,7 +138,7 @@ func (a *App) qPhase(base, share float64) {
 
 // scaled maps a track's own fraction into the phase's slice of the bar. Share 0
 // means no phase was set, which is the whole bar -- that is every step but
-// Preprocessing, and it is also the headless App the tests build. Called with
+// Prepare, and it is also the headless App the tests build. Called with
 // progMu held.
 func (a *App) scaled(f float64) float64 {
 	if a.progShare == 0 {

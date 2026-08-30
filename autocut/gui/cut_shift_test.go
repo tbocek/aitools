@@ -22,6 +22,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,7 +168,7 @@ func TestDraggingTwoCamerasApartKeepsThemOnTheirOwnRows(t *testing.T) {
 }
 
 // Until something is dragged they stay derived, so a camera added on
-// Preprocessing still lands where the arithmetic puts it. Pinning them from the
+// Prepare still lands where the arithmetic puts it. Pinning them from the
 // start would freeze the first session anyone ever opened.
 func TestTheRowsStayDerivedUntilTheFirstDrag(t *testing.T) {
 	ed := shiftEd(t)
@@ -572,6 +573,203 @@ func TestTheRightButtonSlidesTheTimeline(t *testing.T) {
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the timeline drag no longer contains %q", want)
+		}
+	}
+}
+
+// ---- snapping the drag ------------------------------------------------------
+
+// A right-drag lands exactly on the things worth landing on. The seconds are
+// worked out once at the press (slideSnapSet) and the pull itself is pure
+// arithmetic (slideSnap): every moving edge is offered to every still one and
+// the closest pair inside the tolerance wins.
+func TestTheDragSnapsOntoTheStillEdges(t *testing.T) {
+	ed := shiftEd(t)
+	// the case the whole thing exists for: a selection drawn on the row above,
+	// and camera b dragged until its first file starts where the selection does
+	ed.sel.active, ed.sel.t0, ed.sel.t1 = true, 30, 70
+
+	edges, targets := ed.slideSnapSet([]string{"b1", "b2"}, false)
+	// b's own four edges move; a's and the mic's stay, and the selection's two
+	// borders are still ones too
+	if len(edges) != 4 { // b1 and b2's pictures; their master sound is the
+		// same file and is not counted twice
+		t.Fatalf("edges = %v, want b's own four", edges)
+	}
+	has := func(xs []float64, want float64) bool {
+		for _, x := range xs {
+			if math.Abs(x-want) < 1e-9 {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []float64{30, 70, 0, 100, 5, 95} {
+		if !has(targets, want) {
+			t.Errorf("targets %v are missing %v", targets, want)
+		}
+	}
+	if has(targets, 10) || has(targets, 50) {
+		t.Error("a moving edge of b1 is offered as a target -- the drag would snag on itself")
+	}
+
+	// b1 starts at 10; dragged 19.7 s it is 0.3 s short of the selection's 30,
+	// inside a 0.5 s reach: the drag becomes exactly 20
+	if d := slideSnap(19.7, edges, targets, 0.5); math.Abs(d-20) > 1e-9 {
+		t.Errorf("slideSnap(19.7) = %v, want pulled to 20", d)
+	}
+	// too far from everything: the drag is left alone
+	if d := slideSnap(3.7, edges, targets, 0.1); d != 3.7 {
+		t.Errorf("slideSnap(3.7) = %v, want untouched", d)
+	}
+	// the closest pair wins: at d≈-4.9, b1's start (10) is 0.1 from the mic's
+	// start (5), nearer than anything else
+	if d := slideSnap(-4.9, edges, targets, 0.5); math.Abs(d-(-5)) > 1e-9 {
+		t.Errorf("slideSnap(-4.9) = %v, want -5 (b1 flush with the mic)", d)
+	}
+}
+
+// On a green drag it is the scenes that move, so their borders are the moving
+// edges and everything else -- the selection's own borders included -- stays
+// still to be landed on.
+func TestTheDragComesBackFlushToTheSessionStart(t *testing.T) {
+	// dragging the very recording that anchors 0 turns its start into a MOVING
+	// edge, so the origin used to vanish as a destination exactly when a hand
+	// was trying to put something back on it. The ruler's zero is a still
+	// target in its own right, whatever moves.
+	ed := shiftEd(t)
+	edges, targets := ed.slideSnapSet([]string{"a"}, false)
+	found := false
+	for _, x := range targets {
+		if math.Abs(x) < 1e-9 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("targets %v do not offer the session start", targets)
+	}
+	// a starts at 0; nudged 0.3 s off and within reach, it comes back flush
+	if d := slideSnap(0.3, edges, targets, 0.5); math.Abs(d) > 1e-9 {
+		t.Errorf("slideSnap(0.3) = %v, want pulled back to 0", d)
+	}
+}
+
+func TestTheGreenDragSnapsByItsScenes(t *testing.T) {
+	ed := shiftEd(t)
+	ed.segs = []cutSeg{{S: 12, E: 18}, {S: 40, E: 48}, {S: 80, E: 90}}
+	ed.sel.active, ed.sel.t0, ed.sel.t1 = true, 35, 60
+
+	edges, targets := ed.slideSnapSet(nil, true)
+	if len(edges) != 2 || edges[0] != 40 || edges[1] != 48 {
+		t.Fatalf("edges = %v, want the wholly-inside scene's 40 and 48", edges)
+	}
+	// the scene dragged until its start is a hair from the outside scene's end
+	if d := slideSnap(-21.8, edges, targets, 0.5); math.Abs(d-(-22)) > 1e-9 {
+		t.Errorf("slideSnap(-21.8) = %v, want -22 (flush against the scene at 18)", d)
+	}
+	// ...and the selection's own border is a landing too
+	if d := slideSnap(-5.2, edges, targets, 0.5); math.Abs(d-(-5)) > 1e-9 {
+		t.Errorf("slideSnap(-5.2) = %v, want -5 (scene start on the selection's 35)", d)
+	}
+}
+
+// The gesture actually asks. Live coordinates, so the seam is pinned.
+func TestTheDragSnapIsWired(t *testing.T) {
+	src := readSrc(t, "cut.go")
+	for _, want := range []string{
+		// the sets are frozen at the press...
+		"slideEdges, slideTargs = ed.slideSnapSet(slideSrcs, slideSegs != nil)",
+		// ...and every update passes through the snap, with the same fixed
+		// pixel reach every other snap on the page has
+		"d = slideSnap(d, slideEdges, slideTargs, snapPx/math.Max(ed.pps, 0.001))",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut.go no longer contains %q", want)
+		}
+	}
+}
+
+// ---- moving a part onto another row -----------------------------------------
+
+// The same right button, straight up or down: a part goes onto another row when
+// that row has room for it, the kept scenes that showed it come along, and a
+// part dragged somewhere it will not fit stays exactly where it is.
+func TestAPartMovesToARowWithRoomAndItsScenesFollow(t *testing.T) {
+	ed := newTestEd(t)
+	ed.vids = []tlVideo{
+		{base: "a", path: "/f/a.mp4", start: 0, dur: 40},
+		{base: "b", path: "/f/b.mp4", start: 10, dur: 40},
+		{base: "c", path: "/f/c.mp4", start: 60, dur: 20},
+	}
+	ed.relayout()
+	if ed.laneN != 2 {
+		t.Fatalf("fixture came out on %d rows, want 2 (c fits after a)", ed.laneN)
+	}
+	// a scene showing c, one showing a, and a card standing on c's row
+	ed.segs = []cutSeg{
+		{S: 5, E: 15, Cam: 0},
+		{S: 62, E: 70, Cam: 0},
+		{S: 71, E: 75, Cam: 0, Ins: "card.png"},
+	}
+
+	// no room: b lies over a for 30 of its seconds
+	if ed.moveRow([]string{"b"}, 0) {
+		t.Error("b moved onto a row a is filling")
+	}
+	// no row: the band has two
+	if ed.moveRow([]string{"c"}, 2) {
+		t.Error("c moved onto a row the band does not have")
+	}
+	// already there is not a move
+	if ed.moveRow([]string{"c"}, 0) {
+		t.Error("moving c onto its own row claimed to have done something")
+	}
+
+	if !ed.moveRow([]string{"c"}, 1) {
+		t.Fatal("c would not move to row 1, where 50..80 is empty")
+	}
+	if l := videoOn(ed.vids, 1, 65); l == nil || l.base != "c" {
+		t.Error("c is not on row 1 after the move")
+	}
+	if ed.rows["c"] != 1 {
+		t.Error("the move is not pinned -- the next relayout would put c back")
+	}
+	// the scene inside c's stretch came along; the one on a's footage and the
+	// card stayed
+	if ed.segs[1].Cam != 1 {
+		t.Errorf("the scene showing c still names row %d, want 1", ed.segs[1].Cam)
+	}
+	if ed.segs[0].Cam != 0 || ed.segs[2].Cam != 0 {
+		t.Errorf("scenes that never showed c moved rows: %v", ed.segs)
+	}
+
+	// ...and back again, scenes and all
+	if !ed.moveRow([]string{"c"}, 0) {
+		t.Fatal("c would not move back")
+	}
+	if ed.segs[1].Cam != 0 {
+		t.Error("the scene did not come back with its footage")
+	}
+}
+
+// The gesture's half of it. Live pointer coordinates, so the seams are pinned:
+// what rows are offered, how the gates open, and that a purely vertical drag
+// never lets the snap move the clock sideways.
+func TestTheRowMoveIsWired(t *testing.T) {
+	src := readSrc(t, "cut.go")
+	for _, want := range []string{
+		// only sources on the picture band have rows
+		"slideRows = slideSrcs != nil && area == ed.srcArea",
+		// the pointer's row is the ask, strips counting as their row
+		"if r := ed.rowAt(slideY0 + oy); ed.rowFits(slideSrcs, r) {",
+		"if to >= 0 && ed.moveRow(slideSrcs, to) {",
+		// the TIME gate stays sideways-only; a vertical drag opens the
+		// gesture without it
+		"slideTimeOn = slideTimeOn || math.Abs(ox) >= 3",
+		"if !slideTimeOn && to < 0 {",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut.go no longer contains %q", want)
 		}
 	}
 }

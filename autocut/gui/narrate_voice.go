@@ -9,7 +9,7 @@ package main
 // narrate step's per-line emotion goes on working unchanged.
 //
 // Two sources: one of the session's own voices -- the dominant speaker in the
-// recording tagged with that narrator slot on the Preprocessing page, cut from its
+// recording tagged with that narrator slot on the Prepare page, cut from its
 // diarization, which is the pipeline's default -- or a wav in the voices folder, the
 // CC0 references that ship beside audio.cpp's models, plus anything added with
 // "Add sample…", which converts and copies it in. The list shows file names
@@ -404,7 +404,7 @@ func clampPitch(st float64) float64 {
 }
 
 // setPitchST remembers the shift and drops the shifted reference so it is built
-// again. When there is no base yet -- "own voice" before preprocessing has run -- that
+// again. When there is no base yet -- "own voice" before Prepare has run -- that
 // is all there is to do; the next line spoken cuts one and shifts it then.
 // Safe off the GUI thread.
 func (a *App) setPitchST(st float64) error {
@@ -486,12 +486,12 @@ func (a *App) ensureVoiceBase() error {
 	}
 	aud := a.narratorSource(slot)
 	if aud == "" {
-		return fmt.Errorf("nothing is tagged as narrator %d on the Preprocessing step", slot)
+		return fmt.Errorf("nothing is tagged as narrator %d on the Prepare step", slot)
 	}
 	base := baseName(aud)
 	turns, err := loadJSON(filepath.Join(a.outDir, "step1", base, "turns.json"))
 	if err != nil {
-		return fmt.Errorf("no diarization for %s -- run Preprocessing", base)
+		return fmt.Errorf("no diarization for %s -- run Prepare", base)
 	}
 	type turn struct {
 		s, e float64
@@ -803,7 +803,7 @@ func (a *App) buildVoicePicker() gtk.Widgetter {
 	box := gtk.NewPaned(gtk.OrientationVertical)
 	box.SetStartChild(leftBox)
 	box.SetEndChild(rightScroll)
-	// see Preprocessing: with shrink left on, a pane dragged past its minimum is
+	// see Prepare: with shrink left on, a pane dragged past its minimum is
 	// clipped rather than resized, and the margin goes off the window with it
 	box.SetShrinkStartChild(false)
 	box.SetShrinkEndChild(false)
@@ -978,7 +978,7 @@ func (vp *voicePicker) syncSelection() {
 	// silently speaking in something else. Which of the two ways that happened
 	// decides where to go and fix it.
 	if n := narratorSlot(want); n > 0 {
-		vp.cur.SetText(fmt.Sprintf("Narrator %d is not tagged on the Preprocessing step — tag a recording, or pick another voice.", n))
+		vp.cur.SetText(fmt.Sprintf("Narrator %d is not tagged on the Prepare step — tag a recording, or pick another voice.", n))
 		return
 	}
 	vp.cur.SetText(fmt.Sprintf("Voice %q is no longer in %s — pick another.", want, vp.a.voicesDir()))
@@ -991,7 +991,7 @@ func (vp *voicePicker) showCurrent(v voiceOpt) {
 			vp.cur.SetText("Voice: " + who + " — the dominant speaker in " + f + ".")
 			return
 		}
-		vp.cur.SetText("Voice: " + who + " — nothing is tagged with that slot on the Preprocessing step.")
+		vp.cur.SetText("Voice: " + who + " — nothing is tagged with that slot on the Prepare step.")
 		return
 	}
 	vp.cur.SetText("Voice: " + v.name)

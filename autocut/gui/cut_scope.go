@@ -1,7 +1,7 @@
 package main
 
-// The scope strip: the row between the pictures and the waveforms, where a
-// selection says whether it is OF the picture or OF a sound.
+// The scope strip: the row under the ruler, where a selection says whether it
+// is OF the picture or OF a sound.
 //
 // A selection has meant one or the other since the lanes learnt the verbs: drag
 // across the thumbnails and ⧉ Copy takes footage, drag across a waveform and it
@@ -11,10 +11,13 @@ package main
 // sound had to be thrown away and dragged again in a lane, at the exact same
 // seconds, by eye.
 //
-// So the choice gets a row, on the seam it is a choice about. The strip is the
-// border between the picture band and the sound band, and the selection wears a
-// handle on it that points up into the pictures or down into the lanes. Press
-// the half you mean. Press ▼ again and it walks to the next recording, which is
+// So the choice gets a row, and the selection wears a handle on it that
+// points up towards the pictures or down towards the sound. It stood on the
+// seam between the picture band and the sound band while there was one; the
+// waves are paired under their own rows now (drawPairStrip) and the seam is
+// gone, so the strip stands where a timeline puts the things that are about
+// the whole of it: at the top, under the ruler's clock. Press the half you
+// mean. Press ▼ again and it walks to the next recording, which is
 // the only place on the page that can say WHICH sound a selection drawn on the
 // thumbnails is about, and after the last one it comes back up to both.
 //
@@ -43,17 +46,16 @@ package main
 // where that gets asked. So the strip follows the footage, not the lanes, and
 // ▼ with nothing to walk to simply comes back to the middle.
 //
-// It is a drawing area of its own rather than a few pixels borrowed from either
-// neighbour, because the two neighbours are separate widgets: a handle drawn at
-// the bottom of the picture band could not be pressed at the top of the lanes,
-// and a strip that belongs to neither can sit between them and be pressed
-// anywhere in its own height.
+// It is drawn inside the source area (drawTrack) rather than as a widget of
+// its own -- it was one while its neighbours were, and both of them are the
+// same widget now. Everything in this file still speaks strip-local
+// coordinates: the callers that need to know where the strip actually sits
+// translate by scopeTop, and the strip itself never learns it moved.
 
 import (
 	"fmt"
 
 	"github.com/diamondburned/gotk4/pkg/cairo"
-	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
 // what a press on the strip lands on.
@@ -88,6 +90,15 @@ func (ed *cutEditor) scopeBoxPx() (float64, float64, bool) {
 		x0, x1 = mid-scopeMinW/2, mid+scopeMinW/2
 	}
 	return x0, x1, true
+}
+
+// scopeTop is where the strip sits in the source area: under the ruler, above
+// the selection band.
+func (ed *cutEditor) scopeTop() float64 { return float64(rulerH) }
+
+// hitScope is whether a y of the source area lands on the strip.
+func (ed *cutEditor) hitScope(y float64) bool {
+	return y >= ed.scopeTop() && y < ed.scopeTop()+scopeH
 }
 
 // scopePartAt is what a press at timeline-x px, y px down the strip takes.
@@ -201,26 +212,24 @@ func (ed *cutEditor) scopeClicked(px, y float64) {
 
 // hoverScope lights the half under the pointer, and takes the light away when
 // it leaves (x below zero). The strip is small and its two halves are smaller,
-// so which one a press would take has to be visible before the press.
+// so which one a press would take has to be visible before the press. y is
+// the source area's own (hoverTracks); the cursor is wantCursor's job, like
+// every other row of the area.
 func (ed *cutEditor) hoverScope(x, y float64) {
 	part := scopeNone
-	if x >= 0 {
-		part = ed.scopePartAt(x+ed.viewX, y)
+	if x >= 0 && ed.hitScope(y) {
+		part = ed.scopePartAt(x+ed.viewX, y-ed.scopeTop())
 	}
 	if part != ed.scopeHov {
 		ed.scopeHov = part
-		if ed.scopeArea != nil {
-			ed.scopeArea.QueueDraw()
+		if ed.srcArea != nil {
+			ed.srcArea.QueueDraw()
 		}
 	}
-	name := "default"
-	if part != scopeNone {
-		name = "pointer"
-	}
-	ed.setCursor(ed.scopeArea, name)
 }
 
-// drawScope paints the strip: the seam, and the selection's handle on it.
+// drawScope paints the strip: its ground, and the selection's handle on it.
+// Strip-local -- (0, 0) is the strip's own corner; drawTrack translates.
 func (ed *cutEditor) drawScope(cr *cairo.Context, w, h int) {
 	cr.SetSourceRGB(0.13, 0.13, 0.13)
 	cr.Rectangle(0, 0, float64(w), float64(h))
@@ -231,8 +240,8 @@ func (ed *cutEditor) drawScope(cr *cairo.Context, w, h int) {
 	vx0, vx1 := ed.viewX, ed.viewX+float64(w)
 	cr.Save()
 	cr.Translate(-ed.viewX, 0)
-	// the seam itself, drawn only under the recordings, so an empty strip reads
-	// as a row that could hold something rather than a gap between two widgets
+	// the strip's ground, drawn only under the recordings, so an empty strip
+	// reads as a row that could hold something rather than a dead stripe
 	cr.SetSourceRGB(0.155, 0.155, 0.165)
 	for _, v := range ed.vids {
 		cr.Rectangle(v.pxOrigin, 0, v.dur*ed.pps, scopeH)
@@ -300,47 +309,16 @@ func (ed *cutEditor) drawScope(cr *cairo.Context, w, h int) {
 	cr.Restore()
 }
 
-// fitScope shows the strip whenever there is footage under it to be a scope of.
+// fitScope keeps the selection's scope pointing at things the session still
+// has: the lanes are rebuilt from what is on disk, a recording can go away
+// between one reload and the next, and a selection pointing at one nobody has
+// is a selection whose every verb would miss. So it comes back to the footage.
 //
-// It waited on the lanes for a while, on the argument that the handle's job was
-// to name WHICH sound and a session with one had nothing to name. The third
-// rung ended that argument: the picture alone is a scope every session has, and
-// a capture with no sound anywhere -- no lanes, no strip -- was the one session
-// that could not reach it and the one most likely to want it, since an inserted
-// sting has nothing to be heard over.
-//
-// It is also where a selection that named a recording the session no longer has
-// comes back to the footage. The lanes are rebuilt from what is on disk, a
-// recording can go away between one reload and the next, and a selection
-// pointing at one nobody has is a selection whose every verb would miss.
+// The strip itself stopped needing fitting when it moved into the source
+// area, which is exactly as wide as the page and drawn whenever it is.
 func (ed *cutEditor) fitScope() {
 	if ed.sel.aud != "" && ed.audByBase(ed.sel.aud) == nil {
 		ed.sel.aud, ed.sel.pic = "", false
 		ed.syncSelBtns()
 	}
-	if ed.scopeArea == nil {
-		return
-	}
-	ed.scopeArea.SetVisible(len(ed.vids) > 0)
-}
-
-// newScopeArea builds the strip and wires the one gesture it answers.
-func (ed *cutEditor) newScopeArea() *gtk.DrawingArea {
-	area := gtk.NewDrawingArea()
-	area.SetDrawFunc(func(_ *gtk.DrawingArea, cr *cairo.Context, w, h int) {
-		ed.drawScope(cr, w, h)
-	})
-	area.SetSizeRequest(-1, int(scopeH))
-	area.SetHExpand(true)
-	area.SetVisible(false) // until reload finds footage to put it under
-	click := gtk.NewGestureClick()
-	click.ConnectPressed(func(_ int, x, y float64) {
-		ed.scopeClicked(x+ed.viewX, y)
-	})
-	area.AddController(click)
-	motion := gtk.NewEventControllerMotion()
-	motion.ConnectMotion(func(x, y float64) { ed.hoverScope(x, y) })
-	motion.ConnectLeave(func() { ed.hoverScope(-1, -1) })
-	area.AddController(motion)
-	return area
 }

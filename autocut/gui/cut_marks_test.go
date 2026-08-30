@@ -233,7 +233,7 @@ func TestTheTimelineDrawsItsMarksRatherThanWritingThem(t *testing.T) {
 			"markPlate(cr, x0+3, y+fxLaneH-4, mark, label)",
 		},
 		"cut.go":       {`markPlate(cr, x0+4, top+th-2, "card", insName(s))`},
-		"cut_audio.go": {`markPlate(cr, x0+4, fh-6, "sound", insName(s))`},
+		"cut_audio.go": {`markPlate(cr, x0+4, y+h-6, "sound", insName(s))`},
 	}
 	for file, wants := range pins {
 		b, err := os.ReadFile(file)

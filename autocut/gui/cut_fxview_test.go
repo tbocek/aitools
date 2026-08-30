@@ -89,8 +89,8 @@ func TestTheSlideGestureIsWired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "settled = fxRect{z.Cx, z.Cy, z.Hf}") {
-		t.Error("camRectAt no longer opens the camera on the earliest staying zoom's rectangle")
+	if strings.Contains(string(b), "settled = fxRect{z.Cx, z.Cy, z.Hf}\n\t\t\tbreak") {
+		t.Error("camRectAt opens the camera on a framing that has not happened yet")
 	}
 	// the lane says which effect a press would take before it is pressed
 	if !strings.Contains(string(b), "ed.fxHovOn, ed.fxHov = i >= 0, i") {
@@ -187,8 +187,8 @@ func TestTheFreeZoomAndTheLivePreviewAreWired(t *testing.T) {
 // Which zoom a drag on the picture edits. The rule has to match what the
 // overlay draws, or the hand grabs one rectangle and moves another: a zoom
 // whose band covers the playhead owns the picture for those seconds, otherwise
-// it is the staying zoom in force -- and before the first of those, the first
-// of those, which is camRectAt's own opening rule said again.
+// it is the staying zoom in force -- and before the first of those, none, the
+// camera being parked on the plain centred slice that belongs to no effect.
 func TestTheZoomInForceIsTheOneOnScreen(t *testing.T) {
 	ed := &cutEditor{fx: []cutFx{
 		{Kind: "zoom", T: 55, Stay: true, Cx: 0.7, Cy: 0.5, Hf: 0.5},
@@ -199,9 +199,7 @@ func TestTheZoomInForceIsTheOneOnScreen(t *testing.T) {
 		t    float64
 		want float64 // the zoom's Cx
 	}{
-		{0, 0.3},  // before every framing: the earliest one is in force
 		{12, 0.9}, // inside the close-up's band: the close-up owns the picture
-		{19.9, 0.3},
 		{20, 0.3}, // its own moment counts as in force
 		{40, 0.3},
 		{55, 0.7},
@@ -214,6 +212,13 @@ func TestTheZoomInForceIsTheOneOnScreen(t *testing.T) {
 		}
 		if f.Cx != c.want {
 			t.Errorf("at %gs the zoom in force has Cx %g, wanted %g", c.t, f.Cx, c.want)
+		}
+	}
+	// and ahead of every framing there is nothing in force: those seconds are
+	// the centred slice, which no effect owns and no drag can reframe
+	for _, tt := range []float64{0, 9.9, 19.9} {
+		if f := ed.camInForce(tt); f != nil {
+			t.Errorf("at %gs, before any framing, %+v was offered to drag", tt, *f)
 		}
 	}
 	// clear of every band, with nothing that stays, the camera is parked on
@@ -243,10 +248,10 @@ func TestACameraMidMoveIsNotSomethingToGrab(t *testing.T) {
 	if camMoving([]cutFx{{Kind: "zoom", T: 10, Dur: 4}}, 11) {
 		t.Error("a zoom with no fades claims to be travelling")
 	}
-	// the earliest staying zoom's fade in is a no-op: there is nowhere to
-	// travel from, so the camera is standing still through it
-	if camMoving([]cutFx{{Kind: "zoom", T: 10, Dur: 4, Trans: 2, Stay: true}}, 11) {
-		t.Error("the opening framing claims to be gliding in from somewhere")
+	// the cut's earliest framing glides like any other: it travels from the
+	// centred slice the video opened on, which is a real journey
+	if !camMoving([]cutFx{{Kind: "zoom", T: 10, Dur: 4, Trans: 2, Stay: true}}, 11) {
+		t.Error("the first framing's glide reads as the camera standing still")
 	}
 	// and the whole rule: held beats everything, otherwise the framing on
 	// screen, and nothing at all while the camera travels

@@ -2,18 +2,20 @@ package main
 
 // The YouTube Shorts cut style: 20 to 30 seconds built on the one subject the
 // user names in the session notes, and the one style whose cut gets effects.
-// The effects are chosen by their own call (suggestFx) once the audit has
-// settled the segments -- NOT in the cut reply, where they used to ride and
-// where the audit then rewrote the segments under them. What these pin: the
-// style is on the menu and no cut style asks for fx any more, the effects
-// prompt is its own registered key, a tiny target relaxes the segment-count
-// arithmetic instead of fighting it, the proposed effects become the page's
-// own zooms, speeds and captions with the dialogs' defaults for everything
-// the model is not trusted with, and the seams -- the reply parse, both
-// validators, the clamp that reads a leftover five-minute target as the box
-// from other work rather than as a wish.
+// The effects ride in the cut reply -- what to cut and whether to decorate it
+// is one judgement, made once -- and the audit then reads BOTH back, its
+// fxchecks correcting or dropping effects as it corrects the segments under
+// them. What these pin: the style is on the menu and is the only one asking
+// for fx, the audit is told about effects, a tiny target relaxes the
+// segment-count arithmetic instead of fighting it, the proposed effects
+// become the page's own zooms, speeds and captions with the dialogs' defaults
+// for everything the model is not trusted with, and the seams -- the reply
+// parse, both validators, and the judgement that reads a leftover five-minute
+// target as the box from other work rather than as a wish, made once in the
+// box itself when the wording is picked and again at ▶.
 
 import (
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -38,25 +40,34 @@ func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
 			t.Errorf("the Shorts prompt does not say %q", want)
 		}
 	}
-	// NO cut style asks for fx: effects are chosen by suggestFx against the
-	// audited segments, and a cut reply's fx (a project's edited prompt may
-	// still send them) are only a fallback. A shipped style asking again
-	// would reintroduce the misalignment the third call exists to end.
+	// the Shorts style is the ONE style that asks for fx, in the same reply
+	// as the segments: an effect is part of the same judgement as the cut it
+	// decorates. The other styles never mention them, so their replies stay
+	// cheap to parse and their prompts stay short.
 	for _, s := range a.promptStyleList("cut") {
-		if strings.Contains(s.Text, `"fx"`) {
-			t.Errorf("cut style %q asks for effects in its reply — they are chosen after the audit now", s.Name)
+		asks := strings.Contains(s.Text, `"fx":[`)
+		if s.Name == shortsStyleName {
+			if !asks {
+				t.Error("the Shorts style no longer asks for effects in its reply")
+			}
+			for _, want := range []string{
+				`"kind":"zoom"`, `"kind":"speed"`, `"kind":"text"`,
+				"inside one of your segments",
+			} {
+				if !strings.Contains(s.Text, want) {
+					t.Errorf("the Shorts prompt does not say %q", want)
+				}
+			}
+		} else if asks {
+			t.Errorf("cut style %q asks for effects — only the Shorts style decorates", s.Name)
 		}
 	}
-	// ...and the effects prompt is where that schema lives instead, told in
-	// plain words that the segments are final and effects lie inside them
-	fxP := a.prompt("effects")
-	for _, want := range []string{
-		`{"fx":[`, `"kind":"zoom"`, `"kind":"speed"`, `"kind":"text"`,
-		"The segments are final",
-		"inside one of the segments",
-	} {
-		if !strings.Contains(fxP, want) {
-			t.Errorf("the effects prompt does not say %q", want)
+	// ...and the audit is told to read them back: one fxcheck per effect,
+	// held inside the segments as corrected
+	audP := a.prompt("audit")
+	for _, want := range []string{`"fxchecks":[`, "inside one of the segments"} {
+		if !strings.Contains(audP, want) {
+			t.Errorf("the audit prompt does not say %q", want)
 		}
 	}
 }
@@ -122,25 +133,81 @@ func TestTheRepliedEffectsBecomeCutFx(t *testing.T) {
 	}
 }
 
+// TestATargetIsAWishOrALeftover: the one judgement both the pick and the run
+// make about the ▶ target box when the style is Shorts. The long cut's
+// default (300) becomes 25; a number already inside the format is a wish and
+// stays, the window's edges included; an empty box parses to 0 and is fixed.
+func TestATargetIsAWishOrALeftover(t *testing.T) {
+	for _, c := range []struct {
+		in, want float64
+		changed  bool
+	}{
+		{300, 25, true}, // the long cut's default, left over
+		{0, 25, true},   // an empty or unreadable box
+		{14, 25, true},
+		{15, 15, false}, // the edges are believed
+		{45, 45, false},
+		{30, 30, false}, // a wish
+		{46, 25, true},
+	} {
+		got, changed := shortsTargetFix(c.in)
+		if got != c.want || changed != c.changed {
+			t.Errorf("shortsTargetFix(%g) = %g, %v; want %g, %v",
+				c.in, got, changed, c.want, c.changed)
+		}
+	}
+}
+
+// A highlight cut may run half over its target -- it is a wish. A Short may
+// not: 20 to 30 seconds is a promise, so its ceiling is a fifth over. This is
+// the gate that stopped a 25 s target shipping as a 53 s "Short".
+func TestAShortMayRunAFifthOverNeverHalfOver(t *testing.T) {
+	a := &App{root: t.TempDir()}
+	if lo, hi := a.suggestWindow(25); lo != 15 || hi != 37.5 {
+		t.Errorf("default window = %.1f..%.1f, want 15..37.5", lo, hi)
+	}
+	a.pickPromptStyle("cut", shortsStyleName)
+	if lo, hi := a.suggestWindow(25); lo != 15 || math.Abs(hi-30) > 1e-9 {
+		t.Errorf("shorts window = %.1f..%.1f, want 15..30", lo, hi)
+	}
+}
+
 func TestTheShortsWiringIsInPlace(t *testing.T) {
 	for file, wants := range map[string][]string{
 		"cut_suggest.go": {
 			"`json:\"fx\"`", // a cut reply carrying fx still parses -- the fallback
 			"} else if len(out.Segments) < minSuggestSegs(target) {",
-			"if len(merged) < minSuggestSegs(target) ||", // ...and the audit accepts by the same count
 			`shorts := a.promptPickName("cut") == shortsStyleName`,
-			"shortsClamped := shorts && (target < 15 || target > 45)",
+			"target, shortsClamped = shortsTargetFix(target)",
+			// both acceptance gates ask the style-aware window, not a shared 1.5x
+			"if len(merged) < minSuggestSegs(target) || total < lo || total > hi {",
+			"if lo, hi := a.suggestWindow(target); total < lo || total > hi {",
 			"return segs, fxFromReply(out.Fx), nil",
-			// the third call comes AFTER auditCut and only replaces the fallback
-			// when it actually delivered; an empty answer keeps the inline fx
-			"if got := a.suggestFx(rows, segs); len(got) > 0 {",
+			// the audit gets the effects with the segments and hands both back
+			"segs, fx = a.auditCut(session, target, segs, fx)",
 			// the clamp runs against the segments as applied, snapEdge and
 			// coalesce included, which is the guarantee the prompts cannot give
 			"kept := clampFxToSegs(fx, a.ed.segs)",
 			"a.ed.fx = fx", // the effects land on the page, replacing the old
 		},
-		// still reachable: third in the bar's menu, after the two it follows
-		"cut.go": {`promptSlot{"effects", "Effects",`},
+		"cut.go": {
+			// the pick corrects the box itself, through the shared judgement
+			"if fixed, changed := shortsTargetFix(cur); changed {",
+			// the prompt makes the model budget: divide the target across the
+			// notes' parts, then trade seconds -- a directed plan, not a vibe
+			"Divide the target length by the number of beats",
+			"trade seconds between beats, keeping the same total",
+			"add up end minus start across your segments",
+			// generic over the notes: the beat count is whatever the editor
+			// wrote -- one part or five -- and the segment count follows the
+			// beats rather than a fixed 1-to-3
+			"one part, three, five",
+			"As many segments as the beats need",
+		},
+		"prompts.go": {
+			// ...and picking a wording is what asks for that correction
+			"a.styleTarget(key, name)",
+		},
 	} {
 		src := readSrc(t, file)
 		for _, want := range wants {
@@ -156,7 +223,7 @@ func TestTheShortsWiringIsInPlace(t *testing.T) {
 	if !strings.Contains(string(p), "{shortsStyleName, strings.TrimSpace(shortsSystem)}") {
 		t.Error("prompts.go does not offer the Shorts style under the cut key")
 	}
-	if !strings.Contains(string(p), `{key: "effects", def: strings.TrimSpace(effectsSystem)}`) {
-		t.Error("prompts.go does not register the effects prompt — suggestFx would send a project's dead air")
+	if strings.Contains(string(p), `{key: "effects"`) {
+		t.Error("prompts.go still registers the effects prompt — the third call is gone, its key goes the way of \"thumbnail\"")
 	}
 }

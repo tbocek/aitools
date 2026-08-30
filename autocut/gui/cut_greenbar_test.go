@@ -67,9 +67,12 @@ func TestTheBarKnowsWhoseClipItIs(t *testing.T) {
 }
 
 // What a press on the bar takes hold of: the blue's parts, told apart the
-// blue's way -- ends first, then the middle -- and no ✕ anywhere on it,
-// because the only thing a ✕ here could mean is deleting footage.
-func TestTheBarHasEndsAndAMiddleAndNoKill(t *testing.T) {
+// blue's way -- ends first, then the ✕, then the middle. The ✕ was left off
+// this bar at first, on the grounds that the only thing it could mean here is
+// deleting footage; it is on it now because the scene badge over the pictures
+// already offers exactly that verb in exactly that corner, and the blue bar
+// drawn on top of this one is what hides the badge underneath.
+func TestTheBarHasEndsAMiddleAndAKill(t *testing.T) {
 	ed := greenEd(t) // the bar is clip 100-140: px 400-560
 	for _, c := range []struct {
 		px        float64
@@ -81,8 +84,8 @@ func TestTheBarHasEndsAndAMiddleAndNoKill(t *testing.T) {
 		{ed.xOf(100) + selGripPx + 1, 1, selWhole, "just inboard of the grip"},
 		{ed.xOf(140), 1, selEnd, "the right end"},
 		{ed.xOf(120), 1, selWhole, "the middle"},
-		// where the blue bar's ✕ would sit: on this bar it is only the middle
-		{ed.xOf(140) - selKillIn - selKillW/2, 1, selWhole, "the ✕'s spot"},
+		// the blue bar's ✕ spot, answering the blue bar's way
+		{ed.xOf(140) - selKillIn - selKillW/2, 1, selKill, "the ✕"},
 		{ed.xOf(80), -1, selNone, "clear of it"},
 	} {
 		seg, part := ed.bandClipPartAt(c.px)

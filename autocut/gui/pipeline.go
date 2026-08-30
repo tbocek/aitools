@@ -1,6 +1,6 @@
 package main
 
-// The first half of Preprocessing, natively: STT both inputs and dump frames
+// The first half of Prepare, natively: STT both inputs and dump frames
 // at an interval, into
 // step1/. ffmpeg is driven via os/exec and the audio.cpp server over HTTP
 // (audiocpp.go); the anchored diarization and the segment merge are real code
@@ -269,8 +269,14 @@ func setPlayIcon(b *gtk.Button, playing bool, playTip, pauseTip string) {
 // clicked for, like a clip simply finishing.
 func (a *App) syncPlayIcons() {
 	if a.ed != nil {
-		setPlayIcon(a.ed.playBtn, a.ed.playing(),
-			"play the preview from the playhead — same as ▶ below", "pause the preview")
+		// two ▶s on that page, each pausing only what IT plays: plain ▶ wears
+		// ⏸ only while the RECORDING runs, and ▶✂ (its own two-glyph face,
+		// synced beside this) only while the cut does -- one ⏸ across both
+		// would pause something its button never claimed to have started
+		setPlayIcon(a.ed.playBtn, a.ed.playing() && !a.ed.cutOnly,
+			"play the recording from the playhead — every second of it, removed "+
+				"stretches included", "pause the preview")
+		a.ed.syncCutPlay()
 	}
 	if n := a.narr; n != nil {
 		// the preview has no button of its own any more: the picture is its
@@ -462,8 +468,8 @@ func spansFrom(b []byte) ([]span, error) {
 
 // ---- the transcripts and the frames -----------------------------------------
 
-// ingest is the first half of Preprocessing: every source transcribed, and a
-// frame out of the footage every few seconds. It is called by preprocess
+// ingest is the first half of Prepare: every source transcribed, and a
+// frame out of the footage every few seconds. It is called by prepare
 // (prep.go), which owns the goroutine, the run controls and the log lines for
 // both halves -- this is only the work.
 

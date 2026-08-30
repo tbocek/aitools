@@ -42,9 +42,11 @@ func msg(role string, content any) map[string]any {
 	return map[string]any{"role": role, "content": content}
 }
 
-// llmChat posts a chat completion; thinking selects the parameter set.
-func (a *App) llmChat(msgs []map[string]any, thinking bool) (string, error) {
-	return a.llmChatOn(msgs, thinking, nil)
+// llmChat posts a chat completion; thinking selects the parameter set. step
+// names the caller -- "suggest", "describe" -- and is what the recorded
+// exchange is filed and logged under (recordChatStart in llmlog.go).
+func (a *App) llmChat(step string, msgs []map[string]any, thinking bool) (string, error) {
+	return a.llmChatOn(step, msgs, thinking, nil)
 }
 
 // llmChatOn is llmChat with the reply readable while it is still being written.
@@ -58,7 +60,28 @@ func (a *App) llmChat(msgs []map[string]any, thinking bool) (string, error) {
 // narrEntriesDone), and the same bar that counts the speaking counts the
 // writing. Nothing else changes: a caller with no callback is not streamed, so
 // the steps that ask for one JSON object and parse it whole are untouched.
-func (a *App) llmChatOn(msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
+//
+// Every call is also written down: what went out, what came back, how long it
+// took -- the recorder keeps the exchange as an HTML page under llm/, request
+// first and the reply folded in when it lands, and puts a
+// preview in the log, because "2 LLM calls ran" was all the log used to say
+// about the step where all the judgment happens.
+func (a *App) llmChatOn(step string, msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
+	rec := a.recordChatStart(step, thinking, msgs)
+	// tee an existing stream through the live page; a caller with no callback
+	// stays unstreamed (wrapping nil would flip the wire request to streaming)
+	if onText != nil {
+		user := onText
+		onText = func(s string) { rec.stream(s); user(s) }
+	}
+	t0 := time.Now()
+	reply, err := a.llmChatPost(msgs, thinking, onText)
+	rec.done(reply, time.Since(t0), err)
+	return reply, err
+}
+
+// llmChatPost is the wire call itself: build the body, post it, read the answer.
+func (a *App) llmChatPost(msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
 	c := a.readConf()
 	if c.Server == "" || c.Model == "" {
 		return "", fmt.Errorf("no LLM configured -- use the gear button")
@@ -254,15 +277,15 @@ func jsonEnd(obj string) (float64, bool) {
 
 // llmChatRetry absorbs one transport hiccup, which a multi-hour pass will hit
 // -- but never retries a user stop.
-func (a *App) llmChatRetry(msgs []map[string]any, thinking bool) (string, error) {
-	return a.llmChatRetryOn(msgs, thinking, nil)
+func (a *App) llmChatRetry(step string, msgs []map[string]any, thinking bool) (string, error) {
+	return a.llmChatRetryOn(step, msgs, thinking, nil)
 }
 
-func (a *App) llmChatRetryOn(msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
-	reply, err := a.llmChatOn(msgs, thinking, onText)
+func (a *App) llmChatRetryOn(step string, msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
+	reply, err := a.llmChatOn(step, msgs, thinking, onText)
 	if err == nil || errors.Is(err, errStopped) {
 		return reply, err
 	}
 	time.Sleep(2 * time.Second)
-	return a.llmChatOn(msgs, thinking, onText)
+	return a.llmChatOn(step, msgs, thinking, onText)
 }

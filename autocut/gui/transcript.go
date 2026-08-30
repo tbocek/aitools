@@ -534,7 +534,7 @@ Transcript lines to clean (%d lines, return exactly %d):
 
 		ok := false
 		for try := 0; try < 2 && !ok; try++ {
-			reply, err := a.llmChatRetry([]map[string]any{
+			reply, err := a.llmChatRetry("transcript", []map[string]any{
 				msg("system", system), msg("user", user),
 			}, false)
 			if err != nil {

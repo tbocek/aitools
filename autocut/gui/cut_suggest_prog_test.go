@@ -92,8 +92,10 @@ func TestSuggestReportsWhileItRunsInsteadOfOnlyPulsing(t *testing.T) {
 	}
 	src := string(b)
 	for _, want := range []struct{ frag, why string }{
-		{`a.llmChatRetryOn(msgs, true, onText)`,
+		{`a.llmChatRetryOn("suggest", msgs, true, onText)`,
 			"a call that is not streamed cannot be counted while it runs"},
+		{`a.llmChatRetryOn("audit", msgs, true, onText)`,
+			"the audit call is streamed and recorded under its own name"},
 		{`jsonItemsDone(s, "segments")`, "choosing has to count its own segments"},
 		{`jsonItemsDone(s, "checks")`, "the audit has to count its own checks"},
 		{`a.prog(trackSTT, suggestChooseShare`, "the audit half has to start where the choosing half ended"},
@@ -104,9 +106,9 @@ func TestSuggestReportsWhileItRunsInsteadOfOnlyPulsing(t *testing.T) {
 			t.Errorf("suggest no longer contains %q -- %s", want.frag, want.why)
 		}
 	}
-	if strings.Count(src, "a.llmChatRetryOn(msgs, true, onText)") != 2 {
+	if strings.Count(src, "msgs, true, onText)") != 2 {
 		t.Errorf("%d of the two suggest calls are streamed",
-			strings.Count(src, "a.llmChatRetryOn(msgs, true, onText)"))
+			strings.Count(src, "msgs, true, onText)"))
 	}
 	// the two halves have to add up to the whole bar, or a finished run stops short
 	if suggestChooseShare <= 0 || suggestChooseShare >= 1 {

@@ -99,7 +99,7 @@ func TestClearTracksLeavesNothingBehind(t *testing.T) {
 // runs Describe and finds an empty page, which is where this started.
 func TestEverythingThatMovesTheTracksSaysSo(t *testing.T) {
 	for _, c := range []struct{ file, what, why string }{
-		{"prep.go", "preprocessing finishing",
+		{"prep.go", "Prepare finishing",
 			"it writes the frames the strip is drawn from and the session timeline printed on them -- the first Cut anyone opens is the one after this run"},
 		{"project.go", "a project being applied",
 			"Open and New Project replace the sources wholesale, and the tracks are the sources"},

@@ -188,8 +188,9 @@ func (ed *cutEditor) loadWaves() {
 					return
 				}
 				ed.waves[au.base] = wf
-				ed.fitAudio() // it may have come back on fewer lanes than the probe promised
-				ed.redrawTracks()
+				ed.fitAudio()     // it may have come back on fewer lanes than the probe promised
+				ed.fitSrc()       // ...and a master's collapse is a shallower ROW: the strip under
+				ed.redrawTracks() // its pictures is row geometry now, not the band's
 			})
 		}()
 	}
@@ -746,24 +747,41 @@ func (ed *cutEditor) lanes(au tlAudio) int {
 	return max(1, au.chans)
 }
 
-// audioLanes is how many lanes the page has to make room for.
-func (ed *cutEditor) audioLanes() int {
-	n := 0
+// sepAuds is what the band under the timeline holds: the separate recordings,
+// the sound nobody filmed. A master -- some row's own track -- is drawn under
+// that row's pictures instead (drawPairStrip), so every question about the
+// band's own layout is a question about this list and not about ed.auds.
+func (ed *cutEditor) sepAuds() []tlAudio {
+	var out []tlAudio
 	for _, au := range ed.auds {
-		n += ed.lanes(au)
+		if !au.master {
+			out = append(out, au)
+		}
 	}
-	return n
+	return out
 }
 
 // audioHeight is the widget's height, and 0 when there is nothing to show --
 // which hides the area entirely rather than leaving an empty black strip under
-// the cut saying nothing.
+// the cut saying nothing. With the masters paired under their rows that is the
+// everyday state, not the odd one: a cameras-only session has no band at all.
 func (ed *cutEditor) audioHeight() int {
 	n := ed.audioLanes()
 	if n == 0 {
 		return 0
 	}
-	return int(float64(n)*waveLaneH + float64(len(ed.auds)-1)*waveGap + 2*wavePad)
+	return int(float64(n)*waveLaneH + float64(len(ed.sepAuds())-1)*waveGap + 2*wavePad)
+}
+
+// audioLanes is how many waveform lanes the band holds: the separate
+// recordings' channels, and only theirs -- a master's wave lives under its
+// own row of pictures now, not down here.
+func (ed *cutEditor) audioLanes() int {
+	n := 0
+	for _, au := range ed.sepAuds() {
+		n += ed.lanes(au)
+	}
+	return n
 }
 
 // audAtY is the recording whose lanes sit at y in the audio area, by base
@@ -776,17 +794,18 @@ func (ed *cutEditor) audioHeight() int {
 // meant "the pictures" would take the footage when the hand was on a
 // waveform -- the one mistake this whole row is here to prevent.
 func (ed *cutEditor) audAtY(y float64) string {
-	if len(ed.auds) == 0 {
+	auds := ed.sepAuds()
+	if len(auds) == 0 {
 		return ""
 	}
 	top := wavePad
-	for _, au := range ed.auds {
+	for _, au := range auds {
 		if top += float64(ed.lanes(au)) * waveLaneH; y < top {
 			return au.base
 		}
 		top += waveGap
 	}
-	return ed.auds[len(ed.auds)-1].base
+	return auds[len(auds)-1].base
 }
 
 // audLaneSpan is the top and bottom of one recording's lanes, and whether it
@@ -794,7 +813,7 @@ func (ed *cutEditor) audAtY(y float64) string {
 // selection is of rather than across all of them.
 func (ed *cutEditor) audLaneSpan(base string) (float64, float64, bool) {
 	top := wavePad
-	for _, au := range ed.auds {
+	for _, au := range ed.sepAuds() {
 		h := float64(ed.lanes(au)) * waveLaneH
 		if au.base == base {
 			return top, top + h, true
@@ -813,7 +832,8 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 	cr.SetSourceRGB(0.13, 0.13, 0.13)
 	cr.Rectangle(0, 0, float64(w), fh)
 	cr.Fill()
-	if len(ed.auds) == 0 || len(ed.vids) == 0 {
+	auds := ed.sepAuds()
+	if len(auds) == 0 || len(ed.vids) == 0 {
 		return
 	}
 	vx0, vx1 := ed.viewX, ed.viewX+float64(w)
@@ -821,7 +841,7 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 	cr.Save()
 	cr.Translate(-ed.viewX, 0)
 	y := wavePad
-	for _, au := range ed.auds {
+	for _, au := range auds {
 		wf := ed.waves[au.base]
 		for ch := 0; ch < ed.lanes(au); ch++ {
 			ed.drawLane(cr, au, wf, ch, y, vx0, vx1)
@@ -858,7 +878,7 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 			cr.Stroke()
 		}
 	}
-	// and under ✂ Cut the dropped stretches are dimmed rather than merely left
+	// and under the ▶✂ preview the dropped stretches are dimmed rather than merely left
 	// untinted, the picture band's rule: in that mode they are the seconds ▶
 	// jumps over, and a lane that still showed them at full brightness would
 	// be offering sound that is never heard.
@@ -888,38 +908,7 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 		if x1 < vx0 || x0 > vx1 {
 			continue
 		}
-		cr.SetSourceRGBA(0.55, 0.35, 0.9, 0.45)
-		cr.Rectangle(x0, 0, x1-x0, fh)
-		cr.Fill()
-		if s.spliced() {
-			// the same sentence the picture band's hatching says for a card:
-			// the footage stops for this
-			hatchStrokes(cr, x0, x1-x0, 0, fh)
-		}
-		cr.SetSourceRGB(0.75, 0.6, 1)
-		cr.SetLineWidth(2)
-		for _, x := range []float64{x0, x1} {
-			cr.MoveTo(x, 0)
-			cr.LineTo(x, fh)
-			cr.Stroke()
-		}
-		if held == &ed.segs[i] {
-			cr.SetSourceRGBA(1, 1, 1, 0.9)
-			cr.Rectangle(x0+1, 1, x1-x0-2, fh-2)
-			cr.Stroke()
-		}
-		// named at the bottom of the lanes: the lane plates own the top left
-		cr.SetFontSize(10)
-		switch {
-		case s.spliced():
-			tx := x1 + 4
-			if x1-x0 > 90 {
-				tx = x0 + 4
-			}
-			markPlate(cr, tx, fh-6, "sound", fmt.Sprintf("%s  %.1fs", insName(s), s.Dur))
-		case x1-x0 > 24:
-			markPlate(cr, x0+4, fh-6, "sound", insName(s))
-		}
+		ed.sndInsMark(cr, s, x0, x1, 0, fh, held == &ed.segs[i], true)
 	}
 	// the selection, over everything it covers. Drawn here and not only in its
 	// own row because a selection made in a lane is a selection of that
@@ -982,15 +971,10 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 	// its recording would otherwise be an anonymous blue smear
 	cr.SetFontSize(9)
 	y = wavePad
-	for _, au := range ed.auds {
+	for _, au := range auds {
 		n := ed.lanes(au)
 		for ch := 0; ch < n; ch++ {
 			name := au.base + " " + laneName(ch, n, au.chans)
-			if au.master {
-				// which lane is the footage's own sound has to be readable from
-				// the lane, not worked out from the order of the track above
-				name += " · video"
-			}
 			if ed.heardOn(au.base) {
 				// and which one the finished video is heard on, said on the
 				// lane itself: it is a choice with no other mark on the page,
@@ -1039,70 +1023,142 @@ func laneName(ch, lanes, chans int) string {
 // hole between them (gapPx) and tAt clamps inside those holes, so a column
 // walked blindly across one would smear the same instant over the whole gap.
 func (ed *cutEditor) drawLane(cr *cairo.Context, au tlAudio, wf *waveform, ch int, y, vx0, vx1 float64) {
+	for _, v := range ed.vids {
+		ed.drawWaveSpan(cr, au, v, wf, ch, y, vx0, vx1, false)
+	}
+}
+
+// sndInsMark paints one sound-only insert's marker over one strip of wave --
+// the violet, the splice hatching, the edges, the held outline, and (asked
+// once per insert) the name plate. One painter for the recorders' band and
+// the rows' paired strips: a placed sound shows in both places, and two
+// hand-copied blocks are two chances for them to stop saying the same thing.
+func (ed *cutEditor) sndInsMark(cr *cairo.Context, s cutSeg, x0, x1, y, h float64, held, named bool) {
+	cr.SetSourceRGBA(0.55, 0.35, 0.9, 0.45)
+	cr.Rectangle(x0, y, x1-x0, h)
+	cr.Fill()
+	if s.spliced() {
+		// the same sentence the picture band's hatching says for a card:
+		// the footage stops for this
+		hatchStrokes(cr, x0, x1-x0, y, h)
+	}
+	cr.SetSourceRGB(0.75, 0.6, 1)
+	cr.SetLineWidth(2)
+	for _, x := range []float64{x0, x1} {
+		cr.MoveTo(x, y)
+		cr.LineTo(x, y+h)
+		cr.Stroke()
+	}
+	if held {
+		cr.SetSourceRGBA(1, 1, 1, 0.9)
+		cr.Rectangle(x0+1, y+1, x1-x0-2, h-2)
+		cr.Stroke()
+	}
+	if !named {
+		return
+	}
+	// named at the bottom of the strip: the plates own the top left
+	cr.SetFontSize(10)
+	switch {
+	case s.spliced():
+		tx := x1 + 4
+		if x1-x0 > 90 {
+			tx = x0 + 4
+		}
+		markPlate(cr, tx, y+h-6, "sound", fmt.Sprintf("%s  %.1fs", insName(s), s.Dur))
+	case x1-x0 > 24:
+		markPlate(cr, x0+4, y+h-6, "sound", insName(s))
+	}
+}
+
+// drawPairStrip paints a row's own sound under its pictures: every channel of
+// the footage's track, windowed exactly as the pictures are, in the dim voice.
+// Over this one video only -- the strip belongs to the row's footage, not to
+// the session, and two sources sharing a row each bring the stretch under
+// their own pictures.
+func (ed *cutEditor) drawPairStrip(cr *cairo.Context, v tlVideo, au tlAudio, y, vx0, vx1 float64) {
+	wf := ed.waves[au.base]
+	for ch := 0; ch < ed.lanes(au); ch++ {
+		ed.drawWaveSpan(cr, au, v, wf, ch, y, vx0, vx1, true)
+		y += waveLaneH
+	}
+}
+
+// drawWaveSpan paints the stretch of one channel of one recording that
+// overlaps one piece of footage.
+//
+// dim is the paired strip's voice: the same wave turned down, plateless, edge
+// to edge with the thumbnails above it. The strip sits inside the picture
+// band, and the rows of pictures are the things the eye compares when it
+// chooses a camera -- so the wave has to read as the row's shadow, not as a
+// row of its own between two of them.
+func (ed *cutEditor) drawWaveSpan(cr *cairo.Context, au tlAudio, v tlVideo, wf *waveform, ch int, y, vx0, vx1 float64, dim bool) {
 	bot := y + waveLaneH - 1 // the meter's zero, a hair inside the lane
 	full := waveLaneH - 2    // and how far up full scale reaches
-
-	for _, v := range ed.vids {
-		// the overlap of this recording with this piece of footage, in session
-		// time, then in px
-		t0 := math.Max(au.start, v.start)
-		t1 := math.Min(au.start+au.dur, v.start+v.dur)
-		if t1 <= t0 {
-			continue // this recording was not running while this one was
-		}
-		x0 := math.Max(v.pxOrigin+(t0-v.start)*ed.pps, vx0)
-		x1 := math.Min(v.pxOrigin+(t1-v.start)*ed.pps, vx1)
-		if x1 <= x0 {
-			continue // off screen
-		}
-		// the ground says where the recording IS, which is the other half of
-		// only drawing the relevant part: an empty lane and a lane of silence
-		// are different things and have to look different
-		cr.SetSourceRGB(0.16, 0.17, 0.2)
-		cr.Rectangle(x0, y, x1-x0, waveLaneH)
-		cr.Fill()
-		// the baseline sits under the fill rather than through it: it is the
-		// meter's zero, and on a silent stretch it is the only thing saying the
-		// recorder was still running
-		cr.SetSourceRGBA(0.35, 0.6, 1, 0.35)
-		cr.SetLineWidth(1)
-		cr.MoveTo(x0, math.Round(bot)+0.5)
-		cr.LineTo(x1, math.Round(bot)+0.5)
-		cr.Stroke()
-		if wf == nil {
-			continue // still being decoded; the ground already says it is here
-		}
-		// one filled column per pixel, standing up from the baseline
-		spp := 1 / ed.pps // seconds per pixel
-		hgts := make([]float64, 0, int(x1-math.Floor(x0))+1)
-		cr.SetSourceRGB(0.29, 0.62, 1)
-		for x := math.Floor(x0); x < x1; x++ {
-			at := au.timeAt(v, ed.pps, x)
-			// the envelope is a linear peak and the lane is a meter: iecScale
-			// is the whole difference between a row of spikes over a flat line
-			// and a picture of where the sound is
-			p := iecScale(wf.peak(ch, at, at+spp))
-			h := 0.0
-			if p > 0 {
-				h = math.Max(1, p*full)
-				cr.Rectangle(x, bot-h, 1, h)
-			}
-			hgts = append(hgts, h)
-		}
-		cr.Fill()
-		// and a darker cap along the top of the fill. A column is one pixel
-		// wide, so at any zoom worth looking at the lane is a solid block of
-		// blue whose only shape is its skyline; drawn in the same ink as the
-		// block it sits on, that skyline is exactly where the eye stops being
-		// able to see it.
-		cr.SetSourceRGB(0.09, 0.27, 0.52)
-		for i, h := range hgts {
-			if h >= 3 { // below that the cap would eat the column it caps
-				cr.Rectangle(math.Floor(x0)+float64(i), bot-h, 1, 1)
-			}
-		}
-		cr.Fill()
+	alpha := 1.0
+	if dim {
+		alpha = 0.55
 	}
+
+	// the overlap of this recording with this piece of footage, in session
+	// time, then in px
+	t0 := math.Max(au.start, v.start)
+	t1 := math.Min(au.start+au.dur, v.start+v.dur)
+	if t1 <= t0 {
+		return // this recording was not running while this one was
+	}
+	x0 := math.Max(v.pxOrigin+(t0-v.start)*ed.pps, vx0)
+	x1 := math.Min(v.pxOrigin+(t1-v.start)*ed.pps, vx1)
+	if x1 <= x0 {
+		return // off screen
+	}
+	// the ground says where the recording IS, which is the other half of
+	// only drawing the relevant part: an empty lane and a lane of silence
+	// are different things and have to look different
+	cr.SetSourceRGBA(0.16, 0.17, 0.2, alpha)
+	cr.Rectangle(x0, y, x1-x0, waveLaneH)
+	cr.Fill()
+	// the baseline sits under the fill rather than through it: it is the
+	// meter's zero, and on a silent stretch it is the only thing saying the
+	// recorder was still running
+	cr.SetSourceRGBA(0.35, 0.6, 1, 0.35*alpha)
+	cr.SetLineWidth(1)
+	cr.MoveTo(x0, math.Round(bot)+0.5)
+	cr.LineTo(x1, math.Round(bot)+0.5)
+	cr.Stroke()
+	if wf == nil {
+		return // still being decoded; the ground already says it is here
+	}
+	// one filled column per pixel, standing up from the baseline
+	spp := 1 / ed.pps // seconds per pixel
+	hgts := make([]float64, 0, int(x1-math.Floor(x0))+1)
+	cr.SetSourceRGBA(0.29, 0.62, 1, alpha)
+	for x := math.Floor(x0); x < x1; x++ {
+		at := au.timeAt(v, ed.pps, x)
+		// the envelope is a linear peak and the lane is a meter: iecScale
+		// is the whole difference between a row of spikes over a flat line
+		// and a picture of where the sound is
+		p := iecScale(wf.peak(ch, at, at+spp))
+		h := 0.0
+		if p > 0 {
+			h = math.Max(1, p*full)
+			cr.Rectangle(x, bot-h, 1, h)
+		}
+		hgts = append(hgts, h)
+	}
+	cr.Fill()
+	// and a darker cap along the top of the fill. A column is one pixel
+	// wide, so at any zoom worth looking at the lane is a solid block of
+	// blue whose only shape is its skyline; drawn in the same ink as the
+	// block it sits on, that skyline is exactly where the eye stops being
+	// able to see it.
+	cr.SetSourceRGBA(0.09, 0.27, 0.52, alpha)
+	for i, h := range hgts {
+		if h >= 3 { // below that the cap would eat the column it caps
+			cr.Rectangle(math.Floor(x0)+float64(i), bot-h, 1, 1)
+		}
+	}
+	cr.Fill()
 }
 
 // timeAt is the recording's own time at a timeline x, through the video that x

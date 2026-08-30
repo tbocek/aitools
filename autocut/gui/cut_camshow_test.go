@@ -172,3 +172,143 @@ func TestACopyRemembersWhichCameraItWasTakenFrom(t *testing.T) {
 		t.Errorf("the copy plays %v again, want the second camera", v)
 	}
 }
+
+// ---- watching one row -------------------------------------------------------
+
+// Inside a kept scene camAt answers with the scene's camera, which left no way
+// at all to see what another camera saw at the same second -- and that is most
+// of how a scene gets stolen for it. A click on a row asks exactly that: the
+// preview WATCHES the clicked row, scene or no scene, until ▶ hands the answer
+// back to the cut.
+func TestAClickedRowIsWatchedEvenInsideAScene(t *testing.T) {
+	ed := axisEd(t, twoCams()...)
+	ed.segs = []cutSeg{{S: 20, E: 30}} // a scene on the first camera
+	ed.monRow = 2                      // a click on the second row
+	if v := ed.videoAt(25); v == nil || v.base != "b" {
+		t.Errorf("watching the second row inside the scene the preview showed %v, want b", v)
+	}
+	// withdrawn, the scene's own camera is back -- monRow's zero value is
+	// exactly "the cut answers", so an editor nobody clicked in behaves
+	ed.monRow = 0
+	if v := ed.videoAt(25); v == nil || v.base != "a" {
+		t.Errorf("with nothing watched the preview showed %v, want the scene's a", v)
+	}
+	// a watch outlives the rows it points at: clamped, not trusted, since a
+	// reload can take cameras away between the click and the asking -- and
+	// clamped ONCE (watchRow), so the preview, the dashed outline and the
+	// status line cannot each clamp differently and disagree
+	ed.monRow = 9
+	if v := ed.videoAt(25); v == nil || v.base != "b" {
+		t.Errorf("watching a row that left, the preview showed %v, want the last row's b", v)
+	}
+	if got := ed.watchRow(); got != 1 {
+		t.Errorf("watchRow() = %d, want the last row 1", got)
+	}
+	// and a session with no footage at all has no rows to watch, whatever a
+	// stale click left behind
+	ed.vids = nil
+	ed.relayout()
+	if got := ed.watchRow(); got != -1 {
+		t.Errorf("watchRow() with no footage = %d, want -1", got)
+	}
+}
+
+// The watched row is told apart on the page -- a dashed outline around its
+// pictures and its strip -- because a preview quietly showing something other
+// than the cut is a lie waiting to be rendered.
+func TestTheWatchedRowWearsItsOutline(t *testing.T) {
+	ed := axisEd(t, twoCams()...)
+	h := int(ed.picBottom()) + 80
+	plain := renderTrack(t, ed, 400, h)
+	ed.monRow = 2
+	dashed := renderTrack(t, ed, 400, h)
+	lt := int(ed.laneTop(1))
+	changed := 0
+	for x := 2; x < 398; x++ {
+		pr, pg, pb := plain(x, lt+1)
+		dr, dg, db := dashed(x, lt+1)
+		if pr != dr || pg != dg || pb != db {
+			changed++
+		}
+	}
+	if changed < 50 {
+		t.Errorf("watching the second row changed %d px along its top edge, want a dashed line's worth", changed)
+	}
+	// and only that row: the first row's edge is untouched
+	lt0 := int(ed.laneTop(0))
+	for x := 2; x < 398; x++ {
+		pr, pg, pb := plain(x, lt0+1)
+		if dr, dg, db := dashed(x, lt0+1); pr != dr || pg != dg || pb != db {
+			t.Errorf("the outline leaked onto the first row at x=%d", x)
+			break
+		}
+	}
+}
+
+// The seams: the click that starts a watch, the ▶ that ends it, and the
+// sentence that says the preview and the cut disagree on purpose.
+func TestTheWatchIsWired(t *testing.T) {
+	src := readSrc(t, "cut.go")
+	for _, want := range []string{
+		// a click on a row's pictures or on its wave strip starts the watch;
+		// a click anywhere else moves the line and changes no minds
+		"ed.monRow = l + 1",
+		// ...and only from a standstill: followPlayback re-cues from camAt
+		// every tick, so a watch started mid-play would change what PLAYS
+		"if area == ed.srcArea && !ed.playing() && len(ed.vids) > 0 {",
+		// ▶ plays the CUT: the watch is withdrawn on the way into playing
+		"ed.monRow = 0",
+		// and the disagreement is said out loud, only when there is one
+		"watching camera %d — the cut shows camera %d here; ",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut.go no longer contains %q", want)
+		}
+	}
+}
+
+func TestAStandstillOnAnEmptyRowShowsItsEmptiness(t *testing.T) {
+	// videoAt is charitable on purpose -- a scene must never render a hole --
+	// but the paused preview borrowing another camera's frame looks exactly
+	// like the row HAVING that footage. videoShown is the same question told
+	// to answer honestly: the watched row's own recording, or nothing.
+	ed := axisEd(t, twoCams()...)
+	ed.monRow = 2 // watch row 1, where b rolls from 10 to 90
+	if v := ed.videoShown(20); v == nil || v.base != "b" {
+		t.Fatal("the watched row's own footage is not what the standstill shows")
+	}
+	if v := ed.videoShown(5); v != nil {
+		t.Errorf("row 1 has nothing at 5 s, yet the standstill would show %q", v.base)
+	}
+	if ed.videoAt(5) == nil {
+		t.Error("the charitable lookup lost its fallback; scenes would render holes")
+	}
+	// the same honesty when the row is the selection's, not a watched one
+	ed.monRow = 0
+	ed.sel.lane = 1
+	if v := ed.videoShown(5); v != nil {
+		t.Errorf("the selected row has nothing at 5 s, yet it would show %q", v.base)
+	}
+}
+
+func TestTheBlackFrameIsWired(t *testing.T) {
+	// the choice lives in showInsert, the one place every path that moves the
+	// playhead already settles the picture -- a second settling place would be
+	// a second chance to disagree
+	src := readSrc(t, "cut_insview.go")
+	for _, want := range []string{
+		"if !ed.player.playing && ed.videoShown(ed.playhead) == nil {",
+		"ed.player.ShowStill(blackStill())",
+		"pb.Fill(0x000000ff)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the empty row no longer goes black at a standstill: %q", want)
+		}
+	}
+	// pausing is a standstill playback's own ticks do not re-settle, so ⏯
+	// settles it by hand
+	if !strings.Contains(readSrc(t, "cut.go"),
+		"ed.showInsert()\n\ted.started = ed.started || ed.player.Playing()") {
+		t.Error("pausing over an empty stretch leaves the borrowed frame up")
+	}
+}

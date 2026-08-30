@@ -133,7 +133,7 @@ func TestABrokenSettingsFileIsNotAFailedLaunch(t *testing.T) {
 
 // The wiring, which is the half that rots: remembering has to happen in both
 // places that assign projPath, the launch has to prefer what was remembered
-// over the working copy, and running preprocessing must not rename the open project
+// over the working copy, and running Prepare must not rename the open project
 // back to project.json -- that last one is how a Save could be undone by
 // pressing ▶, which would defeat all of the above.
 func TestWhatIsRememberedIsWhatTheNextLaunchOpens(t *testing.T) {

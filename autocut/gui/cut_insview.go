@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
+	"github.com/diamondburned/gotk4/pkg/gdkpixbuf/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 )
 
@@ -342,8 +343,19 @@ func (ed *cutEditor) showInsert() {
 	if s == nil || s.audioIns() {
 		// no card, or a sound-only one: the picture stays the session's --
 		// running under an overwrite, standing on its held frame under a
-		// splice -- and cardSound above has already routed the file's sound
-		ed.player.ShowVideo()
+		// splice -- and cardSound above has already routed the file's sound.
+		//
+		// Unless the session's picture would be a lie: standing still on a row
+		// with nothing under the line, the pipeline is holding some OTHER
+		// row's frame (videoAt falls back so a scene never renders a hole),
+		// and showing it says this row has that footage. Black says what is
+		// true -- there is no video here. Only at a standstill: in playback
+		// the fallback stays, because the running pipeline is the clock.
+		if !ed.player.playing && ed.videoShown(ed.playhead) == nil {
+			ed.player.ShowStill(blackStill())
+		} else {
+			ed.player.ShowVideo()
+		}
 		if ed.film != nil {
 			ed.film.shown = -1 // whatever it was showing is off the picture now
 		}
@@ -381,6 +393,22 @@ func (ed *cutEditor) showInsert() {
 		}
 	}
 	ed.renderFrame(f, i)
+}
+
+// blackTex is built once and kept: the "nothing here" frame never changes, and
+// showInsert puts it up on every playhead move across an empty stretch.
+var blackTex *gdk.Texture
+
+// blackStill is the picture for a row with no footage under the line: plain
+// black, in the video's shape so the letterboxing does not jump when real
+// footage comes back. 16x9 pixels is enough -- every pixel is the same one.
+func blackStill() *gdk.Texture {
+	if blackTex == nil {
+		pb := gdkpixbuf.NewPixbuf(gdkpixbuf.ColorspaceRGB, false, 8, 16, 9)
+		pb.Fill(0x000000ff)
+		blackTex = gdk.NewTextureForPixbuf(pb)
+	}
+	return blackTex
 }
 
 // nearest is the rendered frame closest to i, preferring the one behind it: a

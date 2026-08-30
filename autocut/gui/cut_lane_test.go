@@ -2,7 +2,7 @@ package main
 
 // A row nobody filmed.
 //
-// Everything else on the picture band arrived by being a source: Preprocessing
+// Everything else on the picture band arrived by being a source: Prepare
 // was pointed at a file and the row is that file. A cut lane is the other kind
 // -- a shot copied from elsewhere in the session, or a video that was never a
 // source at all, given a band of its own so the green can cut to it. It lives
@@ -622,7 +622,7 @@ func TestARowOfNoSecondsIsNotDrawn(t *testing.T) {
 
 func TestAFileFromOutsideTheSessionGetsARowAndNoPictures(t *testing.T) {
 	// the other kind of lane: a sting nobody filmed here, so there is no frame
-	// folder to borrow. Extracting one would be exactly the Preprocessing pass
+	// folder to borrow. Extracting one would be exactly the Prepare pass
 	// this row exists to skip -- it draws its name, and the preview plays it
 	ed := rowEd(t)
 	got := ed.a.laneVideos([]cutLane{{Name: "sting", Src: "/f/nope.mp4", At: 30, Dur: 10}}, ed.vids)
