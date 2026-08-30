@@ -428,7 +428,8 @@ func TestTheTransportIsWired(t *testing.T) {
 		"n.slider.SetValue(cutPos(segs, t))",                  // ...and shows it, on the cut's clock
 		"n.seekWant = cutAt(n.clips(), n.slider.Value())",     // ...which a drag reads back the other way
 		"n.seekTo(n.seekWant)",                                // a drag seeks, debounced
-		"a.addLineClicked()",                                  // + Line at playhead
+		"a.addLineClicked()",                                  // ＋ adds a line
+		"transport.Append(addBtn)",                            // ...from the transport row, not a row of its own
 		"n.holdForSynth(",                                     // an edited line is re-spoken the first time it plays
 		"n.deleteLine(i)",                                     // 🗑 per row
 		"i := n.addLineAt(n.pos)",                             // the button adds at the playhead

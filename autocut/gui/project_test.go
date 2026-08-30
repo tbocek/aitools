@@ -210,29 +210,152 @@ func TestOldProjectsBecomeSourcesWithTheirRoles(t *testing.T) {
 
 // ---- autosave ---------------------------------------------------------------
 
-// Where a save lands. The working copy is what the next launch opens, so it is
-// written whatever else happens; a file the user named through Save Project is
-// written too, because from the moment they name it, that file is the project
-// as far as they are concerned. The failure this pins is the quiet one: edits
-// after a Save As going only into root/project.json, so the named file the user
-// believes they are working in is a session behind.
-func TestASaveGoesToTheWorkingCopyAndTheNamedFile(t *testing.T) {
+// Where a save lands, and where the work lands. One file -- the open one -- and
+// one folder, derived from that file's own name, so a project and everything it
+// wrote can only be moved together. Two failures behind this: edits after a
+// Save As going only into a working copy, leaving the named file a session
+// behind, and a session writing into a folder that belonged to a project nobody
+// had open any more.
+func TestAProjectOwnsTheFolderBesideIt(t *testing.T) {
+	const proj = "/mnt/rec/tom.json.autocut"
+	if got, want := dataDir(proj), proj+".data"; got != want {
+		t.Errorf("%s writes into %s, want %s", proj, got, want)
+	}
+	// Save takes whatever was typed into the name box. The extension is what
+	// the desktop opens with Autocut and what .data hangs off, so it is added
+	// rather than hoped for -- and capitals the user typed are theirs to keep.
+	for _, c := range []struct{ in, want string }{
+		{"/mnt/rec/tom", "/mnt/rec/tom" + projExt},
+		{"/mnt/rec/tom.json", "/mnt/rec/tom.json" + projExt},
+		{"/mnt/rec/tom" + projExt, "/mnt/rec/tom" + projExt},
+		{"/mnt/rec/tom.AUTOCUT", "/mnt/rec/tom.AUTOCUT"},
+	} {
+		if got := withProjExt(c.in); got != c.want {
+			t.Errorf("saving %q writes %q, want %q", c.in, got, c.want)
+		}
+	}
+	// the session nobody has named is a file like any other: same rule, no
+	// unsaved special case, and the desktop can open it too
+	if !strings.HasSuffix(workName, projExt) {
+		t.Errorf("the working copy is %q, which is not a file the desktop would open", workName)
+	}
+	// and the launch hands the session that file before anything can be saved
+	// into it, which is what makes "not saved yet" not a case anywhere else
+	main := funcBody(t, "main.go", `func main\(\)`)
+	for _, want := range []string{"a.projPath = filepath.Join(wd, workName)", "a.outDir = dataDir(a.projPath)"} {
+		if !strings.Contains(main, want) {
+			t.Errorf("a session starts without %s, so it starts with no file of its own", want)
+		}
+	}
+	// and a save goes to that one file. It used to go to two -- the named file
+	// and a working copy -- which is how edits after a Save As reached only the
+	// copy.
+	body := funcBody(t, "project.go", `func \(a \*App\) saveProjectNow\(`)
+	if !strings.Contains(body, "a.writeProject(a.projPath, b)") {
+		t.Errorf("a save no longer writes the open project file:\n%s", body)
+	}
+}
+
+// Save As moves the work. The folder is derived from the name, so renaming the
+// project without renaming the folder leaves the transcripts, frames and
+// renders filed under the name it used to have -- and every page of the project
+// that is open reads as one that has never been run.
+//
+// The move is a rename and nothing else: it is instant, it cannot half-happen,
+// and when it will not go through the files stay exactly where they are. Nobody
+// presses Save expecting gigabytes of frames to be copied, and nobody presses
+// it expecting them to be lost either.
+func TestSavingUnderANewNameTakesTheWorkWithIt(t *testing.T) {
 	root := t.TempDir()
 	a := &App{root: root}
-	work := filepath.Join(root, "project.json")
+	from, to := filepath.Join(root, "a"+projExt+".data"), filepath.Join(root, "b"+projExt+".data")
 
-	if got := a.projectFiles(); len(got) != 1 || got[0] != work {
-		t.Errorf("with nothing named, a save goes to %v, want just the working copy", got)
+	// nothing written yet: nothing to move, and no empty folder invented
+	a.moveOutputs(from, to)
+	if exists(to) {
+		t.Errorf("%s was created for a project that had written nothing", to)
 	}
-	a.projPath = work // the startup load names the working copy itself
-	if got := a.projectFiles(); len(got) != 1 || got[0] != work {
-		t.Errorf("after loading the working copy, a save goes to %v -- it must not be written twice", got)
+	// an empty folder is not work either -- it is what a project that has been
+	// opened and not run leaves behind, and moving it says something ran
+	if err := os.MkdirAll(from, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	named := filepath.Join(root, "before-the-recut.json")
-	a.projPath = named
-	got := a.projectFiles()
-	if len(got) != 2 || got[0] != work || got[1] != named {
-		t.Errorf("after Save As, a save goes to %v, want both %s and %s", got, work, named)
+	a.moveOutputs(from, to)
+	if exists(to) || !exists(from) {
+		t.Errorf("an empty %s was moved to %s", from, to)
+	}
+
+	if err := os.MkdirAll(filepath.Join(from, "step1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	frame := filepath.Join(from, "step1", "0001.jpg")
+	if err := os.WriteFile(frame, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.moveOutputs(from, to)
+	if !exists(filepath.Join(to, "step1", "0001.jpg")) {
+		t.Errorf("the work did not follow the project to %s", to)
+	}
+	if exists(from) {
+		t.Errorf("%s is still there -- the work was copied, not moved", from)
+	}
+
+	// the new name already has work of its own: the rename fails on it, so
+	// nothing is written over and nothing is half-merged in
+	if err := os.MkdirAll(filepath.Dir(frame), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(frame, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.moveOutputs(from, to)
+	if !exists(frame) {
+		t.Errorf("%s was moved into a folder that was already in use", frame)
+	}
+
+	// and the move happens before the project is pointed at the new folder --
+	// the other way round moves a folder the pages have already been drawn from
+	body := funcBody(t, "project.go", `func \(a \*App\) saveProjectTo\(`)
+	move, set := strings.Index(body, "a.moveOutputs("), strings.Index(body, "a.setProject(")
+	if move < 0 || set < 0 || move > set {
+		t.Errorf("Save As no longer moves the outputs before renaming the project:\n%s", body)
+	}
+	// the extension is forced here, or a project saved as "tom" and one saved
+	// as "tom.autocut" are two projects with neither name nor folder in common
+	if !strings.Contains(body, "withProjExt(path)") {
+		t.Errorf("Save takes the typed name as it is:\n%s", body)
+	}
+	// and a plain Save over the open file is not a move: it would warn about a
+	// folder already being in use -- its own
+	if !strings.Contains(body, "if path != a.projPath {") {
+		t.Errorf("saving the open project under its own name still moves its folder:\n%s", body)
+	}
+}
+
+// setProject is where the two halves of a project meet: the file the autosave
+// follows, and the folder every step writes into. Everything on screen that was
+// read out of the LAST project's folder has to be re-read here, or the pages go
+// on showing another project's work -- the narration that "was never saved" was
+// exactly this, a page built once at startup against the empty session.
+func TestPointingAtAProjectRedrawsWhatItsFolderHolds(t *testing.T) {
+	body := funcBody(t, "project.go", `func \(a \*App\) setProject\(`)
+	if !strings.Contains(body, "a.outDir = dataDir(path)") {
+		t.Errorf("the folder is no longer derived from the file:\n%s", body)
+	}
+	for _, want := range []string{
+		"a.showProject()",  // the header bar names the file
+		"a.followOutDir()", // and the render target follows it
+		`a.voiceSel = ""`,  // the voice is the project's, not the session's
+		"a.narr.load()",    // the narration lives in the folder
+		"a.prep.refresh()", // and so do the counts on every page
+		"a.updateProduceInfo()",
+		"a.pub.refresh()",
+		"a.refreshCut()", // the Cut page's tracks most of all
+		"a.updateGates()",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("setProject no longer does %s, so that part keeps the last project's folder", want)
+		}
 	}
 }
 
@@ -389,14 +512,21 @@ func TestTheProjectNameFollowsSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Both of the two that rename a project go through setProject, and that is
+	// what tells the bar -- one place, so the name on screen cannot be the file
+	// the autosave stopped following.
 	for _, fn := range []string{"saveProjectTo", "loadProjectFrom"} {
 		body := regexp.MustCompile(`(?s)func \(a \*App\) ` + fn + `\(path string\) \{.*?\n}\n`).Find(p)
 		if body == nil {
 			t.Fatalf("%s is gone", fn)
 		}
-		if !strings.Contains(string(body), "a.showProject()") {
-			t.Errorf("%s renames the project without telling the header bar", fn)
+		if !strings.Contains(string(body), "a.setProject(") {
+			t.Errorf("%s renames the project without going through setProject", fn)
 		}
+	}
+	if !strings.Contains(string(regexp.MustCompile(`(?s)func \(a \*App\) setProject\(path string\) \{.*?\n}\n`).Find(p)),
+		"a.showProject()") {
+		t.Error("setProject renames the project without telling the header bar")
 	}
 	// showProject is also where a rename gets re-priced: a Save As from
 	// short.json to a path three folders deep may no longer fit as a path.
@@ -536,9 +666,116 @@ func TestNewProjectResetsEveryPageThroughApplyProject(t *testing.T) {
 		t.Fatal("applyProject is gone")
 	}
 	for _, want := range []string{"a.srcList.load(", "a.setFrameInterval(", "a.applyLanguage(",
-		"a.applyPromptStyles(", "a.applySessionCtx(", "a.applyProdSettings(", "a.applyPublish(", "a.setOutDir("} {
+		"a.applyPromptStyles(", "a.applySessionCtx(", "a.applyProdSettings(", "a.applyPublish("} {
 		if !strings.Contains(string(load), want) {
 			t.Errorf("applyProject no longer calls %s -- New Project would leave that page as it was", want)
 		}
+	}
+	// The output folder is the one thing it must NOT take from the file: it is
+	// derived from the project's own name, and a stored folder is a second
+	// answer that can disagree with the first -- which is how a session ends up
+	// writing where nobody is looking.
+	if strings.Contains(string(load), "p.OutDir") {
+		t.Errorf("applyProject reads the stored output folder instead of deriving it:\n%s", load)
+	}
+	// and both callers point the session at its file, which is what sets the
+	// folder and redraws the pages read out of it
+	for _, fn := range []string{"newProject", "loadProjectFrom"} {
+		body := funcBody(t, "project.go", `func \(a \*App\) `+fn+`\(`)
+		if !strings.Contains(body, "a.setProject(") {
+			t.Errorf("%s does not point the session at a file, so the pages keep the last project's folder:\n%s", fn, body)
+		}
+	}
+}
+
+// A project opened under an older name goes on under the new one. The name is
+// what the output folder hangs off, so a tom.json left as tom.json would write
+// into tom.json.data while everything saved since writes beside a .autocut --
+// one rule with two answers, which is the thing this whole change is against.
+// It has to happen on the way IN as well as on the way out: Save is not the
+// only door.
+//
+// The old file is left on disk. Nothing here deletes or overwrites a file the
+// user has, which is also why a name already in use stops the upgrade instead
+// of taking it.
+func TestAnOlderProjectGoesOnUnderTheNameTheRuleGivesIt(t *testing.T) {
+	root := t.TempDir()
+	a := &App{root: root}
+
+	json := filepath.Join(root, "tom.json")
+	if got, want := a.projectName(json), json+projExt; got != want {
+		t.Errorf("opening %s continues as %s, want %s", json, got, want)
+	}
+	// already the new name: nothing to do, and no .autocut.autocut
+	named := filepath.Join(root, "tom.json"+projExt)
+	if got := a.projectName(named); got != named {
+		t.Errorf("opening %s continues as %s", named, got)
+	}
+	// the new name is taken by a project of its own: it is not written over
+	if err := os.WriteFile(named, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.projectName(json); got != json {
+		t.Errorf("opening %s continues as %s, which is a project that already exists", json, got)
+	}
+
+	// The working copy is the one file that gets a name rather than a suffix:
+	// root/project.json was never a name anybody chose, and the session it
+	// holds is the session, so it comes back as the working copy the launch
+	// already looks for.
+	if got, want := a.projectName(filepath.Join(root, "project.json")), filepath.Join(root, workName); got != want {
+		t.Errorf("the old working copy comes back as %s, want %s", got, want)
+	}
+
+	// and the load path is what applies it -- Save is not the only door in
+	body := funcBody(t, "project.go", `func \(a \*App\) loadProjectFrom\(`)
+	if !strings.Contains(body, "a.setProject(a.projectName(path))") {
+		t.Errorf("a loaded project keeps whatever name it was read under:\n%s", body)
+	}
+	// what it is remembered as has to be the name it is kept under, or the next
+	// launch reopens the old file and the upgrade happens again every time
+	if !strings.Contains(body, "a.rememberProject(a.projPath)") {
+		t.Errorf("the next launch is pointed at the file this one stopped using:\n%s", body)
+	}
+	// what an older session already wrote is NOT moved: the working copy wrote
+	// into the root, which also holds the checkout, and no rename could tell
+	// one from the other
+	launch := funcBody(t, "main.go", `func \(a \*App\) build\(`)
+	for _, no := range []string{"os.Rename", "a.moveOutputs("} {
+		if strings.Contains(launch, no) {
+			t.Errorf("the launch calls %s to move an old session's outputs, which is a guess", no)
+		}
+	}
+	if !strings.Contains(launch, `case exists(filepath.Join(a.root, "project.json")):`) {
+		t.Error("a session saved by an older build no longer opens at all")
+	}
+}
+
+// Nobody chooses the output folder. It was a button on the Prepare page and a
+// line in every project file, which meant two answers to "where does this
+// session write" that could disagree -- and when they did, the work went
+// somewhere nobody was looking. One answer now: the open project's own name.
+func TestNothingChoosesTheOutputFolder(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sets := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src := readSrc(t, f)
+		for _, gone := range []string{"outDirRow", "chooseOutDirDialog", "outLabel", "setOutDir("} {
+			if strings.Contains(src, gone) {
+				t.Errorf("%s still has %s -- the output folder is derived, not picked", f, gone)
+			}
+		}
+		sets += strings.Count(src, "a.outDir = ")
+	}
+	// two: the empty session main() starts with, and setProject. A third is a
+	// folder that moved without the project file it belongs to.
+	if sets != 2 {
+		t.Errorf("the output folder is assigned in %d places, want 2 (main and setProject)", sets)
 	}
 }

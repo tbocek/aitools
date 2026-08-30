@@ -557,24 +557,31 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	})
 	n.timeLbl = gtk.NewLabel("00:00")
 	n.timeLbl.AddCSSClass("dim-label")
+	// ＋ is the same ＋ every line's row carries, and means the same thing: a
+	// new line here. It sits with the transport because "here" is the playhead
+	// -- you pause where the video has nothing to say, and add there -- and it
+	// had a row of its own under this one, a whole line of the column spent on
+	// one button, pushing the voice picker down.
+	addBtn := gtk.NewButtonFromIconName("list-add-symbolic")
+	addBtn.SetTooltipText("start a new narration line at this second — it runs until the clip's " +
+		"next line, or the clip's end. Pause where the video has nothing to say and press this.")
+	addBtn.ConnectClicked(func() { a.addLineClicked() })
+
 	transport := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	transport.Append(back)
 	transport.Append(n.playBtn)
 	transport.Append(fwd)
+	transport.Append(addBtn)
 	transport.Append(n.slider)
 	transport.Append(n.timeLbl)
-
-	addBtn := gtk.NewButtonWithLabel("+ Line at playhead")
-	addBtn.SetTooltipText("start a new narration line at this second — it runs until the clip's " +
-		"next line, or the clip's end. Pause where the video has nothing to say and press this.")
-	addBtn.ConnectClicked(func() { a.addLineClicked() })
-	editRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	editRow.Append(addBtn)
+	// and how loud it is, beside the button that plays it: this page is where
+	// a narration line is judged against the sound under it, which is a
+	// judgement made with a hand on the volume
+	transport.Append(volumeCtl())
 
 	preview := gtk.NewBox(gtk.OrientationVertical, 8)
 	preview.Append(vframe)
 	preview.Append(transport)
-	preview.Append(editRow)
 
 	// The prompt was a box filling the bottom half of this column, then a
 	// dropdown above the video, and it is on Prepare with all the others now
@@ -2206,7 +2213,7 @@ func (a *App) narrateRun() {
 		a.qJob(trackSTT, "speaking", 0, 0)
 	}
 	if writing {
-		a.logf(">>> narrate: %s — writing %d clip(s), one thinking call (a minute or two), then speaking them",
+		a.logf(">>> narrate: %s — writing %d clip(s), one LLM call, then speaking them",
 			why, len(segs))
 		a.prog(trackSTT, 0, "thinking about it")
 		glib.TimeoutAdd(150, func() bool {
@@ -2226,8 +2233,7 @@ func (a *App) narrateRun() {
 			return true
 		})
 	} else {
-		a.logf(">>> narrate: the narration matches the cut; speaking the %d line(s) not in the cache",
-			n.unspoken())
+		a.logf(">>> narrate: the narration matches the cut — speaking %d line(s)", n.unspoken())
 	}
 
 	// where the speaking half of the bar starts. With writing to do it is the
@@ -2326,21 +2332,17 @@ func (a *App) narrateDone(err error, stage string) {
 			if !errors.Is(err, errStopped) {
 				a.logf("%s FAILED: %v", stage, err)
 				a.progress.SetText(stage + " failed — see log")
-				a.setStatus(stage + " failed — see log")
 				return
 			}
 			a.progress.SetText(stage + " stopped")
-			a.setStatus(stage + " stopped")
 			return
 		}
 		a.progress.SetFraction(1)
 		if a.captionsOnly() {
-			a.progress.SetText("narration ready — captions only")
-			a.setStatus("narration ready — nothing is spoken; Produce burns the lines into the picture or ships them as subtitles")
+			a.progress.SetText("narration ready — captions only, nothing spoken")
 			return
 		}
-		a.progress.SetText("narration ready and spoken")
-		a.setStatus("narration ready and spoken — ▶ the preview to hear it in place")
+		a.progress.SetText("narration ready and spoken — ▶ the preview hears it in place")
 	})
 }
 

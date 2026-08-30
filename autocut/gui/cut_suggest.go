@@ -79,12 +79,10 @@ func (a *App) suggestClicked() {
 	a.runCtx, a.runCancel = context.WithCancel(context.Background())
 	a.qReset()
 	a.updateRunControls()
-	a.setStatus("suggesting a cut…")
 	a.logExp.SetExpanded(true)
-	a.logf(">>> suggest: target %.0f s, thinking over the session timeline — two long LLM calls "+
-		"(choose, then audit what was chosen), expect a few minutes", target)
+	a.logf(">>> suggest: target %.0f s — two LLM calls (choose, then audit), a few minutes", target)
 	if shortsClamped {
-		a.logf(">>> a YouTube Short runs 20-30 s — the target box (%s s) is not one, aiming at %.0f s instead",
+		a.logf(">>> target %s s is not a Short (20-30 s) — aiming at %.0f s instead",
 			strings.TrimSpace(a.ed.target.Text()), shortsLen)
 	}
 	// Both calls are streamed, so the bar has real news to report -- but not
@@ -117,7 +115,7 @@ func (a *App) suggestClicked() {
 		if err == nil {
 			a.qJob(trackSTT, "suggest", 2, 2)
 			a.prog(trackSTT, suggestChooseShare, "reading the cut back")
-			a.logfIdle(">>> audit: reading the %d proposed segments and %d effect(s) back against the brief — a second long call", len(segs), len(fx))
+			a.logfIdle(">>> audit: %d segments and %d effect(s) read back against the brief", len(segs), len(fx))
 			segs, fx = a.auditCut(session, target, segs, fx)
 		}
 		glib.IdleAdd(func() {
@@ -129,7 +127,6 @@ func (a *App) suggestClicked() {
 				}
 				a.progress.SetFraction(0)
 				a.progress.SetText("suggest failed — see log")
-				a.setStatus("suggest failed — see log")
 				return
 			}
 			total := 0.0
@@ -160,9 +157,9 @@ func (a *App) suggestClicked() {
 			// the effects the style proposed, on the page as if drawn by
 			// hand. They REPLACE what was there: the moments they decorate
 			// are the new suggestion's, and effects pinned to the old choice
-			// would decorate stretches no longer in the video. Styles that
-			// answer without fx (all but Shorts) change nothing here, and
-			// the pushUndo above takes segments and effects back as one.
+			// would decorate stretches no longer in the video. A reply that
+			// proposed none changes nothing here, and the pushUndo above
+			// takes segments and effects back as one.
 			if len(fx) > 0 {
 				a.ed.fx = fx
 				a.ed.dropFx()
@@ -170,13 +167,12 @@ func (a *App) suggestClicked() {
 			a.ed.persist()
 			a.ed.setBase() // from here on, Revert comes back to this suggestion
 			a.progress.SetFraction(1)
-			a.progress.SetText("cut suggested")
-			a.logf(">>> suggested %d segments, %d:%02d total — edit away",
+			a.progress.SetText(fmt.Sprintf("suggested %d segments", len(segs)))
+			a.logf(">>> suggested %d segments, %d:%02d total",
 				len(segs), int(total)/60, int(total)%60)
 			if len(fx) > 0 {
-				a.logf(">>> ...and %d effect(s) from the style, on the fx lane like hand-drawn ones", len(fx))
+				a.logf(">>> ...and %d effect(s) from the style", len(fx))
 			}
-			a.setStatus(fmt.Sprintf("suggested %d segments", len(segs)))
 		})
 	}()
 }
@@ -203,7 +199,7 @@ Return strict JSON, nothing else:
 - "fix" keeps the moment and corrects its boundaries: give the new start and end, and say briefly what was wrong.
 - "drop" takes it out. Use it sparingly, for a stretch where nothing happens or that repeats another segment.
 - add is what is missing. This is where most of your value is.
-- The proposal may also list effects -- zooms, speed changes, captions decorating the cut. One fxcheck per effect, same verdicts: an effect must lie inside one of the segments as you corrected them. Fix one that should follow a segment you moved; drop one whose segment you dropped or that no segment contains. No effects proposed means no fxchecks.
+- The proposal may also list effects -- punch-ins, captions, speed changes, held frames, volume changes -- decorating the cut. One fxcheck per effect, same verdicts: an effect must lie inside one of the segments as you corrected them. Fix one that should follow a segment you moved; drop one whose segment you dropped or that no segment contains. No effects proposed means no fxchecks.
 
 What to check, hardest first.
 
@@ -246,13 +242,18 @@ func (a *App) auditCut(session string, target float64, segs []cutSeg, fx []cutFx
 		for i, f := range fx {
 			t0, t1 := f.fxSpan()
 			extra := ""
-			switch f.Kind {
-			case "speed":
+			kind := f.Kind
+			switch {
+			case f.frozenFx():
+				kind = "stop" // "speed rate 0" is the storage, not the effect
+			case f.Kind == "speed":
 				extra = fmt.Sprintf("  rate %g", f.Rate)
-			case "text":
+			case f.Kind == "volume":
+				extra = fmt.Sprintf("  gain %g", f.Gain)
+			case f.Kind == "text":
 				extra = fmt.Sprintf("  %q", f.Text)
 			}
-			fmt.Fprintf(&b, "#%d  %s  [%s] to [%s]%s\n", i+1, f.Kind, mmss(t0), mmss(t1), extra)
+			fmt.Fprintf(&b, "#%d  %s  [%s] to [%s]%s\n", i+1, kind, mmss(t0), mmss(t1), extra)
 		}
 		fxBlock = "PROPOSED EFFECTS:\n" + b.String() + "\n"
 	}
@@ -278,7 +279,7 @@ func (a *App) auditCut(session string, target float64, segs []cutSeg, fx []cutFx
 	}
 	reply, err := a.llmChatRetryOn("audit", msgs, true, onText)
 	if err != nil {
-		a.logfIdle(">>> audit skipped: %v — keeping the suggestion as it is", err)
+		a.logfIdle(">>> audit skipped (%v) — the suggestion stands", err)
 		return segs, fx
 	}
 	clean := strings.TrimSpace(reply)
@@ -300,7 +301,7 @@ func (a *App) auditCut(session string, target float64, segs []cutSeg, fx []cutFx
 		FxChecks []fxCheck `json:"fxchecks"`
 	}
 	if err := json.Unmarshal([]byte(clean), &out); err != nil {
-		a.logfIdle(">>> audit answered with something that is not JSON — keeping the suggestion as it is")
+		a.logfIdle(">>> audit did not answer in JSON — the suggestion stands")
 		return segs, fx
 	}
 
@@ -371,8 +372,8 @@ func (a *App) auditCut(session string, target float64, segs []cutSeg, fx []cutFx
 	}
 	lo, hi := a.suggestWindow(target)
 	if len(merged) < minSuggestSegs(target) || total < lo || total > hi {
-		a.logfIdle(">>> audit result rejected (%d segments, %.0f s against a %.0f s target) — "+
-			"keeping the suggestion as it is", len(merged), total, target)
+		a.logfIdle(">>> audit rejected: %d segments, %.0f s against a %.0f s target — "+
+			"the suggestion stands", len(merged), total, target)
 		return segs, fx
 	}
 	a.logfIdle(">>> audit: %d fixed, %d dropped, %d added, %d effect(s) changed — %d segments, %d:%02d total",
@@ -420,7 +421,7 @@ func (a *App) applyFxChecks(fx []cutFx, checks []fxCheck) ([]cutFx, int) {
 			}
 			f := keep[i]
 			switch f.Kind {
-			case "zoom", "text", "svg", "speed":
+			case "zoom", "text", "svg", "speed", "volume":
 			default:
 				continue // a kind with no span to move
 			}
@@ -490,13 +491,19 @@ func (a *App) suggestWindow(target float64) (lo, hi float64) {
 }
 
 // sugFx is one effect as a cut style's reply spells it: a kind, the stretch of
-// session seconds it covers, and the one number that kind needs. Only the
-// Shorts style asks for these; a reply without the list parses to none.
+// session seconds it covers, and the one number that kind needs. Every style
+// asks for these; a reply without the list parses to none.
 type sugFx struct {
 	Kind       string
 	Start, End float64
 	Rate       float64
-	Text       string
+	// a pointer because 0 is a gain somebody can mean. Silence is the whole
+	// reason a session says "do not use this audio", and as a plain float64
+	// that instruction and a volume effect with no gain field at all arrive
+	// here as the same 0 -- so obeying one meant obeying the other, and the
+	// parser chose to obey neither. Absent is nil; explicit is a number.
+	Gain *float64
+	Text string
 }
 
 // fxFromReply turns proposed effects into the page's own cutFx. The model is
@@ -506,11 +513,23 @@ type sugFx struct {
 // caption box is left empty for textBox() to fill in). Entries that make no
 // sense are dropped rather than failing the run: the segments are the work,
 // the effects are seasoning.
+//
+// Four of the app's five kinds can be asked for. The fifth, svg, cannot: a
+// drawing is a file on this machine and nothing in a reply can name one, so
+// the overlay stays a thing a hand places.
+// fxMaxProposed is how many effects a reply may place. It was a handful when
+// the only style asking for them cut a 25-second Short; the long-form styles
+// ask now too, and their wording budgets three or four per five minutes of
+// finished video -- so the ceiling is what that rate reaches on a cut far
+// longer than anyone makes, and a reply past it is a model decorating instead
+// of editing.
+const fxMaxProposed = 24
+
 func fxFromReply(in []sugFx) []cutFx {
 	var out []cutFx
 	for _, f := range in {
-		if len(out) == 8 {
-			break // seasoning: past a handful it is noise, not a cut
+		if len(out) == fxMaxProposed {
+			break
 		}
 		d := f.End - f.Start
 		switch strings.ToLower(strings.TrimSpace(f.Kind)) {
@@ -541,6 +560,34 @@ func fxFromReply(in []sugFx) []cutFx {
 			}
 			out = append(out, cutFx{Kind: "speed", T: f.Start, Dur: d, Rate: rate,
 				Trans: ramp, Tout: ramp})
+		case "stop":
+			// the held frame: the picture stands still at f.Start while the
+			// footage runs on under it, which is a speed of 0 (frozenFx). It
+			// is a kind of its own in the reply because a rate cannot say it
+			// -- an omitted rate and a rate of 0 are the same JSON number,
+			// and reading that as a freeze would hand a still to every reply
+			// that forgot to name a speed
+			if d <= 0 {
+				d = 2 // long enough to read as a hold, short enough not to strand the viewer
+			}
+			fade := math.Min(0.3, d/4)
+			out = append(out, cutFx{Kind: "speed", T: f.Start, Dur: d, Rate: 0,
+				Trans: fade, Tout: fade})
+		case "volume":
+			if d <= 0 {
+				continue
+			}
+			// a gain nobody named is a field left out, and there is nothing
+			// to do about it; 1 is dropped for the plainer reason that it
+			// does nothing. An explicit 0 is kept -- that is a stretch the
+			// session wanted silent.
+			if f.Gain == nil || *f.Gain == 1 {
+				continue
+			}
+			// the same second either way that a suggested zoom and caption get
+			ramp := math.Min(1, d/4)
+			out = append(out, cutFx{Kind: "volume", T: f.Start, Dur: d,
+				Gain: clampGain(*f.Gain), Trans: ramp, Tout: ramp})
 		case "text":
 			txt := strings.TrimSpace(f.Text)
 			if txt == "" {
@@ -698,7 +745,7 @@ func clampFxToSegs(fx []cutFx, segs []cutSeg) []cutFx {
 		}
 		f.T, f.Dur = nt0, nt1-nt0
 		switch f.Kind {
-		case "zoom", "text", "svg":
+		case "zoom", "text", "svg", "volume":
 			// nothing kind-specific: the band is the band, and the fades
 			// inside it are shrunk with it below
 		case "speed":

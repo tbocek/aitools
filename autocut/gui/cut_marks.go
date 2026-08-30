@@ -105,6 +105,19 @@ func drawMark(cr *cairo.Context, kind string, x, y float64) {
 		cr.Stroke()
 		cr.Rectangle(x+2.6, y+0.7, m-3.3, m-3.9)
 		cr.Stroke()
+	case "vol":
+		// a speaker: a cone opening to the right, with a wave off it
+		cr.MoveTo(x+0.8, y+2.4)
+		cr.LineTo(x+0.8, y+m-2.4)
+		cr.LineTo(x+2.6, y+m-2.4)
+		cr.LineTo(x+4.6, y+m-0.8)
+		cr.LineTo(x+4.6, y+0.8)
+		cr.LineTo(x+2.6, y+2.4)
+		cr.ClosePath()
+		cr.Fill()
+		cr.NewSubPath()
+		cr.Arc(x+4.6, cy, 2.2, -1.0, 1.0)
+		cr.Stroke()
 	case "sound":
 		// a note
 		cr.NewSubPath()
@@ -144,6 +157,11 @@ func laneLabel(f cutFx, chars int) (mark, label string) {
 		return "text", laneWords(f.Text, chars)
 	case "svg":
 		return "svg", laneWords(svgName(f), chars)
+	case "volume":
+		// the percent, which is the whole of what this one does. No "%" in the
+		// words: the mark beside them is a speaker, so the number can only be
+		// a loudness, and every character costs room on a narrow band
+		return "vol", gainPct(f.Gain)
 	}
 	return "", ""
 }

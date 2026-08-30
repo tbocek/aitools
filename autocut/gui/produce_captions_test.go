@@ -55,7 +55,7 @@ func TestProduceNeverSpeaksACaptionsOnlyProject(t *testing.T) {
 		t.Fatal("an .srt writer bypasses subText — its captions all sit at the bottom")
 	}
 	// a project that wrote captions and turned subtitles off is told so
-	if !strings.Contains(s, "the written lines appear nowhere") {
+	if !strings.Contains(s, "the lines appear nowhere") {
 		t.Fatal("produce no longer warns when captions have no way into the video")
 	}
 }

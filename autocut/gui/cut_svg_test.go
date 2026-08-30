@@ -207,17 +207,17 @@ func TestTheDrawingIsWiredLikeATitle(t *testing.T) {
 	for file, wants := range map[string][]string{
 		"cut.go": {
 			// its own entry on the effects dropdown, and the file first
-			`fxKinds := []string{"✚ Effect", "⊕ Zoom", "❝ Text", "▨ SVG", "⏩ Speed"}`,
+			`fxKinds := []string{"✚ Effect", "⊕ Zoom", "❝ Text", "▨ SVG", "⏩ Speed", "🔊 Volume"}`,
 			"a.svgClicked()",
 		},
 		"cut_suggest.go": {
 			// and it survives a cut moving under it, like a title
-			`case "zoom", "text", "svg":`,
+			`case "zoom", "text", "svg", "volume":`,
 		},
 		"cut_fx.go": {
 			// the drawing's file rides on the effect, apart from the words
 			"Src string `json:\"src,omitempty\"`",
-			`case "zoom", "speed", "text", "svg":`,
+			`case "zoom", "speed", "text", "svg", "volume":`,
 			"return fmt.Sprintf(\"svg %s at %s for %.1fs\", svgName(f), mmss(f.T), f.Dur)",
 			// the same dialog reopens it
 			"a.askSvgParams(was, false, func(nf cutFx) { ed.updateFx(was, nf) })",

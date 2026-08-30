@@ -13,7 +13,9 @@ package main
 // rate of its own -- slowed to a crawl, or run up to a hundred times faster so
 // a twenty-minute stretch of nothing passes in a few seconds -- or one frame
 // held still for a moment. A "text" is words over the picture for a while, in
-// a box drawn on it (fxtext.go, which is also what draws them).
+// a box drawn on it (fxtext.go, which is also what draws them). A "volume" is
+// none of those three: it touches neither the frame nor the clock, only how
+// loud the seconds under it are, from silence to ten times what was recorded.
 //
 // None of them touch the segments. The cut says WHAT is shown; the effects say
 // HOW -- where the camera is, how fast the clock runs, what is written over it
@@ -48,7 +50,7 @@ import (
 // is omitempty so a cut without effects writes exactly the cut.json it always
 // wrote.
 type cutFx struct {
-	Kind string  `json:"kind"` // "zoom", "speed", "text" or "svg"
+	Kind string  `json:"kind"` // "zoom", "speed", "text", "svg" or "volume"
 	T    float64 `json:"t"`    // session time it happens at
 	// Every kind reads these two the same way: the seconds the effect fades
 	// in at its start and out at its end, both inside Dur. For a zoom that is
@@ -96,6 +98,12 @@ type cutFx struct {
 	// that is meant to be a held beat rather than a held frame. At any other
 	// rate the sound follows the picture and this says nothing.
 	Mute bool `json:"mute,omitempty"`
+	// volume: how loud the seconds it covers are, as a plain linear gain --
+	// 1 is the footage as recorded, 0.5 half as loud, 10 the ceiling
+	// (fxMaxGain). 0 is silence, and it is stored as the zero value like any
+	// other, which is why this reads back as silence rather than as "unset":
+	// an effect that exists at all was placed by a hand that typed a number.
+	Gain float64 `json:"gain,omitempty"`
 	// text: the words. Newlines are kept and always break a line; everything
 	// else is wrapped to the box.
 	Text string `json:"text,omitempty"`
@@ -137,6 +145,18 @@ func clampSpeed(rate, dur float64) (float64, float64) {
 	return rate, dur
 }
 
+// fxMaxGain is as loud as a volume effect goes: ten times what was recorded,
+// which is 1000% on the form. The number is not arbitrary -- it is the ceiling
+// of playbin's own volume property, so the preview can be as loud as the
+// render and neither has to explain a limit the other does not have. Past it
+// there is nothing left to recover anyway: a passage quiet enough to need more
+// than ten times is a passage whose noise floor comes up with it.
+const fxMaxGain = 10.0
+
+// clampGain holds a gain to what both ends of the app can make of it. Silence
+// is a legitimate answer, so the floor is 0 and not some small number.
+func clampGain(g float64) float64 { return math.Max(0, math.Min(fxMaxGain, g)) }
+
 // fxSpan is the stretch of session time an effect owns on the timeline, and it
 // is the same stretch for every kind: T to T+Dur, fades included. The bar on
 // the lane IS the seconds the effect is doing something -- the camera away
@@ -145,7 +165,7 @@ func clampSpeed(rate, dur float64) (float64, float64) {
 // transitions.
 func (f cutFx) fxSpan() (float64, float64) {
 	switch f.Kind {
-	case "zoom", "speed", "text", "svg":
+	case "zoom", "speed", "text", "svg", "volume":
 		return f.T, f.T + math.Max(f.Dur, 0)
 	}
 	return f.T, f.T
@@ -200,6 +220,20 @@ func (f cutFx) fxLabel() string {
 		return fmt.Sprintf("text %s at %s for %.1fs", quoteFirst(f.Text, 24), mmss(f.T), f.Dur)
 	case "svg":
 		return fmt.Sprintf("svg %s at %s for %.1fs", svgName(f), mmss(f.T), f.Dur)
+	case "volume":
+		verb := "louder"
+		switch g := clampGain(f.Gain); {
+		case g == 0:
+			verb = "silent"
+		case g < 1:
+			verb = "quieter"
+		}
+		fade := ""
+		if f.Trans > 0 || f.Tout > 0 {
+			fade = fmt.Sprintf(" (%.1fs in, %.1fs out)", math.Max(f.Trans, 0), math.Max(f.Tout, 0))
+		}
+		return fmt.Sprintf("%s %s at %s for %.1fs%s",
+			mmss(f.T), verb, gainPct(f.Gain), f.Dur, fade)
 	}
 	return "effect"
 }
@@ -599,6 +633,40 @@ func (f cutFx) stairs(in, out float64) []rateStep {
 		ramp(f.T+f.Dur-out, out, f.Rate, 1)
 	}
 	return steps
+}
+
+// fxGainAt is how loud session second t is, as a plain linear gain: 1 where no
+// volume effect covers it, and every volume effect that does multiplied
+// together. Multiplied, not averaged the way overlapping rates are (rateSpans),
+// because two gains are two things done to the same sound and doing both is
+// doing both -- twice as loud and then twice again is four times, which is
+// what a hand that placed two of them asked for. The ceiling is the same one a
+// single effect has, so the pair cannot go somewhere neither of them could.
+//
+// This is the one gain rule: the preview reads it per tick (syncPlayGain) and
+// the render reads it per clip (gainCues), so what you hear while cutting is
+// what comes out.
+func fxGainAt(fx []cutFx, t float64) float64 {
+	g := 1.0
+	for _, f := range fx {
+		if f.Kind != "volume" {
+			continue
+		}
+		// the fades are a title's fades, evaluated by a title's function: a
+		// volume effect's envelope is 0 outside its band, 1 across the middle
+		// and a straight ramp either side, which is exactly what textAlpha is.
+		// A band of no length needs no guard of its own -- textAlpha reads it
+		// as covering no second at all, so it changes nothing here
+		g *= 1 + (clampGain(f.Gain)-1)*textAlpha(f, t)
+	}
+	return clampGain(g)
+}
+
+// gainPct is a gain written the way the form asks for it and the lane shows
+// it: whole percent, because "180%" is how loud something is and "1.8" is a
+// number that has to be converted before it means anything.
+func gainPct(g float64) string {
+	return fmt.Sprintf("%.0f%%", clampGain(g)*100)
 }
 
 // rampStairs is how many stairs a ramp of d seconds of footage from rate from
@@ -1099,6 +1167,10 @@ func (ed *cutEditor) fxStatus() {
 	case "svg":
 		hint = "on the video drag inside the box to move it or its border to " +
 			"resize it, and the drawing is re-fitted as you go — " + hint
+	case "volume":
+		// nothing on the picture to take hold of: this one is heard, not seen,
+		// so the only handles it has are the ones the lane gives it
+		hint = "it changes nothing on the picture, only how loud it is — " + hint
 	}
 	ed.a.setStatus(f.fxLabel() + " picked up — " + hint)
 }
@@ -1315,6 +1387,26 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.Stroke()
 			if x1-x0 > 40 {
 				mark, label := laneLabel(f, int((x1-x0-16)/5))
+				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
+			}
+		case "volume":
+			// the same bracket the overlays wear, in its own yellow, with the
+			// fill drawn on textFades -- which is the very function fxGainAt
+			// reads the gain off, so the shape on the lane IS the shape the
+			// sound travels. A band drawn from one rule and heard from another
+			// is a band that lies for exactly the seconds it fades over.
+			fin, fout := f.textFades()
+			cr.SetSourceRGBA(0.95, 0.85, 0.2, 0.3)
+			laneBand(cr, x0, x1, fin*ed.pps, fout*ed.pps, y)
+			cr.SetSourceRGB(0.95, 0.85, 0.2)
+			cr.SetLineWidth(1.5)
+			cr.MoveTo(x0, y+fxLaneH-2)
+			cr.LineTo(x0, y+2)
+			cr.LineTo(x1, y+2)
+			cr.LineTo(x1, y+fxLaneH-2)
+			cr.Stroke()
+			if x1-x0 > 40 {
+				mark, label := laneLabel(f, 0)
 				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
 			}
 		}
@@ -1553,6 +1645,75 @@ func (a *App) speedClicked() {
 	})
 }
 
+// volumeClicked is the 🔊 Volume entry: a stretch of the session played louder or
+// quieter than it was recorded. The one effect here that changes nothing you
+// can see -- which is why it has no drag on the picture and no box: there is
+// nowhere on a frame to point at a sound.
+//
+// A marked stretch is the seconds it covers, and with nothing marked it takes
+// a couple of seconds from the line, exactly as a speed does.
+func (a *App) volumeClicked() {
+	ed := a.ed
+	t0, t1 := ed.selOrdered()
+	marked := ed.fxMarked()
+	if !marked {
+		if !ed.hasPlay {
+			a.setStatus("click a track or mark a stretch first — volume needs seconds to work on")
+			return
+		}
+		t0, t1 = ed.playhead, ed.playhead+2
+	}
+	// twice as loud, and a quarter of a second of fade at each end. The fades
+	// are not decoration: a gain that arrives on one sample is a click, and a
+	// click is the one artefact a listener hears as a broken video rather than
+	// as an edit. Typed to 0 by anyone who wants the hard step.
+	f := cutFx{Kind: "volume", T: t0, Dur: t1 - t0, Gain: 2, Trans: 0.25, Tout: 0.25}
+	a.askVolumeParams(f, true, func(f cutFx) {
+		ed.addFx(f)
+		ed.sel.active = false
+		a.setStatus(f.fxLabel() + " — the sound recorded there is played at that gain and " +
+			"the picture is untouched; ↶ Undo takes it back")
+	})
+}
+
+// askVolumeParams asks a volume effect's numbers. Percent rather than a
+// multiplier, because "180%" is a loudness and "1.8" is arithmetic homework --
+// and because the two ends of the range, silence and ten times, are both
+// easier to mean in percent than to reason about as a factor.
+func (a *App) askVolumeParams(f cutFx, isNew bool, ok func(cutFx)) {
+	verb := "Save"
+	if isNew {
+		verb = "Place"
+	}
+	gRow, g := fxNumRow("Volume %",
+		fmt.Sprintf("how loud these seconds are played, against how they were recorded. "+
+			"100 is untouched, 50 half as loud, 0 silent, and up to %.0f for a passage "+
+			"recorded too quietly to hear — though a passage lifted that far brings its "+
+			"hiss up with it", fxMaxGain*100), clampGain(f.Gain)*100)
+	lRow, l := fxNumRow("Length seconds",
+		"the session seconds it covers, fades included — the same seconds its "+
+			"bar covers on the lane", f.Dur)
+	iRow, i := fxNumRow("Fade in seconds",
+		"how long it takes to reach that loudness instead of stepping to it. 0 is the "+
+			"hard step, which on a big change is audible as a click", f.Trans)
+	oRow, o := fxNumRow("Fade out seconds",
+		"how long it takes to come back to the recorded loudness at the end, on the "+
+			"same terms", f.Tout)
+	eRow, ec := fxEaseRow(f)
+	a.fxWin(fmt.Sprintf("Volume %s – %s", mmss(f.T), mmss(f.T+f.Dur)), verb,
+		[]gtk.Widgetter{fxGrid([]fxField{gRow, lRow}, []fxField{iRow, oRow, eRow})}, func() {
+			f.Gain = clampGain(fxNumOf(g, clampGain(f.Gain)*100) / 100)
+			// no minClipLn here: a volume effect makes no clip, so the render's
+			// floor is not its floor. A tenth of a second is the shortest thing
+			// worth placing -- audible, and still a band the lane can draw.
+			f.Dur = math.Max(0.1, fxNumOf(l, f.Dur))
+			f.Trans, f.Tout = math.Max(0, fxNumOf(i, f.Trans)), math.Max(0, fxNumOf(o, f.Tout))
+			f.Ease = fxEaseOf(ec.Selected())
+			clampFades(&f)
+			ok(f)
+		})
+}
+
 // editFx reopens the held effect's numbers -- the ✎ Edit button's other job.
 func (a *App) editFx() {
 	ed := a.ed
@@ -1574,6 +1735,8 @@ func (a *App) editFx() {
 		a.askTextParams(was, false, func(nf cutFx) { ed.updateFx(was, nf) })
 	case "svg":
 		a.askSvgParams(was, false, func(nf cutFx) { ed.updateFx(was, nf) })
+	case "volume":
+		a.askVolumeParams(was, false, func(nf cutFx) { ed.updateFx(was, nf) })
 	}
 }
 

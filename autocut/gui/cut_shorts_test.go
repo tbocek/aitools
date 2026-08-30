@@ -1,18 +1,19 @@
 package main
 
 // The YouTube Shorts cut style: 20 to 30 seconds built on the one subject the
-// user names in the session notes, and the one style whose cut gets effects.
-// The effects ride in the cut reply -- what to cut and whether to decorate it
-// is one judgement, made once -- and the audit then reads BOTH back, its
-// fxchecks correcting or dropping effects as it corrects the segments under
-// them. What these pin: the style is on the menu and is the only one asking
-// for fx, the audit is told about effects, a tiny target relaxes the
-// segment-count arithmetic instead of fighting it, the proposed effects
-// become the page's own zooms, speeds and captions with the dialogs' defaults
-// for everything the model is not trusted with, and the seams -- the reply
-// parse, both validators, and the judgement that reads a leftover five-minute
-// target as the box from other work rather than as a wish, made once in the
-// box itself when the wording is picked and again at ▶.
+// user names in the session notes. Effects ride in the cut reply -- what to
+// cut and whether to decorate it is one judgement, made once -- and the audit
+// then reads BOTH back, its fxchecks correcting or dropping effects as it
+// corrects the segments under them. Every style asks for effects now (fxRules,
+// and cut_fxreply_test.go for the kinds); what these pin is Shorts itself: it
+// is on the menu, it words its own effects for a phone, the audit is told
+// about effects at all, a tiny target relaxes the segment-count arithmetic
+// instead of fighting it, the proposed effects become the page's own zooms,
+// speeds and captions with the dialogs' defaults for everything the model is
+// not trusted with, and the seams -- the reply parse, both validators, and the
+// judgement that reads a leftover five-minute target as the box from other
+// work rather than as a wish, made once in the box itself when the wording is
+// picked and again at ▶.
 
 import (
 	"math"
@@ -40,26 +41,45 @@ func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
 			t.Errorf("the Shorts prompt does not say %q", want)
 		}
 	}
-	// the Shorts style is the ONE style that asks for fx, in the same reply
-	// as the segments: an effect is part of the same judgement as the cut it
-	// decorates. The other styles never mention them, so their replies stay
-	// cheap to parse and their prompts stay short.
+	// EVERY style asks for fx, in the same reply as the segments: an effect is
+	// part of the same judgement as the cut it decorates, and a cut proposed
+	// with nothing on it is a cut nobody finished. Shorts words it for a phone
+	// and the other three share fxRules, but the reply shape is one shape --
+	// suggestParse reads it without knowing which wording asked.
 	for _, s := range a.promptStyleList("cut") {
-		asks := strings.Contains(s.Text, `"fx":[`)
+		if !strings.Contains(s.Text, `"fx":[`) {
+			t.Errorf("cut style %q no longer asks for effects in its reply", s.Name)
+			continue
+		}
+		for _, want := range []string{
+			`"kind":"zoom"`, `"kind":"speed"`, `"kind":"text"`,
+			"inside one of your segments",
+		} {
+			if !strings.Contains(s.Text, want) {
+				t.Errorf("the %q prompt does not say %q", s.Name, want)
+			}
+		}
+	}
+	// ...and the three that are not Shorts take the same wording from one
+	// place, so a rule added to effects cannot reach two cuts out of three
+	for _, s := range a.promptStyleList("cut") {
 		if s.Name == shortsStyleName {
-			if !asks {
-				t.Error("the Shorts style no longer asks for effects in its reply")
-			}
-			for _, want := range []string{
-				`"kind":"zoom"`, `"kind":"speed"`, `"kind":"text"`,
-				"inside one of your segments",
-			} {
-				if !strings.Contains(s.Text, want) {
-					t.Errorf("the Shorts prompt does not say %q", want)
-				}
-			}
-		} else if asks {
-			t.Errorf("cut style %q asks for effects — only the Shorts style decorates", s.Name)
+			continue
+		}
+		if !strings.Contains(s.Text, strings.TrimSpace(fxRules)) {
+			t.Errorf("cut style %q spells its own effects rules out instead of sharing fxRules", s.Name)
+		}
+	}
+	// what the user wrote about the session directs the effects too, not just
+	// the choosing: "speed the boring parts up and show them" is an
+	// instruction about which seconds are cut as much as about the decoration
+	for _, want := range []string{
+		"ABOUT THIS SESSION",
+		"It decides segments too",
+	} {
+		if !strings.Contains(fxRules, want) {
+			t.Errorf("the shared effects wording does not say %q, so the session notes "+
+				"cannot ask for a dull stretch to be kept at speed", want)
 		}
 	}
 	// ...and the audit is told to read them back: one fxcheck per effect,
@@ -124,12 +144,20 @@ func TestTheRepliedEffectsBecomeCutFx(t *testing.T) {
 		t.Errorf("the caption brought a box (%g×%g) — no box means textBox()'s caption default", tx.Wf, tx.Hf)
 	}
 	// seasoning has a lid
-	many := make([]sugFx, 20)
+	many := make([]sugFx, fxMaxProposed*2)
 	for i := range many {
 		many[i] = sugFx{Kind: "zoom", Start: float64(i * 10), End: float64(i*10 + 2)}
 	}
-	if got := fxFromReply(many); len(got) != 8 {
-		t.Errorf("%d effects survived of 20, want the lid of 8", len(got))
+	if got := fxFromReply(many); len(got) != fxMaxProposed {
+		t.Errorf("%d effects survived of %d, want the lid of %d", len(got), len(many), fxMaxProposed)
+	}
+	// ...and the lid has to clear what the wording itself budgets, or the
+	// parser is the thing dropping effects rather than the model choosing
+	// them. fxRules asks for three or four per five minutes of finished
+	// video; a twenty-minute cut asking at that rate must fit under the lid.
+	if want := 4 * (20 / 5); fxMaxProposed < want {
+		t.Errorf("the lid is %d, under the %d a %d-minute cut may ask for at the rate "+
+			"fxRules budgets -- the effects past it vanish without a word", fxMaxProposed, want, 20)
 	}
 }
 

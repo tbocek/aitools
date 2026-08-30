@@ -198,9 +198,6 @@ func (a *App) buildSources() *gtk.Box {
 		a.refreshCut() // the tracks ARE this list: a row added or unmarked changes them
 	})
 
-	var outRow *gtk.Box
-	outRow, a.outLabel = a.outDirRow("Output folder:")
-
 	// the frame controls: how often, then how big. A stepper over the same
 	// discrete stops the slider had, each..5s, typable by hand.
 	a.interval = newFreqPick()
@@ -285,18 +282,17 @@ func (a *App) buildSources() *gtk.Box {
 	sources.Append(addRow)
 	sources.Append(listScroll)
 
-	// The bottom line, one line: how the frames are taken, then where
-	// everything lands. What is already there is counted along the bottom of
-	// the page, beside the other two folders this step writes.
-	outRow.SetHExpand(true)
-	outRow.SetHAlign(gtk.AlignEnd) // the whole group sits at the right edge
+	// The bottom line, one line: how the frames are taken, and what language
+	// they are spoken in. Where it all lands used to be chosen here too; it is
+	// the project file's own folder now (project.go), so there is nothing to
+	// choose, and what has been written into it is counted along the bottom of
+	// the page where the other two folders this step writes are.
 	bottom := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	bottom.Append(gtk.NewLabel("Freq:"))
 	bottom.Append(a.interval.box)
 	bottom.Append(a.scalePick)
 	bottom.Append(gtk.NewLabel("Language:"))
 	bottom.Append(a.langEntry)
-	bottom.Append(outRow)
 
 	// No margins of its own: it is one side of the page's divider now, and the
 	// page keeps its columns 12 from the window's edges as Cut and Narrate do.
@@ -448,8 +444,7 @@ func (a *App) prepRun() {
 	// two sources of the same name would write into one folder under step1/,
 	// and the second would quietly overwrite the first's transcript
 	if x, y := a.srcList.clash(); x != "" {
-		a.logf("!!! %s and %s are both step1/%s -- rename one, or the second overwrites the first",
-			x, y, baseName(x))
+		a.logf("!!! %s and %s are both step1/%s -- rename one", x, y, baseName(x))
 		a.setStatus(fmt.Sprintf("%s and %s have the same name — rename one",
 			filepath.Base(x), filepath.Base(y)))
 		return
@@ -467,7 +462,7 @@ func (a *App) prepRun() {
 	if err := a.undFreshStart(); err != nil {
 		// nothing here is worth refusing to run over: say what could not be
 		// cleared, and let the run pick up from what is still on disk
-		a.logf(">>> could not clear the last run (%v) -- resuming it instead of starting over", err)
+		a.logf(">>> could not clear the last run (%v) -- resuming it", err)
 	}
 	scaleName, scaleVF := a.frameScale()
 	a.startPrep(vids, auds, a.frameInterval(), scaleName, scaleVF)
@@ -501,7 +496,7 @@ func (a *App) startPrep(videos, audios []string, interval float64, scaleName, sc
 	a.runCtx, a.runCancel = context.WithCancel(context.Background())
 	a.qReset()
 	a.updateRunControls()
-	a.setStatus("preparing…")
+	a.prog(trackSTT, 0, "preparing")
 	a.logExp.SetExpanded(true)
 	// what went in, by name -- the page has room for a count and nothing more
 	a.logf(">>> prepare: %d input files", len(videos)+len(audios))
@@ -525,18 +520,16 @@ func (a *App) startPrep(videos, audios []string, interval float64, scaleName, sc
 				// transcribing arms nothing
 				a.undRestart = described
 				a.progress.SetText("stopped — finished work is kept; ⏸ was the way to keep a place")
-				a.setStatus("preparing stopped")
 			case err != nil:
 				a.logf("prepare FAILED: %v", err)
 				a.progress.SetText("failed — see log")
-				a.setStatus("preparing failed")
 			default:
 				a.progress.SetFraction(1)
 				a.logf(">>> prepare wrote:")
 				n := a.logOutputs("inputs", a.inputsDir()) +
 					a.logOutputs("describe", a.describeDir()) +
 					a.logOutputs("transcript", a.transcriptDir())
-				a.setStatus(fmt.Sprintf("prepared — %d files", n))
+				a.progress.SetText(fmt.Sprintf("prepared — %d files", n))
 			}
 			a.prep.refresh()
 			a.updateGates()

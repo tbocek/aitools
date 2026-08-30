@@ -73,6 +73,12 @@ type Player struct {
 	// pipeline until something seeks, and ▶ on its own does not seek -- so
 	// resuming has to notice the two have drifted apart and put that right.
 	seekRate float64
+	// the volume effects' say over this pipeline: the gain the cut asks for at
+	// the second under the playhead (fxGainAt), 1 where no volume effect
+	// covers it. Kept per player because it is a property of what that player
+	// is showing, unlike previewVol below, which is a property of the room.
+	// The two are multiplied together at every write (applyVol).
+	fxGain float64
 }
 
 func NewPlayer() (*Player, error) {
@@ -109,10 +115,11 @@ func NewPlayer() (*Player, error) {
 		pb.SetObjectProperty("audio-filter", tempo)
 	}
 
-	p := &Player{pb: pb, Picture: pic, video: paintable, pendStart: -1, pendStop: -1, rate: 1, seekRate: 1}
-	// born at the volume the slider on the run bar says, like every pipeline
-	// in the app -- and on the roll it visits when that slider moves
-	pb.SetObjectProperty("volume", previewVol)
+	p := &Player{pb: pb, Picture: pic, video: paintable, pendStart: -1, pendStop: -1,
+		rate: 1, seekRate: 1, fxGain: 1}
+	// born at the volume the sliders say, like every pipeline in the app --
+	// and on the roll it visits when one of them moves
+	p.applyVol()
 	allPlayers = append(allPlayers, p)
 
 	// signal watch dispatches on the default main context, i.e. the GTK loop
@@ -261,7 +268,7 @@ func (p *Player) SetMix(tracks []mixTrack) {
 	}
 	p.mix = nil
 	for i, t := range tracks {
-		a := newAux(fmt.Sprintf("mix%d", i), t)
+		a := newAux(fmt.Sprintf("mix%d", i), t, p.vol())
 		if a == nil {
 			return
 		}
@@ -273,7 +280,7 @@ func (p *Player) SetMix(tracks []mixTrack) {
 // newAux builds one audio-only pipeline for a file and the bus watch that does
 // its seeking. nil when GStreamer will not give us a playbin, which is the one
 // failure a caller can do nothing about.
-func newAux(name string, t mixTrack) *auxAudio {
+func newAux(name string, t mixTrack, vol float64) *auxAudio {
 	// playbin3 with no video sink of its own would put up a window; a fake
 	// one is how "audio only" is spelled without touching flags
 	pb := gst.ElementFactoryMake("playbin3", name)
@@ -284,7 +291,9 @@ func newAux(name string, t mixTrack) *auxAudio {
 		pb.SetObjectProperty("video-sink", fake)
 	}
 	pb.SetObjectProperty("uri", "file://"+t.path)
-	pb.SetObjectProperty("volume", previewVol)
+	// born at the loudness its player is already running at, which is the
+	// slider and any volume effect under the playhead together (Player.vol)
+	pb.SetObjectProperty("volume", vol)
 	a := &auxAudio{pb: pb, delta: t.delta, dur: t.dur, pend: -1, rate: 1}
 	bus := pb.GetBus()
 	bus.AddSignalWatch()
@@ -304,15 +313,16 @@ func newAux(name string, t mixTrack) *auxAudio {
 }
 
 // The preview's loudness, one number for the whole app. Package state rather
-// than a Player field because the slider that sets it is on the run bar, which
-// is shared by every page -- five players answer to it, and a per-player volume
-// would be five sliders' worth of state behind one slider. 1 is the footage as
-// recorded; playbin treats it as a plain linear gain.
+// than a Player field because it is how loud the ROOM is, and the room does
+// not change when a tab does -- there is a slider on the run bar and one
+// beside each transport that can play video (volumeCtl), and all of them are
+// hands on this one number. 1 is the footage as recorded; playbin treats it as
+// a plain linear gain.
 var previewVol = 1.0
 
-// every player ever built, so a volume set on the run bar reaches pipelines
-// that already exist. Players are made once per page at startup and never torn
-// down, so the roll only ever holds those five.
+// every player ever built, so a volume set on any of the sliders reaches
+// pipelines that already exist. Players are made once per page at startup and
+// never torn down, so the roll only ever holds those few.
 var allPlayers []*Player
 
 // SetPreviewVolume turns the whole preview up or down: every player, and inside
@@ -322,13 +332,110 @@ var allPlayers []*Player
 func SetPreviewVolume(v float64) {
 	previewVol = math.Max(0, math.Min(1, v))
 	for _, p := range allPlayers {
-		p.pb.SetObjectProperty("volume", previewVol)
-		for _, a := range p.mix {
-			a.pb.SetObjectProperty("volume", previewVol)
+		p.applyVol()
+	}
+}
+
+// every volume slider on screen. There is one wherever a video can be played
+// -- the run bar, the Cut transport, the Narrate transport -- and they are
+// hands on the one number, so a slider pulled down on Cut has to be found
+// pulled down on Narrate. Otherwise the second page would show 100% while
+// playing at 40, which is a control lying about the state it is in.
+var volScales []*gtk.Scale
+
+// volSyncing is up while one slider is writing the others, so their own
+// value-changed handlers know not to write back. GtkAdjustment stays quiet
+// when the value does not actually change, so the loop would end anyway; the
+// flag is here because "would end anyway" is a thing to have to work out, and
+// the rounding through 0..100 and back is exactly where it would stop being
+// true.
+var volSyncing bool
+
+// volumeCtl is the preview volume control: a speaker and a slider, built fresh
+// for each place a video can be played from. Built rather than shared because
+// a GTK widget has one parent, and the alternative to one per transport is
+// re-parenting it on every tab switch.
+func volumeCtl() *gtk.Box {
+	icon := gtk.NewImageFromIconName("audio-volume-high-symbolic")
+	sc := gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 100, 1)
+	sc.SetValue(previewVol * 100)
+	sc.SetSizeRequest(120, -1)
+	tip := "preview volume — the players only; nothing that is rendered, and the " +
+		"same setting wherever it is shown"
+	icon.SetTooltipText(tip)
+	sc.SetTooltipText(tip)
+	sc.ConnectValueChanged(func() {
+		if volSyncing {
+			return
 		}
-		if p.card != nil {
-			p.card.pb.SetObjectProperty("volume", previewVol)
+		SetPreviewVolume(sc.Value() / 100)
+		volSyncing = true
+		for _, o := range volScales {
+			if o != sc {
+				o.SetValue(previewVol * 100)
+			}
 		}
+		volSyncing = false
+	})
+	volScales = append(volScales, sc)
+	box := gtk.NewBox(gtk.OrientationHorizontal, 4)
+	box.SetVAlign(gtk.AlignCenter)
+	box.Append(icon)
+	box.Append(sc)
+	return box
+}
+
+// barVolume answers whether the run bar's slider belongs on the named page.
+//
+// A volume slider is only worth a place beside a ▶ that can use it. Cut and
+// Narrate have their own ▶ on the page and their own slider next to it, so the
+// bar would be showing a second copy of a control already in reach; Prepare and
+// Publish play nothing at all, so the bar would be offering to set the loudness
+// of silence. Produce is the page that plays from this bar -- its preview has
+// no transport of its own -- and so it is the page that keeps the slider.
+func barVolume(page string) bool { return page == "produce" }
+
+// SetFxGain is the cut's own say over this player's loudness: the volume
+// effect under the playhead, which the preview obeys for the same reason it
+// obeys a speed effect's rate -- a preview that does not is telling you about
+// a video that will not exist.
+//
+// Multiplied with the slider rather than replacing it, so turning the preview
+// down still turns a boosted stretch down. Nothing is done when the gain has
+// not moved: this is called from a tick ten times a second, and writing a
+// property that already holds that value on every one of them is a message
+// through the pipeline for nothing.
+func (p *Player) SetFxGain(g float64) {
+	g = math.Max(0, math.Min(fxMaxGain, g))
+	if math.Abs(p.fxGain-g) < 1e-6 {
+		return
+	}
+	p.fxGain = g
+	p.applyVol()
+}
+
+// vol is the one loudness every pipeline this player owns runs at: the room's
+// setting (previewVol) and the cut's own say over the seconds under the
+// playhead (fxGain), multiplied and held to what the property will take. One
+// function, because a pipeline built later must start at the same number the
+// ones built earlier are already at.
+func (p *Player) vol() float64 {
+	return math.Max(0, math.Min(fxMaxGain, previewVol*p.fxGain))
+}
+
+// applyVol writes the two gains, multiplied, onto every pipeline this player
+// owns -- the footage, the separate recordings heard under it, and an insert's
+// own sound. playbin's volume runs to 10, which is exactly as far as a volume
+// effect goes (fxMaxGain), so a boosted stretch played at the slider's full
+// travel still lands inside what the property will take.
+func (p *Player) applyVol() {
+	v := p.vol()
+	p.pb.SetObjectProperty("volume", v)
+	for _, a := range p.mix {
+		a.pb.SetObjectProperty("volume", v)
+	}
+	if p.card != nil {
+		p.card.pb.SetObjectProperty("volume", v)
 	}
 }
 
@@ -365,7 +472,7 @@ func (p *Player) CardSound(file string, at float64, play bool) {
 		if file == "" {
 			return
 		}
-		a := newAux("cardsound", mixTrack{path: file})
+		a := newAux("cardsound", mixTrack{path: file}, p.vol())
 		if a == nil {
 			return
 		}

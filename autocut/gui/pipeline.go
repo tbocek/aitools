@@ -600,7 +600,6 @@ func (a *App) transcribe(input, inDir string, base, unit float64) error {
 	wav := filepath.Join(out, "voice16k.wav")
 	if !exists(wav) {
 		a.prog(trackSTT, base+0.01*unit, "extracting audio")
-		a.logfIdle(">>> [%s] extracting 16 kHz mono", name)
 		if err := a.runCmd(ffTool("ffmpeg"), "-v", "error", "-y", "-i", input,
 			"-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav); err != nil {
 			return err
@@ -677,7 +676,7 @@ func (a *App) asrLong(wav string, dur float64, name string, base, unit float64) 
 	}
 	edges := append(append([]float64{0}, asrCuts(dur, a.quietSpots(wav), asrChunkMax, asrCutSeek)...), dur)
 	n := len(edges) - 1
-	a.logfIdle(">>> [%s] %.0f s is past what one ASR request takes -- %d chunks", name, dur, n)
+	a.logfIdle(">>> [%s] too long for one request -- %d ASR chunks", name, n)
 
 	dir := filepath.Join(filepath.Dir(wav), "asr")
 	os.RemoveAll(dir)
@@ -700,8 +699,8 @@ func (a *App) asrLong(wav string, dur float64, name string, base, unit float64) 
 		if err := a.checkpoint(); err != nil {
 			return nil, "", err
 		}
-		a.prog(trackSTT, base+(0.05+0.45*float64(i)/float64(n))*unit, "recognising speech")
-		a.logfIdle(">>> [%s] ASR chunk %d/%d (%.0f-%.0f s)", name, i+1, n, edges[i], edges[i+1])
+		a.prog(trackSTT, base+(0.05+0.45*float64(i)/float64(n))*unit,
+			"recognising speech %d/%d", i+1, n)
 		part := filepath.Join(dir, fmt.Sprintf("c%02d.wav", i))
 		// -ss ahead of -i seeks the input, which on the pcm this stage wrote
 		// is exact rather than a keyframe away
@@ -859,7 +858,8 @@ func (a *App) diarize(out string, dur float64, name string, base, unit float64) 
 		if err := a.checkpoint(); err != nil {
 			return err
 		}
-		a.prog(trackSTT, base+(0.55+0.20*float64(i)/float64(nwin))*unit, "finding voices")
+		a.prog(trackSTT, base+(0.55+0.20*float64(i)/float64(nwin))*unit,
+			"finding voices %d/%d", i+1, nwin)
 		start := float64(i) * diarScanHop
 		if err := a.runCmd(ffTool("ffmpeg"), "-v", "error", "-y",
 			"-ss", fmt.Sprint(start), "-t", fmt.Sprint(diarWin),
@@ -874,7 +874,6 @@ func (a *App) diarize(out string, dur float64, name string, base, unit float64) 
 		for _, sp := range spans {
 			scan[i] = append(scan[i], span{sp.s + start, sp.e + start, sp.slot})
 		}
-		a.logfIdle(">>> [%s] scanning window %d/%d", name, i+1, nwin)
 	}
 	if len(scan) == 0 {
 		return os.WriteFile(turnsPath, []byte("[]\n"), 0o644)
@@ -984,7 +983,8 @@ func (a *App) diarize(out string, dur float64, name string, base, unit float64) 
 		if err := a.checkpoint(); err != nil {
 			return err
 		}
-		a.prog(trackSTT, base+(0.75+0.22*float64(i)/float64(nwin))*unit, "placing speakers")
+		a.prog(trackSTT, base+(0.75+0.22*float64(i)/float64(nwin))*unit,
+			"placing speakers %d/%d", i+1, nwin)
 		start := float64(i) * hop
 		if err := a.runCmd(ffTool("ffmpeg"), "-v", "error", "-y",
 			"-ss", fmt.Sprint(start), "-t", fmt.Sprint(hop),
@@ -1007,7 +1007,6 @@ func (a *App) diarize(out string, dur float64, name string, base, unit float64) 
 			return err
 		}
 		all[i] = spans
-		a.logfIdle(">>> [%s] diarizing window %d/%d", name, i+1, nwin)
 	}
 
 	// -- resolve slots against the anchor, one-to-one per window ------------
@@ -1274,7 +1273,7 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 		return nil
 	}
 	if interval == 0 {
-		a.logfIdle(">>> [%s] extracting EVERY frame -- this can be many gigabytes", name)
+		a.logfIdle(">>> [%s] extracting EVERY frame -- gigabytes", name)
 	} else {
 		a.logfIdle(">>> [%s] extracting a frame every %gs at %s", name, interval, scaleName)
 	}

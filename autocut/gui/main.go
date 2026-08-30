@@ -22,8 +22,9 @@ package main
 //
 //   cd autocut && ./gui/autocut-gui
 //
-// Everything is written under the output folder (default: the autocut
-// directory), one folder per job, so a run can resume where it stopped.
+// Everything is written under the open project's own output folder -- the
+// project file's path with .data on the end (project.go) -- one folder per job,
+// so a run can resume where it stopped.
 
 import (
 	"context"
@@ -287,7 +288,7 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"yours: each box is \"[emotion] words\" with its start time beside it — edit " +
 			"the words, the delivery, or when the line begins — a time inside another " +
 			"clip moves the line to that clip, and one outside the cut is refused with " +
-			"the line left where it was. \"+ Line at playhead\" " +
+			"the line left where it was. ＋ beside the transport " +
 			"adds a line at the paused second, 🗑 removes one, and an edited line is " +
 			"simply re-spoken the first time it plays. The voice is cloned from a " +
 			"sample, picked under the video; the slider and the picture play the cut, speaking each " +
@@ -432,6 +433,7 @@ func (a *App) showStep(name string) {
 	a.tabGuard = false
 	a.stack.SetVisibleChildName(name)
 	a.outStack.SetVisibleChildName(name) // the Outputs group on the shared bar is this page's
+	a.volBox.SetVisible(barVolume(name)) // ...and the bar's slider is only for the page that plays from it
 	a.updateRunControls()                // ▶ ⏹ belong to the new page's playback now
 	a.syncHelp()                         // and so does the ⓘ
 	// Cut's Inputs row lists what Suggest will be sent, and one of those things
@@ -548,7 +550,6 @@ type App struct {
 	interval  *freqPick
 	scalePick *gtk.DropDown
 	langEntry *gtk.Entry // what the ASR is told this session is spoken in
-	outLabel  *gtk.Label
 
 	// One controller per page, in tab order (steps). Each is nil until its page
 	// has been built, which is what every headless test is and also what the
@@ -573,6 +574,7 @@ type App struct {
 	playBtn  *gtk.Button
 	stopBtn  *gtk.Button
 	outStack *gtk.Stack // the visible step's Outputs group; each page adds its own by step name
+	volBox   *gtk.Box   // the run bar's volume slider, shown only on the page that needs it
 
 	// pipeline control: pause parks the runners at the next checkpoint, stop
 	// kills the in-flight subprocesses; finished stages stay on disk either
@@ -635,14 +637,16 @@ type App struct {
 	// only, and the box rereads it on the next switch.
 	ctxView *gtk.TextView
 
-	// the project file, and what was last written to it. projPath is the named
-	// file Save/Load last used -- the working copy at root/project.json is
-	// written whatever it says. Both are the GUI thread's (project.go).
-	// projLabel is projPath's name in the header bar; nil under the tests,
-	// which build an App without a window.
+	// The project file and what was last written to it. projPath is never empty:
+	// a session with no name of its own is root/session.autocut, and outDir is
+	// derived from whichever of the two it is (project.go). Both are the GUI
+	// thread's. projLabel is projPath's name in the header bar; nil under the
+	// tests, which build an App without a window. openPath is a file the desktop
+	// handed us to open -- a double-click -- and is read once, by build().
 	projPath  string
 	projSaved []byte
 	projLabel *gtk.Label
+	openPath  string
 
 	// the header bar and the parts of it that give up words when the window is
 	// narrow (headfit.go). headBtns is the six icon buttons at the two ends --
@@ -885,72 +889,6 @@ func (a *App) canCut() bool {
 	return false
 }
 
-func (a *App) setOutDir(dir string) {
-	a.outDir = dir
-	if a.outLabel != nil {
-		a.outLabel.SetText(dir)
-	}
-	a.followOutDir()
-	// the voice belongs to the project, not to the session: drop the cached id
-	// and pitch so both are re-read from the folder we just moved to
-	a.voiceMu.Lock()
-	a.voiceSel = ""
-	a.voiceMu.Unlock()
-	a.pitchRead = false
-	if a.voicePick != nil {
-		a.voicePick.syncSelection()
-	}
-	// The narration lives in the output folder, and this is the only thing that
-	// re-reads it: the page is built once at startup, when outDir is still the
-	// root, so without this a saved narration would only ever load for a project
-	// whose output IS the root -- it looked like narration was never saved.
-	if a.narr != nil {
-		a.narr.load()
-		a.narr.rebuildRows()
-	}
-	// every page shows state derived from the output folder -- refresh all
-	a.prep.refresh()
-	a.updateProduceInfo()
-	a.pub.refresh()
-	a.updateGates()
-}
-
-// outDirRow builds the output-folder row: buttons lead, the path follows -- an
-// expanding path in the middle would push Choose to the far edge, away from
-// what it changes. Returns the row and the path label, which the caller owns
-// and has to keep in step with a.outDir (setOutDir does that).
-//
-// One folder, several pages, but exactly one place it is set and shown: here.
-// The later pages open it and say how much is in their part of it; a path
-// repeated on every page that writes into it is a line of chrome per page for
-// something that changes once a project.
-func (a *App) outDirRow(caption string) (*gtk.Box, *gtk.Label) {
-	const tip = "Where every step writes"
-	btn := gtk.NewButtonWithLabel("Choose…")
-	btn.SetTooltipText(tip)
-	btn.ConnectClicked(a.chooseOutDirDialog)
-	openBtn := gtk.NewButtonFromIconName("folder-open-symbolic")
-	openBtn.SetTooltipText(tip)
-	openBtn.ConnectClicked(func() { a.openFolder(a.outDir) })
-	// Right-aligned, and the row it goes in is too: the Describe page reads its
-	// outputs off the right-hand end and so does the row this sits next to, and
-	// a reading you have to hunt for in a different place on each page is one
-	// you stop trusting. It no longer expands -- an expanding path stretched
-	// this row across the window and left the count marooned at the far edge.
-	lbl := gtk.NewLabel(a.outDir)
-	lbl.SetXAlign(1)
-	lbl.SetEllipsize(pango.EllipsizeStart) // the tail names the folder; the head is /home/…
-	lbl.SetSelectable(true)                // it is a path: it gets pasted into a terminal
-	row := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	row.Append(btn)
-	row.Append(openBtn)
-	if caption != "" {
-		row.Append(gtk.NewLabel(caption))
-	}
-	row.Append(lbl)
-	return row, lbl
-}
-
 func main() {
 	a := &App{curCmds: map[*exec.Cmd]bool{}}
 	wd, _ := os.Getwd()
@@ -962,11 +900,37 @@ func main() {
 	a.root = wd
 	a.vidDir = filepath.Join(wd, "input_video")
 	a.audDir = filepath.Join(wd, "input_audio")
-	a.outDir = wd
+	// A session always has a file, before anyone saves one (see projExt). Set
+	// here rather than through setProject, which refreshes pages that do not
+	// exist yet; from build() on, setProject is the only thing that moves it.
+	a.projPath = filepath.Join(wd, workName)
+	a.outDir = dataDir(a.projPath)
 
-	app := gtk.NewApplication(appID, gio.ApplicationFlagsNone)
+	// HandlesOpen is the double-click. Without the flag gio treats a file
+	// argument as an error and refuses to start; with it, the desktop's "open
+	// with Autocut" arrives at ConnectOpen and a bare launch still goes to
+	// ConnectActivate. GApplication is single-instance, so a double-click while
+	// a window is up is forwarded to this same process rather than starting a
+	// second one -- which is why open loads into the window that exists instead
+	// of building another.
+	app := gtk.NewApplication(appID, gio.ApplicationHandlesOpen)
 	app.ConnectActivate(func() { a.build(app) })
-	os.Exit(app.Run(nil))
+	app.ConnectOpen(func(files []gio.Filer, _ string) {
+		var path string
+		if len(files) > 0 {
+			path = files[0].Path() // one window, one project: the rest are ignored
+		}
+		if a.win == nil {
+			a.openPath = path
+			a.build(app)
+			return
+		}
+		if path != "" {
+			a.loadProjectFrom(path)
+		}
+		a.win.Present()
+	})
+	os.Exit(app.Run(os.Args))
 }
 
 // ---- state -----------------------------------------------------------------
@@ -1066,7 +1030,7 @@ func (a *App) build(app *gtk.Application) {
 	a.player.OnError = a.playerErr("the preview")
 
 	a.win = gtk.NewApplicationWindow(app)
-	a.win.SetTitle("autocut")
+	a.win.SetTitle("Autocut")
 	// the few styles of our own: the no-timestamp flag on a source row, and the
 	// settings dialog's test verdicts. Plain GTK only promises the semantic
 	// warning/success classes on a handful of widgets, so the colors are stated
@@ -1242,7 +1206,6 @@ func (a *App) build(app *gtk.Application) {
 	}
 	head.SetTitleWidget(tabRow)
 	a.watchHeadWidth()
-	a.showStep("prep")
 
 	// shared log + status across all pages: one bottom row, the status text
 	// living in the expander header so nothing reserves empty space
@@ -1275,18 +1238,19 @@ func (a *App) build(app *gtk.Application) {
 	ctlRow.SetMarginBottom(2)
 	ctlRow.Append(a.playBtn)
 	ctlRow.Append(a.stopBtn)
-	// how loud the preview is, next to the button that starts one. One slider
-	// for the whole app (SetPreviewVolume): the players live one per page, but
-	// the ear they play to is the same one, and a volume that reset on every
-	// tab switch would be five settings pretending to be one.
-	volIcon := gtk.NewImageFromIconName("audio-volume-high-symbolic")
-	vol := gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 100, 1)
-	vol.SetValue(100)
-	vol.SetSizeRequest(120, -1)
-	vol.SetTooltipText("preview volume — the players only; nothing that is rendered")
-	vol.ConnectValueChanged(func() { SetPreviewVolume(vol.Value() / 100) })
-	ctlRow.Append(volIcon)
-	ctlRow.Append(vol)
+	// how loud the preview is -- on the pages that have a preview. A slider
+	// belongs beside the ▶ that uses it, and Cut and Narrate have their own ▶
+	// on the page, with their own slider next to it; Prepare and Publish play
+	// nothing at all. That leaves Produce, whose result is watched from this
+	// bar because the page has no transport of its own, so this is the one
+	// Produce uses and showStep hides it everywhere else (barVolume).
+	//
+	// All of them are one number (volumeCtl, SetPreviewVolume): the players
+	// live one per page, but the ear they play to is the same one, and a
+	// volume that reset on every tab switch would be settings pretending to be
+	// one setting.
+	a.volBox = volumeCtl()
+	ctlRow.Append(a.volBox)
 	ctlRow.Append(a.progress)
 	// the one Outputs heading in the app; the group behind it is the visible
 	// page's own, swapped by showStep
@@ -1301,6 +1265,11 @@ func (a *App) build(app *gtk.Application) {
 	bottom.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
 	bottom.Append(ctlRow)
 	bottom.Append(a.logExp)
+
+	// the first page is chosen here rather than beside the tabs it moves,
+	// because showStep dresses this bar for the page it opens -- the Outputs
+	// group and the volume slider are both on the row built just above
+	a.showStep("prep")
 
 	// The log against the page above it, on a divider. How much log you want is
 	// a per-moment question -- all of it while a run talks, none of it while
@@ -1334,15 +1303,27 @@ func (a *App) build(app *gtk.Application) {
 	// somewhere the user will look rather than only on stderr
 	a.setupIcons()
 
-	// Pick up where the last session left off: the named project that was open
-	// when it ended, and only failing that the working copy. Opening
-	// project.json unconditionally was the old behaviour, and it silently
-	// undid the Save that named a variant -- you saved jan-video.json, quit,
-	// and came back to the session you had saved it to get away from.
-	if pj := a.lastProject(); pj != "" {
-		a.loadProjectFrom(pj)
-	} else if pj := filepath.Join(a.root, "project.json"); exists(pj) {
-		a.loadProjectFrom(pj)
+	// Pick up where the last session left off. A file handed over by the desktop
+	// comes first -- a double-click is somebody asking for THAT project, not for
+	// whatever was open last -- then the named project that was open when the
+	// last session ended, and only failing that the working copy. Opening the
+	// working copy unconditionally was the old behaviour, and it silently undid
+	// the Save that named a variant: you saved jan-video, quit, and came back to
+	// the session you had saved it to get away from.
+	switch {
+	case a.openPath != "":
+		a.loadProjectFrom(a.openPath)
+	case a.lastProject() != "":
+		a.loadProjectFrom(a.lastProject())
+	case exists(a.projPath):
+		a.loadProjectFrom(a.projPath)
+	case exists(filepath.Join(a.root, "project.json")):
+		// The working copy from before a project was a file you double-click.
+		// Its contents are this session and its name is the one a session has
+		// now (projectName); project.json is left on disk exactly as it was.
+		// What it wrote is NOT moved: it went into the root, which also holds
+		// the checkout, and no rename could tell one from the other.
+		a.loadProjectFrom(filepath.Join(a.root, "project.json"))
 	}
 
 	a.updateGates()
@@ -1421,6 +1402,15 @@ func (a *App) updateNarrateInfo() {
 
 // ---- helpers ---------------------------------------------------------------
 
+// setStatus is the answer to a click: what an edit did, or why it did nothing.
+// It sits in the log expander's header, which is the only line on screen with
+// room for a sentence, and it holds that sentence until the next press.
+//
+// It is not where a run reports. A run has the progress bar, two widgets to the
+// left of it, and everything a run had to say was being said twice -- the same
+// words on the bar and on this line at the same instant, which reads as two
+// events rather than as one. Nor does it repeat the header bar: the project it
+// names is the project the header names.
 func (a *App) setStatus(s string) {
 	if a.status == nil {
 		return // headless (tests): the status line is the window's
@@ -1453,6 +1443,14 @@ func newLogPane(minHeight int) (*gtk.TextView, *gtk.ScrolledWindow) {
 	return tv, sw
 }
 
+// logf writes one line to the run log and to the terminal behind it.
+//
+// A log line reports: a name, a count, a size, a failure. What a thing is, what
+// is going to happen next, and what to do about it are not log lines -- they are
+// on the page, in a tooltip, or in the source. A log that explains itself is a
+// log whose real news scrolls past unread, and the run's own news already has a
+// widget: the progress bar carries the task and the counter (see prog), so a
+// line that says only "window 7 of 60" belongs there and not here.
 func (a *App) logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...) // mirror to the launching terminal
 	if a.log == nil {

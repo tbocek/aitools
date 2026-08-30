@@ -357,7 +357,7 @@ func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
 	// the contract every cut wording shares, because the parser and the audit
 	// read the same reply whichever one wrote it
 	for _, want := range []string{
-		`{"segments":[{"start":<sec>,"end":<sec>}]}`, // what suggestParse reads
+		`{"segments":[{"start":<sec>,"end":<sec>}],"fx":[`, // what suggestParse reads
 		"session seconds", // on which clock
 		"target length",   // the length the run checks
 		"EVENT lines",     // a span without them has no footage

@@ -163,7 +163,7 @@ func TestTheDesktopEntryIsWhatTheShellCanActuallyFind(t *testing.T) {
 	// the file name is the id, and the id is the icon name and the svg's name:
 	// one string, still (appID). A file called autocut.desktop matches nothing.
 	for _, want := range []string{
-		"Exec=" + exe,
+		"Exec=" + exe + " %f", // the file a double-click opened, handed to the program
 		"Icon=" + icon,
 		"Path=" + dir,
 		"StartupWMClass=" + appID,
@@ -298,5 +298,82 @@ func TestTheIconIsAnSVGOrAPNGOrAJPGInThatOrder(t *testing.T) {
 	if !strings.Contains(string(src), "case file == \"\":") {
 		t.Error("setupIcons gives up on a theme lookup alone, so a png or jpg icon " +
 			"never reaches the desktop entry that is the only thing drawing it under Wayland")
+	}
+}
+
+// Double-clicking a project opens Autocut. Four things have to line up for
+// that, and any one of them missing looks like the same nothing-happens: the
+// desktop has to know what a .autocut file IS (the mime package), the entry has
+// to claim that type, the command has to have somewhere to put the file name,
+// and the program has to accept being handed one. The last is the one that
+// fails loudest -- gio treats an argument it was not told to expect as a usage
+// error and refuses to start at all.
+func TestADoubleClickedProjectOpensInAutocut(t *testing.T) {
+	entry := desktopEntry("/opt/autocut/gui/autocut-gui", "/opt/autocut", "")
+	for _, want := range []string{
+		"Exec=/opt/autocut/gui/autocut-gui %f", // where the opened file is substituted
+		"MimeType=" + mimeType + ";",           // and what this program is offered for
+		"Name=Autocut",                         // the program has a capital A; its files do not
+	} {
+		if !strings.Contains(entry, want+"\n") {
+			t.Errorf("the entry has no %q line:\n%s", want, entry)
+		}
+	}
+	pkg := mimePackage()
+	for _, want := range []string{`type="` + mimeType + `"`, `<glob pattern="*` + projExt + `"/>`} {
+		if !strings.Contains(pkg, want) {
+			t.Errorf("the mime package does not say %s:\n%s", want, pkg)
+		}
+	}
+	// A type of its own, not text/plain or a JSON subtype: the whole point is
+	// that these files open with Autocut, and "some JSON" opens with whatever
+	// the machine opens JSON with.
+	if strings.HasPrefix(mimeType, "text/") || strings.Contains(mimeType, "json") {
+		t.Errorf("%q is a type other programs already claim", mimeType)
+	}
+
+	m := readSrc(t, "main.go")
+	for _, want := range []string{
+		"gio.ApplicationHandlesOpen", // without it the file argument is an error
+		"app.ConnectOpen(",           // where the desktop hands it over
+		"app.Run(os.Args)",           // and gio never sees it if the args are dropped
+		"a.openPath = path",
+	} {
+		if !strings.Contains(m, want) {
+			t.Errorf("the launch does not do %s, so a double-click opens an empty session", want)
+		}
+	}
+	// The file somebody double-clicked wins over the one that happened to be
+	// open last: they asked for THIS project, and reopening yesterday's while
+	// their file sits unopened is the bug that reads as "it did nothing".
+	open, last := strings.Index(m, `case a.openPath != "":`), strings.Index(m, `case a.lastProject() != "":`)
+	if open < 0 || last < 0 || open > last {
+		t.Error("a double-clicked file no longer comes first at startup")
+	}
+	// And a second double-click while a window is up: GApplication forwards it
+	// to this process, so it has to land in the window that exists rather than
+	// build another one on top of it.
+	body := funcBody(t, "main.go", `func main\(\)`)
+	if !strings.Contains(body, "if a.win == nil {") {
+		t.Errorf("open builds a window without checking for the one already up:\n%s", body)
+	}
+
+	// Both files are caches away from being believed: the desktop reads
+	// databases built from them, and until those are rebuilt it goes on knowing
+	// neither the glob nor the program that claims it.
+	mime := funcBody(t, "icon.go", `func \(a \*App\) installMime\(`)
+	for _, want := range []string{
+		`filepath.Join(data, "mime", "packages", appID+".xml")`,
+		"update-mime-database",
+		"update-desktop-database",
+	} {
+		if !strings.Contains(mime, want) {
+			t.Errorf("installMime does not do %s, so the association never takes:\n%s", want, mime)
+		}
+	}
+	// and not on every launch: update-mime-database walks every package on the
+	// machine, and this runs while the window is trying to come up
+	if !strings.Contains(mime, "if !wrote && !entryWrote {") {
+		t.Errorf("the databases are rebuilt even when nothing changed:\n%s", mime)
 	}
 }

@@ -115,6 +115,84 @@ func buildCam(fx []cutFx, aspect string, sw, sh int, sessS, span, rate, length f
 	return p
 }
 
+// gainCues maps the cut's volume effects onto one clip, on exactly the terms
+// textCues maps its titles -- the same five numbers, the same arithmetic --
+// so a title and a gain placed at the same second come and go together, and a
+// gain under a speed effect is stretched with the sound it is turning up.
+//
+// A clip that is one held session moment (span 0: a spliced card, a freeze)
+// gets none. There is no stretch of the session under it for a band to cover
+// part of, and a gain that covered all of it would be an effect the timeline
+// draws two seconds wide doing something for the whole of a ten-second card.
+func gainCues(fx []cutFx, sessS, span, rate, length float64) []textCue {
+	if length <= 0 || span <= 0 {
+		return nil
+	}
+	var out []textCue
+	for i, f := range fx {
+		if f.Kind != "volume" {
+			continue
+		}
+		// no guard against a band of no length: cueClip turns down anything
+		// shorter than a frame, which is the same answer for a better reason
+		fin, fout := f.textFades()
+		s, e, cin, cout, ok := cueClip(f.T, f.Dur, fin, fout, sessS, rate, length)
+		if !ok {
+			continue
+		}
+		if cin+cout > e-s {
+			cin = math.Min(cin, e-s)
+			cout = math.Max(0, e-s-cin)
+		}
+		out = append(out, textCue{fx: f, s: s, e: e, fin: cin, fout: cout, idx: i})
+	}
+	return out
+}
+
+// gainExpr is one volume cue as an ffmpeg volume expression, in the clip's own
+// seconds: the gain across the band, 1 everywhere else, and a straight ramp
+// over each fade. The whole envelope is one expression rather than a filter per
+// piece because volume's own eval=frame already re-reads it every frame, and
+// three enable-windowed filters where one expression will do is three passes
+// over the samples for the same numbers.
+//
+// The multiplier is written with an explicit sign (1-0.5000*... rather than
+// 1+-0.5000*...) because that is the arithmetic a person reading the command
+// line expects to see, and because a quieting effect -- which is every gain
+// under 100% -- is the case that would otherwise be written the ugly way.
+func gainExpr(c textCue) string {
+	g := clampGain(c.fx.Gain)
+	var ramps []string
+	if c.fin > 0 {
+		ramps = append(ramps, fmt.Sprintf("(t-%.3f)/%.3f", c.s, c.fin))
+	}
+	if c.fout > 0 {
+		ramps = append(ramps, fmt.Sprintf("(%.3f-t)/%.3f", c.e, c.fout))
+	}
+	val := fmt.Sprintf("%.4f", g)
+	switch len(ramps) {
+	case 1:
+		val = fmt.Sprintf("1%+.4f*min(1,%s)", g-1, ramps[0])
+	case 2:
+		val = fmt.Sprintf("1%+.4f*min(1,min(%s,%s))", g-1, ramps[0], ramps[1])
+	}
+	return fmt.Sprintf("if(between(t,%.3f,%.3f),%s,1)", c.s, c.e, val)
+}
+
+// gainChain is every volume cue of one clip, applied in turn to the label the
+// sound arrives on; it returns the filter text and the label it leaves on. In
+// turn, so two overlapping effects multiply -- which is exactly what fxGainAt
+// tells the preview they do.
+func gainChain(cues []textCue, in string) (string, string) {
+	fc := ""
+	for k, c := range cues {
+		out := fmt.Sprintf("gv%d", k)
+		fc += fmt.Sprintf("[%s]volume=volume='%s':eval=frame[%s];", in, gainExpr(c), out)
+		in = out
+	}
+	return fc, in
+}
+
 func sortCam(p *camPath) {
 	for i := 1; i < len(p.ts); i++ {
 		for j := i; j > 0 && p.ts[j] < p.ts[j-1]; j-- {

@@ -148,7 +148,7 @@ func TestWhatIsRememberedIsWhatTheNextLaunchOpens(t *testing.T) {
 		}
 	}
 	m := readSrc(t, "main.go")
-	if !strings.Contains(m, "if pj := a.lastProject(); pj != \"\" {") {
+	if !strings.Contains(m, `case a.lastProject() != "":`) {
 		t.Error("the launch no longer prefers the remembered project over the working copy")
 	}
 	if strings.Contains(m, `a.saveProjectTo(filepath.Join(a.root, "project.json"))`) {

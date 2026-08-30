@@ -347,13 +347,13 @@ func TestTheFadeShapeIsAskedFor(t *testing.T) {
 	if !strings.Contains(fx, `fxRowLabel("Fade curve"`) {
 		t.Error("the fade shape row is gone")
 	}
-	// all four dialogs ask it, and all four store the answer
-	if n := strings.Count(fx, "eRow, ec := fxEaseRow(f)") + strings.Count(svg, "eRow, ec := fxEaseRow(f)"); n != 4 {
-		t.Errorf("%d dialogs ask for the fade shape, want all 4", n)
+	// all five dialogs ask it, and all five store the answer
+	if n := strings.Count(fx, "eRow, ec := fxEaseRow(f)") + strings.Count(svg, "eRow, ec := fxEaseRow(f)"); n != 5 {
+		t.Errorf("%d dialogs ask for the fade shape, want all 5", n)
 	}
 	if n := strings.Count(fx, "f.Ease = fxEaseOf(ec.Selected())") +
-		strings.Count(svg, "f.Ease = fxEaseOf(ec.Selected())"); n != 4 {
-		t.Errorf("%d dialogs keep the fade shape they were given, want all 4", n)
+		strings.Count(svg, "f.Ease = fxEaseOf(ec.Selected())"); n != 5 {
+		t.Errorf("%d dialogs keep the fade shape they were given, want all 5", n)
 	}
 	// straight stores as nothing, so a cut saved with the row on disk is the
 	// cut that was saved before the row existed

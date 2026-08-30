@@ -9,8 +9,9 @@ package main
 // narrate step's per-line emotion goes on working unchanged.
 //
 // Two sources: one of the session's own voices -- the dominant speaker in the
-// recording tagged with that narrator slot on the Prepare page, cut from its
-// diarization, which is the pipeline's default -- or a wav in the voices folder, the
+// recording tagged with that narrator slot on the Prepare page, cut from the
+// stretches its diarization and transcript agree are worth cloning, which is
+// the pipeline's default -- or a wav in the voices folder, the
 // CC0 references that ship beside audio.cpp's models, plus anything added with
 // "Add sample…", which converts and copies it in. The list shows file names
 // because that is what they are: a row can be opened, replaced or deleted in
@@ -119,6 +120,9 @@ type voicePicker struct {
 	player  *Player
 	playBtn *gtk.Button // ▶/⏸ for the sample; drawn by syncPlayIcons
 	stopBtn *gtk.Button // and its ⏹, lit only while there is a sample to end
+	rollBtn *gtk.Button // ⟳: the same words again, drawn differently
+	roll    int         // how many times that has been asked for
+	spoken  string      // sampleKey of the wav in the player, or "" for none
 	busy    bool        // one synthesis at a time; the button says so
 	syncing bool        // showing the stored voice, which is not a fresh choice
 	drag    int         // bumped per slider move; only the last one rebuilds the reference
@@ -217,15 +221,40 @@ func (a *App) voiceID() string {
 	return a.voiceSel
 }
 
+// refLoud levels the reference before the model ever hears it. A clone is as
+// loud as what it was cloned from: a quiet recording became a quiet narrator,
+// which the audition made obvious and the finished video did not -- the mix is
+// loudnorm'd as a whole (loudFlt), so a thin voice under game audio comes out
+// as game audio, at the right level, with somebody murmuring under it.
+//
+// Single-pass loudnorm is dynamic, which is what a reference wants: the takes
+// come from different minutes of a recording and the joins between them are
+// audible when one is louder than the next. LRA is tight because this is one
+// person talking, not a programme.
+const refLoud = "loudnorm=I=-16:TP=-1.5:LRA=7"
+
+// levelRef runs one ffmpeg pass into a reference file: whatever the input is,
+// out as levelled mono PCM. Three things write a reference -- a picked wav
+// chosen, the same wav healed on another machine, and a narrator's own takes
+// concatenated -- and a level rule that only two of them followed would be a
+// voice that changed loudness when the project moved.
+func (a *App) levelRef(dst string, in ...string) error {
+	args := append([]string{"-v", "error", "-y"}, in...)
+	args = append(args, "-af", refLoud, "-ac", "1", "-c:a", "pcm_s16le", dst)
+	return a.runCmd(ffTool("ffmpeg"), args...)
+}
+
 // refBase is the chosen recording as it was picked, refPath the shifted copy
 // the server is handed. Keeping them apart is what makes the slider cheap: the
 // base is cut or converted once, the shift is redone from it.
 func (a *App) refBase() string { return filepath.Join(a.narrateDir(), "voice_ref_base.wav") }
 func (a *App) refPath() string { return filepath.Join(a.narrateDir(), "voice_ref.wav") }
 
-// setVoice installs the reference the model clones from. "own" just removes the
-// files, so ensureVoiceRef cuts a fresh one from the diarization the next time
-// anything speaks; anything else is converted to the mono PCM the model wants.
+// setVoice installs the reference the model clones from. A narrator slot just
+// removes the files, so ensureVoiceRef cuts a fresh one from that recording the
+// next time anything speaks -- which is also how a project built under an older
+// rule for choosing those seconds gets a reference under the current one.
+// Anything else is converted to the mono PCM the model wants.
 // Safe off the GUI thread -- it only runs ffmpeg and writes files.
 func (a *App) setVoice(v voiceOpt) error {
 	dir := a.narrateDir()
@@ -238,8 +267,7 @@ func (a *App) setVoice(v voiceOpt) error {
 	os.Remove(a.refPath())
 	if v.id == captionsVoice || narratorSlot(v.id) > 0 {
 		os.Remove(a.refBase())
-	} else if err := a.runCmd(ffTool("ffmpeg"), "-v", "error", "-y", "-i", v.path,
-		"-ac", "1", "-c:a", "pcm_s16le", a.refBase()); err != nil {
+	} else if err := a.levelRef(a.refBase(), "-i", v.path); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "voice.txt"), []byte(v.id), 0o644); err != nil {
@@ -460,9 +488,10 @@ func (a *App) ensureVoiceRef() error {
 
 // ensureVoiceBase builds the unshifted reference. For a picked voice that is a
 // copy of the wav it names -- rebuilt here so a project folder carried to
-// another machine heals itself. For your own voice it is cut from the first
-// recording's cleanest solo stretches: long turns of the dominant speaker with
-// clearance from everyone else, taken from the ORIGINAL file for fidelity.
+// another machine heals itself. For one of the session's own voices it is cut
+// from that recording's best stretches -- solo, clear of everyone else, and
+// with the most actually said in them (refCuts, narrate_ref.go) -- taken from
+// the ORIGINAL file for fidelity.
 func (a *App) ensureVoiceBase() error {
 	ref := a.refBase()
 	if exists(ref) {
@@ -481,72 +510,33 @@ func (a *App) ensureVoiceBase() error {
 			return fmt.Errorf("voice %q is no longer in %s -- pick another at the top of this step", id, a.voicesDir())
 		}
 		os.MkdirAll(filepath.Dir(ref), 0o755)
-		return a.runCmd(ffTool("ffmpeg"), "-v", "error", "-y", "-i", src,
-			"-ac", "1", "-c:a", "pcm_s16le", ref)
+		return a.levelRef(ref, "-i", src)
 	}
 	aud := a.narratorSource(slot)
 	if aud == "" {
 		return fmt.Errorf("nothing is tagged as narrator %d on the Prepare step", slot)
 	}
 	base := baseName(aud)
-	turns, err := loadJSON(filepath.Join(a.outDir, "step1", base, "turns.json"))
+	turns, err := loadSpans(filepath.Join(a.outDir, "step1", base, "turns.json"))
 	if err != nil {
 		return fmt.Errorf("no diarization for %s -- run Prepare", base)
 	}
-	type turn struct {
-		s, e float64
-		spk  string
-	}
-	var all []turn
-	walkObjects(turns, func(m map[string]any) {
-		spk, ok := m["speaker_id"].(string)
-		ss, okS := m["start_sample"].(float64)
-		es, okE := m["end_sample"].(float64)
-		if ok && okS && okE {
-			all = append(all, turn{ss / sampleRate, es / sampleRate, spk})
-		}
-	})
-	// dominant speaker by total time
-	durBy := map[string]float64{}
-	for _, t := range all {
-		durBy[t.spk] += t.e - t.s
-	}
-	dom, best := "", 0.0
-	for s, d := range durBy {
-		if d > best {
-			dom, best = s, d
-		}
-	}
-	// long solo turns, clear of other speakers
-	var picks []turn
-	for _, t := range all {
-		if t.spk != dom || t.e-t.s < 5 {
-			continue
-		}
-		clean := true
-		for _, o := range all {
-			if o.spk != dom && o.e > t.s-2 && o.s < t.e+2 {
-				clean = false
-				break
-			}
-		}
-		if clean {
-			picks = append(picks, t)
-		}
-	}
-	sort.Slice(picks, func(i, j int) bool { return picks[i].e-picks[i].s > picks[j].e-picks[j].s })
+	// the transcript of the same recording, on the same clock: what refCuts
+	// weighs the stretches by. Missing is allowed and means unweighed.
+	rows := loadSeg4(filepath.Join(a.outDir, "step1", base, "transcript.tsv"))
+	picks := refCuts(turns, rows)
 	if len(picks) == 0 {
 		return fmt.Errorf("no clean solo stretch found for the voice reference")
 	}
 	dir := a.narrateDir()
 	os.MkdirAll(dir, 0o755)
 	var list strings.Builder
-	total := 0.0
+	total, words := 0.0, 0
 	for i, t := range picks {
-		if total >= 14 || i >= 3 {
+		if total >= refWant || i >= refTakeMax {
 			break
 		}
-		d := math.Min(t.e-t.s, 14-total)
+		d := math.Min(t.dur(), refWant-total)
 		f := filepath.Join(dir, fmt.Sprintf(".ref%d.wav", i))
 		if err := a.runCmd(ffTool("ffmpeg"), "-v", "error", "-y",
 			"-ss", fmt.Sprint(t.s), "-t", fmt.Sprint(d),
@@ -554,17 +544,16 @@ func (a *App) ensureVoiceBase() error {
 			return err
 		}
 		fmt.Fprintf(&list, "file '%s'\n", f)
-		total += d
+		total, words = total+d, words+t.words
 	}
 	lf := filepath.Join(dir, ".ref.list")
 	if err := os.WriteFile(lf, []byte(list.String()), 0o644); err != nil {
 		return err
 	}
-	if err := a.runCmd(ffTool("ffmpeg"), "-v", "error", "-y", "-f", "concat", "-safe", "0",
-		"-i", lf, "-c:a", "pcm_s16le", ref); err != nil {
+	if err := a.levelRef(ref, "-f", "concat", "-safe", "0", "-i", lf); err != nil {
 		return err
 	}
-	a.logfIdle(">>> voice reference built: %.1f s from %s", total, base)
+	a.logfIdle(">>> voice reference built: %.1f s, %d words from %s", total, words, base)
 	return nil
 }
 
@@ -578,10 +567,37 @@ func (a *App) voiceKey() string {
 	return a.voiceID()
 }
 
+// sampleKey is what ▶ would speak if it were pressed now: which voice, shifted
+// by how much, saying which words, on which draw. Everything the sample can be
+// is in here, which is what lets the button tell "play that again" from "that
+// is not what I asked for any more".
+func (vp *voicePicker) sampleKey(text string) string {
+	k := vp.a.voiceKey() + "|" + strings.TrimSpace(text)
+	if vp.roll > 0 { // a sample nobody re-rolled keeps the key it already has
+		k = strconv.Itoa(vp.roll) + "#" + k
+	}
+	return k
+}
+
+// sampleNeedsSpeaking is what ▶ does: resume the sample in the player, or make
+// a new one.
+//
+// It used to be the first of those whenever anything was loaded, and that is
+// the bug this exists to name. The player holds a file, not a question, and
+// the file stops being the answer the moment the voice, the pitch or the words
+// change -- so moving the slider and pressing ▶ played back the setting before
+// it, and the only way to hear the new one was to edit the text, which took a
+// different path (the entry's Enter) and always spoke afresh. A control that
+// silently does nothing is worse than one that is missing.
+func sampleNeedsSpeaking(sounding bool, loaded, now string) bool {
+	return !sounding || loaded != now
+}
+
 // sampleWav caches one voice's reading of one sample text, so hearing a voice
-// again is instant and comparing two is a click each.
-func (a *App) sampleWav(id, text string) string {
-	h := sha1.Sum([]byte(text))
+// again is instant and comparing two is a click each. id is the readable half
+// of the name; key is what decides the file.
+func (a *App) sampleWav(id, key string) string {
+	h := sha1.Sum([]byte(key))
 	return filepath.Join(a.narrateDir(), "samples", fmt.Sprintf("%s_%x.wav", id, h[:6]))
 }
 
@@ -723,10 +739,17 @@ func (a *App) buildVoicePicker() gtk.Widgetter {
 	vp.stopBtn.SetTooltipText("Stop the sample")
 	vp.stopBtn.SetSensitive(false)
 	vp.stopBtn.ConnectClicked(vp.stopClicked)
+	// ⟳ is the same ⟳ the narration's lines have (narrate.go), and means the
+	// same thing: these words again, drawn again. A voice is judged on a
+	// reading, and one bad reading of a good sentence is not the voice.
+	vp.rollBtn = gtk.NewButtonFromIconName("view-refresh-symbolic")
+	vp.rollBtn.SetTooltipText("Speak the sample again as a different take — same words, same voice, new draw")
+	vp.rollBtn.ConnectClicked(vp.rollClicked)
 	row := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	row.Append(vp.sample)
 	row.Append(vp.playBtn)
 	row.Append(vp.stopBtn)
+	row.Append(vp.rollBtn)
 
 	// the reference is shifted, not the narration: this changes who is speaking
 	// in the finished video, so it belongs next to the choice of voice rather
@@ -1085,7 +1108,7 @@ func (vp *voicePicker) stop() {
 // "synthesize and start over" before, which on a cold server is a ten second
 // wait for a sentence that was already playing.
 func (vp *voicePicker) playClicked() {
-	if vp.playing() || vp.cued() {
+	if !sampleNeedsSpeaking(vp.playing() || vp.cued(), vp.spoken, vp.sampleKey(vp.sample.Text())) {
 		vp.toggle()
 		// this branch used to be the one silent button on the page: a click on
 		// a sounding ⏸ changed the icon and said nothing, which is
@@ -1101,14 +1124,28 @@ func (vp *voicePicker) playClicked() {
 	vp.playSample()
 }
 
-// stopClicked ends the sample. Stopping forgets the file as well as the
-// position, so the next ▶ speaks the sample text as it reads NOW -- which is
-// the way to get out of a sample you have since edited, or a voice you have
-// since changed your mind about.
+// stopClicked ends the sample: the position and the file both, so the next ▶
+// starts over rather than resuming. It no longer has to be the way out of a
+// sample you have since edited -- ▶ notices that by itself (sampleNeedsSpeaking).
 func (vp *voicePicker) stopClicked() {
 	vp.stop()
 	vp.a.setStatus("sample stopped")
 	vp.a.updateRunControls()
+}
+
+// rollClicked asks for another reading of the same words. The seed is fixed to
+// the key (ttsSeed), which is what stops a sample changing under you between
+// two clicks -- and what leaves you stuck with a take that got the words right
+// and the delivery wrong. Bumping the roll moves the key, so the old wav is
+// not in the way and the play below is a first play.
+func (vp *voicePicker) rollClicked() {
+	if vp.busy {
+		vp.a.setStatus("still synthesizing the last sample…")
+		return
+	}
+	vp.roll++
+	vp.stop() // the old take is in the player; it is not the one being asked for
+	vp.playSample()
 }
 
 // playSample speaks the sample text in the selected voice. The first one after
@@ -1140,12 +1177,18 @@ func (vp *voicePicker) playSample() {
 	// sample is the one thing on the page with no output file to inspect
 	// afterwards -- so it says which voice, at what pitch, in what words,
 	// before anything can go wrong.
-	a.logf(">>> sample: %s at %+.1f semitones — %q", v.name, vp.pitch.Value(), text)
+	take := ""
+	if vp.roll > 0 {
+		take = fmt.Sprintf(" take %d", vp.roll+1)
+	}
+	a.logf(">>> sample%s: %s at %+.1f semitones — %q", take, v.name, vp.pitch.Value(), text)
 	a.snapSources() // ensureVoiceRef reads the narrator's recording
+	key := vp.sampleKey(text)
 	go func() {
-		// keyed on the pitch too, or the slider would appear to do nothing:
-		// the first sample would answer for every setting after it
-		out := a.sampleWav(a.voiceKey(), text)
+		// keyed on the pitch and the re-rolls too, or those controls would
+		// appear to do nothing: the first sample would answer for every
+		// setting after it
+		out := a.sampleWav(a.voiceKey(), key)
 		cached := exists(out)
 		t0 := time.Now()
 		var err error
@@ -1187,6 +1230,7 @@ func (vp *voicePicker) playSample() {
 				return
 			}
 			vp.player.PlaySegment(out, 0, -1, true)
+			vp.spoken = key // what ▶ is now holding, for the next press to judge
 			a.setStatus(fmt.Sprintf("sample in %s", v.name))
 		})
 	}()

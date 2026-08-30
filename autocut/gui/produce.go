@@ -852,6 +852,10 @@ type prodClip struct {
 	// the stop effects that fall inside this clip (freezeCues): each a frame
 	// of a recording standing over the running footage, faded on and off.
 	stills []stillCue
+	// the volume effects that fall inside this clip (gainCues), in its own
+	// output seconds. The only effect that reaches the sound and nothing else,
+	// so it is the only one resolved here that the picture never sees.
+	gains []textCue
 }
 
 // stillCue is one stop effect inside one clip: a textCue's window and fades --
@@ -1032,12 +1036,17 @@ func (a *App) produceClicked() {
 				if !errors.Is(err, errStopped) {
 					a.logf("produce FAILED: %v", err)
 				}
-				a.progress.SetText("production stopped")
-				a.setStatus("production stopped — see log")
+				if errors.Is(err, errStopped) {
+					a.progress.SetText("production stopped")
+				} else {
+					a.progress.SetText("production failed — see log")
+				}
 				return
 			}
 			a.progress.SetFraction(1)
 			a.progress.SetText("done")
+			// the bar carries the outcome; filled in below, once the file has
+			// been measured
 			dur, _ := ffprobeDur(st.OutFile)
 			fi, _ := os.Stat(st.OutFile)
 			size := int64(0)
@@ -1045,7 +1054,8 @@ func (a *App) produceClicked() {
 				size = fi.Size()
 			}
 			a.logf(">>> %s  (%.1f s, %s)", st.OutFile, dur, humanSize(size))
-			a.setStatus(fmt.Sprintf("produced %s — %.1f s, %s", filepath.Base(st.OutFile), dur, humanSize(size)))
+			a.progress.SetText(fmt.Sprintf("produced %s — %.1f s, %s",
+				filepath.Base(st.OutFile), dur, humanSize(size)))
 			a.updateProduceInfo()
 			if a.prod != nil && a.prod.player != nil {
 				a.prod.player.PlaySegment(st.OutFile, 0, -1, false)
@@ -1079,7 +1089,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			}
 		}
 	} else if len(entries) > 0 && st.Subs == "none" {
-		a.logfIdle("captions only, and subtitles are set to none — the written lines appear nowhere in this video")
+		a.logfIdle("!!! captions only and subtitles set to none — the lines appear nowhere")
 	}
 	if len(todo) > 0 {
 		// a render that has to speak first is two jobs, and the bar says so;
@@ -1193,9 +1203,8 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			// vanishing out of the middle of the cut in silence reads as a
 			// render bug. It is nearly always an effect boundary landing just
 			// short of a cut, which is a thing the hand can move.
-			a.logfIdle("clip %d is %.2f s — too short to render, dropped. Move the "+
-				"edit or effect at %s if that stretch was meant to be in",
-				i+1, c.length, mmss(s.S))
+			a.logfIdle("clip %d at %s is %.2f s — too short to render, dropped",
+				i+1, mmss(s.S), c.length)
 			continue
 		}
 		c.sessS = s.S
@@ -1382,6 +1391,18 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			}
 			c.texts = textCues(fx, c.sessS, span, c.speed(), c.length)
 		}
+	}
+
+	// the volume effects: the same mapping a third time, and outside the boxW
+	// guard above because a gain needs no frame size -- a clip with no picture
+	// to put a title on still has sound to turn up.
+	for i := range clips {
+		c := &clips[i]
+		span := c.length * c.speed()
+		if c.freeze || c.ins != "" {
+			span = 0
+		}
+		c.gains = gainCues(fx, c.sessS, span, c.speed(), c.length)
 	}
 
 	// the stop effects: the same mapping once more, but the overlay is a frame
@@ -1597,9 +1618,8 @@ func (a *App) clipInput(c prodClip, st prodSettings) ([]string, bool, error) {
 		}
 		if !svgAnimated(src) {
 			if svgHasCSSAnimation(src) {
-				a.logfIdle("%s asks for a CSS animation whose @keyframes are not in the file — "+
-					"it is drawn as a still. Both are read: @keyframes and SMIL (<animate>, "+
-					"<animateTransform>).", insBase(c.ins))
+				a.logfIdle("%s: a CSS animation with no @keyframes in the file — drawn as a still",
+					insBase(c.ins))
 			}
 			// a static card with parameters is no longer the file on disk, so it
 			// is written out for ffmpeg to open; without them the asset is opened
@@ -2027,6 +2047,15 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 		fc += fmt.Sprintf("[gm]%samix=inputs=%d:duration=first:normalize=0[bed];",
 			seps, 1+len(c.mix))
 		game = "bed" // everything downstream ducks and mixes the bed, not the capture
+	}
+	// the volume effects, on everything that was actually there and nothing
+	// that was added afterwards: after the bed, so a boost lifts the capture
+	// and the separate recordings together the way one hand on one fader
+	// would, and before the narration, which is written on this page and has
+	// its own level (GameVol) rather than a cut effect's say over it.
+	if fx, lab := gainChain(c.gains, game); fx != "" {
+		fc += fx
+		game = lab
 	}
 	if len(spoken) > 0 {
 		nrs := ""

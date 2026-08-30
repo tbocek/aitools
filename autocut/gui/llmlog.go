@@ -221,7 +221,7 @@ details summary{color:#666;cursor:pointer}
 func chatHTML(step, model string, thinking bool, msgs []map[string]any, reply string, took time.Duration, callErr error, pending bool) []byte {
 	esc := html.EscapeString
 	var b strings.Builder
-	fmt.Fprintf(&b, "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>%s -- autocut LLM exchange</title>\n<style>%s</style></head><body>\n",
+	fmt.Fprintf(&b, "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>%s -- Autocut LLM exchange</title>\n<style>%s</style></head><body>\n",
 		esc(step), chatCSS)
 	mode := "execute"
 	if thinking {

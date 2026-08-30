@@ -42,6 +42,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -105,9 +106,8 @@ func (a *App) setupIcons() {
 		// Wayland is the only half that ever reaches the screen anyway; what is
 		// lost is the title bar on X11. Worth saying once, since the icon then
 		// appears in one place and not the other for a reason nothing shows.
-		a.logf("icon: the icon theme has no %q, so %s is drawn from the desktop entry "+
-			"and not by the theme -- an svg in hicolor/scalable/apps, or a png in "+
-			"hicolor/<size>/apps, is read by both.", appID, file)
+		a.logf("icon: %q is not in the icon theme -- %s is drawn from the desktop "+
+			"entry instead", appID, file)
 	}
 	a.installDesktop()
 }
@@ -216,22 +216,50 @@ func builtOnTheFly(exe string) bool {
 // application id; GTK sets that from the id too, so it is the same string
 // again. On Wayland the file NAME is what does the matching, and that is why it
 // has to be the id and not "autocut".
+//
+// The %f and the MimeType line are the double-click: %f is where the file the
+// user opened is substituted into the command, and MimeType is what makes
+// Autocut one of the programs offered for it in the first place. Both, or
+// neither works -- a MimeType with no %f launches an empty session and looks
+// like the file was ignored.
 func desktopEntry(exe, dir, icon string) string {
 	if icon == "" {
 		icon = appID
 	}
 	return fmt.Sprintf(`[Desktop Entry]
 Type=Application
-Name=autocut
-Comment=Workflow console for the autocut pipeline
-Exec=%s
+Name=Autocut
+Comment=Workflow console for the Autocut pipeline
+Exec=%s %%f
 Path=%s
 Icon=%s
 Terminal=false
+MimeType=%s;
 Categories=AudioVideo;Video;AudioVideoEditing;
 StartupNotify=true
 StartupWMClass=%s
-`, desktopArg(exe), dir, icon, appID)
+`, desktopArg(exe), dir, icon, mimeType, appID)
+}
+
+// mimeType is what a project file IS to the desktop. A type of its own rather
+// than text/plain or application/json: the point of the whole exercise is that
+// double-clicking one opens Autocut, and a file whose type is "some JSON" opens
+// whatever the machine opens JSON with.
+const mimeType = "application/x-autocut-project"
+
+// mimePackage declares that type and what it looks like -- one glob, the
+// project extension. The database is what turns a file name into a type; the
+// desktop entry above only says which types this program handles, so without
+// this the association matches nothing.
+func mimePackage() string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="%s">
+    <comment>Autocut project</comment>
+    <glob pattern="*%s"/>
+  </mime-type>
+</mime-info>
+`, mimeType, projExt)
 }
 
 // desktopArg quotes a program path the way the spec's Exec key wants it. Paths
@@ -245,10 +273,10 @@ func desktopArg(s string) string {
 	return `"` + r.Replace(s) + `"`
 }
 
-// writeDesktop puts the entry where the shell looks, and says whether it had
-// to. Unchanged is the common case -- every start after the first -- and it
-// must not touch the file, or the shell reloads its application list on every
-// launch of this program.
+// writeDesktop puts a file where the desktop looks -- the entry, or the mime
+// package beside it -- and says whether it had to. Unchanged is the common case
+// -- every start after the first -- and it must not touch the file, because
+// what follows a write here is a database rebuild the desktop notices.
 func writeDesktop(path, entry string) (bool, error) {
 	if old, err := os.ReadFile(path); err == nil && string(old) == entry {
 		return false, nil
@@ -287,13 +315,48 @@ func (a *App) installDesktop() {
 	path := filepath.Join(data, "applications", appID+".desktop")
 	wrote, err := writeDesktop(path, desktopEntry(exe, a.root, a.iconFile()))
 	if err != nil {
-		a.logf("icon: could not write %s: %v -- the window will show the "+
-			"generic icon until it exists", path, err)
+		a.logf("icon: could not write %s: %v", path, err)
 		return
 	}
 	if wrote {
-		a.logf("icon: wrote %s, so the shell can put the autocut icon on this "+
-			"window and in the app grid. Delete that file to undo it. "+
-			"Already-open windows keep the old icon until autocut is restarted.", path)
+		a.logf("icon: wrote %s -- new windows take the icon from it", path)
 	}
+	a.installMime(data, wrote)
+}
+
+// installMime is the other half of the double-click: the entry says Autocut
+// opens application/x-autocut-project, and this says what a file of that type
+// is called. Same deal as the entry -- written into the user's own data
+// directory, best-effort, and only when it changed.
+//
+// The two update- commands are the part that cannot be skipped. Both databases
+// are caches built from the files just written, and until they are rebuilt the
+// desktop goes on believing what it believed before: the glob is unknown, and a
+// .autocut file offers no program to open it with. They are rebuilt off the
+// GUI thread because update-mime-database walks every package on the machine
+// and takes a moment, and this is the first thing a launch does.
+func (a *App) installMime(data string, entryWrote bool) {
+	path := filepath.Join(data, "mime", "packages", appID+".xml")
+	wrote, err := writeDesktop(path, mimePackage())
+	if err != nil {
+		a.logf("mime: could not write %s: %v", path, err)
+		return
+	}
+	if !wrote && !entryWrote {
+		return // both files are as this build left them last time
+	}
+	if wrote {
+		a.logf("mime: wrote %s -- a %s file opens with Autocut", path, projExt)
+	}
+	go func() {
+		for _, c := range [][]string{
+			{"update-mime-database", filepath.Join(data, "mime")},
+			{"update-desktop-database", filepath.Join(data, "applications")},
+		} {
+			if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {
+				a.logfIdle("mime: %s failed: %v (%s)", c[0], err,
+					strings.TrimSpace(string(out)))
+			}
+		}
+	}()
 }

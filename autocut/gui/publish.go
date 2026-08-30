@@ -1162,13 +1162,12 @@ func (a *App) publishRun(textOnly bool) {
 
 	switch {
 	case textOnly:
-		a.logf(">>> publish: rewriting the title, the thumbnail instruction and the description — one thinking call")
+		a.logf(">>> publish: rewriting the title, instruction and description — one LLM call")
 	case needText:
-		a.logf(">>> publish: writing the title, the thumbnail instruction and the "+
-			"description once, then drawing the thumbnail on %s", a.sdURL())
+		a.logf(">>> publish: writing the title, instruction and description, "+
+			"then drawing the thumbnail on %s", a.sdURL())
 	default:
-		a.logf(">>> publish: redrawing the thumbnail on %s from what the boxes say — "+
-			"the text is already written, no thinking calls", a.sdURL())
+		a.logf(">>> publish: redrawing the thumbnail on %s from what the boxes say", a.sdURL())
 	}
 	// The model calls have nothing countable in them, so the bar pulses until
 	// the drawing starts. What stops it is the drawing's own first fraction
@@ -1209,8 +1208,7 @@ func (a *App) publishRun(textOnly bool) {
 			if st.Frames = pickShots(a.publishShots(), segs, defPubFrames); len(st.Frames) > 0 {
 				a.landPublish(st)
 			} else {
-				a.logfIdle("    publish: no frames extracted either — add an image by hand, " +
-					"or let the instruction draw one from nothing")
+				a.logfIdle("    publish: no frames extracted either — drawing from the instruction alone")
 			}
 		}
 
@@ -1443,21 +1441,17 @@ func (a *App) publishDone(err error, textOnly bool) {
 			if !errors.Is(err, errStopped) {
 				a.logf("%s FAILED: %v", what, err)
 				a.progress.SetText(what + " failed — see log")
-				a.setStatus(what + " failed — see log")
 				return
 			}
 			a.progress.SetText(what + " stopped")
-			a.setStatus(what + " stopped")
 			return
 		}
 		a.progress.SetFraction(1)
 		if textOnly {
-			a.progress.SetText("suggestions rewritten")
-			a.setStatus("title, image prompt and description rewritten — ▶ draws the thumbnail")
+			a.progress.SetText("title, instruction and description rewritten — ▶ draws the thumbnail")
 			return
 		}
-		a.progress.SetText("thumbnail drawn")
 		n := a.logOutputs("publish", a.publishDir())
-		a.setStatus(fmt.Sprintf("thumbnail and description ready — %d file(s) under step6/", n))
+		a.progress.SetText(fmt.Sprintf("thumbnail and description ready — %d file(s)", n))
 	})
 }

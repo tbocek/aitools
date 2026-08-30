@@ -478,7 +478,7 @@ func TestSampleAccountsForItself(t *testing.T) {
 		t.Fatal("playSample not found")
 	}
 	for _, want := range []string{
-		`a.logf(">>> sample:`,   // what was asked for, before it can fail
+		`a.logf(">>> sample%s:`, // what was asked for, and which take, before it can fail
 		`a.logf("sample FAILED`, // the server said no
 		`a.logf("!!! sample:`,   // the server said yes and sent nothing
 		`a.logf("    sample:`,   // it worked: which file, how big, how long

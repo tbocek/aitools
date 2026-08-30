@@ -75,13 +75,14 @@ func (a *App) llmChatOn(step string, msgs []map[string]any, thinking bool, onTex
 		onText = func(s string) { rec.stream(s); user(s) }
 	}
 	t0 := time.Now()
-	reply, err := a.llmChatPost(msgs, thinking, onText)
+	reply, err := a.llmChatPost(step, msgs, thinking, onText)
 	rec.done(reply, time.Since(t0), err)
 	return reply, err
 }
 
 // llmChatPost is the wire call itself: build the body, post it, read the answer.
-func (a *App) llmChatPost(msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
+// step names the caller so the watch can say whose call is running (llmstall.go).
+func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
 	c := a.readConf()
 	if c.Server == "" || c.Model == "" {
 		return "", fmt.Errorf("no LLM configured -- use the gear button")
@@ -116,6 +117,14 @@ func (a *App) llmChatPost(msgs []map[string]any, thinking bool, onText func(stri
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// the watch holds the call to a silence rule and says every minute what is
+	// arriving; a call nobody streams has no silence to measure, so it keeps a
+	// whole-call ceiling on the client instead
+	w := a.watchChat(step, onText != nil)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := w.guard(cancel)
+	defer stop()
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		strings.TrimRight(c.Server, "/")+"/v1/chat/completions", bytes.NewReader(buf))
 	if err != nil {
@@ -123,19 +132,23 @@ func (a *App) llmChatPost(msgs []map[string]any, thinking bool, onText func(stri
 	}
 	bearer(req, c.Key)
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Minute}
+	client := &http.Client{}
+	if onText == nil {
+		client.Timeout = llmWhole
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		if a.stopFlag.Load() {
 			return "", errStopped
 		}
-		return "", err
+		return "", w.blame(err)
 	}
 	defer resp.Body.Close()
 	// only if the server actually streamed: one that ignores the flag, or that
 	// answers an error as plain JSON, falls through to the decode below
 	if onText != nil && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return a.readChatStream(resp.Body, onText)
+		reply, err := a.readChatStream(w.wrap(resp.Body), onText, w)
+		return reply, w.blame(err)
 	}
 	var out struct {
 		Choices []struct {
@@ -158,7 +171,7 @@ func (a *App) llmChatPost(msgs []map[string]any, thinking bool, onText func(stri
 // text so far as each piece lands. Read with a bufio.Reader rather than a
 // Scanner: one event carrying a long chunk is a line of any length, and a
 // Scanner would stop dead at its 64 kB limit halfway through a narration.
-func (a *App) readChatStream(r io.Reader, onText func(string)) (string, error) {
+func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (string, error) {
 	br := bufio.NewReader(r)
 	var b strings.Builder
 	for {
@@ -172,12 +185,26 @@ func (a *App) readChatStream(r io.Reader, onText func(string)) (string, error) {
 				Choices []struct {
 					Delta struct {
 						Content string `json:"content"`
+						// what the model tells itself on the way to the
+						// answer. This server keeps it out of content
+						// entirely, so a call that is thinking hard sends
+						// nothing here that the old parser could see -- and
+						// looked, from the log and from the bar, exactly like
+						// one that had hung. It is read to be counted and
+						// shown, and goes nowhere near the reply: onText feeds
+						// the progress bar and the recorded page, and both are
+						// about the answer.
+						Reasoning string `json:"reasoning_content"`
 					} `json:"delta"`
 				} `json:"choices"`
 			}
 			// a chunk that will not parse is a chunk, not the reply: keep reading
 			if json.Unmarshal([]byte(payload), &ch) == nil && len(ch.Choices) > 0 {
+				if d := ch.Choices[0].Delta.Reasoning; d != "" {
+					w.wrote(d, true)
+				}
 				if d := ch.Choices[0].Delta.Content; d != "" {
+					w.wrote(d, false)
 					b.WriteString(d)
 					onText(b.String())
 				}

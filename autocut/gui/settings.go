@@ -13,7 +13,7 @@ package main
 // remembered path travelling with it would reopen somebody else's variant on
 // the first launch after the copy.
 //
-// Losing this file costs nothing: autocut falls back to root/project.json, the
+// Losing this file costs nothing: Autocut falls back to the working copy, the
 // working copy it opened before this existed. Every read and write here is
 // therefore best-effort and never fails a launch.
 

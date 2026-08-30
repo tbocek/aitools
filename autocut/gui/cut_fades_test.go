@@ -140,9 +140,9 @@ func TestTheLaneDrawsOneEnvelopeForEveryKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	// zoom, plain speed, stop, text
-	if n := strings.Count(s, "laneBand(cr, x0, x1,"); n != 4 {
-		t.Errorf("%d kinds draw the shared envelope, want all 4", n)
+	// zoom, plain speed, stop, text, volume
+	if n := strings.Count(s, "laneBand(cr, x0, x1,"); n != 5 {
+		t.Errorf("%d kinds draw the shared envelope, want all 5", n)
 	}
 	// the envelope itself: a trapezium, rising over the fade in and falling
 	// over the fade out, both clamped inside the bar

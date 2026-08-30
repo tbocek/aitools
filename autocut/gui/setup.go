@@ -1032,7 +1032,7 @@ func (a *App) setupDialog() {
 		"asynchronous API, not an OpenAI-shaped one: GET /sdcpp/v1/capabilities, POST "+
 		"/sdcpp/v1/img_gen for a job id, then GET /sdcpp/v1/jobs/{id} until the picture "+
 		"arrives.\n\nThere is no model box: sd-server loads one model when it starts and "+
-		"nothing autocut sends can switch it, so Test reports which weights it found "+
+		"nothing Autocut sends can switch it, so Test reports which weights it found "+
 		"instead of holding it to a name."), 0, 14, 4, 1)
 	grid.Attach(lbl("Server:"), 0, 15, 1, 1)
 	grid.Attach(sd, 1, 15, 1, 1)

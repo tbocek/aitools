@@ -196,7 +196,7 @@ func TestTheLaneDrawsWhatTheEffectDoes(t *testing.T) {
 	// height where the effect fully holds, rising and falling over its fades
 	// -- which is what makes two 3 s effects the same width whatever their
 	// transitions
-	if strings.Count(s, "laneBand(cr, x0, x1,") < 4 {
+	if strings.Count(s, "laneBand(cr, x0, x1,") < 5 {
 		t.Error("an effect kind stopped drawing its envelope through laneBand")
 	}
 	// the lead-in triangle belonged to the slow-down ramp, which is gone: a
@@ -210,12 +210,12 @@ func TestTheLaneDrawsWhatTheEffectDoes(t *testing.T) {
 	// the dialog offers the fades, and the label reports them. One dialog for
 	// the whole kind now: a stop is a speed of x0, so there is exactly one
 	// pair of fade rows and no stop-only branch to keep in step
-	// -- and all three dialogs name them the same, in the same order, with the
-	// length between them: a zoom, a text and a speed differ in what they do,
-	// not in what their transitions are called
+	// -- and all four dialogs in this file name them the same, in the same
+	// order, with the length between them: a zoom, a text, a speed and a
+	// volume differ in what they do, not in what their transitions are called
 	for _, row := range []string{"Fade in seconds", "Length seconds", "Fade out seconds"} {
-		if n := strings.Count(s, `fxNumRow("`+row+`"`); n != 3 {
-			t.Errorf("%d dialogs ask for %q, want all 3", n, row)
+		if n := strings.Count(s, `fxNumRow("`+row+`"`); n != 4 {
+			t.Errorf("%d dialogs ask for %q, want all 4", n, row)
 		}
 	}
 	for _, gone := range []string{"Ramp in seconds", "Ramp out seconds", "Glide in seconds",

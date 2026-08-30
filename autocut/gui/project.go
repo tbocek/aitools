@@ -2,10 +2,10 @@ package main
 
 // Project state: which sources are in, in what order, and the step settings.
 // Saved as plain JSON with root-relative paths, so a project file survives
-// moving the autocut directory. root/project.json is the working copy --
-// always written, whatever else is open; Save/Load dialogs are for keeping
-// named variants, and whichever file is open when the window closes is the one
-// the next launch reopens (settings.go).
+// moving the autocut directory. There is always an open file -- root/session.autocut
+// until Save names another one -- and it is the only file a save writes; Save/Load
+// dialogs are for keeping named variants, and whichever file is open when the
+// window closes is the one the next launch reopens (settings.go).
 
 import (
 	"bytes"
@@ -46,7 +46,10 @@ type Project struct {
 	// in_dir is read, never written: there was one input folder, which had to
 	// hold input_video/ and input_audio/. A project written back then names it
 	// here, and those two subfolders are where the two folders above start.
-	InDir  string `json:"in_dir,omitempty"`
+	InDir string `json:"in_dir,omitempty"`
+	// out_dir is read, never written: the output folder used to be chosen and
+	// stored, and is now derived from the project file's own name (see projExt).
+	// It is read only to say, once, where an older project's work was left.
 	OutDir string `json:"out_dir,omitempty"`
 	// these four are read, never written: the pages they belonged to had a notes
 	// box beside the system prompt, which the runner glued onto the prompt just
@@ -117,6 +120,72 @@ func (a *App) fromRoot(rel string) string {
 	}
 }
 
+// A project is a file you can double-click, and the folder it writes into is
+// its own path with .data on the end: /mnt/rec/tom.json.autocut writes into
+// /mnt/rec/tom.json.autocut.data. Nothing chooses that folder and nothing
+// stores it. Stored, it was a second answer to "where does this session write"
+// that could disagree with the first -- a project copied to another machine,
+// or a folder emptied between sessions, and the work went somewhere nobody was
+// looking. Derived, the two travel together and cannot come apart, and the
+// answer to "where are my transcripts" is the project's own name.
+//
+// Which is also why a session nobody has saved still has a file: the working
+// copy is root/session.autocut, so the rule is the same everywhere and there
+// is no unsaved special case. Save then renames the pair.
+const projExt = ".autocut"
+
+// workName is the working copy inside the autocut root: what the first launch
+// starts as, and what New Project goes back to.
+const workName = "session" + projExt
+
+// dataDir is a project's output folder. One line, so that every step, every
+// page and the Save that moves the folder all mean the same folder.
+func dataDir(proj string) string { return proj + ".data" }
+
+// projectName is the file an opened project is kept as from here on, which is
+// not always the file it was read from. A project saved before projects were
+// files the desktop could open is a .json, and the name is what the output
+// folder hangs off -- so leaving it as it was would mean tom.json writing into
+// tom.json.data while everything saved since writes beside a .autocut. One
+// rule, so opening tom.json continues as tom.json.autocut.
+//
+// The old file is not touched and not deleted: it stays on disk as the last
+// thing that build wrote, and the session simply goes on under the new name.
+// Unless that name is taken -- then the .json keeps its own, because quietly
+// autosaving over a project the user already has is not an upgrade.
+//
+// root/project.json is the exception, and not really one: it was never a name
+// anybody chose, it was the working copy, and the working copy has a name of
+// its own now.
+func (a *App) projectName(path string) string {
+	if path == filepath.Join(a.root, "project.json") {
+		return filepath.Join(a.root, workName)
+	}
+	up := withProjExt(path)
+	switch {
+	case up == path:
+		return path
+	case exists(up):
+		a.logf("!!! %s is still open under its old name: %s is already there, and this "+
+			"session would have written over it", filepath.Base(path), filepath.Base(up))
+		return path
+	}
+	a.logf(">>> %s is open as %s from here on; %s is left on disk as it is",
+		filepath.Base(path), filepath.Base(up), filepath.Base(path))
+	return up
+}
+
+// withProjExt is what Save actually writes, whatever was typed in the name box.
+// The extension is not decoration: it is what the desktop matches to open a
+// file with Autocut (icon.go), and it is what .data hangs off, so "tom" and
+// "tom.autocut" would otherwise be two projects sharing neither name nor work.
+func withProjExt(p string) string {
+	if strings.EqualFold(filepath.Ext(p), projExt) {
+		return p
+	}
+	return p + projExt
+}
+
 func (a *App) currentProject() Project {
 	scaleName, _ := a.frameScale()
 	var prod *prodSettings
@@ -146,7 +215,6 @@ func (a *App) currentProject() Project {
 		Language:     a.projectLanguage(),
 		VidDir:       a.relToRoot(a.vidDir),
 		AudDir:       a.relToRoot(a.audDir),
-		OutDir:       a.relToRoot(a.outDir),
 		Context:      a.sessionCtx(),
 		PromptStyles: a.currentPromptStyles(),
 		PromptPick:   a.currentPromptPick(),
@@ -219,18 +287,6 @@ func (a *App) writeProject(path string, b []byte) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
-// projectFiles is where a save goes. root/project.json is the working copy the
-// next launch opens, and is always written; a file named through Save Project
-// (or opened through Load Project) is written as well, because the moment the
-// user names a file, that file is the project as far as they are concerned.
-func (a *App) projectFiles() []string {
-	work := filepath.Join(a.root, "project.json")
-	if a.projPath == "" || a.projPath == work {
-		return []string{work}
-	}
-	return []string{work, a.projPath}
-}
-
 // projNameChars is how much of the project's name the header bar shows before
 // it ellipsizes. Wide enough for the names people actually type ("before the
 // recut.json"), narrow enough that it cannot walk the centered tabs sideways
@@ -268,6 +324,42 @@ func (a *App) showProject() {
 	a.fitHeader()
 }
 
+// setProject points the session at a project file: the file the autosave
+// follows, and the folder beside it that every step writes into. The two are
+// one decision (see projExt), so they are made in one place, and everything on
+// screen that was read out of the old folder is re-read here.
+func (a *App) setProject(path string) {
+	a.projPath = path
+	a.outDir = dataDir(path)
+	a.showProject()
+	a.followOutDir()
+	// the voice belongs to the project, not to the session: drop the cached id
+	// and pitch so both are re-read from the folder we just moved to
+	a.voiceMu.Lock()
+	a.voiceSel = ""
+	a.voiceMu.Unlock()
+	a.pitchRead = false
+	if a.voicePick != nil {
+		a.voicePick.syncSelection()
+	}
+	// The narration lives in the output folder, and this is the only thing that
+	// re-reads it: the page is built once at startup, against the empty
+	// session's folder, so without this a saved narration would never load for
+	// any project at all -- it looked like narration was never saved.
+	if a.narr != nil {
+		a.narr.load()
+		a.narr.rebuildRows()
+	}
+	// every page shows state derived from the output folder -- refresh all.
+	// The Cut page included: its tracks were just drawn from the folder of the
+	// project we are leaving.
+	a.prep.refresh()
+	a.updateProduceInfo()
+	a.pub.refresh()
+	a.refreshCut()
+	a.updateGates()
+}
+
 // saveProjectNow writes every target and remembers what it wrote. Quiet: it is
 // what the ticker and the step runners call, and a status line per autosave
 // would push the message the user is actually waiting on off the bar.
@@ -280,21 +372,56 @@ func (a *App) saveProjectNow() {
 	// retried every tick for the rest of the session, and the log line below
 	// says it once per change either way.
 	a.projSaved = b
-	for _, p := range a.projectFiles() {
-		if err := a.writeProject(p, b); err != nil {
-			a.logf("save project: %v", err)
-		}
+	// One file: the open one. It used to be two -- the named file and a working
+	// copy the next launch opened -- and the working copy is now simply the
+	// project that is open when nobody has named one, so there is nothing left
+	// to keep in step with anything.
+	if err := a.writeProject(a.projPath, b); err != nil {
+		a.logf("save project: %v", err)
 	}
 }
 
 // saveProjectTo is the explicit save behind the button: it names the file the
 // autosave follows from here on, and says so.
+//
+// The work follows the name. Transcripts, frames and renders live in a folder
+// derived from the file name (see projExt), so a Save As without the move would
+// leave a project whose every output is filed under the name it used to have,
+// and which reads, on every page, as one that has never been run.
 func (a *App) saveProjectTo(path string) {
-	a.projPath = path
-	a.showProject()
+	path = withProjExt(path)
+	if path != a.projPath {
+		a.moveOutputs(a.outDir, dataDir(path))
+		a.setProject(path)
+	}
 	a.rememberProject(path)
 	a.saveProjectNow()
-	a.setStatus("project saved: " + path)
+	a.setStatus("project saved")
+}
+
+// moveOutputs takes one project's output folder to another's name. A rename is
+// instant on one filesystem and cannot half-happen, which is why it is a rename
+// and not a copy: nobody presses Save expecting gigabytes of frames to be
+// duplicated. It is also the whole check -- a rename onto a folder that already
+// has work in it fails, and onto one that is empty succeeds, which is exactly
+// the answer wanted in both cases. When it will not go through, across
+// filesystems or into a name in use, the files stay where they are and the log
+// says where, because a Save that silently moved work would be worse than one
+// that did not.
+//
+// Silent when there is nothing to move, which is the ordinary case: a project
+// saved before it has been run has an empty folder or none at all.
+func (a *App) moveOutputs(from, to string) {
+	n, _ := countOutputs(from)
+	if n == 0 {
+		return
+	}
+	if err := os.Rename(from, to); err != nil {
+		a.logf("!!! could not move the output folder to %s: %v -- the %d file(s) are still in %s",
+			to, err, n, from)
+		return
+	}
+	a.logf(">>> moved the output folder to %s", to)
 }
 
 // autosaveTick is how often the project is compared with what is on disk.
@@ -349,13 +476,18 @@ func (a *App) loadProjectFrom(path string) {
 		return
 	}
 	a.applyProject(p)
-	// what is open is what the autosave keeps: opening a variant and then
-	// editing it must not quietly write the edits into the working copy alone
-	a.projPath = path
-	a.showProject()
-	a.rememberProject(path)
+	// After applyProject, exactly where the output folder used to be set: what
+	// is open is what the autosave keeps, and every page that reads the folder
+	// is now reading this project's own rather than the last one's. Under the
+	// name it is kept as, which for an older project is not the one it was read
+	// from (projectName).
+	a.setProject(a.projectName(path))
+	if p.OutDir != "" && a.fromRoot(p.OutDir) != a.outDir {
+		a.logf("!!! this project used to write into %s and now writes into %s -- "+
+			"the old folder is untouched", a.fromRoot(p.OutDir), a.outDir)
+	}
+	a.rememberProject(a.projPath)
 	a.projSaved = a.projectJSON()
-	a.setStatus("project loaded: " + path)
 }
 
 // applyProject puts a project on screen -- every page of it. Split out of
@@ -375,7 +507,7 @@ func (a *App) applyProject(p Project) {
 	// silently-dropped source once cost half a debugging session
 	for _, it := range items {
 		if !exists(it.path) {
-			a.logf("WARNING: project references %s, which is not there any more -- it was dropped from the session (renamed? moved?)", it.path)
+			a.logf("!!! %s is not there any more -- dropped from the session", it.path)
 		}
 	}
 	a.srcList.load(items)
@@ -390,10 +522,10 @@ func (a *App) applyProject(p Project) {
 	a.migrateHints(p)
 	a.applyProdSettings(p.Produce)
 	a.applyPublish(p.Publish)
-	a.setOutDir(a.fromRoot(p.OutDir))
-	// the Cut page is drawn from the OTHER project's folder until something
-	// says so; the sources on its tracks have just been replaced wholesale
-	a.refreshCut()
+	// Every page except the ones drawn from the output folder -- the Cut page,
+	// the counts, the narration. The stored out_dir is deliberately not read:
+	// the folder is derived from the file's own name (see projExt), and the
+	// caller sets both with setProject, which is what redraws those pages.
 }
 
 // blankProject is what New Project starts from: an empty session, and the
@@ -402,8 +534,9 @@ func (a *App) applyProject(p Project) {
 // Interval and Produce are stated because their zero values are real settings
 // and the wrong ones -- 0 seconds means EVERY frame, which is gigabytes nobody
 // asked for, and a zeroed produce block is a 0-CRF, 0-fps render. Everything
-// else is legitimately empty: no sources, nothing typed, no prompt edited, no
-// thumbnail, and the output folder back to the autocut root.
+// else is legitimately empty: no sources, nothing typed, no prompt edited and
+// no thumbnail. Not the output folder, which is not a setting any more: it
+// follows whichever file the emptied session goes back to being.
 func blankProject() Project {
 	prod := defaultProdSettings()
 	return Project{
@@ -413,21 +546,21 @@ func blankProject() Project {
 	}
 }
 
-// newProject empties the session. The project FILE is not deleted and not
-// written over here: what the autosave follows afterwards is the working copy
-// again (projPath ""), so a named project that was open stays on disk exactly
-// as it was, and going back to it is Load, not undo.
+// newProject empties the session. The named project FILE is not deleted and not
+// written over here: what the autosave follows afterwards is the working copy,
+// so a named project that was open stays on disk exactly as it was, and going
+// back to it is Load, not undo. Its output folder is left alone too -- it is
+// that file's folder now, not this session's.
 func (a *App) newProject() {
 	a.applyProject(blankProject())
-	a.projPath = ""
-	a.showProject()
+	a.setProject(filepath.Join(a.root, workName))
 	// the working copy is now the open project, and that is a decision, not an
 	// absence: without this the next launch reopens the named project this was
 	// meant to get away from (see rememberProject)
-	a.rememberProject(filepath.Join(a.root, "project.json"))
+	a.rememberProject(a.projPath)
 	a.saveProjectNow()
 	a.setStatus("new project — the session is empty")
-	a.logf(">>> new project: the session was emptied; outputs already on disk are untouched")
+	a.logf(">>> new project -- the session is empty; outputs on disk are untouched")
 }
 
 // newProjectDialog asks first. The session is not a file until Save names one,
@@ -448,11 +581,11 @@ func (a *App) newProjectDialog() {
 	}
 	detail := "The sources, the session context and every prompt edit go back to empty. " +
 		"Files already written to the output folder are left alone."
-	if a.projPath != "" {
-		detail += "\n\n" + filepath.Base(a.projPath) + " stays on disk as it is -- " +
-			"this session simply stops being it."
+	if filepath.Base(a.projPath) != workName {
+		detail += "\n\n" + filepath.Base(a.projPath) + " stays on disk as it is, " +
+			"with everything it has written -- this session simply stops being it."
 	} else {
-		detail += "\n\nThis session has never been saved to a named project file, " +
+		detail += "\n\nThis session has never been saved under a name of its own, " +
 			"so there is nothing to come back to."
 	}
 	a.confirm("Start a new project?", detail, "Start new", a.newProject)
@@ -529,7 +662,7 @@ func (a *App) migrateHints(p Project) {
 			tv.Buffer().SetText(merged)
 		}
 		if a.log != nil { // not during tests, which have no window
-			a.logf("moved this project's notes into the %q prompt -- they are one box now", key)
+			a.logf(">>> moved this project's notes into the %q prompt", key)
 		}
 	}
 	fold("describe", p.DescribeHints, "Editor's notes about this footage -- trust them:")
@@ -630,22 +763,32 @@ func (a *App) addSources(paths ...string) {
 	}
 }
 
-func (a *App) chooseOutDirDialog() {
-	d := gtk.NewFileDialog()
-	d.SetInitialFolder(gio.NewFileForPath(a.outDir))
-	d.SelectFolder(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.SelectFolderFinish(res)
-		if err != nil || f == nil {
-			return
-		}
-		a.setOutDir(f.Path())
-	})
+// projFilter is the one filter both project dialogs use: .autocut files, plus
+// the .json a project was before it was a file the desktop could open.
+func projFilter() *gtk.FileFilter {
+	filt := gtk.NewFileFilter()
+	filt.SetName("Autocut projects")
+	filt.AddSuffix(strings.TrimPrefix(projExt, "."))
+	filt.AddSuffix("json")
+	return filt
 }
 
+// saveProjectDialog names the project. It opens beside the open project rather
+// than in the root, because Save As on /mnt/rec/tom.json.autocut is nearly
+// always another name in /mnt/rec -- that is where the footage is.
+//
+// Not during a run: the save moves the output folder the run is writing into.
 func (a *App) saveProjectDialog() {
+	if a.running {
+		a.setStatus("stop the run first — saving under a new name moves the folder it is writing into")
+		return
+	}
 	d := gtk.NewFileDialog()
-	d.SetInitialFolder(gio.NewFileForPath(a.root))
-	d.SetInitialName("project.json")
+	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
+	d.SetInitialName(filepath.Base(a.projPath))
+	filters := gio.NewListStore(gtk.GTypeFileFilter)
+	filters.Append(projFilter().Object)
+	d.SetFilters(filters)
 	d.Save(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
 		f, err := d.SaveFinish(res)
 		if err != nil || f == nil {
@@ -657,7 +800,10 @@ func (a *App) saveProjectDialog() {
 
 func (a *App) loadProjectDialog() {
 	d := gtk.NewFileDialog()
-	d.SetInitialFolder(gio.NewFileForPath(a.root))
+	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
+	filters := gio.NewListStore(gtk.GTypeFileFilter)
+	filters.Append(projFilter().Object)
+	d.SetFilters(filters)
 	d.Open(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
 		f, err := d.OpenFinish(res)
 		if err != nil || f == nil {

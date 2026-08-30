@@ -467,10 +467,10 @@ func TestTheEffectsLaneIsWired(t *testing.T) {
 		"vframe := videoFrame(ed.buildFxOverlay())",
 		// and the aspect is a dropdown on the toolbar, not a dialog
 		"ed.aspectDD = gtk.NewDropDownFromStrings(fxAspects)",
-		// the effects are one dropdown of verbs -- and only four, because a
+		// the effects are one dropdown of verbs -- and only five, because a
 		// stop is a speed of x0 rather than an entry of its own
 		"fxDD := gtk.NewDropDownFromStrings(fxKinds)",
-		`fxKinds := []string{"✚ Effect", "⊕ Zoom", "❝ Text", "▨ SVG", "⏩ Speed"}`,
+		`fxKinds := []string{"✚ Effect", "⊕ Zoom", "❝ Text", "▨ SVG", "⏩ Speed", "🔊 Volume"}`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the cut page no longer contains %q", want)

@@ -98,9 +98,9 @@ var promptDefs = []promptDef{
 			{shortsStyleName, strings.TrimSpace(shortsSystem)}}},
 	{key: "audit", def: strings.TrimSpace(auditSystem)},
 	// "effects" was here: the third call that decorated the audited cut. The
-	// effects ride the Shorts cut reply again and the audit checks them, so
-	// the key is gone the way "thumbnail" below went -- a project's edited
-	// copy is a dead key nobody reads.
+	// effects ride the cut reply again -- every style's, see fxRules -- and
+	// the audit checks them, so the key is gone the way "thumbnail" below
+	// went: a project's edited copy is a dead key nobody reads.
 	{key: "narrate", def: strings.TrimSpace(narrSystem)},
 	// "thumbnail" was here: a second Publish prompt that picked which frame to
 	// edit and wrote the instruction for it. Removed, not renamed -- the key is

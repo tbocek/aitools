@@ -116,7 +116,7 @@ You get the whole session as one timeline, [mm:ss] then who, then the line. The 
   [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it, so a good NARRATOR line is worth cutting for.
 
 Return strict JSON, nothing else:
-{"segments":[{"start":<sec>,"end":<sec>}]}
+{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
 
 Rules.
 
@@ -144,7 +144,7 @@ Where to cut.
 
 - Never cut into a sentence: start a beat before the first word you want, end after the reaction to it.
 - End on the payoff, never just before it. Ending a beat before the thing everyone was waiting for is the worst cut you can make.
-- A moment that only makes sense because of something earlier needs that earlier thing in the cut as well, or neither of them belongs in it.`
+- A moment that only makes sense because of something earlier needs that earlier thing in the cut as well, or neither of them belongs in it.` + cutSpeech + fxRules
 
 const suggestSystem = `You choose the moments for a highlight video of a gaming session, cut for YouTube. Someone who was not there should enjoy it from start to finish.
 
@@ -154,7 +154,7 @@ You get the whole session as one timeline, [mm:ss] then who, then the line. The 
   [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it, so a good NARRATOR line is worth cutting for.
 
 Return strict JSON, nothing else:
-{"segments":[{"start":<sec>,"end":<sec>}]}
+{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
 
 Rules.
 
@@ -180,7 +180,7 @@ What goes in.
 Where to cut.
 
 - Never cut into a sentence: start a beat before the first word you want, end after the reaction to it.
-- Give a joke its setup, and end on the payoff, never just before it. Ending a beat before the thing everyone was waiting for is the worst cut you can make.`
+- Give a joke its setup, and end on the payoff, never just before it. Ending a beat before the thing everyone was waiting for is the worst cut you can make.` + cutSpeech + fxRules
 
 // ratingSystem is the cut for a session whose shape is a verdict: a group plays
 // several things and ranks them. suggestSystem cuts for the best moments, which
@@ -207,7 +207,7 @@ You get the whole session as one timeline, [mm:ss] then who, then the line. The 
   [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it, so a good NARRATOR line is worth cutting for.
 
 Return strict JSON, nothing else:
-{"segments":[{"start":<sec>,"end":<sec>}]}
+{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
 
 Rules.
 
@@ -235,7 +235,7 @@ Priorities.
 - Coverage beats highlights. An item with no segment is a hole the ending falls through: when length is tight, give every item something short rather than some of them something generous.
 - Spare length goes to the items the group argued about or changed their mind on, and to funny lines that land on items you cover anyway.
 - End a segment on the judgement -- someone saying what they think -- not the moment the action stops.
-- Never cut into a sentence, and never invent a moment, a name or a score. If the timeline does not show where an item was rated, take the nearest stretch where it is discussed.`
+- Never cut into a sentence, and never invent a moment, a name or a score. If the timeline does not show where an item was rated, take the nearest stretch where it is discussed.` + cutSpeech + fxRules
 
 // shortsStyleName is how the Shorts wording is picked and stored; the style
 // clamp in suggestClicked reads the same name, so the two cannot drift apart.
@@ -298,8 +298,8 @@ func (a *App) styleTarget(key, name string) {
 // checked against the target before answering, and suggestWindow holds a
 // Short to a fifth over the target where other styles get half.
 //
-// This is the one style whose cut gets effects, asked for in the same reply
-// as the segments: choosing what to cut and whether to decorate it is one
+// Its effects are asked for in the same reply as the segments, as every style's
+// now are (fxRules): choosing what to cut and whether to decorate it is one
 // judgement, made once. What keeps them lined up is downstream -- the audit
 // reads the effects back against the segments as it corrects them
 // (fxchecks), and clampFxToSegs holds whatever survives to the cut as
@@ -314,7 +314,7 @@ You get the whole session as one timeline, [mm:ss] then who, then the line. The 
   [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it.
 
 Return strict JSON, nothing else:
-{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"}]}
+{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
 
 The plan. Budget the seconds before you touch the timeline.
 
@@ -339,8 +339,66 @@ Effects.
 - fx decorates the cut. Every effect lies inside one of your segments; one outside them is thrown away.
 - Two or three across the whole Short is plenty; an empty list is fine for a clip that carries itself.
 - zoom is a centre punch-in: put the eye on the thing that matters at the moment it matters. Two to four seconds.
+- text is a caption on screen: phones are watched with the sound off, so caption the key line or the punchline. Under about eight words.
 - speed rescales the clock: rate 0.5 for the one impact worth savouring, 2 or more to rush a stretch the viewer does not need.
-- text is a caption on screen: phones are watched with the sound off, so caption the key line or the punchline. Under about eight words.`
+- stop holds the picture still while the sound runs on, for a second on the face or the score. At most one, on the beat the clip is about.
+- volume is how loud those seconds are -- 1 is as recorded, 0.5 half, 2 twice, 10 the most, 0 silent -- for a line recorded too quiet to hear on a phone in public.` + cutSpeech
+
+// fxRules is the effects half of a cut prompt, shared by the three styles that
+// cut for a screen rather than for a phone. Shorts keeps its own wording: two
+// or three effects on a 25-second clip watched with the sound off is a
+// different instruction from a handful spread over five minutes with the sound
+// on, and one paragraph trying to cover both would say neither well.
+//
+// It is appended rather than written out three times because it is the same
+// instruction three times. The reply shape is not in here, though -- the fx
+// array sits inside the JSON line each style spells out where its own rules
+// begin, and that line has to read as one object.
+//
+// The notes come first in it on purpose. What to do with a dull stretch is
+// exactly what the editor writes down -- "the boring parts you can speed up
+// and show instead of cutting them" -- and that sentence is an instruction
+// about the SEGMENTS as much as about the effects: the stretch has to be kept
+// for there to be anything left to speed up. A model told to decorate a cut it
+// has already chosen cannot act on it; told both at once, it can.
+//
+// One paragraph or bullet per line, unwrapped: see describeSystem.
+// cutSpeech is how to read the spoken lines, and it is the same paragraph for
+// every style -- Shorts included, which is why it is not part of fxRules.
+//
+// The session decides it and only the editor knows which session this is: on
+// most recordings the speech is the video, and on some the person recording is
+// telling whoever cuts it what to do -- "this bit is boring", "speed this up
+// from here". The same sentence read the wrong way is the worst answer this
+// app can give, because it is a confident one: a direction kept as content
+// puts the editor's asides in the video, and content read as directions
+// throws the video away. So the prompt does not guess. It reads the notes,
+// and with no notes it takes the speech as content, which is what a recording
+// is unless someone says otherwise.
+//
+// One paragraph or bullet per line, unwrapped: see describeSystem.
+const cutSpeech = `
+
+What the speech is.
+
+- ABOUT THIS SESSION says how to read the spoken lines. They are content -- the speakers are in the video, what they say is why a moment is worth keeping, and a caption may quote them -- unless the notes say they are directions.
+- Directions are someone talking to whoever cuts this: "this part is boring", "speed this up", "the good bit starts here". Where the notes say the speech is directions, do what it asks at the second it asks -- and keep the words out of the video: never caption them, and never keep a stretch just because it was spoken over.
+- A session can be both, and the notes say which speaker is which. Follow the one and cut for the other.
+- With no notes about it, the speech is content.`
+
+const fxRules = `
+
+Effects.
+
+- fx decorates the cut: a punch-in, a change of pace, a caption. Every effect lies inside one of your segments -- one outside them is thrown away.
+- The session notes outrank everything below. If ABOUT THIS SESSION says what to do with a kind of stretch -- speed the dull parts up and show them instead of cutting them, caption each thing as it is named, punch in on what is being talked about -- that is the instruction, and follow it wherever the stretch it describes occurs. It decides segments too: a stretch the notes want shown fast has to BE in the cut, as a segment with a speed effect over it, or there is nothing left to speed up.
+- Otherwise: few and deliberate, three or four across five minutes of finished video, each with a reason you could say out loud. An effect on every segment is a video that fidgets, and a cut with none at all is one nobody finished.
+- Pick the kind by what the moment needs, not by variety. Something important on screen and easy to miss -> zoom onto it. A viewer who would not know what is happening -> text saying it. A stretch that must be shown but not watched -> speed. The one beat worth landing on -> stop. Sound that does not sit right against the rest -> volume.
+- zoom is a centre punch-in: put the eye on the thing that matters at the moment it matters -- the score, the face, the mistake -- while the speech is about it. Two to four seconds.
+- text is a caption on screen: the name of a thing as it is first shown, the number someone just said, what is going on when the footage does not say it out loud. Under about eight words, over the seconds it belongs to. A zoom onto something worth pointing at is often worth a caption naming it.
+- speed rescales the clock. Above 1 rushes a stretch that has to be shown but not watched -- the walk back, the loading screen, the setup being built: 2 over a few seconds of it, 4 to 8 over a minute of it. 0.5 stretches the one impact worth savouring, and once in a video is enough.
+- stop holds the picture still while the sound runs on: a second or two on the face, the score, the moment it went wrong. One per video, on the beat everything else was leading to.
+- volume is how loud those seconds are -- 1 is as recorded, 0.5 half, 2 twice, 10 the most, 0 silent. For a stretch that was recorded too quiet to hear or loud enough to hurt, for ducking a noisy background under a line that matters, and for muting seconds the session says are not to be heard. Not a fade: the cut does its own.`
 
 // cutSeg is one piece of the finished video. Normally it is a stretch of the
 // session: S and E are session seconds and the footage under them is what plays.
@@ -1426,6 +1484,7 @@ func (ed *cutEditor) setPlayhead(t float64) {
 	ed.cancelHold()
 	ed.syncFxHold() // and an effect being aimed is being aimed at THIS frame
 	ed.showTime()
+	ed.syncPlayGain() // the line may have landed inside a volume effect
 	if v := ed.videoAt(t); v != nil && ed.player != nil {
 		wasPlaying := ed.player.playing
 		// before the seek, never after: a rate only takes hold at a seek, and
@@ -1729,6 +1788,18 @@ func (ed *cutEditor) reLive(t float64) {
 // instant-rate-change seek would not, but support for it varies by element and
 // a preview that silently keeps the old rate is worse than one that stutters
 // for a frame at the edge of an effect.
+// syncPlayGain puts the preview at the loudness the volume effects give the
+// second under the line, on top of whatever the slider says (SetFxGain). The
+// preview's half of a volume effect, and the reason it is beside syncPlayRate
+// rather than inside it: a gain needs no seek to take hold, so it can be set
+// while the picture is stopped, which is what makes scrubbing across a boosted
+// stretch sound like the boosted stretch.
+func (ed *cutEditor) syncPlayGain() {
+	if ed.player != nil {
+		ed.player.SetFxGain(fxGainAt(ed.fx, ed.playhead))
+	}
+}
+
 func (ed *cutEditor) syncPlayRate() {
 	if ed.player == nil || !ed.player.SetRate(fxRateAt(ed.fx, ed.playhead)) {
 		return
@@ -1834,6 +1905,7 @@ func (ed *cutEditor) followPlayback() bool {
 			}
 		}
 		ed.syncPlayRate()   // the line has crossed into or out of a speed effect
+		ed.syncPlayGain()   // and into or out of a volume one
 		ed.revealPlayhead() // playback runs the line off the view; recenter and follow
 		ed.redrawTracks()
 	}
@@ -4408,10 +4480,10 @@ func (a *App) buildCut() gtk.Widgetter {
 			ed.aspectChanged(fxAspects[i])
 		}
 	})
-	// The four effects behind one dropdown -- a menu of verbs, not a state:
+	// The five effects behind one dropdown -- a menu of verbs, not a state:
 	// picking one fires it and the control snaps back to its label, so the
 	// notify below re-enters once with 0 and leaves.
-	fxKinds := []string{"✚ Effect", "⊕ Zoom", "❝ Text", "▨ SVG", "⏩ Speed"}
+	fxKinds := []string{"✚ Effect", "⊕ Zoom", "❝ Text", "▨ SVG", "⏩ Speed", "🔊 Volume"}
 	fxDD := gtk.NewDropDownFromStrings(fxKinds)
 	fxDD.SetTooltipText("put an effect in: ⊕ Zoom frames what the video shows — drag a box on " +
 		"the preview and say how long; when its seconds are up the camera either pulls back " +
@@ -4423,7 +4495,10 @@ func (a *App) buildCut() gtk.Widgetter {
 		"up to 100× to run through dead air, or ×0 to stop the picture on one frame while the " +
 		"footage runs on underneath. On the preview " +
 		"the box under the pointer can be dragged and its border resized; click its mark in " +
-		"the lane below the track for its numbers")
+		"the lane below the track for its numbers. 🔊 Volume is the one that changes nothing " +
+		"you can see: the seconds it covers are played louder or quieter than they were " +
+		"recorded, anywhere from silent to ten times, which is how a passage nobody can " +
+		"hear is rescued without touching the rest")
 	fxDD.NotifyProperty("selected", func() {
 		i := int(fxDD.Selected())
 		if i <= 0 {
@@ -4439,6 +4514,8 @@ func (a *App) buildCut() gtk.Widgetter {
 			a.svgClicked()
 		case 4:
 			a.speedClicked()
+		case 5:
+			a.volumeClicked()
 		}
 	})
 
@@ -4531,6 +4608,12 @@ func (a *App) buildCut() gtk.Widgetter {
 	// never has to land on one exact button to scrub
 	bar.AddController(ed.wheelFrames())
 	bar.Append(col(linked(ed.playBtn, ed.cutPlayBtn, prev5, prevF, nextF, next5), ed.clock))
+	// how loud the preview is, next to the two ▶s that use it -- the run bar
+	// at the bottom of the window has one too, and both are the same number
+	// (volumeCtl). Here as well as there because this is the page a cut is
+	// listened to on, and reaching past the timeline to a slider on the status
+	// bar is a long way to go to turn the game down
+	bar.Append(volumeCtl())
 	bar.Append(rule())
 	bar.Append(col(tgtBox, tgtLbl))
 	bar.Append(col(linked(add, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))
@@ -5943,9 +6026,7 @@ func (a *App) insertDir() string {
 		}
 	}
 	if len(wrote) > 0 {
-		a.logf(">>> put %s in %s — the built-in cards. They are ordinary files: edit them, "+
-			"or keep them as they are and fill them in when you insert one.",
-			strings.Join(wrote, ", "), dir)
+		a.logf(">>> wrote the built-in cards to %s: %s", dir, strings.Join(wrote, ", "))
 	}
 	return dir
 }
@@ -6197,9 +6278,8 @@ func (a *App) insertLength(path string) float64 {
 			break
 		}
 		if svgHasCSSAnimation(b) && !svgAnimated(b) {
-			a.logf(">>> %s asks for a CSS animation whose @keyframes are not in the file — "+
-				"it will be a still. Both are read: @keyframes and SMIL (<animate>, "+
-				"<animateTransform>).", insBase(path))
+			a.logf(">>> %s: a CSS animation with no @keyframes in the file — drawn as a still",
+				insBase(path))
 		}
 		if root, err := parseSVG(b); err == nil {
 			if d := svgDuration(root); d > 0 {
