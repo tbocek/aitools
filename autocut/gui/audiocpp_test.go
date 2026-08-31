@@ -292,7 +292,7 @@ func TestEnsureAudioModelsNamesWhatIsMissing(t *testing.T) {
 	fail := func(t *testing.T, models string, wants ...string) {
 		t.Helper()
 		a, _ := fakeAudio(t, models, answer(""))
-		err := a.ensureAudioModels()
+		err := a.ensureAudioModels(false)
 		if err == nil {
 			t.Fatalf("%s passed the preflight", models)
 		}
@@ -304,7 +304,7 @@ func TestEnsureAudioModelsNamesWhatIsMissing(t *testing.T) {
 	}
 
 	a, _ := fakeAudio(t, asrModels, answer(""))
-	if err := a.ensureAudioModels(); err != nil {
+	if err := a.ensureAudioModels(false); err != nil {
 		t.Fatalf("a server with both models was rejected: %v", err)
 	}
 
@@ -316,6 +316,44 @@ func TestEnsureAudioModelsNamesWhatIsMissing(t *testing.T) {
 	fail(t, `{"id":"nemotron-asr","family":"nemotron_asr","task":"asr"},`+
 		`{"id":"sortformer-diar","family":"sortformer_diar","task":"asr"}`,
 		defDiarModel, "diar")
+}
+
+// TestTheSeparationModelIsOnlyRequiredWhenSomethingAskedToBeSplit: every stack
+// this runs against has the ASR and the diarizer; hardly any has a separation
+// model until somebody installs one for this. Demanding it of a session that
+// flagged nothing would be refusing to start over a model nothing would call.
+func TestTheSeparationModelIsOnlyRequiredWhenSomethingAskedToBeSplit(t *testing.T) {
+	a, _ := fakeAudio(t, asrModels, answer(""))
+	if err := a.ensureAudioModels(false); err != nil {
+		t.Fatalf("a session that flagged nothing was refused: %v", err)
+	}
+	err := a.ensureAudioModels(true)
+	if err == nil {
+		t.Fatal("a session that asked to be split started without a model to split with")
+	}
+	for _, w := range []string{defSepModel, "bs_roformer_q8_0", "audiocpp-server.json"} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("the error drops %q: %v", w, err)
+		}
+	}
+
+	// present, but declared for something else: the entry was copied from the
+	// diarizer's and the task went with it
+	b, _ := fakeAudio(t, asrModels+`,{"id":"bs-roformer","family":"bs_roformer","task":"diar"}`,
+		answer(""))
+	err = b.ensureAudioModels(true)
+	if err == nil {
+		t.Fatal("a model declared for diarization was accepted for separation")
+	}
+	if !strings.Contains(err.Error(), `"sep"`) {
+		t.Errorf("the error does not say what the task should be: %v", err)
+	}
+
+	c, _ := fakeAudio(t, asrModels+`,{"id":"bs-roformer","family":"bs_roformer","task":"sep"}`,
+		answer(""))
+	if err := c.ensureAudioModels(true); err != nil {
+		t.Fatalf("a server with all three models was rejected: %v", err)
+	}
 }
 
 // TestCatalogIDsIsStable: these names go into error messages, and a message

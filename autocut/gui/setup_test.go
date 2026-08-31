@@ -327,6 +327,7 @@ func TestConfRoundTrip(t *testing.T) {
 		ASRModel:  "whisper-large",
 		DiarModel: "sortformer-8spk",
 		TTSModel:  "kokoro-82m",
+		SepModel:  "mel-band-roformer",
 		SD:        "http://127.0.0.1:1234",
 		SDKey:     "sd-secret",
 	}
@@ -410,15 +411,15 @@ func TestTestAllIsEveryTestOnce(t *testing.T) {
 			t.Errorf("setup.go does not contain %q", want)
 		}
 	}
-	// one registration per Test button: eight rows have one, and Fetch models
+	// one registration per Test button: nine rows have one, and Fetch models
 	// is not a test and must not be swept into a run against a typed-half URL
-	if got := strings.Count(src, "hook(test"); got != 8 {
-		t.Errorf("setup.go hooks %d test buttons, want 8 — if a row was added, "+
+	if got := strings.Count(src, "hook(test"); got != 9 {
+		t.Errorf("setup.go hooks %d test buttons, want 9 — if a row was added, "+
 			"check its Test joined runAll (it does if it went through hook)", got)
 	}
 	// left of the spring, Cancel and Save right of it: the sweep sits apart
 	// from the verbs that close the dialog, so a reach for Save cannot land on
-	// eight network calls
+	// nine network calls
 	i, j := strings.Index(src, "btns.Append(testAll)"), strings.Index(src, "btns.Append(cancel)")
 	if i < 0 || j < 0 || i > j {
 		t.Error("Test All is not laid out left of Cancel/Save in the button row")

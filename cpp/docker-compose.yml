@@ -110,8 +110,13 @@ services:
       # API and browser UI both live here -- http://127.0.0.1:8765/
       - "127.0.0.1:8765:8080"
     environment:
-      # the backend comes from audiocpp-server.json ("hip"). The realtime
-      # capture path drives portaudio server-side, same as vc2.
+      # the backend comes from audiocpp-server.json ("hip"), and so does
+      # "threads": 8. That file takes no comments, so the reason lives here: the
+      # server defaults it to 1, and every model's STFT/ISTFT is host code sized
+      # by it, so separation was running its whole FFT half on one core of
+      # sixteen. 8 rather than 16 because ffmpeg is usually working here too and
+      # those loops are memory-bound on a part that shares bandwidth with the
+      # GPU. The realtime capture path drives portaudio server-side, same as vc2.
       - PULSE_SERVER=unix:/run/user/1000/pulse/native
     volumes:
       # MODELS_ROOT is <repo>/models; GGUF packages land here from the UI's
@@ -124,12 +129,10 @@ services:
       - /mnt/models/vc:/mnt/models/vc:ro
       - /run/user/1000/pulse/native:/run/user/1000/pulse/native
       - /home/draft/.config/pulse/cookie:/home/arch/.config/pulse/cookie:ro
-      # Same path inside and out, for anything that still hands this server a
-      # path. autocut no longer does: it POSTs the bytes to /v1/ui/upload and
-      # names the path that comes back, which is why a project on /mnt/Recordings
-      # works without being listed here. Kept for the CLI and for driving the
-      # server by hand, where a path is still the only way in.
-      - ${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}:${AUTOCUT_DIR:-/home/draft/git/aitools/autocut}
+      # No recording of ours is mounted, on purpose: this server opens none of
+      # our files. autocut POSTs the bytes to /v1/ui/upload and names the path
+      # that comes back, so a project anywhere on disk works. Driving the server
+      # by hand with a path is the one thing that still needs a mount added here.
       - ./audiocpp-server.json:/etc/audiocpp-server.json:ro
     # --ui serves the browser UI off this same port; --ui-management lets it
     # load and unload models, which is the only way to change what this server

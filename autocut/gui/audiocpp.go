@@ -341,7 +341,12 @@ func (a *App) diarSpans(wav string) ([]span, error) {
 // ensureAudioModels is Prepare's preflight. The step is minutes of ffmpeg before
 // the first model call, and "no such model" is worth hearing at the start of
 // that rather than at the end of it.
-func (a *App) ensureAudioModels() error {
+//
+// The separation model is only asked for when a row asked to be split. It is
+// the one model here that most servers will not have -- the other three are
+// what this stack is for -- and refusing to start a session that never wanted
+// it would be refusing over a model nothing was going to call.
+func (a *App) ensureAudioModels(sep bool) error {
 	if err := a.ensureAudioServer(); err != nil {
 		return err
 	}
@@ -350,10 +355,15 @@ func (a *App) ensureAudioModels() error {
 	if err != nil {
 		return err
 	}
-	for _, want := range []struct{ id, def, task, pkg string }{
+	wants := []struct{ id, def, task, pkg string }{
 		{c.ASRModel, defASRModel, "asr", "nemotron_asr_q8_0"},
 		{c.DiarModel, defDiarModel, "diar", "sortformer_diar_4spk_v1_q8_0"},
-	} {
+	}
+	if sep {
+		wants = append(wants, struct{ id, def, task, pkg string }{
+			c.SepModel, defSepModel, "sep", "bs_roformer_q8_0"})
+	}
+	for _, want := range wants {
 		m, ok := cat[want.id]
 		if !ok {
 			// the package name only fits the model this ships expecting; for a

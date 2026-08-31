@@ -96,6 +96,10 @@ type ProjectSource struct {
 	Path     string `json:"path"`
 	Footage  bool   `json:"footage,omitempty"`
 	Narrator int    `json:"narrator,omitempty"`
+	// the wish, not the result: it is saved because a project closed before ▶
+	// has to open with the same rows still flagged, and it is cleared by the
+	// run that grants it, so a finished project stores nothing here
+	SepVoice bool `json:"sepvoice,omitempty"`
 }
 
 // relToRoot stores a folder the way a project file wants it: relative when it
@@ -206,6 +210,7 @@ func (a *App) currentProject() Project {
 	for _, it := range a.srcList.items {
 		srcs = append(srcs, ProjectSource{
 			Path: a.relToRoot(it.path), Footage: it.footage, Narrator: it.narrator,
+			SepVoice: it.sepVoice,
 		})
 	}
 	return Project{
@@ -241,6 +246,7 @@ func (a *App) projectSources(p Project) []sourceItem {
 		for _, s := range p.Sources {
 			out = append(out, sourceItem{
 				path: a.fromRoot(s.Path), footage: s.Footage, narrator: s.Narrator,
+				sepVoice: s.SepVoice,
 			})
 		}
 		return out

@@ -37,11 +37,14 @@ RUN cd /home/arch/audio.cpp && for p in /home/arch/patches/*.patch; do \
         echo "applying $(basename $p)" && git apply --verbose "$p" || exit 1; \
     done
 
-# Same ROCm-from-AUR layout as Dockerfile.llama (rocm-gfx1151-bin in arch:latest).
+# Same ROCm-from-AUR layout as Dockerfile.llama (rocm-gfx1151-bin in arch:latest),
+# minus its ROCBLAS_USE_HIPBLASLT=1: that tells rocBLAS to dispatch through
+# hipBLASLt, which is the opposite of what the Strix Halo build flag below asks
+# for. Setting both would leave the GEMM path decided at runtime by whichever
+# was read last, which is not a thing anyone should have to reason about.
 ENV ROCM_PATH=/opt/rocm/core \
     HIP_PATH=/opt/rocm/core \
-    PATH="/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:${PATH}" \
-    ROCBLAS_USE_HIPBLASLT=1
+    PATH="/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:${PATH}"
 
 # HIP + Vulkan in one binary, like the llama build: the backend is picked at
 # runtime ("hip" / "vulkan" in the server config), so A/B-ing the two on
@@ -54,9 +57,19 @@ ENV ROCM_PATH=/opt/rocm/core \
 # the server still links, serving a placeholder page instead -- so the guard
 # below fails the build loudly rather than shipping an empty UI.
 RUN test -s /home/arch/audio.cpp/webui/native/dist/index.html
+
+# ENGINE_HIP_STRIX_HALO_OPTIMIZATIONS is upstream's opt-in for exactly this GPU;
+# it refuses to configure unless the target list is precisely gfx1151. Read what
+# it buys before trusting it: the compile definition it sets is used in one file,
+# qwen3_tts/tokenizer_speech_decoder.cpp, where it caches two decoder graphs --
+# and we run no qwen3_tts model. What does reach every model is its other half,
+# forcing GGML_HIP_HIPBLASLT=OFF so GEMM goes through rocBLAS; upstream measured
+# hipBLASLt about 3 s slower on gfx1151, but measured it on that same decoder.
+# So this is an A/B on our own models, not a settled win. Drop the line to undo.
 RUN cd /home/arch/audio.cpp && cmake -S . -B build \
     -DENGINE_ENABLE_HIP=ON \
     -DGPU_TARGETS=gfx1151 \
+    -DENGINE_HIP_STRIX_HALO_OPTIMIZATIONS=ON \
     -DENGINE_ENABLE_VULKAN=ON \
     -DENGINE_ENABLE_CUDA_GRAPHS=OFF \
     -DCMAKE_C_COMPILER=/opt/rocm/core/lib/llvm/bin/clang \

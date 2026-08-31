@@ -470,17 +470,12 @@ func spansFrom(b []byte) ([]span, error) {
 
 // ingest is the first half of Prepare: every source transcribed, and a
 // frame out of the footage every few seconds. It is called by prepare
-// (prep.go), which owns the goroutine, the run controls and the log lines for
-// both halves -- this is only the work.
+// (prep.go), which owns the goroutine, the run controls, the preflight on the
+// server's models and the log lines for both halves -- this is only the work.
 
 func (a *App) ingest(videos, audios []string, interval float64, scaleName, scaleVF string) error {
 	inDir := filepath.Join(a.outDir, "step1")
 	if err := os.MkdirAll(inDir, 0o755); err != nil {
-		return err
-	}
-	// the models are the server's to load, but that it HAS them is worth
-	// finding out now rather than after the frame extraction
-	if err := a.ensureAudioModels(); err != nil {
 		return err
 	}
 	// progress plan: half the bar each. This step is two jobs -- speech

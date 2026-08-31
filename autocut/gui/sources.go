@@ -15,7 +15,9 @@ package main
 //	footage   -- frames come out of it; it is a video to describe, cut and render
 //	narrator  -- slot 1..4: whose voice this recording is
 //
-// The roles are independent, and a row can carry neither. Everything in the
+// The roles are independent, and a row can carry neither. A row also carries
+// one wish -- split the voice off -- which is not a role but a job for ▶, and
+// which turns one row into two: the recording without its voice, and the voice. Everything in the
 // list is transcribed either way -- that is the point of having the other
 // players' chatter in here: it belongs in the timeline without belonging to
 // anyone we narrate as. What a narrator slot adds is identity: narrator 1 is
@@ -88,6 +90,11 @@ type sourceItem struct {
 	path     string
 	footage  bool
 	narrator int // 0 = untagged, 1..narratorSlots
+	// sepVoice asks for the voice to be split off this recording. It is a
+	// WISH, not a state: nothing has happened until Prepare runs, and once it
+	// has, the wish is spent -- the row then points at the voiceless file and
+	// the voice is a row of its own, so there is nothing left to ask for.
+	sepVoice bool
 }
 
 func (it sourceItem) name() string { return filepath.Base(it.path) }
@@ -198,6 +205,30 @@ func (s *sourceList) setFootage(i int, on bool) {
 	}
 	s.items[i].footage = on
 	s.changed()
+}
+
+// setSepVoice flags a row for voice separation, or unflags it. Only the wish
+// is stored: the models are the server's and the work is minutes long, so the
+// button cannot do it -- ▶ does, and until then this is reversible with a
+// second click, which is the whole reason it is a flag and not an action.
+func (s *sourceList) setSepVoice(i int, on bool) {
+	if i < 0 || i >= len(s.items) || s.items[i].sepVoice == on {
+		return
+	}
+	s.items[i].sepVoice = on
+	s.changed()
+}
+
+// sepVoiceWanted is the list as the separator reads it: every path still
+// waiting for its voice to be lifted off.
+func (s *sourceList) sepVoiceWanted() []string {
+	var out []string
+	for _, it := range s.items {
+		if it.sepVoice {
+			out = append(out, it.path)
+		}
+	}
+	return out
 }
 
 // cycleNarrator is what the microphone button does: step to the next free slot,
@@ -398,6 +429,20 @@ func (s *sourceList) row(i int) *gtk.Box {
 	lbl.SetEllipsize(pango.EllipsizeMiddle)
 	lbl.SetTooltipText(it.path) // sources come from anywhere; the name alone can repeat
 
+	// split the voice off: the recording becomes two rows -- itself without the
+	// voice, and the voice on its own. A flag, because the separation is a
+	// model on the server and minutes of it, so the press that starts work is
+	// ▶ like every other minute this page spends. Toggled on it is loud, so a
+	// row waiting for it is visible from across the list.
+	sep := gtk.NewToggleButton()
+	sep.SetIconName("edit-cut-symbolic")
+	sep.AddCSSClass("flat")
+	sep.SetActive(it.sepVoice)
+	sep.SetTooltipText("Split the voice off — on ▶ this recording is separated into the\n" +
+		"voice and everything else. This row keeps everything else; the voice\n" +
+		"is added as a track of its own, so it can be cut and mixed apart.")
+	sep.ConnectToggled(func() { s.setSepVoice(i, sep.Active()) })
+
 	del := gtk.NewButtonFromIconName("user-trash-symbolic")
 	del.AddCSSClass("flat")
 	del.SetTooltipText("Remove from this session — the file itself is left alone")
@@ -422,6 +467,7 @@ func (s *sourceList) row(i int) *gtk.Box {
 			"into place with the right mouse button on the Cut page.")
 		row.Append(warn)
 	}
+	row.Append(sep)
 	row.Append(del)
 	return row
 }

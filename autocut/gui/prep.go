@@ -259,6 +259,7 @@ func (a *App) buildSources() *gtk.Box {
 	for _, l := range []struct{ icon, text string }{
 		{"camera-video-symbolic", "footage"},
 		{"audio-input-microphone-symbolic", "narrator"},
+		{"edit-cut-symbolic", "split voice off"},
 		{"user-trash-symbolic", "remove"},
 	} {
 		lbl := gtk.NewLabel(l.text)
@@ -550,6 +551,11 @@ func (a *App) startPrep(videos, audios []string, interval float64, scaleName, sc
 // requirement -- what a progress bar owes you is a direction, not an ETA.
 const prepInputsShare = 0.3
 
+// prepSepShare is the slice of that first third the voice splitting takes when
+// there is any to do. A third of it: the separation is one model pass over the
+// audio and the transcripts are two, over the same audio, plus every frame.
+const prepSepShare = 0.1
+
 // prepare is the whole press: the transcripts and the frames, then the
 // describing and the fixing. It reports whether the second half had begun,
 // which is what a ⏹ needs to know -- that is the half a restart throws away.
@@ -558,7 +564,28 @@ const prepInputsShare = 0.3
 // tracks that add up to a whole bar. qPhase is what puts each of them in its
 // own slice of it, so the needle crosses the middle once and never goes back.
 func (a *App) prepare(videos, audios []string, interval float64, scaleName, scaleVF string) (bool, error) {
-	a.qPhase(0, prepInputsShare)
+	// the models are the server's to load, but that it HAS them is worth
+	// finding out now rather than after the frame extraction -- and before the
+	// separation too, since that is the phase this step now opens with and the
+	// one asking for the model a server is least likely to have.
+	sep := len(a.sepWanted()) > 0
+	if err := a.ensureAudioModels(sep); err != nil {
+		return false, err
+	}
+	// the splitting goes first, because it changes what the rest of this is OF:
+	// a recording being split is not the file the frames come out of or the
+	// transcript is of -- the two files it becomes are. With nothing flagged
+	// this phase costs nothing and the two below are the two there always were.
+	sepAt := 0.0
+	if sep {
+		a.qPhase(0, prepSepShare)
+		var err error
+		if videos, audios, err = a.separateVoices(videos, audios); err != nil {
+			return false, err
+		}
+		sepAt = prepSepShare
+	}
+	a.qPhase(sepAt, prepInputsShare-sepAt)
 	if err := a.ingest(videos, audios, interval, scaleName, scaleVF); err != nil {
 		return false, err
 	}

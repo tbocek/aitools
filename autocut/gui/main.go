@@ -593,10 +593,17 @@ type App struct {
 	// step throws its half-written event logs away first. See resetDescribe.
 	undRestart bool
 
-	srcMu   sync.Mutex
-	selVid  []string              // snapshot of the session's sources, taken on the GUI
-	selAud  []string              // thread when a run starts: the footage, then the rest
-	selNarr [narratorSlots]string // ...and who was tagged as which narrator
+	srcMu sync.Mutex
+	// snapshot of the session's sources, taken on the GUI thread when a run
+	// starts. selItems is the whole of it and the other three are what the
+	// pipeline actually asks for, derived from it: the footage, then the rest,
+	// and who was tagged as which narrator. They are kept together because a
+	// run can rewrite the session -- splitting a voice off a recording turns
+	// one row into two -- and every one of them has to say so at once.
+	selItems []sourceItem
+	selVid   []string
+	selAud   []string
+	selNarr  [narratorSlots]string
 
 	// the editable system prompts. The views are the GUI thread's; promptTxt is
 	// the copy a runner reads, kept current by the buffers' changed handler --
@@ -965,13 +972,23 @@ func (a *App) snapSources() (vids, auds []string) {
 	if a.srcList == nil {
 		return a.snappedSources()
 	}
-	vids, auds = a.srcList.split()
+	return a.snapItems(append([]sourceItem(nil), a.srcList.items...))
+}
+
+// snapItems takes one list of sources as the run's snapshot and hands back the
+// two path lists the pipeline works from. It goes through a sourceList of its
+// own rather than reading the fields: what counts as footage and who holds a
+// narrator slot are that type's rules, and the run must not answer either
+// question differently from the page.
+func (a *App) snapItems(items []sourceItem) (vids, auds []string) {
+	l := sourceList{items: items} // the rules, without the widget
+	vids, auds = l.split()
 	var narr [narratorSlots]string
 	for n := 1; n <= narratorSlots; n++ {
-		narr[n-1] = a.srcList.narratorPath(n)
+		narr[n-1] = l.narratorPath(n)
 	}
 	a.srcMu.Lock()
-	a.selVid, a.selAud, a.selNarr = vids, auds, narr
+	a.selItems, a.selVid, a.selAud, a.selNarr = items, vids, auds, narr
 	a.srcMu.Unlock()
 	return
 }
@@ -980,6 +997,22 @@ func (a *App) snappedSources() (vids, auds []string) {
 	a.srcMu.Lock()
 	defer a.srcMu.Unlock()
 	return a.selVid, a.selAud
+}
+
+// snappedItems is the whole snapshot, for the one thing that rewrites it.
+func (a *App) snappedItems() []sourceItem {
+	a.srcMu.Lock()
+	defer a.srcMu.Unlock()
+	return append([]sourceItem(nil), a.selItems...)
+}
+
+// sepWanted is every source still waiting for its voice to be lifted off, from
+// the snapshot -- so the runner can ask without touching a widget.
+func (a *App) sepWanted() []string {
+	a.srcMu.Lock()
+	defer a.srcMu.Unlock()
+	l := sourceList{items: a.selItems}
+	return l.sepVoiceWanted()
 }
 
 // narratorPath is the recording tagged with slot n, from the snapshot -- so a

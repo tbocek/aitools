@@ -3,6 +3,7 @@
   "port": 8080,
   "backend": "hip",
   "device": 0,
+  "threads": 8,
   "lazy_load": true,
   "voice_dir": "/home/arch/audio.cpp/models/voices",
   "models": [
@@ -29,6 +30,13 @@
       "session_options": {
         "parakeet_tdt.offline_mode": "long_form"
       }
+    },
+    {
+      "id": "bs-roformer",
+      "family": "bs_roformer",
+      "path": "/home/arch/audio.cpp/models/BS-RoFormer-ep368-GGUF/bs-roformer-ep368-q8_0.gguf",
+      "task": "sep",
+      "mode": "offline"
     },
     {
       "id": "sortformer-diar",

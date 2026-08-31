@@ -80,6 +80,7 @@ type appConf struct {
 	Voices              string
 	ASRModel, DiarModel string
 	TTSModel            string
+	SepModel            string
 
 	// Which ffmpeg to shell out to. Blank -- the ordinary answer -- means the
 	// name alone, resolved off PATH like any other tool. A path is for the
@@ -119,6 +120,7 @@ const (
 	defASRModel  = "nemotron-asr"
 	defDiarModel = "sortformer-diar"
 	defTTSModel  = "index-tts2"
+	defSepModel  = "bs-roformer"
 )
 
 func or(v, def string) string {
@@ -139,6 +141,7 @@ func (c appConf) withDefaults() appConf {
 	c.ASRModel = or(c.ASRModel, defASRModel)
 	c.DiarModel = or(c.DiarModel, defDiarModel)
 	c.TTSModel = or(c.TTSModel, defTTSModel)
+	c.SepModel = or(c.SepModel, defSepModel)
 	return c
 }
 
@@ -180,6 +183,8 @@ func (a *App) readConf() appConf {
 			c.ASRModel = v
 		case "AUDIOCPP_DIAR_MODEL":
 			c.DiarModel = v
+		case "AUDIOCPP_SEP_MODEL":
+			c.SepModel = v
 		case "FFMPEG":
 			c.FFmpeg = v
 		case "AUDIOCPP_TTS_MODEL":
@@ -226,11 +231,13 @@ AUDIOCPP_API_KEY=%q
 # voice library. Nothing else is read from disk: model weights and their paths
 # are audiocpp-server.json's business, on the server's side.
 AUDIOCPP_VOICES=%q
-# The ids the server lists for its three jobs -- transcribe, tell speakers
-# apart, speak the narration.
+# The ids the server lists for its four jobs -- transcribe, tell speakers
+# apart, speak the narration, and split a voice off a recording. Only the last
+# is optional: nothing asks for it unless a source is flagged to be split.
 AUDIOCPP_ASR_MODEL=%q
 AUDIOCPP_DIAR_MODEL=%q
 AUDIOCPP_TTS_MODEL=%q
+AUDIOCPP_SEP_MODEL=%q
 
 # Which ffmpeg every step shells out to; empty means whichever one is on PATH,
 # which is what it should be unless this machine has more than one. ffprobe is
@@ -244,7 +251,7 @@ FFMPEG=%q
 SD_SERVER=%q
 SD_API_KEY=%q
 `, c.Server, c.Model, c.Key, ttsPort, c.TTS, c.TTSKey,
-		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel, c.FFmpeg,
+		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel, c.SepModel, c.FFmpeg,
 		sdPort, c.SD, c.SDKey)
 	return os.WriteFile(a.confPath(), []byte(body), 0o600)
 }
@@ -823,6 +830,8 @@ func (a *App) setupDialog() {
 		"Id of the voice-cloning model the narration is spoken through, exactly as the server lists it")
 	asrModel := entry(c.ASRModel, defASRModel, "Id of the speech-to-text model, exactly as the server lists it")
 	diarModel := entry(c.DiarModel, defDiarModel, "Id of the diarization model — the one that tells speakers apart")
+	sepModel := entry(c.SepModel, defSepModel,
+		"Id of the separation model — the one that lifts the voice off a recording")
 	testTTSMBtn := gtk.NewButtonWithLabel("Test")
 	testTTSMBtn.SetTooltipText("Check that the audio.cpp server serves this voice-cloning model")
 	ttsmBadge := newTestBadge()
@@ -849,6 +858,17 @@ func (a *App) setupDialog() {
 		return fmt.Sprintf("asking %s for %q …", url, id),
 			func() (string, error) {
 				return testAudioModel(url, k, id, "diar", "tell speakers apart")
+			}
+	})
+
+	testSepBtn := gtk.NewButtonWithLabel("Test")
+	testSepBtn.SetTooltipText("Check that the audio.cpp server really serves this model, declared for separation")
+	sepBadge := newTestBadge()
+	hook(testSepBtn, sepBadge, "separation", func() (string, func() (string, error)) {
+		url, k, id := audioTarget(), ttsKey.Text(), or(sepModel.Text(), defSepModel)
+		return fmt.Sprintf("asking %s for %q …", url, id),
+			func() (string, error) {
+				return testAudioModel(url, k, id, "sep", "split a voice off a recording")
 			}
 	})
 
@@ -881,6 +901,7 @@ func (a *App) setupDialog() {
 			Voices:    c.Voices,
 			ASRModel:  asrModel.Text(),
 			DiarModel: diarModel.Text(),
+			SepModel:  strings.TrimSpace(sepModel.Text()),
 			TTSModel:  strings.TrimSpace(ttsm.Text()),
 			SD:        strings.TrimRight(strings.TrimSpace(sd.Text()), "/"),
 			SDKey:     sdKey.Text(),
@@ -1002,8 +1023,9 @@ func (a *App) setupDialog() {
 	// no server of its own: Prepare talks to the one named above. What is left
 	// is which of its models to ask -- what language to ask them in is the
 	// project's, on the Inputs page, where the footage it describes is
-	grid.Attach(head("Listening", "Speech-to-text and diarization -- who said what, and who "+
-		"is who -- on the same audio.cpp server as Speaking above, so there is no second "+
+	grid.Attach(head("Listening", "Speech-to-text, diarization -- who said what, and who "+
+		"is who -- and splitting a voice off a recording, all on the same audio.cpp server "+
+		"as Speaking above, so there is no second "+
 		"address to keep.\n\nExpects POST /v1/tasks/run, and GET /v1/models to check the "+
 		"ids.\n\nThese are model ids as the server lists them, not files: which weights they "+
 		"are, and on which backend, is set in audiocpp-server.json. Blank means the built-in "+
@@ -1017,6 +1039,7 @@ func (a *App) setupDialog() {
 	}{
 		{"ASR model:", asrModel, testASRBtn, asrBadge},
 		{"Diarization model:", diarModel, testDiarBtn, diarBadge},
+		{"Voice split model:", sepModel, testSepBtn, sepBadge},
 	} {
 		grid.Attach(lbl(row.name), 0, 12+i, 1, 1)
 		grid.Attach(row.w, 1, 12+i, 1, 1)
@@ -1033,13 +1056,13 @@ func (a *App) setupDialog() {
 		"/sdcpp/v1/img_gen for a job id, then GET /sdcpp/v1/jobs/{id} until the picture "+
 		"arrives.\n\nThere is no model box: sd-server loads one model when it starts and "+
 		"nothing Autocut sends can switch it, so Test reports which weights it found "+
-		"instead of holding it to a name."), 0, 14, 4, 1)
-	grid.Attach(lbl("Server:"), 0, 15, 1, 1)
-	grid.Attach(sd, 1, 15, 1, 1)
-	grid.Attach(sdBadge.stack, 2, 15, 1, 1)
-	grid.Attach(testSDBtn, 3, 15, 1, 1)
-	grid.Attach(lbl("API key:"), 0, 16, 1, 1)
-	grid.Attach(sdKey, 1, 16, 3, 1)
+		"instead of holding it to a name."), 0, 15, 4, 1)
+	grid.Attach(lbl("Server:"), 0, 16, 1, 1)
+	grid.Attach(sd, 1, 16, 1, 1)
+	grid.Attach(sdBadge.stack, 2, 16, 1, 1)
+	grid.Attach(testSDBtn, 3, 16, 1, 1)
+	grid.Attach(lbl("API key:"), 0, 17, 1, 1)
+	grid.Attach(sdKey, 1, 17, 3, 1)
 
 	// the dialog's one row of verbs: Test All on the left, because it acts on
 	// the rows above it and not on the dialog; Cancel and Save on the right,
@@ -1059,12 +1082,12 @@ func (a *App) setupDialog() {
 	btns.Append(spring)
 	btns.Append(cancel)
 	btns.Append(save)
-	grid.Attach(btns, 0, 17, 4, 1)
+	grid.Attach(btns, 0, 18, 4, 1)
 
 	// the log is the LAST row, below even the verbs: expanded it grows downward
 	// into space the dialog adds, instead of shoving the buttons off the bottom
 	// of the screen while a failure is being read
-	grid.Attach(logExp, 0, 18, 4, 1)
+	grid.Attach(logExp, 0, 19, 4, 1)
 
 	win.SetChild(grid)
 	win.SetVisible(true)
