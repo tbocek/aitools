@@ -1,7 +1,7 @@
 FROM arch:latest
 
 #https://github.com/leejet/stable-diffusion.cpp
-RUN git clone --recursive https://github.com/leejet/stable-diffusion.cpp 
+RUN git -c http.version=HTTP/1.1 clone --recursive https://github.com/leejet/stable-diffusion.cpp 
 RUN cd /home/arch/stable-diffusion.cpp/examples/server/frontend && pnpm install
 
 ENV ROCM_PATH=/opt/rocm/core \

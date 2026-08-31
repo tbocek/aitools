@@ -94,6 +94,7 @@ func TestAStreamedReplyIsReadableWhileItIsWritten(t *testing.T) {
 // keeps the narration working against anything OpenAI-compatible, streaming or
 // not.
 func TestAServerThatWillNotStreamStillAnswers(t *testing.T) {
+	ownConfig(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"entries\":[]}"}}]}`)

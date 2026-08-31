@@ -38,7 +38,7 @@ func TestOneEffectComesOutExactlyWhatItAskedFor(t *testing.T) {
 	if got := fxRateAt(stop, 11); got != 1 {
 		t.Errorf("the footage under a lone stop runs at ×%g, want ×1", got)
 	}
-	if applyFx([]cutSeg{{S: 0, E: 60}}, stop)[0] != (cutSeg{S: 0, E: 60}) {
+	if !sameSeg(applyFx([]cutSeg{{S: 0, E: 60}}, stop)[0], cutSeg{S: 0, E: 60}) {
 		t.Error("a lone stop cut the segments open")
 	}
 }

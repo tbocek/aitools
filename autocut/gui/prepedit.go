@@ -81,11 +81,14 @@ func prepRows() []prepRow {
 			"session was and what matters in it."},
 		{"Upload text", "youtube", "Gets the cut and the narration — no images — and " +
 			"answers with the YouTube title, the thumbnail instruction and the description."},
+		{"Improve", "improve", "How the Improve button answers: it gets your complaint, " +
+			"every prompt above, the run log and the recorded exchanges, and has to come " +
+			"back with why it did that and which sentence to change."},
 	}
 }
 
-// prepEditNames is the menu's rows, each wearing the ✎ that says this project
-// holds a wording of its own for it (promptOwned). The context never wears one:
+// prepEditNames is the menu's rows, each wearing the ✎ that says a wording of
+// your own is being held for it (promptOwned). The context never wears one:
 // it is this session's own text and there is nothing built-in for it to differ
 // from.
 func (a *App) prepEditNames() []string {
@@ -135,8 +138,8 @@ func (a *App) prepEditor() gtk.Widgetter {
 	// this; the context row has no built-in to differ from, so it stays empty.
 	mark := gtk.NewLabel("")
 	mark.AddCSSClass("dim-label")
-	mark.SetTooltipText("Your wording is stored in the project, so a newer built-in " +
-		"prompt will not replace it. Reset puts it back.")
+	mark.SetTooltipText("Your wording is kept in ~/.config/autocut/prompts, so a newer " +
+		"built-in prompt will not replace it. Reset puts it back.")
 
 	names := gtk.NewStringList(nil)
 	wording := gtk.NewDropDown(names, nil)
@@ -239,7 +242,7 @@ func (a *App) prepEditor() gtk.Widgetter {
 		if r.key == "" {
 			return
 		}
-		a.askName("Name this wording", "It joins the list for "+r.menu+" in this project.",
+		a.askName("Name this wording", "It joins the list for "+r.menu+" on this machine.",
 			func(name string) {
 				b := tv.Buffer()
 				a.savePromptStyle(r.key, name, b.Text(b.StartIter(), b.EndIter(), false))
@@ -258,7 +261,7 @@ func (a *App) prepEditor() gtk.Widgetter {
 			return
 		}
 		a.confirm("Remove the “"+name+"” wording?",
-			"It is stored in this project and nowhere else, so this is the only copy. "+
+			"It is in your settings folder and nowhere else, so this is the only copy. "+
 				"The box goes back to “"+promptDefFor(r.key).styleName()+"”.",
 			"Remove", func() {
 				a.dropPromptStyle(r.key, name)

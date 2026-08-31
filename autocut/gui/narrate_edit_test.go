@@ -164,32 +164,63 @@ func TestTheTimeFieldRoundTripsAndSorts(t *testing.T) {
 	}
 }
 
-func TestDeleteLineKeepsTheClipSpokenFor(t *testing.T) {
+// The trash removes the row it is pointed at. All of it, including the last
+// line on a clip -- that one used to turn into a blank "this clip plays its own
+// audio" row, so the button cleared the words, left a text box's worth of page
+// behind, and did nothing at all the second time it was pressed.
+//
+// What the blank row was protecting is staleFor, which reads coverage: a clip
+// with no line looks exactly like a clip the cut moved under, and ▶ would
+// rewrite the whole narration to fill it back in. The decision is still kept,
+// as a line in the file rather than a row on the page.
+func TestTheTrashRemovesTheRowAndRemembersTheClipIsQuiet(t *testing.T) {
 	n := editNarr(t)
-	// two lines on clip 1
 	n.entries = []narrEntry{
 		{S: 100, E: 130, At: 5, Text: "one"},
 		{S: 100, E: 130, At: 20, Text: "two"},
 		{S: 200, E: 260, At: 10, Text: "three"},
 	}
 
-	// a clip with two lines just loses one
+	// a clip with two lines just loses one, and is not marked quiet
 	n.deleteLine(0)
 	if len(n.entries) != 2 || n.entries[0].Text != "two" {
 		t.Fatalf("after deleting one of two lines: %+v", n.entries)
 	}
+	if len(n.silent) != 0 {
+		t.Errorf("a clip that still has a line was recorded as quiet: %+v", n.silent)
+	}
 
-	// a clip's last line becomes the silent marker, because staleFor reads
-	// coverage: a clip with no entry at all would make ▶ re-write everything
+	// the clip's last line goes too -- row and all
 	n.deleteLine(1)
-	if len(n.entries) != 2 {
-		t.Fatalf("deleting a clip's only line removed the clip's entry: %+v", n.entries)
+	if len(n.entries) != 1 || n.entries[0].S != 100 {
+		t.Fatalf("deleting a clip's only line left something behind: %+v", n.entries)
 	}
-	if e := n.entries[1]; e.S != 200 || e.E != 260 || e.Text != "" || e.At != 0 {
-		t.Fatalf("the clip's marker is %+v, want an empty entry on the same bounds", e)
+	if !silentFor(n.silent, cutSeg{S: 200, E: 260}) || len(n.silent) != 1 {
+		t.Fatalf("the emptied clip was not recorded as quiet exactly once: %+v", n.silent)
 	}
+	// and saying it twice does not say it twice
+	n.silent = markSilent(n.silent, cutSeg{S: 200, E: 260})
+	if len(n.silent) != 1 {
+		t.Errorf("the same clip was recorded quiet twice: %+v", n.silent)
+	}
+	// which is the whole point: ▶ must not decide the narration is stale and
+	// rewrite the line you just deleted
 	if why := n.staleFor(n.a.ed.segs); why != "" {
-		t.Fatalf("hand-deleting lines made the narration stale: %s", why)
+		t.Fatalf("hand-deleting a clip's last line made the narration stale: %s", why)
+	}
+	// and it survives the app being closed
+	n.save()
+	n.load()
+	if !silentFor(n.silent, cutSeg{S: 200, E: 260}) {
+		t.Errorf("the quiet clip was forgotten on reload: %+v", n.silent)
+	}
+	// putting a line back on it drops the note
+	if i := n.addLineAt(210); i < 0 {
+		t.Fatal("a line could not be added back to the emptied clip")
+	}
+	n.save()
+	if silentFor(n.silent, cutSeg{S: 200, E: 260}) {
+		t.Errorf("a clip narrated again is still carrying a note saying it is quiet: %+v", n.silent)
 	}
 }
 
@@ -354,14 +385,11 @@ func TestATypedTimeMovesTheLineToTheClipItNames(t *testing.T) {
 	}
 }
 
-// Every clip in the cut owns at least one entry -- an empty one where the
-// narration has nothing to say -- and the whole page rests on it: the row is
-// where a clip says "I play on my own audio", where a line can be put back, and
-// what staleFor counts when it decides whether ▶ must rewrite the narration.
-// Deleting a clip's last line has always kept the marker. Retyping its time
-// into another clip is the same departure and used to leave nothing behind, so
-// the clip vanished from the page altogether.
-func TestALineLeavingAClipLeavesTheRowBehind(t *testing.T) {
+// Retyping a line's time into another clip is a departure like deleting it: the
+// clip it left is empty, and staleFor reads an empty clip as one the cut moved
+// under. Either way the emptiness has to be recorded, or the next ▶ rewrites
+// the whole narration to fill a hole you made on purpose.
+func TestALineLeavingAClipLeavesItRecordedAsQuiet(t *testing.T) {
 	n := editNarr(t) // clips 100–130 and 200–260
 	n.entries = []narrEntry{
 		{S: 100, E: 130, At: 5, Text: "the only line on the first clip"},
@@ -371,17 +399,14 @@ func TestALineLeavingAClipLeavesTheRowBehind(t *testing.T) {
 	if !n.moveLine(0, 230) {
 		t.Fatal("a time in the next clip did not report a move")
 	}
-	// through the file, because that is where the page's memory lives: the move
-	// saves before the rows are rebuilt around it, so the marker is appended out
-	// of order and has to come back in it
+	// through the file, because that is where the page's memory lives
 	n.save()
 	n.load()
-	if len(n.entries) != 3 {
-		t.Fatalf("the abandoned clip left no marker: %+v", n.entries)
+	if len(n.entries) != 2 {
+		t.Fatalf("the move changed how many lines there are: %+v", n.entries)
 	}
-	mark := n.entries[0]
-	if mark.S != 100 || mark.E != 130 || strings.TrimSpace(mark.Text) != "" {
-		t.Errorf("the marker for clip 100–130 is %+v, want its bounds and no words", mark)
+	if !silentFor(n.silent, cutSeg{S: 100, E: 130}) {
+		t.Fatalf("the abandoned clip was not recorded as quiet: %+v", n.silent)
 	}
 	// ...and the page still agrees with the cut, which is what ▶ reads before
 	// deciding to rewrite every line
@@ -389,28 +414,13 @@ func TestALineLeavingAClipLeavesTheRowBehind(t *testing.T) {
 		t.Errorf("after the move the narration reads as stale: %s", why)
 	}
 
-	// a clip with another line left on it is not abandoned, so no marker
-	before := len(n.entries)
-	if !n.moveLine(2, 110) { // the later of the two lines on 200–260 goes back
+	// a clip with another line left on it is not abandoned, so no note
+	if !n.moveLine(1, 110) { // the later of the two lines on 200–260 goes back
 		t.Fatal("the line did not report a move")
 	}
-	if len(n.entries) != before {
-		t.Errorf("a clip that still has a line gained a marker: %+v", n.entries)
-	}
-
-	// a nudge inside the line's own clip is not a departure either
-	before = len(n.entries)
-	n.moveLine(0, 115)
-	if len(n.entries) != before {
-		t.Errorf("a nudge inside the clip grew the entries: %+v", n.entries)
-	}
-
-	// a line sitting on video the cut no longer has (an orphan) leaves no row
-	// for a clip that does not exist
-	n.entries = []narrEntry{{S: 500, E: 560, At: 3, Text: "written for a clip since removed"}}
-	n.moveLine(0, 210)
-	if len(n.entries) != 1 {
-		t.Errorf("an orphan line left a marker for a clip the cut does not have: %+v", n.entries)
+	n.save()
+	if silentFor(n.silent, cutSeg{S: 200, E: 260}) {
+		t.Errorf("a clip that still has a line was recorded as quiet: %+v", n.silent)
 	}
 }
 
@@ -432,10 +442,12 @@ func TestTheTransportIsWired(t *testing.T) {
 		"transport.Append(addBtn)",                            // ...from the transport row, not a row of its own
 		"n.holdForSynth(",                                     // an edited line is re-spoken the first time it plays
 		"n.deleteLine(i)",                                     // 🗑 per row
+		"n.focusLine(n.addLineAfter(i))",                      // the row's ＋ adds below it
+		"head.Append(add)",                                    // ...and is on the row, not merely built
 		"i := n.addLineAt(n.pos)",                             // the button adds at the playhead
 		"exists(a.ttsWav(e))",                                 // ▶'s speak pass skips what the cache already has
 		"n.rows[i].text.GrabFocus()",                          // a new line is ready to type into
-		"n.seekTo(math.Max(e.S, e.S+e.At-3))",                 // clicking a row cues its LINE, not its clip
+		"n.seekTo(n.leadIn(i))",                               // clicking a row cues its LINE, not its clip
 		"snapToCut(n.clips(), n.pos, n.pos-3, cutEdge)",       // ⏪ and ⏩ flank the play button
 		"snapToCut(n.clips(), n.pos, n.pos+3, cutEdge)",       // ...and land on the cut, not in a gap
 		"n.slider.SetRange(0, math.Max(0.001, cutLen(segs)))", // the bar IS the cut: removed footage is not on it
@@ -480,6 +492,16 @@ func TestTheTransportIsWired(t *testing.T) {
 	// (narrateRun), which is the batch version of the same rule.
 	if strings.Contains(src, "speakMissing") {
 		t.Error("a speak-changed button is back — first play is the re-speak")
+	}
+
+	// and deliberately NO second ＋ on the row. It existed to reach above a
+	// clip's first line, which is a real place to need -- but the transport's ＋
+	// already goes there, and better: it adds at the playhead, so the line is
+	// placed against the picture it has to land on rather than against a row.
+	// Two arrows on every row bought the same reach at the price of a sixth
+	// button on each of them.
+	if strings.Contains(src, "addLineBefore") {
+		t.Error("the row grew its second ＋ back — the transport's ＋ is the way above a line")
 	}
 }
 
@@ -869,5 +891,48 @@ func TestNarrateRefitsOnArrival(t *testing.T) {
 	}
 	if !strings.Contains(string(in), "n.staleFor(segs)") {
 		t.Error("the Inputs row does not say when the narration no longer answers the cut")
+	}
+}
+
+// TestASilencedLaneStaysSilentPastTheClipsEnd: the preview does not stop dead
+// at a clip's last frame. It holds past it while a line finishes speaking, and
+// it takes a seek and a preroll to skip the removed stretch after it. Those
+// seconds belonged to no scene, so the question "which lanes does this scene
+// hear" had no answer and every lane came back -- the recording's own voice,
+// silenced in the cut and replaced by the narration, spoke again underneath it.
+func TestASilencedLaneStaysSilentPastTheClipsEnd(t *testing.T) {
+	ed := &cutEditor{segs: []cutSeg{
+		{S: 10, E: 20, Quiet: []string{"mic"}},
+		{S: 30, E: 40},
+	}}
+	n := &narrator{a: &App{ed: ed}}
+	for _, c := range []struct {
+		what string
+		at   float64
+		want float64 // the S of the scene whose sound answer should be used
+	}{
+		{"inside the first clip", 15, 10},
+		{"just past its end, where a line is still talking", 20.4, 10},
+		{"in the removed stretch a seek is skipping", 25, 10},
+		{"inside the second clip", 35, 30},
+		{"past the last clip", 60, 30},
+		{"before the cut starts", 2, 10},
+	} {
+		s := n.heardScene(c.at)
+		if s == nil {
+			t.Errorf("%s: no scene, so every lane is heard", c.what)
+			continue
+		}
+		if s.S != c.want {
+			t.Errorf("%s: took the scene at %.0f, wanted the one at %.0f", c.what, s.S, c.want)
+		}
+	}
+	// and that answer is the one the preview's sound is set from
+	if own, quiet := hushOf(n.heardScene(20.4), "cam"); own || !laneQuiet(quiet, "mic") {
+		t.Errorf("the tail past a clip does not silence its lanes: own=%v quiet=%v", own, quiet)
+	}
+	if !strings.Contains(funcBody(t, "narrate.go", `func \(n \*narrator\) syncFxSound\(\)`),
+		"hushOf(n.heardScene(n.pos)") {
+		t.Error("the preview's sound is back on the playhead's own scene, so a gap hears everything")
 	}
 }

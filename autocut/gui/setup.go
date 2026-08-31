@@ -71,8 +71,12 @@ type appConf struct {
 
 	// What to ask the audio server for. The voices folder is the ONE folder
 	// autocut still reads -- the wavs the voice picker lists, and where "Add
-	// sample…" converts new ones into -- and it is set on the Narrate step,
-	// beside the list it fills, not in the settings dialog. Model weights are
+	// file…" converts new ones into -- and it has no box in the GUI at all: it
+	// is AUDIOCPP_VOICES in llm.conf, defaulting to defVoices, which is the
+	// same path the compose file mounts into the audio server. It had a row on
+	// the Narrate step, next to a scrolling list of voices; the list is a
+	// dropdown now and the row went with it, because pointing at a folder is
+	// not how a voice gets used here -- "Add file…" copies one in. Model weights are
 	// not read from anywhere here; their paths are audiocpp-server.json's
 	// business, on the server's side. The model ids are the server's own --
 	// what that json calls them -- and they are here rather than compiled in
@@ -145,25 +149,100 @@ func (c appConf) withDefaults() appConf {
 	return c
 }
 
-func (a *App) confPath() string { return filepath.Join(a.root, "llm.conf") }
+// confPath is the one config file for the machine: ~/.config/autocut/llm.conf,
+// or "" when there is nowhere to put it -- no HOME, no XDG_CONFIG_HOME. Not
+// per autocut root, which is where it used to be and was wrong twice over: the
+// endpoints are the same for every session this computer ever cuts, and a
+// session folder gets copied and zipped and handed around, so the key went
+// with it.
+func confPath() string {
+	d := configDir()
+	if d == "" {
+		return ""
+	}
+	return filepath.Join(d, "llm.conf")
+}
 
-// readConf is the whole config, with every blank filled by the built-in.
+// legacyConfPath is where the file used to be, beside the videos. Read when
+// the new one is not there yet, so a machine that has been cutting for months
+// keeps its endpoints without being asked to retype them; migrateConf copies
+// it across on the next launch.
+func (a *App) legacyConfPath() string {
+	// no session folder means nothing to look beside. Never a relative path,
+	// which is what filepath.Join would hand back: the config a program reads
+	// must not depend on the directory it happened to be started from.
+	if a.root == "" {
+		return ""
+	}
+	return filepath.Join(a.root, "llm.conf")
+}
+
+// globalConf is the whole file: this machine's endpoints, and the handful of
+// things autocut remembers between launches. One struct because it is one
+// file, and because writeGlobal writes the whole of it -- a caller that
+// changed one half has to hand the other half back unharmed, which is a rule
+// that is much harder to forget when both halves are in its hand.
+type globalConf struct {
+	appConf
+
+	// The named project last opened or saved, keyed by the autocut root it
+	// belongs to. Keyed rather than one path, because every path INSIDE a
+	// project file is relative to its root (see relToRoot): reopening last
+	// night's project from a different session folder would resolve its
+	// sources against the wrong directory and drop every one of them with a
+	// warning.
+	//
+	// Nothing prunes this map. Entries are one short string each, and a root
+	// that comes back after a month is exactly the case worth remembering.
+	Projects map[string]string
+
+	// Which wording each prompt is set to. The wordings themselves are files
+	// under prompts/ (globalPrompts); this is only the choice, which is one
+	// short name per job and belongs with the other short answers.
+	PromptPick map[string]string
+}
+
+// readGlobal parses the file. Every blank is filled by the built-in, so a
+// caller never has to ask whether a missing key means "default" or "empty".
+//
 // Callable from a runner's goroutine: it re-reads a small file rather than
 // sharing mutable state, which is also why a settings change takes effect on
 // the next step without a restart.
-func (a *App) readConf() appConf {
-	var c appConf
-	b, err := os.ReadFile(a.confPath())
+func (a *App) readGlobal() globalConf {
+	g := globalConf{Projects: map[string]string{}, PromptPick: map[string]string{}}
+	b, err := os.ReadFile(confPath())
 	if err != nil {
-		return c.withDefaults()
+		b, err = os.ReadFile(a.legacyConfPath())
 	}
-	legacyRoot := "" // AUDIOCPP_MODELS named the parent; voices/ was implied
+	if err != nil {
+		g.appConf = g.appConf.withDefaults()
+		g.Projects = loadSettings().Projects
+		storeFF(g.FFmpeg)
+		return g
+	}
+	c := &g.appConf
+	legacyRoot := ""     // AUDIOCPP_MODELS named the parent; voices/ was implied
+	sawProjects := false // ...so a file written before the merge takes settings.json's
+	roots, files := map[string]string{}, map[string]string{}
 	for _, line := range strings.Split(string(b), "\n") {
 		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok || strings.HasPrefix(k, "#") {
 			continue
 		}
 		v = strings.Trim(v, `"`)
+		switch {
+		case strings.HasPrefix(k, "PROJECT_") && strings.HasSuffix(k, "_ROOT"):
+			sawProjects = true
+			roots[strings.TrimSuffix(strings.TrimPrefix(k, "PROJECT_"), "_ROOT")] = v
+			continue
+		case strings.HasPrefix(k, "PROJECT_") && strings.HasSuffix(k, "_FILE"):
+			sawProjects = true
+			files[strings.TrimSuffix(strings.TrimPrefix(k, "PROJECT_"), "_FILE")] = v
+			continue
+		case strings.HasPrefix(k, "PROMPT_"):
+			g.PromptPick[strings.ToLower(strings.TrimPrefix(k, "PROMPT_"))] = v
+			continue
+		}
 		switch k {
 		case "LLM_SERVER":
 			c.Server = v
@@ -204,15 +283,73 @@ func (a *App) readConf() appConf {
 	if c.Voices == "" && legacyRoot != "" {
 		c.Voices = filepath.Join(legacyRoot, "voices")
 	}
-	// the runners read no config of their own; this is where ffTool learns
-	// what the settings box says, on the same read that feeds the step
-	ff := strings.TrimSpace(c.FFmpeg)
-	ffSet.Store(&ff)
-	return c.withDefaults()
+	for n, root := range roots {
+		if f := files[n]; root != "" && f != "" {
+			g.Projects[root] = f
+		}
+	}
+	// a conf written before the two files became one: what it does not say
+	// about, settings.json still does
+	if !sawProjects {
+		for root, f := range loadSettings().Projects {
+			g.Projects[root] = f
+		}
+	}
+	*c = c.withDefaults()
+	storeFF(c.FFmpeg)
+	return g
 }
 
+// storeFF is where ffTool learns what the settings box says, on the same read
+// that feeds the step -- the runners read no config of their own.
+func storeFF(path string) {
+	ff := strings.TrimSpace(path)
+	ffSet.Store(&ff)
+}
+
+// readConf is the machine's endpoints, which is all most callers want.
+func (a *App) readConf() appConf { return a.readGlobal().appConf }
+
+// migrateConf moves a pre-merge llm.conf into the config folder, once, on the
+// launch that finds it beside the videos. Copied rather than moved: the old
+// file is one line of documentation about a machine that has been working for
+// months, and deleting somebody's config to tidy up is not this program's
+// call. It stops being READ the moment the new one exists, which is what the
+// log line says.
+func (a *App) migrateConf() {
+	if confPath() == "" || exists(confPath()) || !exists(a.legacyConfPath()) {
+		return
+	}
+	g := a.readGlobal() // the old file, plus whatever settings.json remembered
+	if err := a.writeGlobal(g); err != nil {
+		a.logf("settings: %v", err)
+		return
+	}
+	a.logf(">>> settings moved to %s -- %s is no longer read", confPath(), a.legacyConfPath())
+}
+
+// writeConf saves what the gear dialog holds, and nothing else. The rest of
+// the file is read back first and handed on untouched: this writes the whole
+// file, so a half not carried through is a half erased.
 func (a *App) writeConf(c appConf) error {
-	c = c.withDefaults() // a cleared box means the default, never an empty flag
+	g := a.readGlobal()
+	g.appConf = c
+	return a.writeGlobal(g)
+}
+
+// writeGlobal puts the file down whole. Still bash-sourceable -- quoted
+// values, no syntax a shell would choke on -- because the endpoints are as
+// useful to a script on this machine as they are to the GUI, and still 0600,
+// because the LLM key is in it.
+func (a *App) writeGlobal(g globalConf) error {
+	p := confPath()
+	if p == "" {
+		return fmt.Errorf("nowhere to write the settings -- neither XDG_CONFIG_HOME nor HOME is set")
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	c := g.appConf.withDefaults() // a cleared box means the default, never an empty flag
 	body := fmt.Sprintf(`# Endpoints and local tools used by the pipeline (written by the GUI's
 # settings dialog). Bash-sourceable -- keep this file chmod 600, the key is a
 # credential.
@@ -253,7 +390,43 @@ SD_API_KEY=%q
 `, c.Server, c.Model, c.Key, ttsPort, c.TTS, c.TTSKey,
 		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel, c.SepModel, c.FFmpeg,
 		sdPort, c.SD, c.SDKey)
-	return os.WriteFile(a.confPath(), []byte(body), 0o600)
+	body += rememberedBody(g)
+	return os.WriteFile(p, []byte(body), 0o600)
+}
+
+// rememberedBody is the half of the file that is not a setting: what autocut
+// noticed rather than what it was told. Numbered pairs and one key per prompt
+// rather than a blob of JSON on a line, so it reads and hand-edits like the
+// rest of the file and a shell that sources it gets usable variables.
+//
+// Sorted, so that saving the settings twice with nothing changed produces the
+// same file twice -- a config that reshuffles itself on every write is a
+// config nobody can diff.
+func rememberedBody(g globalConf) string {
+	var b strings.Builder
+	if len(g.Projects) > 0 {
+		b.WriteString(`
+# The project file last open in each session folder, and the folder it belongs
+# to. Keyed by folder because every path inside a project is relative to it:
+# opening last night's project from a different folder would resolve its
+# sources against the wrong directory. Delete a pair to forget one.
+`)
+		for i, root := range sortedKeys(g.Projects) {
+			fmt.Fprintf(&b, "PROJECT_%d_ROOT=%q\nPROJECT_%d_FILE=%q\n", i+1, root, i+1, g.Projects[root])
+		}
+	}
+	if len(g.PromptPick) > 0 {
+		b.WriteString(`
+# Which wording each prompt is set to. The wordings themselves are text files
+# in prompts/ beside this one -- only the ones edited here, since an untouched
+# prompt is the one in the binary. Delete a line to go back to the built-in
+# default for that job.
+`)
+		for _, k := range sortedKeys(g.PromptPick) {
+			fmt.Fprintf(&b, "PROMPT_%s=%q\n", strings.ToUpper(k), g.PromptPick[k])
+		}
+	}
+	return b.String()
 }
 
 // fetchModels asks the server for its model list.
@@ -489,7 +662,7 @@ var (
 	// drawtext used to be here for the Publish step's thumbnail title. The
 	// title is now lettered by the image model itself (publish.go), so requiring
 	// drawtext would fail a build over a filter nothing asks for any more.
-	ffFilters  = []string{"rubberband", "subtitles", "loudnorm", "atempo", "amix", "adelay"}
+	ffFilters  = []string{"rubberband", "subtitles", "loudnorm", "atempo", "amix", "adelay", "alimiter"}
 	ffEncoders = []string{"libx264", "libx265", "aac", "libopus"}
 )
 
@@ -823,9 +996,11 @@ func (a *App) setupDialog() {
 		e.SetHExpand(true)
 		return e
 	}
-	// the voices folder is deliberately NOT here any more: it is chosen on the
-	// Narrate step, beside the voice list it fills, where changing it can reload
-	// that list live instead of asking for a restart
+	// the voices folder is deliberately not a row here either: it is one path
+	// with a working default that the audio server has to agree with anyway
+	// (the compose file mounts it), set once in llm.conf as AUDIOCPP_VOICES.
+	// Voices are added to it with "Add file…" on the Narrate step, which is the
+	// only thing the GUI does with the folder.
 	ttsm := entry(c.TTSModel, defTTSModel,
 		"Id of the voice-cloning model the narration is spoken through, exactly as the server lists it")
 	asrModel := entry(c.ASRModel, defASRModel, "Id of the speech-to-text model, exactly as the server lists it")
@@ -896,8 +1071,9 @@ func (a *App) setupDialog() {
 		cc := appConf{Server: server.Text(), Model: model.Text(), Key: key.Text(),
 			TTS:    strings.TrimRight(strings.TrimSpace(tts.Text()), "/"),
 			TTSKey: ttsKey.Text(),
-			// the voices folder has no box here: it is edited on the Narrate
-			// step, and Save must not wipe what was chosen there
+			// carried through, not read off a widget: there is no box for the
+			// voices folder anywhere in the GUI, and Save writes the whole file
+			// -- so anything not carried is silently erased on the next Save
 			Voices:    c.Voices,
 			ASRModel:  asrModel.Text(),
 			DiarModel: diarModel.Text(),
@@ -915,7 +1091,7 @@ func (a *App) setupDialog() {
 		// a different server has a different catalog; the cached model id and
 		// the "already listening on" note both belong to the old one
 		a.ttsModel, a.audioNoted = "", ""
-		a.setStatus("settings saved to " + a.confPath())
+		a.setStatus("settings saved to " + confPath())
 		win.Close()
 	})
 	cancel := gtk.NewButtonWithLabel("Cancel")
@@ -1012,7 +1188,7 @@ func (a *App) setupDialog() {
 		"build of your own -- and that one is used instead, with ffprobe taken from the "+
 		"same folder; both are needed, and a mismatched pair is its own kind of bug.\n\n"+
 		"Test runs it and checks this build has the filters and encoders the pipeline "+
-		"uses: rubberband, subtitles, loudnorm, atempo, amix, adelay, libx264, libx265, "+
+		"uses: rubberband, subtitles, loudnorm, atempo, amix, adelay, alimiter, libx264, libx265, "+
 		"aac, libopus. A build missing one works perfectly until the step that needs it, "+
 		"which is minutes into a render."), 0, 9, 4, 1)
 	grid.Attach(lbl("ffmpeg:"), 0, 10, 1, 1)

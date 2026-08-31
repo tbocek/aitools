@@ -298,6 +298,7 @@ func TestTheProbeNamesAnOpenAIShapedSquatter(t *testing.T) {
 // environment for the same reason it does for audio.cpp: it is the one of the
 // two the user can see and clear from inside the program.
 func TestTheImageServerIsSettingsThenEnvThenCompose(t *testing.T) {
+	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	t.Setenv("SD_SERVER", "")
 	if got, want := a.sdURL(), "http://127.0.0.1:1234"; got != want {

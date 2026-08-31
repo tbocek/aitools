@@ -32,11 +32,11 @@ func TestCutUndoRestores(t *testing.T) {
 
 	ed.segs = ed.undo[len(ed.undo)-1].segs
 	ed.undo = ed.undo[:len(ed.undo)-1]
-	if len(ed.segs) != 2 || ed.segs[0] != (cutSeg{S: 10, E: 20}) || ed.segs[1] != (cutSeg{S: 50, E: 60}) {
+	if len(ed.segs) != 2 || !sameSeg(ed.segs[0], cutSeg{S: 10, E: 20}) || !sameSeg(ed.segs[1], cutSeg{S: 50, E: 60}) {
 		t.Fatalf("first undo gave %v, want [{10 20} {50 60}]", ed.segs)
 	}
 	ed.segs = ed.undo[len(ed.undo)-1].segs
-	if len(ed.segs) != 3 || ed.segs[1] != (cutSeg{S: 30, E: 40}) {
+	if len(ed.segs) != 3 || !sameSeg(ed.segs[1], cutSeg{S: 30, E: 40}) {
 		t.Fatalf("second undo gave %v, want the original three", ed.segs)
 	}
 }

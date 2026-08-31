@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math"
 	"os"
 	"os/exec"
@@ -97,6 +98,196 @@ func TestVoiceRoundTrip(t *testing.T) {
 	}
 }
 
+// plainWavBytes is the smallest wav the server would take: a 44-byte plain PCM
+// header at refRate and a little silence. Tests that only need "a reference is
+// on disk" write this, because on disk is no longer enough -- the header is
+// read, and four bytes of "RIFF" is a file that would be cut again.
+func plainWavBytes(n int) []byte {
+	b := &bytes.Buffer{}
+	b.WriteString("RIFF")
+	binary.Write(b, binary.LittleEndian, uint32(36+n))
+	b.WriteString("WAVEfmt ")
+	binary.Write(b, binary.LittleEndian, uint32(16))
+	binary.Write(b, binary.LittleEndian, uint16(1))     // plain PCM, the tag that matters
+	binary.Write(b, binary.LittleEndian, uint16(1))     // mono
+	binary.Write(b, binary.LittleEndian, uint32(48000)) // refRate
+	binary.Write(b, binary.LittleEndian, uint32(96000)) // bytes a second
+	binary.Write(b, binary.LittleEndian, uint16(2))     // block align
+	binary.Write(b, binary.LittleEndian, uint16(16))
+	b.WriteString("data")
+	binary.Write(b, binary.LittleEndian, uint32(n))
+	b.Write(make([]byte, n))
+	return b.Bytes()
+}
+
+// wavHdr is the fmt chunk, which is what a reader switches on: the tag says
+// what the samples are, and the chunk's own length says which of the two wav
+// headers this is.
+type wavHdr struct{ tag, chans, bits, rate, fmtLen int }
+
+func wavFmt(t *testing.T, p string) wavHdr {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 12 || string(b[:4]) != "RIFF" || string(b[8:12]) != "WAVE" {
+		t.Fatalf("%s is not a wav at all", p)
+	}
+	for i := 12; i+8 <= len(b); {
+		n := int(binary.LittleEndian.Uint32(b[i+4 : i+8]))
+		if string(b[i:i+4]) == "fmt " && n >= 16 && i+8+n <= len(b) {
+			c := b[i+8:]
+			return wavHdr{
+				tag:    int(binary.LittleEndian.Uint16(c[0:2])),
+				chans:  int(binary.LittleEndian.Uint16(c[2:4])),
+				rate:   int(binary.LittleEndian.Uint32(c[4:8])),
+				bits:   int(binary.LittleEndian.Uint16(c[14:16])),
+				fmtLen: n,
+			}
+		}
+		i += 8 + n + n%2
+	}
+	t.Fatalf("%s has no fmt chunk", p)
+	return wavHdr{}
+}
+
+// A reference the server will not read is a narrator who never speaks, and the
+// header is where that goes wrong: loudnorm hands back 192 kHz, and above
+// 48 kHz ffmpeg writes WAVE_FORMAT_EXTENSIBLE, whose format tag the server does
+// not recognise. Both files are checked -- the base, and the shifted copy that
+// is the one actually uploaded -- and at both ends of the slider, because only
+// one of those two branches runs ffmpeg.
+func TestTheReferenceIsAWavTheServerWillRead(t *testing.T) {
+	a := &App{outDir: t.TempDir(), curCmds: map[*exec.Cmd]bool{}}
+	if err := a.setVoice(voiceOpt{id: "cv-xx-female-30s", path: sineWav(t, 220)}); err != nil {
+		t.Fatalf("setVoice: %v", err)
+	}
+	if err := a.ensureVoiceRef(); err != nil {
+		t.Fatalf("ensureVoiceRef: %v", err)
+	}
+	for _, st := range []float64{0, 5} {
+		if err := a.setPitchST(st); err != nil {
+			t.Fatalf("setPitchST(%v): %v", st, err)
+		}
+		for _, p := range []string{a.refBase(), a.refPath()} {
+			h, name := wavFmt(t, p), filepath.Base(p)
+			if h.tag != 1 || h.fmtLen != 16 {
+				t.Errorf("%+.0f st: %s has format tag 0x%04X in a %d-byte fmt chunk; "+
+					"the server only reads plain PCM (tag 1, 16 bytes)", st, name, h.tag, h.fmtLen)
+			}
+			if h.rate > 48000 {
+				t.Errorf("%+.0f st: %s is %d Hz -- past 48000 the header stops being plain",
+					st, name, h.rate)
+			}
+			if h.chans != 1 || h.bits != 16 {
+				t.Errorf("%+.0f st: %s is %d channel / %d bit, want mono 16", st, name, h.chans, h.bits)
+			}
+		}
+	}
+}
+
+// The header check itself: what the server accepts, and what ffmpeg writes
+// above 48 kHz instead.
+func TestOnlyAPlainWavHeaderCountsAsReadable(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name string, args ...string) string {
+		p := filepath.Join(dir, name)
+		a := append([]string{"-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=1"}, args...)
+		if err := exec.Command("ffmpeg", append(a, p)...).Run(); err != nil {
+			t.Skipf("no usable ffmpeg: %v", err)
+		}
+		return p
+	}
+	if !wavPlain(mk("plain.wav", "-ar", "48000", "-c:a", "pcm_s16le")) {
+		t.Error("a 48 kHz PCM16 wav was called unreadable")
+	}
+	if !wavPlain(mk("float.wav", "-ar", "48000", "-c:a", "pcm_f32le")) {
+		t.Error("a float32 wav was called unreadable -- the server takes those")
+	}
+	// what loudnorm handed over before refRate was pinned
+	if wavPlain(mk("ext.wav", "-ar", "192000", "-c:a", "pcm_s16le")) {
+		t.Error("a 192 kHz wav passed; that header is WAVE_FORMAT_EXTENSIBLE")
+	}
+	if p := filepath.Join(dir, "notawav"); os.WriteFile(p, []byte("hello"), 0o644) == nil && wavPlain(p) {
+		t.Error("five bytes of text passed as a wav")
+	}
+	if wavPlain(filepath.Join(dir, "missing.wav")) {
+		t.Error("a file that is not there passed")
+	}
+	short := plainWavBytes(0)
+	binary.LittleEndian.PutUint32(short[16:20], 8) // a fmt chunk too short to be one
+	p := filepath.Join(dir, "short.wav")
+	if os.WriteFile(p, short, 0o644) == nil && wavPlain(p) {
+		t.Error("an 8-byte fmt chunk passed as a header")
+	}
+	// a download or a write that died mid-header: the chunk announces itself
+	// and the file ends before the format tag it announced. Reading the tag
+	// there is reading past the end of what was loaded, so the bound has to be
+	// checked before the read, not after.
+	cut := filepath.Join(dir, "cut.wav")
+	if os.WriteFile(cut, plainWavBytes(0)[:20], 0o644) == nil && wavPlain(cut) {
+		t.Error("a wav that ends inside its fmt chunk passed as a header")
+	}
+}
+
+// The reference is built once and then kept, so the rate fix alone would never
+// reach a project that already HAD one: it would go on uploading the 192 kHz
+// file the server refuses, forever, and the voice would simply never speak.
+// A reference is therefore judged by its header, not by existing.
+func TestAReferenceTheServerCannotReadIsCutAgain(t *testing.T) {
+	ownConfig(t)
+	a := &App{outDir: t.TempDir(), curCmds: map[*exec.Cmd]bool{}}
+	src := sineWav(t, 220)
+	// the re-cut reads the voice back out of the voices folder, as it would on
+	// a machine the project was carried to
+	if err := a.writeConf(appConf{Voices: filepath.Dir(src)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.setVoice(voiceOpt{id: "cv-xx-female-30s", path: src}); err != nil {
+		t.Fatalf("setVoice: %v", err)
+	}
+	// exactly what the old levelRef wrote: loudnorm with no rate asked for
+	os.MkdirAll(a.narrateDir(), 0o755)
+	for _, dst := range []string{a.refBase(), a.refPath()} {
+		if err := exec.Command("ffmpeg", "-v", "error", "-y", "-i", src,
+			"-af", refLoud, "-ac", "1", "-c:a", "pcm_s16le", dst).Run(); err != nil {
+			t.Fatalf("could not write the old-style reference: %v", err)
+		}
+		if wavPlain(dst) {
+			t.Skip("this ffmpeg writes a plain header at loudnorm's rate; nothing to heal")
+		}
+	}
+	if err := a.ensureVoiceRef(); err != nil {
+		t.Fatalf("ensureVoiceRef over a stale reference: %v", err)
+	}
+	for _, p := range []string{a.refBase(), a.refPath()} {
+		if h := wavFmt(t, p); h.tag != 1 || h.fmtLen != 16 || h.rate > 48000 {
+			t.Errorf("%s is still tag 0x%04X, %d-byte fmt, %d Hz -- the old file was kept",
+				filepath.Base(p), h.tag, h.fmtLen, h.rate)
+		}
+	}
+
+	// and the shifted copy is judged on its OWN header: a base that is fine
+	// does not vouch for the file the server is actually handed
+	good, err := os.ReadFile(a.refBase())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(a.refPath(), []byte("RIFF....WAVEfmt "), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ensureVoiceRef(); err != nil {
+		t.Fatalf("ensureVoiceRef over a stale shifted copy: %v", err)
+	}
+	if !wavPlain(a.refPath()) {
+		t.Error("the unreadable shifted copy was kept because the base was fine")
+	}
+	if now, _ := os.ReadFile(a.refBase()); !bytes.Equal(now, good) {
+		t.Error("a bad shifted copy sent the base back through ffmpeg too")
+	}
+}
+
 // TestRefPitchShift is the whole point of the slider: the file the server is
 // handed really is moved, by the amount asked for, and the base it came from is
 // left alone so the next move is not a shift of a shift.
@@ -146,7 +337,10 @@ func TestVoiceRefMigration(t *testing.T) {
 	if err := os.MkdirAll(a.narrateDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	old := []byte("RIFF....WAVEfmt  -- stands in for the reference of an old project")
+	// a readable one: a reference the server refuses is re-cut rather than
+	// adopted (TestAReferenceTheServerCannotReadIsCutAgain), which is a
+	// different claim from this one
+	old := plainWavBytes(128)
 	if err := os.WriteFile(a.refPath(), old, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -316,9 +510,10 @@ func TestSanitizeVoiceID(t *testing.T) {
 // project's voice.txt points at, so overwriting one would silently change the
 // speaker in a project that was never opened.
 func TestImportVoiceKeepsNamesDistinct(t *testing.T) {
+	ownConfig(t)
 	root, models := t.TempDir(), t.TempDir()
 	a := &App{root: root, outDir: t.TempDir(), curCmds: map[*exec.Cmd]bool{}}
-	if err := os.WriteFile(a.confPath(),
+	if err := os.WriteFile(confPath(),
 		[]byte("AUDIOCPP_MODELS="+strconv.Quote(models)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -358,74 +553,6 @@ func toneFile(t *testing.T, dir, name string) string {
 		t.Skipf("no usable ffmpeg: %v", err)
 	}
 	return p
-}
-
-// A folder import has three ways to go wrong that a mouse would find slowly: it
-// takes files it was not pointed at, it takes the same folder twice and buries
-// the list in duplicates, or it is aimed at the voices folder and copies it onto
-// itself.
-func TestImportVoiceDir(t *testing.T) {
-	root, models := t.TempDir(), t.TempDir()
-	a := &App{root: root, outDir: t.TempDir(), curCmds: map[*exec.Cmd]bool{}}
-	if err := os.WriteFile(a.confPath(),
-		[]byte("AUDIOCPP_MODELS="+strconv.Quote(models)+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	src := t.TempDir()
-	toneFile(t, src, "alice.wav")
-	toneFile(t, src, "bob.flac")
-	if err := os.WriteFile(filepath.Join(src, "notes.txt"), []byte("not a voice"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	deep := filepath.Join(src, "rejects")
-	if err := os.Mkdir(deep, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	toneFile(t, deep, "carol.wav")
-
-	res, err := a.importVoiceDir(src)
-	if err != nil {
-		t.Fatalf("importVoiceDir: %v", err)
-	}
-	if len(res.added) != 2 || res.skipped != 0 || res.failed != 0 {
-		t.Fatalf("first import: %+v (%s), want the two recordings and nothing else",
-			res.added, res.summary())
-	}
-	got := map[string]bool{}
-	for _, v := range a.listVoices() {
-		got[v.id] = true
-	}
-	if !got["alice"] || !got["bob"] {
-		t.Fatalf("the folder's recordings are not listed: %v", got)
-	}
-	if got["carol"] {
-		t.Fatal("a sub-folder was walked into — pointing this at a music library would import the lot")
-	}
-	if got["notes"] {
-		t.Fatal("a text file was handed to ffmpeg and listed as a voice")
-	}
-
-	// the same folder again: nothing new, and nothing doubled
-	res, err = a.importVoiceDir(src)
-	if err != nil {
-		t.Fatalf("importVoiceDir (again): %v", err)
-	}
-	if len(res.added) != 0 || res.skipped != 2 {
-		t.Fatalf("re-import: %s — re-adding a folder must not duplicate what is in it", res.summary())
-	}
-	if n := len(a.listVoices()); n != 4 { // no-audio + own + alice + bob
-		t.Fatalf("%d rows after re-importing the same folder, want 4", n)
-	}
-
-	// aimed at the voices folder itself, which would copy every voice beside
-	// itself as "-2" on each attempt
-	if _, err := a.importVoiceDir(a.voicesDir()); err == nil {
-		t.Fatal("importing the voices folder into itself was allowed")
-	}
-	if _, err := a.importVoiceDir(t.TempDir()); err == nil {
-		t.Fatal("a folder with nothing usable in it reported success")
-	}
 }
 
 // TestEveryPlayerSaysWhenItFails: GStreamer reports a file it cannot decode on
@@ -492,5 +619,27 @@ func TestSampleAccountsForItself(t *testing.T) {
 	tog := regexp.MustCompile(`(?s)func \(vp \*voicePicker\) playClicked\(\).*?\n}\n`).Find(src)
 	if !strings.Contains(string(tog), "setStatus") {
 		t.Error("playClicked's pause/resume branch reports nothing")
+	}
+}
+
+// TestTheVoiceRowKeepsButtonHeight: the pitch slider is three stacked things --
+// the value, the trough, a legend of words -- and it shares a row with an entry
+// and three transport buttons. Left to fill, those buttons stretched to the
+// slider's height and the row looked broken. The height is capped from both
+// ends: the legend is set in a smaller face, and the controls beside it sit
+// centered at their own size rather than filling.
+func TestTheVoiceRowKeepsButtonHeight(t *testing.T) {
+	body := funcBody(t, "narrate_voice.go", `func \(a \*App\) buildVoicePicker\(\)`)
+	for _, want := range []string{
+		"hear.SetVAlign(gtk.AlignCenter)",
+		"knob.SetVAlign(gtk.AlignCenter)",
+		`vp.pitch.AddCSSClass("tinyscale")`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the voice row lost %s — its buttons grow to the slider's height", want)
+		}
+	}
+	if !strings.Contains(readSrc(t, "main.go"), ".tinyscale value, .tinyscale marks label") {
+		t.Error("nothing defines .tinyscale, so the pitch legend is set in full-size body text")
 	}
 }

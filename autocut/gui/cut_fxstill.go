@@ -19,12 +19,7 @@ package main
 // same one-frame cut the render's overlay input makes, so the preview and the
 // finished video stand on the same picture.
 
-import (
-	"fmt"
-
-	"github.com/diamondburned/gotk4/pkg/gdk/v4"
-	"github.com/diamondburned/gotk4/pkg/glib/v2"
-)
+import "github.com/diamondburned/gotk4/pkg/gdk/v4"
 
 // freezeNow is the stop effect standing over session time t -- the still the
 // preview owes the screen -- or nil when the playhead is on running footage.
@@ -66,80 +61,4 @@ type fxStill struct {
 	shown  bool
 	busy   bool
 	failed bool // it cannot be drawn; said once, then left alone
-}
-
-// syncFxStill settles the still layer for wherever the playhead is now.
-// Called from showInsert, which every path that moves the playhead already
-// calls -- a tick, a click, a frame step, an edit dropping the effect.
-func (ed *cutEditor) syncFxStill() {
-	pic, box := ed.fxStillPic, ed.fxStillBox
-	if pic == nil || box == nil || ed.player == nil {
-		return
-	}
-	f := freezeNow(ed.fx, ed.playhead)
-	// a card owns the whole picture while it is up; the still yields to it
-	if f == nil || ed.player.still {
-		if ed.fstill != nil {
-			ed.fstill.shown = false
-		}
-		box.SetVisible(false)
-		return
-	}
-	st := ed.fstill
-	if st == nil || st.t != f.T {
-		st = &fxStill{t: f.T}
-		ed.fstill = st
-	}
-	if st.tex == nil {
-		ed.renderStill(st)
-		box.SetVisible(false) // nothing to put up yet; the render will call back
-		return
-	}
-	if !st.shown {
-		pic.SetPaintable(st.tex)
-		st.shown = true
-	}
-	// the fades, evaluated the way the render's fade filters will (textAlpha
-	// reads the same Trans/Tout bargain for a freeze as for a title)
-	box.SetOpacity(textAlpha(*f, ed.playhead))
-	ed.fitStill() // under whatever camera is over the footage right now
-	box.SetVisible(true)
-}
-
-// renderStill draws the stop's frame in the background and puts it up when it
-// arrives -- by asking syncFxStill again rather than by showing it directly,
-// because by then the playhead may have left the bar.
-func (ed *cutEditor) renderStill(st *fxStill) {
-	if st.busy || st.failed {
-		return
-	}
-	v := ed.videoAt(st.t)
-	if v == nil {
-		st.failed = true // a stop in a gap has no frame to stand on
-		return
-	}
-	st.busy = true
-	a, local, path := ed.a, v.at(st.t), v.path
-	go func() {
-		png, err := ffmpegPNG("-ss", fmt.Sprintf("%.3f", local), "-i", path)
-		glib.IdleAdd(func() {
-			st.busy = false
-			if ed.fstill != st {
-				return // a different stop owns the layer now
-			}
-			var tex *gdk.Texture
-			if err == nil {
-				tex, err = gdk.NewTextureFromBytes(glib.NewBytes(png))
-			}
-			if err != nil {
-				st.failed = true
-				if a != nil {
-					a.logf(">>> the stop frame at %s cannot be shown in the preview: %v", mmss(st.t), err)
-				}
-				return
-			}
-			st.tex = tex
-			ed.syncFxStill()
-		})
-	}()
 }

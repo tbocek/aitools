@@ -13,6 +13,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	coreglib "github.com/diamondburned/gotk4/pkg/core/glib"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
@@ -52,6 +53,16 @@ type Player struct {
 	// card is on the preview, where hearing the footage carry on underneath is
 	// how an insert ends up sounding exactly like the overwrite it is not.
 	muted bool
+	// the lanes the scene under the playhead does not hear (Hush): hushOwn for
+	// the footage's own sound, and a name for each recording mixed under it.
+	// Separate from muted because they answer different questions -- muted is
+	// "none of this is the session", hush is "this much of the session" -- and
+	// a scene can silence the camera while still hearing the microphone.
+	hushOwn bool
+	hush    map[string]bool
+	// what was last written to each pipeline's mute property, so the ten calls
+	// a second this is asked from settle into nothing when nothing changed
+	ownMute bool
 	// an inserted video's own sound, its own pipeline for the same reason the
 	// recordings have theirs. Empty unless a video insert is on screen.
 	card     *auxAudio
@@ -167,11 +178,39 @@ func NewPlayer() (*Player, error) {
 	return p, nil
 }
 
+// fileURI is how a path is handed to playbin, and it is not "file://"+path --
+// which is what this was, and what a file could be lost behind. A path is
+// bytes; a uri is text with punctuation, and the two disagree about '#'.
+// Everything after a '#' in a uri is a fragment, dropped before the file is
+// ever opened, so a voice sample named for hand-picked takes
+// (own@-0.5#3a1f2b_9c2b1e4d.wav) reached filesrc as ".../own@-0.5" and failed
+// with "No such file" -- a name the app itself had written. '?' would cut the
+// same way and a '%' in a name would be read as an escape of whatever came
+// after it.
+//
+// So every byte outside the unreserved set is percent-escaped, which GStreamer
+// undoes on the way back to a filename. '/' is the exception: it is the one
+// piece of punctuation that means the same thing on both sides.
+func fileURI(path string) string {
+	var b strings.Builder
+	b.WriteString("file://")
+	for i := 0; i < len(path); i++ {
+		switch c := path[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '-', c == '_', c == '.', c == '~', c == '/':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
 // PlaySegment cues [start, stop) seconds of file; stop < 0 means to the end.
 // play=false prerolls only: the first frame shows, paused, until Toggle.
 func (p *Player) PlaySegment(file string, start, stop float64, play bool) {
 	p.pb.SetState(gst.StateReady)
-	p.pb.SetObjectProperty("uri", "file://"+file)
+	p.pb.SetObjectProperty("uri", fileURI(file))
 	p.loaded = file
 	p.pendStart = int64(start * 1e9)
 	p.pendStop = -1
@@ -239,6 +278,10 @@ func (p *Player) ShowVideo() {
 // a monitor mix, and the render still does its own arithmetic (clipMixes).
 type auxAudio struct {
 	pb gst.Element
+	// the lane's name, which is how a scene names the lanes it does not hear
+	// (cutSeg.Quiet). Empty for a card's own sound, which no scene silences.
+	base string
+	mute bool // last written to the pipeline; see applyMute
 	// what to add to a time in the master's file to get the same instant in
 	// this one: (master's session start) - (this recording's session start).
 	delta float64
@@ -253,6 +296,7 @@ type auxAudio struct {
 // mixTrack is one recording to be heard under the footage, as the cut editor
 // knows it: where the file is, and how the two clocks differ.
 type mixTrack struct {
+	base  string
 	path  string
 	delta float64
 	dur   float64
@@ -272,9 +316,11 @@ func (p *Player) SetMix(tracks []mixTrack) {
 		if a == nil {
 			return
 		}
-		a.pb.SetObjectProperty("mute", p.muted)
 		p.mix = append(p.mix, a)
 	}
+	// after the loop, so a lane the scene already silences is born silent
+	// rather than saying its first ten milliseconds out loud
+	p.applyMute()
 }
 
 // newAux builds one audio-only pipeline for a file and the bus watch that does
@@ -290,11 +336,11 @@ func newAux(name string, t mixTrack, vol float64) *auxAudio {
 	if fake := gst.ElementFactoryMake("fakesink", name+"novideo"); fake != nil {
 		pb.SetObjectProperty("video-sink", fake)
 	}
-	pb.SetObjectProperty("uri", "file://"+t.path)
+	pb.SetObjectProperty("uri", fileURI(t.path))
 	// born at the loudness its player is already running at, which is the
 	// slider and any volume effect under the playhead together (Player.vol)
 	pb.SetObjectProperty("volume", vol)
-	a := &auxAudio{pb: pb, delta: t.delta, dur: t.dur, pend: -1, rate: 1}
+	a := &auxAudio{pb: pb, base: t.base, delta: t.delta, dur: t.dur, pend: -1, rate: 1}
 	bus := pb.GetBus()
 	bus.AddSignalWatch()
 	bus.ConnectMessage(func(_ gst.Bus, msg *gst.Message) {
@@ -448,13 +494,70 @@ func (p *Player) applyVol() {
 // session audio under a card (clipMixes), so a preview that does is telling you
 // about a cut that will not exist.
 func (p *Player) SetMuted(v bool) {
-	if p.muted == v {
-		return
-	}
 	p.muted = v
-	p.pb.SetObjectProperty("mute", v)
+	p.applyMute()
+}
+
+// Hush silences the parts of the session the scene under the playhead does not
+// hear: own for the footage's own sound, quiet for the recordings mixed under
+// it, named the way the scene names them (cutSeg.Quiet).
+//
+// The pipelines stay where they are and only their mute property moves. The set
+// of recordings changes with the FILE and the answer about them changes with
+// the SCENE, which is ten times a second while the preview runs -- rebuilding
+// them at that rate would be a gap in the sound at every clip boundary, and the
+// lane would come back a beat late even where it is heard.
+//
+// Without this the badge was a control over the render alone: the lane went
+// grey, the wash went grey, and the preview went on playing it, so the one
+// place the choice could be checked by ear disagreed with the finished video.
+func (p *Player) Hush(own bool, quiet []string) {
+	p.hushOwn, p.hush = own, hushSet(quiet)
+	p.applyMute()
+}
+
+// hushSet turns the scene's list into what the pipelines are checked against.
+// nil for a scene that hears everything, which is most of them: the absence of
+// the map IS that answer, so the common case costs nothing and a scene that
+// stops silencing a lane cannot leave the old set standing behind it.
+func hushSet(quiet []string) map[string]bool {
+	if len(quiet) == 0 {
+		return nil
+	}
+	m := make(map[string]bool, len(quiet))
+	for _, q := range quiet {
+		m[q] = true
+	}
+	return m
+}
+
+// hushes is the whole decision about one pipeline's sound, split out from the
+// writing of it so it can be asked directly -- the pipelines are GStreamer and
+// stay out of a unit test. own marks the footage's own sound, which is a lane
+// the scene can silence like any other and is not one of p.mix.
+func (p *Player) hushes(base string, own bool) bool {
+	if p.muted {
+		return true // not the session's picture at all, so none of its sound
+	}
+	if own {
+		return p.hushOwn
+	}
+	return p.hush[base]
+}
+
+// applyMute writes that answer onto every pipeline, and only where it changed:
+// this runs from the playback tick, and a property written ten times a second
+// with the value it already holds is ten notifications a second for nothing.
+func (p *Player) applyMute() {
+	if m := p.hushes("", true); m != p.ownMute {
+		p.ownMute = m
+		p.pb.SetObjectProperty("mute", m)
+	}
 	for _, a := range p.mix {
-		a.pb.SetObjectProperty("mute", v)
+		if m := p.hushes(a.base, false); m != a.mute {
+			a.mute = m
+			a.pb.SetObjectProperty("mute", m)
+		}
 	}
 }
 
@@ -535,6 +638,11 @@ func (p *Player) setPlaying(v bool) {
 // start whatever the page does when idle.
 func (p *Player) Playing() bool { return p.playing }
 func (p *Player) Cued() bool    { return p.loaded != "" && !p.playing }
+
+// Loaded is whether this player has been pointed at a file at all, playing or
+// not. The question an overlay asks before it draws anything on the picture:
+// there is no framing to show over a player that has never been given footage.
+func (p *Player) Loaded() bool { return p.loaded != "" }
 
 // Toggle is what every play button in the app does: pause what is running,
 // resume what is paused -- and, on a stream that has run to its end, play it

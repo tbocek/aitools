@@ -166,8 +166,16 @@ func TestTheFreeZoomAndTheLivePreviewAreWired(t *testing.T) {
 	for _, want := range []string{
 		"if zoomFree {",
 		"hf = math.Max(rh, rw/pxAspect()) / dh",
-		"over.AddOverlay(zfix)",
-		"ed.fxZoom.SetChildTransform(ed.fxZoomPic, zoomTransform(s, tx, ty))",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the overlay no longer contains %q", want)
+		}
+	}
+	// the layer itself is on the shared screen both previews are built from
+	src = readSrc(t, "cut_fxscreen.go")
+	for _, want := range []string{
+		"over.AddOverlay(s.fxZoom)",
+		"s.fxZoom.SetChildTransform(s.fxZoomPic, zoomTransform(sc, tx, ty))",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the overlay no longer contains %q", want)
@@ -545,22 +553,31 @@ func TestACameraRectangleCannotBeLost(t *testing.T) {
 func TestThePreviewIsFramedPausedAndPlaying(t *testing.T) {
 	// syncCamLayer is syncPreviewZoom's own half; the other half puts a stop's
 	// frozen frame on the same transform (cut_stillcam_test.go)
-	src := funcBody(t, "cut_fxview.go", `func \(ed \*cutEditor\) syncCamLayer\(\)`)
-	if strings.Contains(src, "ed.player.playing") {
+	src := funcBody(t, "cut_fxscreen.go", `func \(s \*fxScreen\) syncCamLayer\(\)`)
+	if strings.Contains(src, "p.playing") {
 		t.Error("the camera layer is gated on playback again: the preview will resize on pause")
 	}
 	for _, want := range []string{
-		"!ed.player.still",              // a card is showing instead of the footage
+		"!p.still",                      // a card is showing instead of the footage
 		"fxHasCamera(ed.aspect, ed.fx)", // nothing to frame with
-		`ed.fxArm == ""`,                // an armed button is about to draw a box
-		"ed.fxRectHeld() == nil",        // and a held box is framed against the full frame
+		"s.page.fxCamOK()",              // and whatever the page itself says
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the camera layer no longer tests %q", want)
 		}
 	}
+	// the Cut page's own half of that answer: a hand framing by eye
+	cam := funcBody(t, "cut_fxview.go", `func \(ed \*cutEditor\) fxCamOK\(\)`)
+	for _, want := range []string{
+		`ed.fxArm == ""`,         // an armed button is about to draw a box
+		"ed.fxRectHeld() == nil", // and a held box is framed against the full frame
+	} {
+		if !strings.Contains(cam, want) {
+			t.Errorf("the Cut page's camera answer no longer tests %q", want)
+		}
+	}
 	// and the still follows it rather than being gated on its own terms
-	if fit := funcBody(t, "cut_fxview.go", `func \(ed \*cutEditor\) fitStill\(\)`); strings.Contains(fit, "ed.player.playing") {
+	if fit := funcBody(t, "cut_fxscreen.go", `func \(s \*fxScreen\) fitStill\(\)`); strings.Contains(fit, "p.playing") {
 		t.Error("the still layer is gated on playback: the frozen frame will jump on pause")
 	}
 }

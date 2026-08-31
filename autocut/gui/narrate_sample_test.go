@@ -133,7 +133,7 @@ func TestTheSampleRowIsWiredToTheseJudgements(t *testing.T) {
 		}
 	}
 	src := readSrc(t, "narrate_voice.go")
-	if !strings.Contains(src, "row.Append(vp.rollBtn)") {
+	if !strings.Contains(src, "hear.Append(vp.rollBtn)") {
 		t.Error("the ⟳ button is built but never put in the sample row")
 	}
 	if !strings.Contains(src, "vp.rollBtn.ConnectClicked(vp.rollClicked)") {

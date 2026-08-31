@@ -271,6 +271,7 @@ func TestAudioRunPassesTheServersRefusalBack(t *testing.T) {
 // TestAudioRunNeedsAServer: the message for "nothing is listening" is the one
 // most likely to be read by someone who has not started the stack.
 func TestAudioRunNeedsAServer(t *testing.T) {
+	ownConfig(t)
 	a, _ := fakeAudio(t, asrModels, answer(asrAnswer))
 	if err := a.writeConf(appConf{TTS: "http://127.0.0.1:1"}); err != nil {
 		t.Fatal(err)
@@ -550,6 +551,7 @@ func TestAFailedASRKeepsTheChunkItFailedOn(t *testing.T) {
 // answers with that path, and the job names what came back. Which folders are
 // mounted stops mattering.
 func TestAFileGoesToTheServerBeforeItIsNamedToIt(t *testing.T) {
+	ownConfig(t)
 	for _, tc := range []struct {
 		name, field string
 		call        func(*App, string)
@@ -600,6 +602,7 @@ func TestAFileGoesToTheServerBeforeItIsNamedToIt(t *testing.T) {
 // read what it already has. That is the one case where the old advice is still
 // the advice, so the refusal has to carry both ways out rather than 403.
 func TestAServerThatRefusesUploadsSaysWhatToDoInstead(t *testing.T) {
+	ownConfig(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health":
@@ -637,6 +640,7 @@ func TestAServerThatRefusesUploadsSaysWhatToDoInstead(t *testing.T) {
 // not started the stack, and the upload is now the first request of every job --
 // so it, not audioRun, is where a dead endpoint gets noticed.
 func TestADeadServerIsStillNamedBeforeAnyFileMoves(t *testing.T) {
+	ownConfig(t)
 	a, _ := fakeAudio(t, asrModels, answer(asrAnswer))
 	if err := a.writeConf(appConf{TTS: "http://127.0.0.1:1"}); err != nil {
 		t.Fatal(err)
@@ -658,7 +662,9 @@ func writeRef(t *testing.T, a *App) {
 		t.Fatal(err)
 	}
 	for _, f := range []string{a.refBase(), a.refPath()} {
-		if err := os.WriteFile(f, []byte("RIFF"), 0o644); err != nil {
+		// a real header: ensureVoiceRef reads it, and a stub would send it off
+		// to be cut again from a recording this test does not have
+		if err := os.WriteFile(f, plainWavBytes(64), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

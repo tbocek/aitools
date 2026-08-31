@@ -207,7 +207,7 @@ func TestASplicedCardCutsTheClipItSitsIn(t *testing.T) {
 		t.Fatalf("the cut came out as %v, want three clips", got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !sameSeg(got[i], want[i]) {
 			t.Errorf("clip %d is %v, want %v", i, got[i], want[i])
 		}
 	}
@@ -223,12 +223,12 @@ func TestASplicedCardCutsTheClipItSitsIn(t *testing.T) {
 	// a card that lands ON a border cuts nothing: there is nothing to split, and
 	// splitting there would leave a clip of no length
 	head := cutSeg{S: 10, E: 10, Ins: "card.svg", Dur: 4}
-	if got := splitSpliced([]cutSeg{{S: 10, E: 40}, head}); len(got) != 2 || got[0] != head {
+	if got := splitSpliced([]cutSeg{{S: 10, E: 40}, head}); len(got) != 2 || !sameSeg(got[0], head) {
 		t.Errorf("a card at the head of a clip came out as %v, want the card then the clip", got)
 	}
 	// and a cut with nothing spliced into it comes back exactly as it went in
 	plain := []cutSeg{{S: 0, E: 5}, {S: 10, E: 20, Ins: "over.svg"}}
-	if got := splitSpliced(plain); len(got) != 2 || got[0] != plain[0] || got[1] != plain[1] {
+	if got := splitSpliced(plain); len(got) != 2 || !sameSeg(got[0], plain[0]) || !sameSeg(got[1], plain[1]) {
 		t.Errorf("an ordinary cut was rearranged into %v", got)
 	}
 }

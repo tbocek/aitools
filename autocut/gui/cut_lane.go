@@ -115,14 +115,24 @@ func (a *App) laneVideos(lanes []cutLane, vids []tlVideo) []tlVideo {
 func laneAudios(rows []tlVideo, src []tlAudio) []tlAudio {
 	var out []tlAudio
 	for _, v := range rows {
-		ch := 0
+		ch, known := 0, false
 		for _, au := range src {
-			if au.path == v.path {
-				ch = au.chans
+			// the MASTER lane of that file, because that is the sound a copied
+			// shot carries: the file's first track, the one the render takes
+			// off the footage input. A further track of a multi-track capture is
+			// on the same path and is not it (cut_tracks.go).
+			if au.path == v.path && au.master {
+				ch, known = au.chans, true
 				break
 			}
 		}
-		if ch < 1 {
+		// and a source whose first track this session was told to leave out is
+		// a source with nothing to copy: only a file that is not in the session
+		// at all -- an insert from outside it -- is worth a probe of its own
+		if !known {
+			if inSession(src, v.path) {
+				continue
+			}
 			ch = ffprobeChannels(v.path)
 		}
 		if ch < 1 {
@@ -132,6 +142,18 @@ func laneAudios(rows []tlVideo, src []tlAudio) []tlAudio {
 			off: v.off, dur: v.dur, chans: ch, master: true})
 	}
 	return out
+}
+
+// inSession says whether a file is one the session's own lanes were built from,
+// which is how "this source has no first track" is told apart from "this file
+// was never a source": the first has an answer already and the second has none.
+func inSession(src []tlAudio, path string) bool {
+	for _, au := range src {
+		if au.path == path {
+			return true
+		}
+	}
+	return false
 }
 
 // videoByPath is the recording a lane is a second look at, or nil when the file

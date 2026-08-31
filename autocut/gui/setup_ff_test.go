@@ -47,6 +47,7 @@ func TestTheFFmpegBoxIsWhatTheStepsRun(t *testing.T) {
 // Saved, re-read, and in force -- the runners read no config of their own, so
 // readConf is where ffTool learns what was typed.
 func TestTheFFmpegBoxSurvivesASaveAndReachesTheRunners(t *testing.T) {
+	ownConfig(t)
 	old := ffSet.Load()
 	t.Cleanup(func() { ffSet.Store(old) })
 
@@ -75,7 +76,7 @@ func TestTheFFmpegBoxSurvivesASaveAndReachesTheRunners(t *testing.T) {
 	}
 
 	// and it is a credential file: the key sits in it, so it stays 0600
-	st, err := os.Stat(a.confPath())
+	st, err := os.Stat(confPath())
 	if err != nil {
 		t.Fatal(err)
 	}

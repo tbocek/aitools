@@ -173,6 +173,7 @@ func TestEveryCallGoesThroughTheRecorder(t *testing.T) {
 // server here IS the model mid-thought: its handler runs after the request
 // went out and before any reply exists, and reads what the recorder has filed.
 func TestTheRequestIsOnDiskBeforeTheReplyArrives(t *testing.T) {
+	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	a.outDir = a.root
 	var midCall []byte
@@ -221,6 +222,7 @@ func TestTheRequestIsOnDiskBeforeTheReplyArrives(t *testing.T) {
 // has got. The recorder is handed everything-so-far on each token, so it must
 // append only what is new rather than repeat the lot.
 func TestAStreamedReplyGrowsThePageAsItArrives(t *testing.T) {
+	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	a.outDir = a.root
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -283,6 +285,7 @@ func TestAStreamedReplyGrowsThePageAsItArrives(t *testing.T) {
 // one-shot request into a streaming one on the wire, which changes what the
 // server sends back. The recorder only tees a stream that already exists.
 func TestAnUnstreamedCallStaysUnstreamed(t *testing.T) {
+	ownConfig(t)
 	seam := readSrc(t, "llm.go")
 	if !strings.Contains(seam, "if onText != nil {") {
 		t.Error("llm.go tees the stream unconditionally -- a callerless call would ask the server to stream")

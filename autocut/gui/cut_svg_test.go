@@ -231,11 +231,16 @@ func TestTheDrawingIsWiredLikeATitle(t *testing.T) {
 			"func (ed *cutEditor) fxHeldBox() *cutFx {",
 			"if f := ed.heldFx(); f != nil && overFx(*f) {",
 			"drawOver := func(cr *cairo.Context, f cutFx, alpha float64) {",
-			"ed.drawSVG(cr, f, x, y, w, h, alpha)",
 			// placing one: the box is drawn on the picture, then the numbers
 			"if ed.fxOverArm() {",
 			"f.Src, b = ed.fxSrc, fxSvgDefault",
 			"ed.a.askSvgParams(f, true, func(nf cutFx) {",
+		},
+		"cut_fxpaint.go": {
+			// the drawing call itself is in the shared painter, so Narrate's
+			// preview shows the same drawing in the same box
+			`if f.Kind == "svg" {`,
+			"ed.drawSVG(cr, f, x, y, w, h, alpha)",
 		},
 		"fxsvg.go": {
 			// the file is chosen before the box, not after

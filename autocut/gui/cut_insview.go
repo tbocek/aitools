@@ -338,6 +338,10 @@ func (ed *cutEditor) showInsert() {
 	// the stop effect's still rides its own overlay layer over whatever this
 	// settles on, so every path that moves the playhead settles both at once
 	defer ed.syncFxStill()
+	// which lanes this scene is heard on, likewise: the card's answer about the
+	// session's sound is all-or-nothing (cardSound below), the scene's is lane
+	// by lane, and both are true at once
+	ed.syncHush()
 	s, into := ed.cardNow()
 	ed.cardSound(s, into)
 	if s == nil || s.audioIns() {

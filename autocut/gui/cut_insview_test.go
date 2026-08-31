@@ -357,9 +357,13 @@ func TestTheInsertPreviewIsWired(t *testing.T) {
 			"p.Picture.SetPaintable(tex)",
 			"func (p *Player) ShowVideo() {",
 			"p.Picture.SetPaintable(p.video)",
-			// the sound of it: the session cut, the insert's own played
+			// the sound of it: the session cut, the insert's own played. The
+			// card's answer is one of two about the session's sound now -- the
+			// scene under the line silences lanes of its own (Player.hush) --
+			// so both go through the one place that writes the property
 			"func (p *Player) SetMuted(v bool) {",
-			`p.pb.SetObjectProperty("mute", v)`,
+			"p.muted = v\n\tp.applyMute()",
+			`p.pb.SetObjectProperty("mute", m)`,
 			"func (p *Player) CardSound(file string, at float64, play bool) {",
 		},
 		"cut_insview.go": {

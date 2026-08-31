@@ -113,7 +113,7 @@ func TestASplitRowBecomesTwoRowsThatKeepItsRoles(t *testing.T) {
 		t.Fatalf("%d rows became %d, want %d: %+v", len(items), len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !sameSource(got[i], want[i]) {
 			t.Errorf("row %d is %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -134,7 +134,7 @@ func TestASplitRowBecomesTwoRowsThatKeepItsRoles(t *testing.T) {
 		t.Fatalf("with nothing split the list went from %d rows to %d", len(items), len(same))
 	}
 	for i := range items {
-		if same[i] != items[i] {
+		if !sameSource(same[i], items[i]) {
 			t.Errorf("row %d changed with nothing split: %+v, was %+v", i, same[i], items[i])
 		}
 	}

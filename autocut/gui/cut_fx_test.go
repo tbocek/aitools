@@ -225,7 +225,7 @@ func TestSlowMotionSplitsAtItsOwnBoundaries(t *testing.T) {
 		t.Fatalf("applyFx gave %v, want %v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !sameSeg(got[i], want[i]) {
 			t.Errorf("seg %d is %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -236,7 +236,7 @@ func TestSlowMotionSplitsAtItsOwnBoundaries(t *testing.T) {
 	// an effect whose scene was cut away does nothing, silently -- the segs
 	// come through untouched and the effect waits for Undo to matter again
 	elsewhere := applyFx([]cutSeg{{S: 30, E: 40}}, fx)
-	if len(elsewhere) != 1 || elsewhere[0] != (cutSeg{S: 30, E: 40}) {
+	if len(elsewhere) != 1 || !sameSeg(elsewhere[0], cutSeg{S: 30, E: 40}) {
 		t.Errorf("an orphaned slow rewrote the cut: %v", elsewhere)
 	}
 }
@@ -255,7 +255,7 @@ func TestFastMotionRunsTheSameSplitTheOtherWay(t *testing.T) {
 		t.Fatalf("applyFx gave %v, want %v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !sameSeg(got[i], want[i]) {
 			t.Errorf("seg %d is %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -359,7 +359,7 @@ func TestTheFrameButtonsWithAnEffectHeldMoveTheLineWithIt(t *testing.T) {
 // knows both shapes.
 func TestAStopLeavesTheSegmentsAlone(t *testing.T) {
 	got := applyFx([]cutSeg{{S: 0, E: 60}}, []cutFx{{Kind: "speed", T: 20, Dur: 2}})
-	if len(got) != 1 || got[0] != (cutSeg{S: 0, E: 60}) {
+	if len(got) != 1 || !sameSeg(got[0], cutSeg{S: 0, E: 60}) {
 		t.Fatalf("a stop cut the segments open: %v", got)
 	}
 	// slow motion still cuts its stretch out and rates it, and a stop laid
@@ -376,7 +376,7 @@ func TestAStopLeavesTheSegmentsAlone(t *testing.T) {
 		t.Fatalf("slow motion crossed by a stop gave %v, want %v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !sameSeg(got[i], want[i]) {
 			t.Errorf("seg %d is %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -426,7 +426,7 @@ func TestEffectsGoToDiskAndAPlainCutDoesNotChange(t *testing.T) {
 	ed.persist()
 	c := ed.a.produceCut() // a.ed is nil: this is the file speaking
 	segs, fx, aspect := c.Segs, c.Fx, c.Aspect
-	if len(segs) != 1 || segs[0] != ed.segs[0] {
+	if len(segs) != 1 || !sameSeg(segs[0], ed.segs[0]) {
 		t.Errorf("the cut came back as %v", segs)
 	}
 	if aspect != "9:16" || len(fx) != 2 || fx[0] != ed.fx[0] || fx[1] != ed.fx[1] {

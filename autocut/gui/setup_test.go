@@ -192,6 +192,7 @@ func TestTestLLM(t *testing.T) {
 }
 
 func TestEndpointsLive(t *testing.T) {
+	ownConfig(t)
 	if os.Getenv("AUTOCUT_LIVE") == "" {
 		t.Skip("set AUTOCUT_LIVE=1 to reach the configured servers")
 	}
@@ -200,7 +201,7 @@ func TestEndpointsLive(t *testing.T) {
 
 	t.Run("llm", func(t *testing.T) {
 		if c.Server == "" {
-			t.Skip("no LLM server in " + a.confPath())
+			t.Skip("no LLM server in " + confPath())
 		}
 		got, err := testLLM(c)
 		if err != nil {
@@ -271,6 +272,7 @@ func TestFFMissing(t *testing.T) {
 // to be a compiled-in constant, and a blank line must mean that constant rather
 // than an empty model id posted to the server.
 func TestConfDefaults(t *testing.T) {
+	ownConfig(t)
 	a := &App{root: t.TempDir()} // no llm.conf at all
 	c := a.readConf()
 	if c.Voices != defVoices || c.ASRModel != defASRModel ||
@@ -279,14 +281,14 @@ func TestConfDefaults(t *testing.T) {
 	}
 	// a config written when the setting was the models ROOT, voices/ implied:
 	// the same folder has to come out of the new field
-	if err := os.WriteFile(a.confPath(), []byte("AUDIOCPP_MODELS=\"/srv/models\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(confPath(), []byte("AUDIOCPP_MODELS=\"/srv/models\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if c := a.readConf(); c.Voices != "/srv/models/voices" {
 		t.Errorf("the legacy models root migrated to %q, want /srv/models/voices", c.Voices)
 	}
 	// an old config: the LLM keys only
-	if err := os.WriteFile(a.confPath(), []byte("LLM_SERVER=\"https://x\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(confPath(), []byte("LLM_SERVER=\"https://x\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if c := a.readConf(); c.Server != "https://x" || c.ASRModel != defASRModel {
@@ -297,14 +299,14 @@ func TestConfDefaults(t *testing.T) {
 	// must not cost the reader the rest of the file
 	old := "AUDIOCPP_IMAGE=\"audio:latest\"\nAUDIOCPP_CLI=\"/opt/audiocpp_cli\"\n" +
 		"AUDIOCPP_BACKEND=\"cuda\"\nAUDIOCPP_LANGUAGE=\"de\"\nAUDIOCPP_ASR_MODEL=\"whisper-large\"\n"
-	if err := os.WriteFile(a.confPath(), []byte(old), 0o600); err != nil {
+	if err := os.WriteFile(confPath(), []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if c := a.readConf(); c.ASRModel != "whisper-large" || c.TTSModel != defTTSModel {
 		t.Errorf("a config with retired keys did not read the rest: %+v", c)
 	}
 	// ...and a blank value is the same as no value, not an empty model id
-	if err := os.WriteFile(a.confPath(), []byte("AUDIOCPP_ASR_MODEL=\"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(confPath(), []byte("AUDIOCPP_ASR_MODEL=\"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if c := a.readConf(); c.ASRModel != defASRModel {
@@ -315,6 +317,7 @@ func TestConfDefaults(t *testing.T) {
 // TestConfRoundTrip guards the config format: the GUI must not write something
 // bash cannot read back, and adding a setting must not disturb the LLM keys.
 func TestConfRoundTrip(t *testing.T) {
+	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	want := appConf{
 		Server: "https://ai.example.com",
@@ -337,22 +340,22 @@ func TestConfRoundTrip(t *testing.T) {
 	if got := a.readConf(); got != want {
 		t.Fatalf("round trip changed the config:\n got %+v\nwant %+v", got, want)
 	}
-	fi, err := os.Stat(a.confPath())
+	fi, err := os.Stat(confPath())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fi.Mode().Perm() != 0o600 { // it holds an API key
-		t.Errorf("%s is mode %v, want 600", a.confPath(), fi.Mode().Perm())
+		t.Errorf("%s is mode %v, want 600", confPath(), fi.Mode().Perm())
 	}
-	if filepath.Base(a.confPath()) != "llm.conf" {
-		t.Errorf("the config is llm.conf, the GUI writes %s", a.confPath())
+	if filepath.Base(confPath()) != "llm.conf" {
+		t.Errorf("the config is llm.conf, the GUI writes %s", confPath())
 	}
 
 	// the file stays sourceable so a shell can read the endpoints too: the model
 	// id is full of parens and semicolons, and anything that quotes it wrongly
 	// leaves the GUI working while a shell chokes on it
 	out, err := exec.Command("bash", "-c",
-		"source "+a.confPath()+`; printf '%s|%s|%s|%s' "$LLM_MODEL" "$LLM_SERVER" "$AUDIOCPP_SERVER" "$AUDIOCPP_ASR_MODEL"`).CombinedOutput()
+		"source "+confPath()+`; printf '%s|%s|%s|%s' "$LLM_MODEL" "$LLM_SERVER" "$AUDIOCPP_SERVER" "$AUDIOCPP_ASR_MODEL"`).CombinedOutput()
 	if err != nil {
 		t.Fatalf("bash could not source the config: %v\n%s", err, out)
 	}
@@ -375,7 +378,7 @@ func TestConfRoundTrip(t *testing.T) {
 	// held the server to. It is gone -- sd-server serves what it was started
 	// with and nothing autocut sent could change it -- and an old conf file
 	// still carrying the key has to be read, not rejected.
-	if err := os.WriteFile(a.confPath(),
+	if err := os.WriteFile(confPath(),
 		[]byte("SD_SERVER=\"http://127.0.0.1:1234\"\nSD_MODEL=\"Krea-2-Turbo-Q8_0\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -492,9 +495,9 @@ func TestTestVision(t *testing.T) {
 
 // TestTheDialogReadsTheSameWayEverywhere pins the consistency pass: every
 // server row is called "Server:" (Endpoint was the same thing under a second
-// name), every server has an API key row beside it, the voices folder has
-// moved to the Narrate step where the list it fills lives, and the log is the
-// dialog's LAST row -- below the button row, so a failure being read grows the
+// name), every server has an API key row beside it, the voices folder is not a
+// row at all -- it is one path in llm.conf with a working default -- and the log
+// is the dialog's LAST row -- below the button row, so a failure being read grows the
 // dialog downward instead of shoving Save off the bottom.
 func TestTheDialogReadsTheSameWayEverywhere(t *testing.T) {
 	b, err := os.ReadFile("setup.go")
@@ -511,27 +514,115 @@ func TestTheDialogReadsTheSameWayEverywhere(t *testing.T) {
 	if got := strings.Count(src, `lbl("API key:")`); got != 3 {
 		t.Errorf("the dialog has %d API key rows, want 3 -- every server takes one", got)
 	}
-	// the voices folder is the Narrate step's now, and Save must not resurrect
-	// or wipe it here
+	// The voices folder has no box anywhere: it is AUDIOCPP_VOICES in llm.conf,
+	// with a default the compose file agrees with. Save still has to carry it,
+	// which is the trap -- writeConf writes the WHOLE file from the struct, so a
+	// field left at its zero value here is not "unchanged", it is erased, and
+	// the next start would list the default folder's voices instead of yours.
 	if strings.Contains(src, `"Voices folder:"`) {
-		t.Error("the voices folder row is back in Settings; it lives on the Narrate step")
+		t.Error("the voices folder is a row in Settings again -- it is one path with a default, set in llm.conf")
 	}
 	if !strings.Contains(src, "c.Voices,") {
-		t.Error("Save no longer preserves the voices folder chosen on the Narrate step")
+		t.Error("Save does not carry the voices folder through, so saving anything else wipes it")
 	}
-	// the Narrate step's side of the move: a folder row that applies live
+	// ...and the Narrate step, which is the only page that touches the folder,
+	// only ever adds one file to it
 	vb, err := os.ReadFile("narrate_voice.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"applyDir", "vp.reload(a.voiceID(), false)", "dirRow"} {
-		if !strings.Contains(string(vb), want) {
-			t.Errorf("narrate_voice.go's folder row lost %q", want)
+	for _, gone := range []string{"applyDir", "dirRow", "addVoiceDirDialog"} {
+		if strings.Contains(string(vb), gone) {
+			t.Errorf("narrate_voice.go still has %q -- the folder row and the folder import are gone", gone)
 		}
+	}
+	if !strings.Contains(string(vb), "add.ConnectClicked(vp.addVoiceDialog)") {
+		t.Error("nothing on the Narrate step puts a voice in the folder any more")
 	}
 	// the log is the last row: attached after the buttons, one grid row below
 	i, j := strings.Index(src, "grid.Attach(btns"), strings.Index(src, "grid.Attach(logExp")
 	if i < 0 || j < 0 || j < i {
 		t.Error("the Log expander is not the dialog's lowest entry")
+	}
+}
+
+// The config left the session folder, and a machine that has been cutting for
+// months still has it there. It has to arrive on its own on the next launch:
+// the file holds the API key and the endpoints, and "settings are gone, retype
+// them" is the worst possible way to introduce a good change. Once only, and
+// never over a newer file -- the old one is left where it is, so a downgrade
+// still finds it.
+func TestTheOldConfigBesideTheVideosArrivesOnItsOwn(t *testing.T) {
+	ownConfig(t)
+	root := t.TempDir()
+	a := &App{root: root}
+	old := filepath.Join(root, "llm.conf")
+	if err := os.WriteFile(old, []byte("LLM_SERVER=\"https://old\"\nLLM_API_KEY=\"sk-secret\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a.migrateConf()
+
+	if !exists(confPath()) {
+		t.Fatalf("nothing arrived at %s", confPath())
+	}
+	if c := (&App{}).readConf(); c.Server != "https://old" || c.Key != "sk-secret" {
+		t.Errorf("the endpoints came across as %+v, want the old server and key", c)
+	}
+	if fi, err := os.Stat(confPath()); err != nil {
+		t.Fatal(err)
+	} else if fi.Mode().Perm() != 0o600 {
+		t.Errorf("the copy is mode %v -- it holds the API key", fi.Mode().Perm())
+	}
+	if !exists(old) {
+		t.Error("the old file was removed; an older build would find nothing")
+	}
+
+	// and a second launch does not undo what has been changed since
+	if err := (&App{root: root}).writeConf(appConf{Server: "https://new"}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(confPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.migrateConf()
+	if got := (&App{}).readConf().Server; got != "https://new" {
+		t.Errorf("a later launch put the old server back: %q", got)
+	}
+	// untouched, not rewritten with the same bytes: the move is announced in
+	// the log, and announcing it on every launch for the rest of the machine's
+	// life is its own small bug
+	if now, err := os.Stat(confPath()); err != nil {
+		t.Fatal(err)
+	} else if !now.ModTime().Equal(fi.ModTime()) {
+		t.Error("a later launch rewrote the settings it had already migrated")
+	}
+}
+
+// The wiring for both of the above. A migration that is never called is a
+// migration that does not exist, and the same goes for the startup read of the
+// prompts: without it the boxes show the shipped wording and the first autosave
+// tick writes that over what this machine had. Source-level, because both live
+// in build() between a GTK window and an icon theme.
+func TestTheMachinesSettingsAreReadAtLaunch(t *testing.T) {
+	m := readSrc(t, "main.go")
+	for _, call := range []string{"a.migrateConf()", "a.loadGlobalPrompts()"} {
+		if !strings.Contains(m, call) {
+			t.Errorf("build() no longer calls %s", call)
+		}
+	}
+	if strings.Index(m, "a.migrateConf()") > strings.Index(m, "a.loadGlobalPrompts()") {
+		t.Error("the prompts are read before the config is moved into place, " +
+			"so the first launch after the move reads the picks from a file that is not there yet")
+	}
+	// and the prompts are written on the same tick as the project, because
+	// setPrompt fires per keystroke and a file per keystroke is not a plan
+	p := readSrc(t, "project.go")
+	for _, part := range strings.Split(p, "a.flushProject()")[1:] {
+		if !strings.HasPrefix(strings.TrimSpace(part), "a.flushPrompts()") {
+			t.Error("the project is flushed without the prompts, so an edited " +
+				"wording is only kept if the session ends the other way")
+		}
 	}
 }

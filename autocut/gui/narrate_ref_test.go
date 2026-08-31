@@ -261,7 +261,10 @@ func TestTheReferenceIsBuiltFromTheBestFewTakesOnly(t *testing.T) {
 		`loadSeg4(filepath.Join(a.outDir, "step1", base, "transcript.tsv"))`,
 		"refCuts(turns, rows)",
 		"total >= refWant || i >= refTakeMax",
-		"math.Min(t.dur(), refWant-total)",
+		"math.Min(d, refWant-total)",
+		// ...and the budget is the AUTOMATIC pick's alone: a set chosen by
+		// hand is taken whole (narrate_take.go)
+		"len(hand) == 0",
 	} {
 		if !strings.Contains(src, pin) {
 			t.Errorf("the reference build no longer has %q", pin)

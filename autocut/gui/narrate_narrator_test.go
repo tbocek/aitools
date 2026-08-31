@@ -256,3 +256,57 @@ func TestTheBarPulsesOnlyWhileNothingCanBeCounted(t *testing.T) {
 		t.Error("the narration request is not streamed, so there is nothing to count until it is over")
 	}
 }
+
+// TestPlayAlwaysRewritesTheNarration: ▶ used to write only when staleFor found
+// something wrong, which meant a narration you wanted redone -- every clip
+// covered, so nothing "wrong" -- had no button at all. Asking for it again is
+// the ordinary reason to press ▶, so the check now names the reason for the log
+// and never withholds the run.
+func TestPlayAlwaysRewritesTheNarration(t *testing.T) {
+	run := string(regexp.MustCompile(`(?s)func \(a \*App\) narrateRun\(\).*?\n}\n`).Find([]byte(readSrc(t, "narrate.go"))))
+	if run == "" {
+		t.Fatal("narrateRun is gone")
+	}
+	if !strings.Contains(run, "writing := true") {
+		t.Error("the writing half is conditional again — ▶ can decline to rewrite")
+	}
+	for _, gate := range []string{`if why != ""`, "the narration matches the cut"} {
+		if strings.Contains(run, gate) {
+			t.Errorf("narrateRun still gates on %q — a run that matches the cut does nothing", gate)
+		}
+	}
+	if !strings.Contains(run, `why = "rewriting every line"`) {
+		t.Error("a run that found nothing stale logs a blank reason")
+	}
+	if !strings.Contains(run, "keepPrevNarration(a.narrPath())") {
+		t.Error("the old narration is overwritten with no copy kept — a hand-edited line is one press from gone")
+	}
+}
+
+// TestTheOverwrittenNarrationIsKeptAside: the price of ▶ always rewriting is
+// that hand-written lines are one press from a fresh draft. One copy, taken
+// before the model's answer lands, is what makes that press undoable.
+func TestTheOverwrittenNarrationIsKeptAside(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "narration.json")
+	if _, err := keepPrevNarration(path); err == nil {
+		t.Error("keeping a narration that was never written reported success")
+	}
+	if err := os.WriteFile(path, []byte(`{"entries":[{"text":"by hand"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, err := keepPrevNarration(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prev == path {
+		t.Fatal("the copy is the original — the run would overwrite it too")
+	}
+	b, err := os.ReadFile(prev)
+	if err != nil {
+		t.Fatalf("keepPrevNarration reported %s but nothing is there: %v", prev, err)
+	}
+	if !strings.Contains(string(b), "by hand") {
+		t.Errorf("the copy does not hold the lines it was meant to save: %s", b)
+	}
+}

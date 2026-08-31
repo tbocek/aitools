@@ -1,7 +1,7 @@
 FROM arch:latest
 
 #https://github.com/ServeurpersoCom/acestep.cpp
-RUN git clone --recursive https://github.com/ServeurpersoCom/acestep.cpp && \
+RUN git -c http.version=HTTP/1.1 clone --recursive https://github.com/ServeurpersoCom/acestep.cpp && \
     mv acestep.cpp acestep.cpp.rocm && \
     cp -r acestep.cpp.rocm acestep.cpp.vulkan
 

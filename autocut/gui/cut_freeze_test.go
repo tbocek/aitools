@@ -23,7 +23,7 @@ func TestAStopIsAnOverlayNotACut(t *testing.T) {
 	fx := []cutFx{{Kind: "speed", T: 100, Dur: 2, Rate: 0, Trans: 0.5, Tout: 0.5}}
 	segs := []cutSeg{{S: 90, E: 110}}
 	out := applyFx(segs, fx)
-	if len(out) != 1 || out[0] != segs[0] {
+	if len(out) != 1 || !sameSeg(out[0], segs[0]) {
 		t.Fatalf("a stop cut the segments open: %v", out)
 	}
 	// the footage -- and its sound -- run on underneath the still
@@ -162,11 +162,12 @@ func TestTheStopWiringIsInPlace(t *testing.T) {
 		// a card keeps owning the whole picture while it is up
 		"cut_insview.go": {"defer ed.syncFxStill()", "if s == nil || s.audioIns() {"},
 		// the still is position-triggered, rendered by ffmpeg from the
-		// recording itself, and faded on the widget's opacity
-		"cut_fxstill.go": {"freezeNow(ed.fx, ed.playhead)", "ffmpegPNG(", "textAlpha(*f, ed.playhead)"},
-		// its layer sits in the preview's overlay stack, on a Fixed of its own
-		// so the camera moves over it (cut_stillcam_test.go)
-		"cut_fxview.go": {"ed.fxStillBox, ed.fxStillPic = sfix, spic"},
+		// recording itself, faded on the widget's opacity, and its layer sits
+		// in the preview's overlay stack on a Fixed of its own so the camera
+		// moves over it (cut_stillcam_test.go) -- all of it on the shared
+		// screen, so the Narrate preview freezes where the Cut one does
+		"cut_fxscreen.go": {"freezeNow(s.fx(), at)", "ffmpegPNG(", "textAlpha(*f, at)",
+			"s.fxStillBox.Put(s.fxStillPic, 0, 0)", "over.AddOverlay(s.fxStillBox)"},
 		// the render composites the same frame over the same seconds: one
 		// decoded frame cloned out over the clip, faded on its alpha, laid on
 		// BEFORE the camera so a zoom crops the still like the footage

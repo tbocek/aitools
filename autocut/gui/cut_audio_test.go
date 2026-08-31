@@ -158,7 +158,7 @@ func TestARealRecordingIsDecodedIntoTheEnvelopeItSoundsLike(t *testing.T) {
 	if got := ffprobeChannels(wav); got != 2 {
 		t.Fatalf("a stereo file was probed as %d channel(s)", got)
 	}
-	wf, err := buildWave(wav, 2)
+	wf, err := buildWave(wav, 0, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestARealRecordingIsDecodedIntoTheEnvelopeItSoundsLike(t *testing.T) {
 	// ...and the whole of that happens once: loadWave leaves an envelope on
 	// disk, and the second look reads it rather than starting ffmpeg again
 	cache := filepath.Join(dir, "cache")
-	first, err := loadWave(cache, wav, 2)
+	first, err := loadWave(cache, tlAudio{base: baseName(wav), path: wav, chans: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestARealRecordingIsDecodedIntoTheEnvelopeItSoundsLike(t *testing.T) {
 	if err := os.WriteFile(notAudio, []byte("this is not a recording"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildWave(notAudio, 1); err == nil {
+	if _, err := buildWave(notAudio, 0, 1); err == nil {
 		t.Error("a text file decoded into a waveform")
 	}
 }
@@ -428,7 +428,7 @@ func TestTheLanesAreWiredUnderTheCut(t *testing.T) {
 		// every sound in the session gets a lane: the footage's own first, then
 		// the sources the Inputs step did NOT mark as footage, placed by the
 		// same zero as everything else and sorted back onto the one clock
-		"ed.auds = masterLanes(ed.vids)",
+		"ed.auds = srcLanes(ed.vids, a.snappedTracks())",
 		"for _, s := range all[len(vids):] {",
 		"start: s.start - zero,",
 		"chans: max(1, ffprobeChannels(s.path)),",
@@ -448,7 +448,7 @@ func TestTheLanesAreWiredUnderTheCut(t *testing.T) {
 	// wherever the lanes were last changed -- a reload, or a lane added by hand
 	for _, want := range []string{
 		"go func() {",
-		"wf, err := loadWave(a.waveCache(), au.path, au.chans)",
+		"wf, err := loadWave(a.waveCache(), au)",
 		"ed.waves[au.base] = wf",
 	} {
 		if !strings.Contains(readSrc(t, "cut_audio.go"), want) {

@@ -212,6 +212,7 @@ func TestTheSourceListSaysWhatItIsWithoutAHeadingOverIt(t *testing.T) {
 }
 
 func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
+	ownConfig(t)
 	body := funcBody(t, "prep.go", `func \(a \*App\) buildPrep\(`)
 	for what, want := range map[string]string{
 		"the session's files on the left":  "outer.SetStartChild(sources)",
@@ -368,9 +369,11 @@ func TestTheOutputsRowSaysHowMuchAndHoverSaysWhen(t *testing.T) {
 // and a prompt this project has its own wording for wears the same ✎ every
 // prompt menu shows -- the mark is the one permanent pixel an edit gets.
 func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
+	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	got := a.prepEditNames()
-	want := []string{"User Context", "Describe", "Transcript", "Cut", "Audit", "Narration", "Upload text"}
+	want := []string{"User Context", "Describe", "Transcript", "Cut", "Audit", "Narration",
+		"Upload text", "Improve"}
 	if len(got) != len(want) {
 		t.Fatalf("the menu offers %v, want %v", got, want)
 	}

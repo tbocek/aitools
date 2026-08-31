@@ -1,7 +1,7 @@
 FROM arch:latest
 
 #https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md
-RUN git clone https://github.com/ggml-org/llama.cpp
+RUN git -c http.version=HTTP/1.1 clone https://github.com/ggml-org/llama.cpp
 RUN cd llama.cpp/tools/ui && npm ci && npm run build
 
 ENV ROCM_PATH=/opt/rocm/core \

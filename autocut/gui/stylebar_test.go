@@ -16,6 +16,7 @@ import (
 )
 
 func TestAPickIsStoredNoMatterWhichDropdownMadeIt(t *testing.T) {
+	ownConfig(t)
 	// both dropdowns call pickPromptStyle; headless there are no widgets, so
 	// this is the shared path below either one
 	a := &App{root: t.TempDir()}
@@ -33,6 +34,7 @@ func TestAPickIsStoredNoMatterWhichDropdownMadeIt(t *testing.T) {
 }
 
 func TestTheStyleBarIsWiredToTheOneStore(t *testing.T) {
+	ownConfig(t)
 	// the bar carries the dropdown...
 	if !strings.Contains(readSrc(t, "cut.go"), `bar.Append(a.styleBar("cut", "Style",`) {
 		t.Error("the Cut bar no longer surfaces the style dropdown")

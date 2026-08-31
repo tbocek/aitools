@@ -23,6 +23,7 @@ import (
 )
 
 func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
+	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	var shorts string
 	for _, s := range a.promptStyleList("cut") {
@@ -190,6 +191,7 @@ func TestATargetIsAWishOrALeftover(t *testing.T) {
 // not: 20 to 30 seconds is a promise, so its ceiling is a fifth over. This is
 // the gate that stopped a 25 s target shipping as a 53 s "Short".
 func TestAShortMayRunAFifthOverNeverHalfOver(t *testing.T) {
+	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	if lo, hi := a.suggestWindow(25); lo != 15 || hi != 37.5 {
 		t.Errorf("default window = %.1f..%.1f, want 15..37.5", lo, hi)

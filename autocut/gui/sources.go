@@ -95,9 +95,40 @@ type sourceItem struct {
 	// has, the wish is spent -- the row then points at the voiceless file and
 	// the voice is a row of its own, so there is nothing left to ask for.
 	sepVoice bool
+	// which of the file's audio tracks the session uses, as a:N indices. Empty
+	// is the first alone, which is what an ordinary file means and what every
+	// project written before the choice existed means (wantTracks). Only a file
+	// with more than one track can be given a different answer, and only from
+	// the menu on its row -- see trackButton (cut_tracks.go).
+	tracks []int
 }
 
 func (it sourceItem) name() string { return filepath.Base(it.path) }
+
+// sameSource is what == used to be, before a row could name a set of audio
+// tracks and stopped being a comparable struct.
+//
+// Every field is spelled out by hand because Go will not compare a struct
+// holding a slice. That is a standing hazard -- a field added later and
+// forgotten here would be a change the project quietly does not notice it has
+// to save -- which is why TestEverySourceFieldCountsAsAChange walks the type by
+// reflection and fails on any field this does not read.
+//
+// The tracks compare in ORDER, unlike a scene's silenced lanes: they are the
+// stored form of a sorted, deduplicated answer (wantTracks), so two orders here
+// is a row that was written twice and only one of them the way this saves it.
+func sameSource(a, b sourceItem) bool {
+	if a.path != b.path || a.footage != b.footage || a.narrator != b.narrator ||
+		a.sepVoice != b.sepVoice || len(a.tracks) != len(b.tracks) {
+		return false
+	}
+	for i := range a.tracks {
+		if a.tracks[i] != b.tracks[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // sourceList is the session's sources. The order is arrival order and nothing
 // hangs on it: sources are placed on the wall clock by the timestamp in their
@@ -109,6 +140,9 @@ type sourceList struct {
 	items    []sourceItem
 	box      *gtk.ListBox
 	onChange func()
+	// how many audio tracks each file holds, so the rows can be rebuilt without
+	// an ffprobe apiece every time one of them is touched (srcTracks)
+	probed map[string][]audTrack
 }
 
 func newSourceList(onChange func()) *sourceList {
@@ -454,6 +488,11 @@ func (s *sourceList) row(i int) *gtk.Box {
 	row.Append(foot)
 	row.Append(narr)
 	row.Append(lbl)
+	// only for a file that holds more than one audio track: an ordinary
+	// recording has nothing to choose and gets no button (trackButton)
+	if tb := s.trackButton(i); tb != nil {
+		row.Append(tb)
+	}
 	// sources align on the wall clock, and the clock comes out of the name --
 	// a file without one is stacked at the session's start and has to be lined
 	// up by hand. That deserves a flag on the row, not a failed run.

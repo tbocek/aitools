@@ -49,10 +49,17 @@ func TestTheRenderAsksForTheScenesCamera(t *testing.T) {
 	if !strings.Contains(src, "assignLanes(out, c.Rows)") {
 		t.Error("the render's timeline has no rows, so every scene resolves to row nought")
 	}
-	// the one lookup left on the clock belongs to the effects, which have no
-	// row of their own yet
-	if n := strings.Count(src, "pickVideo(vids,"); n != 1 {
-		t.Errorf("produce.go has %d clock-only lookups left, want the effects' one", n)
+	// ...and nothing is resolved on the clock alone any more. The last one was
+	// a stop effect's frozen frame: effects have no row of their own, so it
+	// took whatever recording was rolling, and on a two-camera session that
+	// froze camera 1's frame over a scene showing camera 2. An effect still has
+	// no row, but the SCENE it stands on does, and that is the answer -- which
+	// is what cutVideoOn is: the covering scene's camera, no editor behind it.
+	if n := strings.Count(src, "pickVideo(vids,"); n != 0 {
+		t.Errorf("produce.go has %d clock-only lookups left; every one belongs to the scene it stands on", n)
+	}
+	if !strings.Contains(src, "v := cutVideoOn(segs, vids, cue.fx.T)") {
+		t.Error("a stop's frozen frame no longer comes off the camera its scene shows")
 	}
 }
 
@@ -69,16 +76,21 @@ func TestTheSoundUnderAnInsertComesFromTheRowItCovers(t *testing.T) {
 		want string
 	}{{0, "a"}, {1, "b"}} {
 		s := cutSeg{S: 40, E: 44, Ins: "card.svg", Mute: true, Cam: c.cam}
-		_, _, note := soundUnder(s, vids, nil, "")
+		_, _, note := soundUnder(s, vids)
 		if !strings.Contains(note, c.want+" has no sound") {
 			t.Errorf("a card on row %d kept: %q, want the sound of %s", c.cam, note, c.want)
 		}
 	}
-	// ...unless the cut has been told which lane it is heard on, which is one
-	// answer for the whole cut and outranks the row underneath
-	s := cutSeg{S: 40, E: 44, Ins: "card.svg", Mute: true, Cam: 0}
-	if p, at, note := soundUnder(s, vids, nil, "b"); p != "/f/b.mp4" || at != 30 || note != "" {
-		t.Errorf("under the chosen lane the card kept %q at %.0f s (%s)", p, at, note)
+}
+
+func TestTheSubstitutedSoundFillsASpedUpSlot(t *testing.T) {
+	// the trim is in source seconds and the slot is in output ones, so a clip
+	// played at double speed eats twice its length of the file. Without the
+	// speed the lane would run out halfway and apad would finish the slot in
+	// silence -- which sounds like the render dropping the audio
+	src := readSrc(t, "produce.go")
+	if !strings.Contains(src, `args = append(args, "-t", fmt.Sprintf("%.3f", c.length*math.Max(1, c.speed())),`) {
+		t.Error("a substituted lane is trimmed to the slot rather than to what the slot eats")
 	}
 }
 

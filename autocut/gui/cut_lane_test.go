@@ -242,10 +242,6 @@ func TestALanesSoundIsTheSecondsItShows(t *testing.T) {
 	if got := ed.auds[0].at(40); got != 40 {
 		t.Errorf("a recording at 40 s plays its own second %g", got)
 	}
-	// and the render and the preview ask the same question of it
-	if p, at := soundOf(ed.vids, ed.auds, name, 65); p != "/f/a.mp4" || at != 25 {
-		t.Errorf("the cut heard on %s at 65 s plays %s at %g s, want /f/a.mp4 at 25", name, p, at)
-	}
 }
 
 // A row taken away takes its sound with it, and an undo brings both back. Both

@@ -124,19 +124,16 @@ func TestAZoomLaterInTheSessionDoesNotMoveAnEarlierStop(t *testing.T) {
 // hung on, and every path that settles the camera settles the still with it.
 func TestTheStillRidesTheCameraTransform(t *testing.T) {
 	pins := map[string][]string{
-		"cut_fxview.go": {
-			"sfix := gtk.NewFixed()",
-			"sfix.SetOverflow(gtk.OverflowHidden)",
-			"sfix.Put(spic, 0, 0)",
-			"ed.fxStillBox, ed.fxStillPic = sfix, spic",
-			"over.AddOverlay(sfix)",
-			"ed.syncCamLayer()",
-			"ed.fitStill() // whatever the camera just did, the still does too",
-			"box.SetChildTransform(pic, zoomTransform(s, tx, ty))",
-		},
-		"cut_fxstill.go": {
-			"ed.fitStill() // under whatever camera is over the footage right now",
-			"box.SetOpacity(textAlpha(*f, ed.playhead))",
+		"cut_fxscreen.go": {
+			"s.fxStillBox = gtk.NewFixed()",
+			"s.fxStillBox.SetOverflow(gtk.OverflowHidden)",
+			"s.fxStillBox.Put(s.fxStillPic, 0, 0)",
+			"over.AddOverlay(s.fxStillBox)",
+			"s.syncCamLayer()",
+			"s.fitStill() // whatever the camera just did, the still does too",
+			"box.SetChildTransform(pic, zoomTransform(sc, tx, ty))",
+			"s.fitStill() // under whatever camera is over the footage right now",
+			"box.SetOpacity(textAlpha(*f, at))",
 		},
 		// and the render, which has been doing this all along -- the comment is
 		// the contract the preview now keeps
@@ -156,11 +153,11 @@ func TestTheStillRidesTheCameraTransform(t *testing.T) {
 		}
 	}
 	// nothing hangs the still straight on the overlay any more
-	b, err := os.ReadFile("cut_fxview.go")
+	b, err := os.ReadFile("cut_fxscreen.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), "over.AddOverlay(spic)") {
+	if strings.Contains(string(b), "over.AddOverlay(s.fxStillPic)") {
 		t.Error("the still is still an overlay child — the camera cannot reach it there")
 	}
 }

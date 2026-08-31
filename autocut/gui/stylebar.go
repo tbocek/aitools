@@ -71,7 +71,7 @@ func (a *App) styleBar(key, label, tip string) *gtk.Box {
 	return box
 }
 
-// promptOwned is whether this project says anything of its own about a prompt:
+// promptOwned is whether anything of your own is being said about a prompt:
 // a wording it edited or invented, or a shipped wording other than the default
 // picked. Either is worth the ✎ -- both change what the model is told, and
 // neither is visible anywhere else while another row is shown.

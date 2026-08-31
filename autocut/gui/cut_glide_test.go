@@ -113,12 +113,16 @@ func TestTheClampIsReBasedWhereTheLineIsPlaced(t *testing.T) {
 	src := string(b)
 	for _, want := range []string{
 		"ed.reLive(t) // the live clock is re-based with the line; see livePlayhead",
-		"ed.liveMax = ed.playhead // nothing to smooth; re-arm on the line itself",
-		"ed.liveMax, ed.posT, ed.posAt = t, t, time.Now()",
+		"return playhead, playhead // nothing to smooth; re-arm on the line itself",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("cut.go no longer contains %q", want)
 		}
+	}
+	// the re-basing itself is on the shared screen, so the Narrate preview is
+	// re-based by the same line
+	if want := "s.liveMax, s.posT, s.posAt = t, t, time.Now()"; !strings.Contains(readSrc(t, "cut_fxscreen.go"), want) {
+		t.Errorf("cut_fxscreen.go no longer contains %q", want)
 	}
 }
 
@@ -130,11 +134,20 @@ func TestTheGlideIsDrivenByTheFrameClock(t *testing.T) {
 			"if ed.livePreview() && ed.player != nil && ed.player.playing {",
 			"ed.syncPreviewZoom()",
 			"area.QueueDraw()",
-			// both halves of the playing picture: the transformed layer...
-			"r := fxRectAt(ed.fx, ed.livePlayhead(), sw/sh, ed.outAspect())",
-			// ...and the mask and titles drawn over it
-			"now := ed.livePlayhead()",
-			"fxRectAt(ed.fx, now, lw/lh, outA))",
+		},
+		// both halves of the playing picture are on the shared screen: the
+		// transformed layer, and the mask and titles drawn over it, each
+		// asking the live clock rather than the ten-a-second playhead
+		"cut_fxscreen.go": {
+			"fxLiveFit(W, H, sw, sh, s.outAspect(), s.fx(), s.livePlayhead())",
+			"now := s.livePlayhead()",
+			"fxLiveFit(W, H, lw, lh, outA, fx, now)",
+			"s.ed().drawFxOverlaysAt(cr, fx, now, ox, oy, ow, oh)",
+		},
+		"cut_fxpaint.go": {
+			// and the shared side asks about the clock it was handed
+			"liveZoom(W, H, sw, sh, outA, fxRectAt(fx, t, sw/sh, outA))",
+			"for _, i := range textsAt(fx, t) {",
 		},
 		"cut.go": {
 			"ed.posT, ed.posAt = ed.playhead, time.Now()",

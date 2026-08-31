@@ -40,6 +40,27 @@ const (
 	maxExtend = 4.0  // seconds a clip may grow to fit its line
 	maxTempo  = 1.25 // ... and how much the line may be sped up after that
 	loudFlt   = "loudnorm=I=-14:TP=-1.5:LRA=11"
+	// clipCeil is the last thing every clip's audio passes through before the
+	// encoder. The mix keeps every lane at the level it was recorded at
+	// (normalize=0, below), which is what a hand on a desk would do -- switching
+	// a second lane on must not duck the first. But two lanes at their own level
+	// ARE louder than one, and while the filter graph is float and does not care,
+	// the AAC encode of each clip happens right here, long before the loudnorm
+	// pass over the joined file (produceFinal) could undo anything. So the peaks
+	// are caught at the one point that is too late to fix afterwards.
+	//
+	// level=disabled matters and is not a detail: alimiter's default is to scale
+	// its output back up by 1/limit, which hands straight back the headroom the
+	// limit just made -- the ceiling lands at 0 dBFS again and the whole filter
+	// buys nothing. Disabled, it is a pass-through below the ceiling, which is
+	// the other thing wanted here: a quiet scene has to STAY quieter than a loud
+	// one, or the loudnorm pass at the end is handed a file whose moments no
+	// longer agree with each other.
+	//
+	// It is on EVERY clip and not only the mixed ones, for the same reason audFmt
+	// is: the clips are joined by copying, so a filter some of them went through
+	// is a seam.
+	clipCeil = "alimiter=limit=0.891:level=disabled" // -1 dBFS
 )
 
 // audFmt is the shape every clip's audio is forced into. Every clip the same,
@@ -146,6 +167,27 @@ func defaultProdSettings() prodSettings {
 		FPS: 30, AudioKbps: 128, GameVol: 0.22, Subs: "sidecar"}
 }
 
+// UnmarshalJSON seeds the defaults before decoding, so that an ABSENT game_vol
+// and a stored 0 stop meaning the same thing. They are different answers: a
+// project written before the setting existed has no key at all and has to keep
+// getting 0.22, the way Bare's inverted tag keeps the blurred backdrop, while a
+// stored 0 is a deliberate pick -- silence the game entirely under the voice,
+// which is what a talking head over gameplay wants. The page used to tell them
+// apart with "if st.GameVol > 0", which read that 0 as "never set" and sprang
+// the slider back to 0.22 on the next load, quietly un-silencing the game.
+//
+// Only GameVol is seeded. CRF's guard is left alone because it cannot be wrong:
+// its slider starts at 14, so the 0 it tests for is not a value anyone can save.
+func (s *prodSettings) UnmarshalJSON(b []byte) error {
+	type raw prodSettings // a defined type carries no methods, so no recursion
+	v := raw{GameVol: defaultProdSettings().GameVol}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*s = prodSettings(v)
+	return nil
+}
+
 func (a *App) prodSettings() prodSettings {
 	p := a.prod
 	if p == nil {
@@ -197,9 +239,10 @@ func (a *App) applyProdSettings(st *prodSettings) {
 	if st.CRF > 0 {
 		p.crf.SetValue(float64(st.CRF))
 	}
-	if st.GameVol > 0 {
-		p.gvol.SetValue(st.GameVol)
-	}
+	// no "> 0" guard here, unlike CRF above: 0 is a real level -- game fully
+	// silent under the narration -- and UnmarshalJSON has already filled in the
+	// default for a project that stored none.
+	p.gvol.SetValue(st.GameVol)
 	p.guard = false
 	if st.OutFile != "" {
 		out := st.OutFile
@@ -654,7 +697,8 @@ func (a *App) produceSegs() []cutSeg {
 // would render the old placement.
 func (a *App) produceCut() cutFile {
 	if ed := a.ed; ed != nil && (len(ed.segs) > 0 || len(ed.shift) > 0 || len(ed.cutLanes) > 0) {
-		return cutFile{ed.segs, ed.aspect, ed.fx, ed.snd, ed.shift, ed.rows, ed.cutLanes, ed.nRows}
+		return cutFile{Segs: ed.segs, Aspect: ed.aspect, Fx: ed.fx, Shift: ed.shift,
+			Rows: ed.rows, Lanes: ed.cutLanes, NRows: ed.nRows}
 	}
 	b, err := os.ReadFile(a.cutPath())
 	if err != nil {
@@ -737,6 +781,19 @@ func (a *App) sessionTracks(vids, auds []string) ([]tlVideo, []tlAudio, error) {
 	}
 	for i := range rec {
 		rec[i].start += c.Shift[rec[i].base]
+	}
+	// the further tracks of a multi-track capture, which are recordings in every
+	// way that matters here: a lane each, on the file's own clock, mixed under
+	// the clips they were running through. They are built from the videos AFTER
+	// those were corrected, so a row dragged to fix its clock takes its own
+	// second track with it, and their own name is still a name a further drag
+	// can be stored under (slideSrc, cut_shift.go).
+	for _, au := range srcLanes(out, a.snappedTracks()) {
+		if au.master {
+			continue // that one is the footage's own sound, taken off its input
+		}
+		au.start += c.Shift[au.base]
+		rec = append(rec, au)
 	}
 	// and the rows the cut put on the band itself, which are in cut.json and in
 	// no source list -- the render has to be told about them or every scene cut
@@ -831,6 +888,11 @@ type prodClip struct {
 	// selection scoped to a single recording (▼) replaces THAT recording and
 	// leaves the others playing, so it is dropped from the mix by name.
 	dropLane string
+	// the lanes this clip's scene does not hear (cutSeg.Quiet), carried through
+	// unread: clipMixes drops the separate recordings named here, and clipInput
+	// treats the capture's own track as having no sound when the camera's own
+	// lane is one of them.
+	quiet []string
 
 	length float64 // slot length after growing for the narration
 	tempo  float64
@@ -981,6 +1043,11 @@ type prodMix struct {
 	at   float64
 	ss   float64
 	dur  float64
+	// which audio stream of that file, a:N. Nought for a recording and for a
+	// sound laid in by hand; above nought for a further track of a multi-track
+	// capture, where the same file is in the mix on more than one lane and this
+	// is the only thing that says which (cut_tracks.go).
+	track int
 }
 
 // speed is the clip's playback rate with the zero value meaning normal: the
@@ -1114,14 +1181,8 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		a.prog(trackSTT, base, "planning the clips")
 	}
 
-	// 2. plan every clip: which recording, how long, which voice file
-	//
-	// ...and which microphone. The lane the cut is heard on is one answer for
-	// the whole cut, read once here (soundOf): a scene's picture comes from
-	// the camera it says, and its sound from the lane that was picked, which
-	// on a session shot on one camera is the camera itself and changes
-	// nothing.
-	snd := a.produceCut().Sound
+	// 2. plan every clip: which recording, how long, which voice file, and
+	// which lanes the scene was told not to hear (cutSeg.Quiet, cut_hear.go)
 	var clips []prodClip
 	for i, s := range segs {
 		var c prodClip
@@ -1136,7 +1197,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				a.logfIdle("clip %d copies footage at %.0f s that falls in no recording — skipped", i+1, from)
 				continue
 			}
-			c = hearOn(copyClip(i, s, from, v), vids, recs, snd, from)
+			c = copyClip(i, s, from, v)
 			if end := v.start + v.dur; from+c.length > end {
 				c.length = end - from
 				a.logfIdle("clip %d copies past the end of %s — shortened to %.1f s", i+1, v.base, c.length)
@@ -1176,7 +1237,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				continue
 			}
 			var note string
-			c, note = insClip(i, s, path+q.suffix(), vids, recs, snd)
+			c, note = insClip(i, s, path+q.suffix(), vids)
 			if note != "" {
 				a.logfIdle("clip %d %s", i+1, note)
 			}
@@ -1186,8 +1247,8 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				a.logfIdle("clip %d at %.0f s falls in no recording — skipped", i+1, s.S)
 				continue
 			}
-			c = hearOn(prodClip{idx: i, video: v, local: v.at(s.S), tempo: 1, rate: 1,
-				length: s.length()}, vids, recs, snd, s.S)
+			c = prodClip{idx: i, video: v, local: v.at(s.S), tempo: 1, rate: 1,
+				length: s.length()}
 			if s.Rate > 0 {
 				c.rate = s.Rate
 			}
@@ -1208,6 +1269,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			continue
 		}
 		c.sessS = s.S
+		c.quiet = s.Quiet // every clip kind, so one scene answers one way
 		if from, ok := copySrc(s.Ins); ok {
 			// its text cues are the copied footage's, not the paste point's:
 			// a name plate over the original belongs over the copy too
@@ -1415,7 +1477,11 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			continue // no footage runs under a card or a held frame
 		}
 		for _, cue := range freezeCues(fx, c.sessS, c.length*c.speed(), c.speed(), c.length) {
-			v := pickVideo(vids, cue.fx.T)
+			// the scene's own camera (cutVideoOn), not whichever recording
+			// happened to be rolling: on a session shot on two cameras,
+			// pickVideo froze camera 1's frame over a scene showing camera 2 --
+			// a still of something the clip around it never shows
+			v := cutVideoOn(segs, vids, cue.fx.T)
 			if v == nil {
 				a.logfIdle("a stop at %.0f s falls in no recording — its still is skipped", cue.fx.T)
 				continue
@@ -1494,7 +1560,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			return fmt.Errorf("clip %d: %w", i+1, err)
 		}
 		// bare name: concat-list entries resolve against the LIST's directory
-		fmt.Fprintf(&list, "file '%s'\n", name)
+		list.WriteString(concatLine(name))
 	}
 	lf := filepath.Join(clipDir, "concat.txt")
 	if err := os.WriteFile(lf, []byte(list.String()), 0o644); err != nil {
@@ -1588,11 +1654,18 @@ func (a *App) clipInput(c prodClip, st prodSettings) ([]string, bool, error) {
 			}, false, nil
 		}
 		// input seconds: a slowed clip reads rate·length of footage and
-		// stretches it to length on the way out
+		// stretches it to length on the way out.
+		//
+		// Its own sound is that input's FIRST track and no other, because it is
+		// read straight off the picture's input ([0:a], encodeClip) -- so a row
+		// that asked for the second track and not the first has nothing to put
+		// there, and that track reaches the clip as a lane in the mix like any
+		// other recording (ownTrack, cut_tracks.go).
 		return []string{
 			"-ss", fmt.Sprintf("%.3f", math.Max(0, c.local)),
 			"-t", fmt.Sprintf("%.3f", c.length*c.speed()), "-i", c.video.path,
-		}, hasAudioStream(c.video.path) && !c.mute, nil
+		}, hasAudioStream(c.video.path) && !c.mute && !laneQuiet(c.quiet, c.video.base) &&
+			ownTrack(a.snappedTracks(), c.video.path), nil
 	}
 	rate := st.FPS
 	if rate <= 0 {
@@ -1755,12 +1828,15 @@ func clipMixes(c prodClip, recs []tlAudio) []prodMix {
 		if au.base == c.dropLane {
 			continue // this one is what the inserted sound was put in place of
 		}
+		if laneQuiet(c.quiet, au.base) {
+			continue // and this one the scene was told not to hear
+		}
 		t0 := math.Max(s0, au.start)
 		t1 := math.Min(s1, au.start+au.dur)
 		if t1-t0 < 0.1 { // nothing worth an input, and a 0 s one ffmpeg refuses
 			continue
 		}
-		out = append(out, prodMix{base: au.base, path: au.path,
+		out = append(out, prodMix{base: au.base, path: au.path, track: au.track,
 			at: (t0 - s0) / c.speed(), ss: t0 - au.start, dur: t1 - t0})
 	}
 	return out
@@ -2034,7 +2110,7 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 	if len(c.mix) > 0 {
 		seps := ""
 		for k, m := range c.mix {
-			fc += fmt.Sprintf("[%d:a]%s%s", mixBase+k, audFmt(st), slow)
+			fc += fmt.Sprintf("[%s]%s%s", trackOf(mixBase+k, m.track), audFmt(st), slow)
 			// whole milliseconds, and only when there is a wait to honour: this
 			// is the same integer adelay the narration learned to hand over
 			if ms := int(math.Round(m.at * 1000)); ms > 0 {
@@ -2074,9 +2150,10 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 			nrs += fmt.Sprintf("[nr%d]", k)
 		}
 		fc += fmt.Sprintf("[%s]volume=%.3f,aresample=48000[bg];", game, st.GameVol)
-		fc += fmt.Sprintf("[bg]%samix=inputs=%d:duration=first:normalize=0,", nrs, 1+len(spoken)) + audFmt(st) + "[a]"
+		fc += fmt.Sprintf("[bg]%samix=inputs=%d:duration=first:normalize=0,", nrs, 1+len(spoken)) +
+			clipCeil + "," + audFmt(st) + "[a]"
 	} else {
-		fc += fmt.Sprintf("[%s]%s[a]", game, audFmt(st))
+		fc += fmt.Sprintf("[%s]%s,%s[a]", game, clipCeil, audFmt(st))
 	}
 	args = append(args, "-filter_complex", fc, "-map", "["+vlab+"]", "-map", "[a]")
 	if c.ins != "" || c.snd != "" || c.freeze || c.speed() != 1 {
@@ -2210,32 +2287,12 @@ func sndClip(i int, s cutSeg, path string, v *tlVideo, recs []tlAudio) prodClip 
 	return c
 }
 
-func insClip(i int, s cutSeg, file string, vids []tlVideo, auds []tlAudio, snd string) (prodClip, string) {
+func insClip(i int, s cutSeg, file string, vids []tlVideo) (prodClip, string) {
 	c := prodClip{idx: i, ins: file, tempo: 1, rate: 1, length: s.length(), mute: s.Mute,
 		noLanes: !s.keepsSoundUnder()}
 	var note string
-	c.snd, c.sndAt, note = soundUnder(s, vids, auds, snd)
+	c.snd, c.sndAt, note = soundUnder(s, vids)
 	return c, note
-}
-
-// hearOn puts the chosen lane's sound on a clip that would otherwise be heard
-// with its own picture (soundOf). Footage and copied footage only: an insert
-// brings its own sound or keeps what was under it, and both were already
-// settled by the time this is asked.
-//
-// Nothing to do in the two ordinary cases -- no lane picked, or the picked lane
-// IS this clip's own recording -- and saying so here rather than at each call
-// site is what keeps a one-camera render byte for byte the render it was.
-func hearOn(c prodClip, vids []tlVideo, auds []tlAudio, snd string, t float64) prodClip {
-	if c.mute || c.video == nil {
-		return c // silent by choice, or nothing to swap the sound of
-	}
-	p, at := soundOf(vids, auds, snd, t)
-	if p == "" || p == c.video.path {
-		return c
-	}
-	c.snd, c.sndAt = p, at
-	return c
 }
 
 // laneRecorded says whether a named lane is one of the separately-recorded
@@ -2269,15 +2326,9 @@ func laneRecorded(recs []tlAudio, base string) bool {
 // that fall in no recording, and a recording with no sound in it. Both come out
 // silent, both look like the flag was ignored, and neither is something the eye
 // can find on the timeline.
-func soundUnder(s cutSeg, vids []tlVideo, auds []tlAudio, snd string) (path string, at float64, note string) {
+func soundUnder(s cutSeg, vids []tlVideo) (path string, at float64, note string) {
 	if !s.keepsSoundUnder() {
 		return "", 0, ""
-	}
-	// what is heard under it is what is heard anywhere else: the lane the cut
-	// was told to play on, and only failing that the camera the insert was
-	// placed over
-	if p, at := soundOf(vids, auds, snd, s.S); p != "" {
-		return p, at, ""
 	}
 	v := pickVideoOn(vids, s.Cam, s.S)
 	switch {

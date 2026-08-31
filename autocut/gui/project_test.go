@@ -161,7 +161,7 @@ func TestSourcesRoundTripWithTheirRoles(t *testing.T) {
 		t.Fatalf("%d sources went in, %d came back", len(items), len(back))
 	}
 	for i, it := range items {
-		if back[i] != it {
+		if !sameSource(back[i], it) {
 			t.Errorf("source %d came back as %+v, want %+v", i, back[i], it)
 		}
 	}
@@ -202,7 +202,7 @@ func TestOldProjectsBecomeSourcesWithTheirRoles(t *testing.T) {
 		t.Fatalf("migrated to %+v, want %d sources", got, len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !sameSource(got[i], want[i]) {
 			t.Errorf("source %d migrated to %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -346,6 +346,10 @@ func TestPointingAtAProjectRedrawsWhatItsFolderHolds(t *testing.T) {
 		"a.showProject()",  // the header bar names the file
 		"a.followOutDir()", // and the render target follows it
 		`a.voiceSel = ""`,  // the voice is the project's, not the session's
+		// ...and so are the seconds it is cloned from, which are read once and
+		// held: without this the next project shows this one's picks under the
+		// same recording name (narrate_take.go)
+		"a.takesRead, a.takesMap = false, nil",
 		"a.narr.load()",    // the narration lives in the folder
 		"a.prep.refresh()", // and so do the counts on every page
 		"a.updateProduceInfo()",
@@ -548,6 +552,7 @@ func TestTheProjectNameFollowsSaveAndLoad(t *testing.T) {
 // path -- what a runner reads, what the file stores, and that the setting is
 // really gone from the config rather than quietly written in both places.
 func TestTheLanguageBelongsToTheProject(t *testing.T) {
+	ownConfig(t)
 	a := &App{root: t.TempDir()}
 
 	// nothing typed is the default, not an empty language field posted to a
@@ -599,7 +604,7 @@ func TestTheLanguageBelongsToTheProject(t *testing.T) {
 	if err := a.writeConf(appConf{Server: "https://x"}); err != nil {
 		t.Fatal(err)
 	}
-	conf, err := os.ReadFile(a.confPath())
+	conf, err := os.ReadFile(confPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,6 +645,7 @@ func TestANewProjectStartsFromTheDefaultsNotFromZero(t *testing.T) {
 // on screen says so. Pinned by reading the source, because applyProject touches
 // widgets and there is no window here.
 func TestNewProjectResetsEveryPageThroughApplyProject(t *testing.T) {
+	ownConfig(t)
 	src, err := os.ReadFile("project.go")
 	if err != nil {
 		t.Fatal(err)
@@ -699,6 +705,7 @@ func TestNewProjectResetsEveryPageThroughApplyProject(t *testing.T) {
 // user has, which is also why a name already in use stops the upgrade instead
 // of taking it.
 func TestAnOlderProjectGoesOnUnderTheNameTheRuleGivesIt(t *testing.T) {
+	ownConfig(t)
 	root := t.TempDir()
 	a := &App{root: root}
 

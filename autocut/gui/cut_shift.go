@@ -62,7 +62,12 @@ func (ed *cutEditor) slideSrc(base string, d float64) {
 		}
 	}
 	for i := range ed.auds {
-		if ed.auds[i].base == base {
+		// by name, and also every further track of the video with that name: a
+		// multi-track capture's second track is glued to the pictures it was
+		// recorded with, so dragging the row to correct its clock has to take
+		// the track with it or the correction is a desync nobody asked for. Its
+		// own name still works as a name, so it can be nudged apart afterwards.
+		if ed.auds[i].base == base || ed.auds[i].base == trackName(base, ed.auds[i].track) {
 			ed.auds[i].start += d
 		}
 	}

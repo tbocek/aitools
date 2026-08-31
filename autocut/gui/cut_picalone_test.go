@@ -294,7 +294,7 @@ func TestSoundUnderPicksTheRecordingItCovers(t *testing.T) {
 		{"over a gap between recordings", over(14), "", 0, "fall in no recording"},
 		{"over a recording with no sound", over(24), "", 0, "has no sound"},
 	} {
-		path, at, note := soundUnder(c.s, vids, nil, "")
+		path, at, note := soundUnder(c.s, vids)
 		if path != c.path || math.Abs(at-c.at) > 0.001 {
 			t.Errorf("%s takes its sound from %q at %.1f s, want %q at %.1f s",
 				c.what, filepath.Base(path), at, filepath.Base(c.path), c.at)
@@ -307,7 +307,7 @@ func TestSoundUnderPicksTheRecordingItCovers(t *testing.T) {
 	// the offset is into the recording, not into the session: an insert on the
 	// third minute of a recording that started at minute two is one minute in
 	vids[0].start, vids[0].dur = 120, 300
-	if _, at, _ := soundUnder(over(180), vids, nil, ""); at != 60 {
+	if _, at, _ := soundUnder(over(180), vids); at != 60 {
 		t.Errorf("an insert 60 s into a recording took its sound from %.0f s in", at)
 	}
 	vids[0].start, vids[0].dur = 0, 10
@@ -315,7 +315,7 @@ func TestSoundUnderPicksTheRecordingItCovers(t *testing.T) {
 	// and the clip the planner builds carries that answer, not just knows it:
 	// the flag reaches the render twice over, once as the sound to take and
 	// once as the permission to take the insert's own
-	c, _ := insClip(3, over(4), "/x/sting.mp4", vids, nil, "")
+	c, _ := insClip(3, over(4), "/x/sting.mp4", vids)
 	if c.snd != talk || math.Abs(c.sndAt-4) > 0.001 || !c.mute {
 		t.Errorf("the clip takes %q at %.1f s (muted %v), want talk.mp4 at 4.0 s muted",
 			filepath.Base(c.snd), c.sndAt, c.mute)
@@ -323,7 +323,7 @@ func TestSoundUnderPicksTheRecordingItCovers(t *testing.T) {
 	if c.ins != "/x/sting.mp4" || c.length != 2 || c.idx != 3 {
 		t.Errorf("clip %d shows %q for %.1f s, want 3, the sting, 2.0 s", c.idx, c.ins, c.length)
 	}
-	if c, _ := insClip(0, cutSeg{S: 4, E: 6, Ins: "sting.mp4"}, "/x/sting.mp4", vids, nil, ""); c.snd != "" || c.mute {
+	if c, _ := insClip(0, cutSeg{S: 4, E: 6, Ins: "sting.mp4"}, "/x/sting.mp4", vids); c.snd != "" || c.mute {
 		t.Errorf("an insert with its own sound was given %q to play (muted %v)", c.snd, c.mute)
 	}
 }
@@ -381,7 +381,7 @@ func TestThePictureAloneScopeIsWired(t *testing.T) {
 			"ed.player.SetMuted(cardHush(s) || freezeHush(ed.fx, ed.playhead))",
 		},
 		"produce.go": {
-			"c, note = insClip(i, s, path+q.suffix(), vids, recs, snd)",
+			"c, note = insClip(i, s, path+q.suffix(), vids)",
 			"hasAudioStream(file) && !c.mute, nil",
 		},
 	}

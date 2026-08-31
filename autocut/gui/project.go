@@ -68,17 +68,22 @@ type Project struct {
 	// (see context.go).
 	Context string `json:"context,omitempty"`
 
-	// Read, never written. Prompts is how a project stored an edited system
-	// prompt before a job could have more than one wording: one string per job
-	// and no name for it. Loading folds each into the default style for that job,
-	// which is where it came from, and the next save writes it back under
-	// prompt_styles instead.
-	Prompts map[string]string `json:"prompts,omitempty"`
-
-	// the wordings this project has something of its own to say about -- one it
-	// edited, one it added -- keyed by job then listed by name, and which name
-	// each job is set to. Both hold only what differs from what the build ships;
-	// see prompts.go for why an untouched prompt is absent rather than copied.
+	// All three are read, never written. The prompts are the machine's now --
+	// text files under ~/.config/autocut/prompts, see promptstore.go -- because
+	// how you like to be edited for is the same in January's raid as in
+	// March's, and kept in the project it started from the shipped wording
+	// again every time a session began.
+	//
+	// A project that still carries them is one written before that, and what it
+	// carries is adopted on load, once, for whichever jobs this machine has
+	// nothing of its own for (applyPromptStyles). Nothing is deleted from the
+	// file: it is left exactly as it was, so an older build opening it finds
+	// its wordings where it left them.
+	//
+	// Prompts is the oldest of the three, from before a job could have more
+	// than one wording: one string per job and no name for it. It belongs to
+	// whichever style was the default at the time, which is the default now.
+	Prompts      map[string]string        `json:"prompts,omitempty"`
 	PromptStyles map[string][]promptStyle `json:"prompt_styles,omitempty"`
 	PromptPick   map[string]string        `json:"prompt_pick,omitempty"`
 
@@ -100,6 +105,11 @@ type ProjectSource struct {
 	// has to open with the same rows still flagged, and it is cleared by the
 	// run that grants it, so a finished project stores nothing here
 	SepVoice bool `json:"sepvoice,omitempty"`
+	// which audio tracks of a multi-track file this session uses (a:N indices).
+	// Omitted for the ordinary answer -- the first track alone -- so a project
+	// written before multi-track files were reachable already says the right
+	// thing by saying nothing, and no migration was needed (wantTracks).
+	Tracks []int `json:"tracks,omitempty"`
 }
 
 // relToRoot stores a folder the way a project file wants it: relative when it
@@ -210,21 +220,19 @@ func (a *App) currentProject() Project {
 	for _, it := range a.srcList.items {
 		srcs = append(srcs, ProjectSource{
 			Path: a.relToRoot(it.path), Footage: it.footage, Narrator: it.narrator,
-			SepVoice: it.sepVoice,
+			SepVoice: it.sepVoice, Tracks: it.tracks,
 		})
 	}
 	return Project{
-		Sources:      srcs,
-		Interval:     a.frameInterval(),
-		FrameScale:   scaleName,
-		Language:     a.projectLanguage(),
-		VidDir:       a.relToRoot(a.vidDir),
-		AudDir:       a.relToRoot(a.audDir),
-		Context:      a.sessionCtx(),
-		PromptStyles: a.currentPromptStyles(),
-		PromptPick:   a.currentPromptPick(),
-		Produce:      prod,
-		Publish:      a.currentPublish(),
+		Sources:    srcs,
+		Interval:   a.frameInterval(),
+		FrameScale: scaleName,
+		Language:   a.projectLanguage(),
+		VidDir:     a.relToRoot(a.vidDir),
+		AudDir:     a.relToRoot(a.audDir),
+		Context:    a.sessionCtx(),
+		Produce:    prod,
+		Publish:    a.currentPublish(),
 	}
 }
 
@@ -246,7 +254,7 @@ func (a *App) projectSources(p Project) []sourceItem {
 		for _, s := range p.Sources {
 			out = append(out, sourceItem{
 				path: a.fromRoot(s.Path), footage: s.Footage, narrator: s.Narrator,
-				sepVoice: s.SepVoice,
+				sepVoice: s.SepVoice, tracks: s.Tracks,
 			})
 		}
 		return out
@@ -339,12 +347,14 @@ func (a *App) setProject(path string) {
 	a.outDir = dataDir(path)
 	a.showProject()
 	a.followOutDir()
-	// the voice belongs to the project, not to the session: drop the cached id
-	// and pitch so both are re-read from the folder we just moved to
+	// the voice belongs to the project, not to the session: drop the cached id,
+	// pitch and hand-picked takes so all three are re-read from the folder we
+	// just moved to
 	a.voiceMu.Lock()
 	a.voiceSel = ""
-	a.voiceMu.Unlock()
+	a.takesRead, a.takesMap = false, nil
 	a.pitchRead = false
+	a.voiceMu.Unlock()
 	if a.voicePick != nil {
 		a.voicePick.syncSelection()
 	}
@@ -446,7 +456,8 @@ func (a *App) startAutosave() {
 	a.projSaved = a.projectJSON() // what the startup load already put in memory
 	glib.TimeoutAdd(autosaveTick, func() bool {
 		a.flushProject()
-		return true
+		a.flushPrompts() // the prompts are the machine's, not the project's, and
+		return true      // are written on the same tick for the same reason
 	})
 	// the tick leaves a gap of up to autosaveTick between a change and the
 	// file, and the change most likely to land in it is the LAST one -- you
@@ -456,6 +467,7 @@ func (a *App) startAutosave() {
 	if a.win != nil {
 		a.win.ConnectCloseRequest(func() bool {
 			a.flushProject()
+			a.flushPrompts()
 			return false // false lets the window close; this only writes
 		})
 	}

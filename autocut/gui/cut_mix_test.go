@@ -61,14 +61,14 @@ func TestTheSameInstantIsDrawnInTheSameColumn(t *testing.T) {
 		recs[i].chans = ffprobeChannels(recs[i].path)
 	}
 	ed := &cutEditor{a: a, vids: vids, pps: 40, waves: map[string]*waveform{}}
-	ed.auds = append(masterLanes(vids), recs...)
+	ed.auds = append(srcLanes(vids, nil), recs...)
 	sortLanes(ed.auds)
 	if len(ed.auds) != 2 || !ed.auds[0].master || ed.auds[1].master {
 		t.Fatalf("the lanes came out as %+v, want the footage's own first", ed.auds)
 	}
 	ed.relayout()
 	for i, au := range ed.auds {
-		wf, err := loadWave(a.waveCache(), au.path, au.chans)
+		wf, err := loadWave(a.waveCache(), au)
 		if err != nil {
 			t.Fatalf("no envelope for lane %d (%s): %v", i, au.base, err)
 		}
@@ -138,7 +138,7 @@ func TestASilentVideoHasNoLane(t *testing.T) {
 	if got := ffprobeChannels(silent); got != 0 {
 		t.Errorf("a video with no audio stream probes as %d channel(s), want 0", got)
 	}
-	if lanes := masterLanes([]tlVideo{{base: "silent", path: silent, dur: 1}}); len(lanes) != 0 {
+	if lanes := srcLanes([]tlVideo{{base: "silent", path: silent, dur: 1}}, nil); len(lanes) != 0 {
 		t.Errorf("a silent video was given %d lane(s): %+v", len(lanes), lanes)
 	}
 }
@@ -167,8 +167,9 @@ func TestThePreviewPlaysTheRecordingsUnderTheFootage(t *testing.T) {
 	}
 	got := ed.mixUnder(&v)
 	want := []mixTrack{
-		{path: "/x/mic.wav", delta: 90, dur: 300},
-		{path: "/x/late.wav", delta: -30, dur: 100},
+		// named, because the scene that silences a lane names it (cut_hush_test.go)
+		{base: "mic", path: "/x/mic.wav", delta: 90, dur: 300},
+		{base: "late", path: "/x/late.wav", delta: -30, dur: 100},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("%d recording(s) go under the footage, want %d: %+v", len(got), len(want), got)

@@ -560,7 +560,7 @@ func TestTheLineLandsWhereTheWriterPutIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(tts), "n.cue(math.Max(e.S, e.S+e.At-3), true)") {
+	if !strings.Contains(string(tts), "n.cue(n.leadIn(i), true)") {
 		t.Error("the audition no longer cues to the line's placement")
 	}
 }

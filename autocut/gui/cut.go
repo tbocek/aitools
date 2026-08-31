@@ -474,7 +474,34 @@ type cutSeg struct {
 	// and the rest keep playing under it. Meaningless on anything but a sound
 	// insert, and an ordinary cut.json is unchanged by it.
 	Lane string `json:"lane,omitempty"`
+	// which lanes this scene does NOT hear, by the name every audio row on the
+	// page already carries: a camera's own sound is its recording's name, a
+	// separate recording is its file's. Both kinds go in one list because the
+	// page shows them as one kind of thing -- a row with a waveform -- and a
+	// scene that is "my voice only" has to be able to say so about both.
+	//
+	// The SILENT ones rather than the audible ones, for two reasons. A cut
+	// written before this, and a scene nobody has touched, both come out as the
+	// empty list, which is every lane playing -- what the render has always
+	// done. And a lane that appears later (another source split) arrives
+	// audible everywhere rather than silent everywhere, which is the answer
+	// that can be heard and corrected rather than the one that is missed.
+	Quiet []string `json:"quiet,omitempty"`
 }
+
+// laneQuiet is the one reading of that list, so the page, the preview and the
+// render cannot disagree about what a scene hears.
+func laneQuiet(quiet []string, base string) bool {
+	for _, q := range quiet {
+		if q == base {
+			return true
+		}
+	}
+	return false
+}
+
+// hears is the question every caller actually asks.
+func (s cutSeg) hears(base string) bool { return !laneQuiet(s.Quiet, base) }
 
 func (s cutSeg) isInsert() bool { return s.Ins != "" }
 
@@ -621,11 +648,6 @@ type cutEditor struct {
 	// recording happened to be first in the list. Read at the same moment as
 	// the seconds, for the same reason.
 	copyCam int
-	// which lane the whole cut is heard on, by base name, and "" for every
-	// scene heard with the camera that shot it. One choice for the cut, not one
-	// per scene -- the reasoning is at the top of the block that reads it
-	// (soundOf, cut_audio.go). ↑ and ↓ walk it.
-	snd string
 	// the selection band's own hold, the same shape as the edge's and the
 	// effect's: whether the band is in hand, and whether the pointer is over
 	// it. Its row is cut_selband.go.
@@ -780,14 +802,14 @@ type cutEditor struct {
 	// dragged effect, and syncFxHold must not read that as the line walking
 	// away from it -- see there.
 	fxMoving bool
-	// the last playhead read off the player, and the wall clock when it was
-	// read. The camera runs on these rather than on the playhead itself; see
-	// livePlayhead.
-	posT  float64
-	posAt time.Time
-	// the highest time livePlayhead has answered since the clock was last
-	// re-based: while the stream plays, the live clock never runs backward
-	liveMax float64
+	// the three layers of the finished picture over the preview -- the camera,
+	// a stop's frozen frame, the mask and the titles -- and the smoothed clock
+	// they are drawn on. Embedded, not held, because this page had all of it
+	// first and every ed.fxArea / ed.livePlayhead() / ed.syncPreviewZoom() in
+	// the file still means what it did; what changed is that the Narrate
+	// preview now runs the SAME code (cut_fxscreen.go) instead of its own
+	// second opinion about the same render.
+	fxScreen
 	// what the next drag on the video draws: "zoom", "text" or "svg" while
 	// one of the effect buttons is armed, "" when the video is just a picture.
 	fxArm string
@@ -795,22 +817,12 @@ type cutEditor struct {
 	// drag, because a box means nothing until you know what goes in it
 	fxSrc string
 	// the drawings already rasterized for the preview, by file (fxsvg.go)
-	svgs   map[string]*fxSVG
-	fxArea *gtk.DrawingArea // the overlay on the preview (cut_fxview.go)
-	// the pointer's current shape over that overlay, remembered so the motion
+	svgs map[string]*fxSVG
+	// the pointer's current shape over the overlay, remembered so the motion
 	// handler only touches the cursor when it actually changes
 	fxCursor string
-	// the live-zoom layer over the preview: the same video again, transformed
-	// so the camera's window fills the output box while the stream plays
-	fxZoom    *gtk.Fixed
-	fxZoomPic *gtk.Picture
-	// the stop effect's still over the preview, on its own Fixed so the
-	// camera can move over it, and the frame it is showing (cut_fxstill.go)
-	fxStillBox *gtk.Fixed
-	fxStillPic *gtk.Picture
-	fstill     *fxStill
-	aspectDD   *gtk.DropDown // the toolbar's aspect choice
-	aspectMu   bool          // the dropdown is being set by code, not by hand
+	aspectDD *gtk.DropDown // the toolbar's aspect choice
+	aspectMu bool          // the dropdown is being set by code, not by hand
 
 	undoBtn, redoBtn, revertBtn *gtk.Button
 	playBtn                     *gtk.Button // ▶/⏸ for the preview; drawn by syncPlayIcons
@@ -853,7 +865,11 @@ type cutFile struct {
 	Segs   []cutSeg `json:"segs"`
 	Aspect string   `json:"aspect,omitempty"`
 	Fx     []cutFx  `json:"fx,omitempty"`
-	Sound  string   `json:"sound,omitempty"`
+	// READ ONLY, and kept only so an old project still opens the way it was
+	// left: one lane the whole cut was heard on. Nothing writes it -- reload
+	// spreads it across the scenes (migrateSound, cut_hear.go) and the next
+	// save leaves the field out, which is what makes the move a one-way door.
+	Sound string `json:"sound,omitempty"`
 	// per source base: seconds its clock was out, as dragged by hand
 	Shift map[string]float64 `json:"shift,omitempty"`
 	// per source base: the row it sat on when the first drag froze the rows
@@ -911,7 +927,12 @@ func (ed *cutEditor) reload() error {
 	// Nothing is decoded here: what this needs is where each one sits and how
 	// many lanes it has, and the envelopes arrive later (below) without holding
 	// the page up.
-	ed.auds = masterLanes(ed.vids)
+	//
+	// One lane per track the Prepare row asked for, and not one per file: a
+	// capture with the game on one track and a headset on the other is two
+	// recordings that happen to share a container, and this is where they stop
+	// being one (cut_tracks.go).
+	ed.auds = srcLanes(ed.vids, a.snappedTracks())
 	for _, s := range all[len(vids):] {
 		dur, _ := ffprobeDur(s.path)
 		ed.auds = append(ed.auds, tlAudio{
@@ -928,8 +949,7 @@ func (ed *cutEditor) reload() error {
 	ed.jumped = -1 // the clip a gap was skipped to belonged to the last cut
 	ed.fx = nil
 	ed.fxOn = false
-	ed.snd = ""       // another cut's microphone is not this one's
-	ed.cutLanes = nil // and another cut's own rows are not on this band
+	ed.cutLanes = nil // another cut's own rows are not on this band
 	ed.nRows = 0      // nor its empty rows
 	ed.setAspect("")
 	ed.syncButtons()
@@ -938,7 +958,12 @@ func (ed *cutEditor) reload() error {
 		if json.Unmarshal(b, &c) == nil {
 			ed.segs = c.Segs
 			ed.fx = migrateFx(c.Fx)
-			ed.snd = c.Sound
+			// a cut written when the sound was one choice for the whole
+			// project, said the way this one says it (cut_hear.go)
+			if segs, note := migrateSound(ed.segs, c.Sound, ed.vids, ed.auds); note != "" {
+				ed.segs = segs
+				ed.a.logf("cut: %s", note)
+			}
 			ed.shift, ed.rows = c.Shift, c.Rows
 			ed.nRows = c.NRows
 			ed.setAspect(c.Aspect)
@@ -1524,7 +1549,8 @@ func (ed *cutEditor) mixUnder(v *tlVideo) []mixTrack {
 		if au.start+au.dur <= v.start || au.start >= v.start+v.dur {
 			continue
 		}
-		out = append(out, mixTrack{path: au.path, delta: v.start - au.start, dur: au.dur})
+		out = append(out, mixTrack{base: au.base, path: au.path,
+			delta: v.start - au.start, dur: au.dur})
 	}
 	return out
 }
@@ -1704,45 +1730,19 @@ func (ed *cutEditor) wheelFrames() *gtk.EventControllerScroll {
 // redrawing the timeline sixty times a second.
 const playTick = 100
 
-// livePlayhead is the playhead with the time since it was last read added back
-// on: where the picture is NOW, rather than where it was at the last tick.
+// liveClock is that extrapolation written as arithmetic instead of as reads of
+// one page's fields, because the Narrate preview draws the same effects on the
+// same 100ms position and needs the same clamp (narrate_fxview.go). Two copies
+// of a smoothing rule this particular would have drifted, and the drift would
+// have shown as one page's titles flickering and the other's not.
 //
-// The page reads the player's clock every playTick milliseconds, which is the
-// right rate for everything it drives except one thing. A camera glide is a
-// continuous move, and sampling it ten times a second shows it as ten jumps --
-// a one second transition arriving in ten steps. The render has no such
-// problem: zoompan evaluates the same piecewise-linear path per frame, so what
-// is choppy in the preview is smooth in the file. This closes the gap the
-// other way, so that what you approve is what you get.
-//
-// The extrapolation is capped at one tick. A stall then shows as the picture
-// standing still -- which it is -- instead of the camera sailing on and
-// snapping back when the real position arrives.
-//
-// And it never runs backward while the stream plays. At a high rate the
-// pipeline can fall behind the extrapolation -- ×4 is four seconds of footage
-// decoded every second -- and each fresh position read then lands BEHIND the
-// value already handed out. Passed on raw, that sawtooth reached everything
-// drawn on this clock ten times a second: a title flicking on and off across
-// its own edges, its fade jittering, the camera juddering mid-glide. The
-// clamp holds the last answer until the real clock passes it again, and is
-// re-based wherever the line is placed by hand (setPlayhead) or the stream
-// stops being the clock at all.
-//
-// It is a clamp and not a ratchet, which is the difference between hiding
-// jitter and hiding a seek. The mark may never stand more than one whole tick
-// past the last position actually read: the sawtooth it exists to hide is a
-// fraction of a tick, so it stays hidden, while a jump backward is seconds and
-// cannot be. Unbounded, the mark was monotonic for the life of the page -- jump
-// back over a title and the preview went on drawing it, at the alpha of a
-// moment the line had already left, until playback climbed all the way to where
-// it had been.
-func (ed *cutEditor) livePlayhead() float64 {
-	if ed.player == nil || !ed.player.playing || ed.posAt.IsZero() {
-		ed.liveMax = ed.playhead // nothing to smooth; re-arm on the line itself
-		return ed.playhead
+// Returns the clock now and the high-water mark to keep for next time; the
+// caller stores the mark, which is the only state there is.
+func liveClock(playhead, posT float64, posAt time.Time, liveMax, rate float64, playing bool) (now, mark float64) {
+	if !playing || posAt.IsZero() {
+		return playhead, playhead // nothing to smooth; re-arm on the line itself
 	}
-	d := time.Since(ed.posAt).Seconds()
+	d := time.Since(posAt).Seconds()
 	if d < 0 {
 		d = 0
 	}
@@ -1750,30 +1750,13 @@ func (ed *cutEditor) livePlayhead() float64 {
 	if d > span {
 		d = span
 	}
-	if v := ed.posT + d*ed.player.Rate(); v > ed.liveMax {
-		ed.liveMax = v
+	if v := posT + d*rate; v > liveMax {
+		liveMax = v
 	}
-	if hi := ed.posT + span*ed.player.Rate(); ed.liveMax > hi {
-		ed.liveMax = hi // a whole tick of headroom, and not one second more
+	if hi := posT + span*rate; liveMax > hi {
+		liveMax = hi // a whole tick of headroom, and not one second more
 	}
-	return ed.liveMax
-}
-
-// reLive re-arms the live clock on t. All three of its parts move together or
-// none of them do: the position the extrapolation runs from, the wall clock
-// that position was read at, and the high-water mark that keeps the clock from
-// running backward.
-//
-// Re-basing the mark alone was not enough, and the way it failed is the reason
-// this exists. A seek does not stop playback when it lands in the file already
-// open, so the very next read -- the overlay's, sixty times a second, long
-// before the next 100ms tick rewrites the position -- extrapolated from the
-// position the line had BEFORE the jump, found it higher than the freshly
-// lowered mark, and set the mark back to it. From there the clock was stuck in
-// the future: every effect between the line and where it had been was drawn as
-// though the jump had never happened.
-func (ed *cutEditor) reLive(t float64) {
-	ed.liveMax, ed.posT, ed.posAt = t, t, time.Now()
+	return liveMax, liveMax
 }
 
 // followPlayback keeps the red line on the player's clock while it runs;
@@ -2049,9 +2032,7 @@ func pickVideoOn(vids []tlVideo, cam int, t float64) *tlVideo {
 }
 
 // videoOn is the same question without the fallback: the recording on row cam
-// at t, and nil when that row was not rolling. What the sound asks -- a camera
-// that was not running has no sound to take, and the answer there is to leave
-// the scene with its own (soundOf).
+// at t, and nil when that row was not rolling.
 func videoOn(vids []tlVideo, cam int, t float64) *tlVideo {
 	for i := range vids {
 		if vids[i].lane == cam && t >= vids[i].start && t < vids[i].start+vids[i].dur {
@@ -2067,6 +2048,34 @@ func videoOn(vids []tlVideo, cam int, t float64) *tlVideo {
 // through here: what the preview cues, how many frames per second to step by,
 // which file a still is pulled from.
 func (ed *cutEditor) videoAt(t float64) *tlVideo { return pickVideoOn(ed.vids, ed.camAt(t), t) }
+
+// cutVideoOn is the recording the FINISHED VIDEO shows at session time t: the
+// scene covering t, on the camera that scene names. Nothing else -- no fallback
+// to a row somebody clicked, no fallback to a row a drag was last on. It is the
+// same lookup produce makes for every clip it encodes (pickVideoOn on the
+// segment's Cam), said once so the pages that preview the render can ask it.
+//
+// videoAt is the OTHER question, and it belongs to the Cut page: what is that
+// page showing. It starts from the row a click asked to watch (watchRow) --
+// which is how one camera is compared against another at the same second, and
+// most of how a scene gets stolen for it -- and outside a kept scene it falls
+// back to the row the hand was last on. Both are the editor looking around.
+// Everything that is not the editor was inheriting them: Narrate's preview
+// played whatever row the Cut page had last been asked to watch, for the whole
+// session, and the frame a stop is frozen from was cut from that row too.
+//
+// Nil in a gap. There is no finished video between two clips, and answering
+// with the footage that is there anyway is how the cut stops being respected.
+func cutVideoOn(segs []cutSeg, vids []tlVideo, t float64) *tlVideo {
+	for _, s := range segs {
+		if t >= s.S && t < s.E {
+			return pickVideoOn(vids, s.Cam, t)
+		}
+	}
+	return nil
+}
+
+func (ed *cutEditor) cutVideoAt(t float64) *tlVideo { return cutVideoOn(ed.segs, ed.vids, t) }
 
 // videoShown is videoAt without the charity: the recording on the watched row
 // at t, and nil when that row has nothing there. The standstill preview asks
@@ -2881,6 +2890,25 @@ func (ed *cutEditor) segAtPx(px float64) int {
 	return -1
 }
 
+// segOnGreen is the scene a point of the picture band is actually DRAWN on:
+// segAtPx's answer about the second, and then the row, because a scene is
+// drawn on its own camera's row (segTop). The two questions differ wherever
+// the cut is showing one camera and the eye is on another: the green at that
+// second is one row up, and the row under the pointer is plain footage.
+//
+// segAtPx alone is right for everything measured along the clock -- the borders,
+// the band -- and wrong for anything answering "what did I press ON".
+func (ed *cutEditor) segOnGreen(px, y float64) int {
+	i := ed.segAtPx(px)
+	if i < 0 {
+		return -1
+	}
+	if t := ed.segTop(ed.segs[i]); y < t || y >= t+ed.laneH() {
+		return -1
+	}
+	return i
+}
+
 // grabSeg picks up the whole clip under a timeline x.
 func (ed *cutEditor) grabSeg(px float64) bool {
 	i := ed.segAtPx(px)
@@ -3258,7 +3286,37 @@ func sameCut(a, b []cutSeg) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if !sameSeg(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameSeg is what == used to be, before a scene could carry a set of silenced
+// lanes and stopped being a comparable struct. Everything scalar still compares
+// scalar; only Quiet needs its own reading.
+// Every field is named here by hand because Go will not compare a struct that
+// holds a slice, so == is gone. That is a standing hazard -- a field added
+// later and forgotten here would make Revert stop noticing it -- which is why
+// TestEverySegmentFieldCountsAsAChange walks the type by reflection and fails
+// on any field this function does not read.
+func sameSeg(a, b cutSeg) bool {
+	return a.S == b.S && a.E == b.E && a.Ins == b.Ins && a.Dur == b.Dur &&
+		a.Rate == b.Rate && a.Ss == b.Ss && a.Mute == b.Mute &&
+		a.Cam == b.Cam && a.Lane == b.Lane && sameQuiet(a.Quiet, b.Quiet)
+}
+
+// sameQuiet compares the two as SETS, not as lists. Which lane the user
+// silenced first is not part of what the cut sounds like, and Revert lighting
+// up because two toggles were pressed in the other order would be a lie about
+// there being an unsaved change.
+func sameQuiet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, q := range a {
+		if !laneQuiet(b, q) {
 			return false
 		}
 	}
@@ -3514,8 +3572,11 @@ func filmedOf(segs []cutSeg) []cutSeg {
 }
 
 func (ed *cutEditor) persist() {
-	b, _ := json.MarshalIndent(cutFile{ed.segs, ed.aspect, ed.fx, ed.snd, ed.shift, ed.rows,
-		ed.cutLanes, ed.nRows}, "", "  ")
+	// keyed, because cutFile.Sound is read on load and never written: an old
+	// project's whole-cut choice is migrated into the scenes once (migrateSound)
+	// and the field goes out of the file on the very next save
+	b, _ := json.MarshalIndent(cutFile{Segs: ed.segs, Aspect: ed.aspect, Fx: ed.fx,
+		Shift: ed.shift, Rows: ed.rows, Lanes: ed.cutLanes, NRows: ed.nRows}, "", "  ")
 	os.MkdirAll(filepath.Dir(ed.a.cutPath()), 0o755)
 	if err := os.WriteFile(ed.a.cutPath(), append(b, '\n'), 0o644); err != nil {
 		ed.a.logf("save cut: %v", err)
@@ -3823,13 +3884,6 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 			// the right button did (cut_shift.go)
 			name += fmt.Sprintf(" %+.2f s", d)
 		}
-		if ed.heardOn(v.base) {
-			// which camera the finished video is heard on was said on the
-			// master's own lane plate; the wave is plateless now it lives
-			// under the row -- the name is one thumbnail up -- so the row's
-			// plate says it instead
-			name += " · heard"
-		}
 		plateText(cr, v.pxOrigin+4, lt+12, name)
 
 		if au := ed.pairAud(v.base); au != nil {
@@ -3838,6 +3892,9 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 			ed.drawPairStrip(cr, v, *au, lt+ed.laneH(), vx0, vx1)
 		}
 	}
+	// whether the held scene hears the camera it is shown from, said on that
+	// camera's own strip and pressable there (cut_hear.go)
+	ed.drawHearBadges(cr, ed.hearBadgesSrc(), vx0, vx1)
 
 	// ruler
 	stepS := tickStep(ed.pps)
@@ -4808,6 +4865,14 @@ func (a *App) buildCut() gtk.Widgetter {
 			// The ruler, the selection row and the effects lane are not part of
 			// this: they are their own objects, and the branches above have
 			// already returned for them.
+			// the lane badges, in either area and before anything else that
+			// could claim the same ground: they only exist while a scene is in
+			// hand, and while one is, pressing one is the only thing that
+			// press can have meant (cut_hear.go)
+			if base := ed.hearAt(x+ed.viewX, y, area == ed.srcArea); base != "" {
+				ed.toggleHear(base)
+				return
+			}
 			// the ✕ in a kept scene's corner, asked before the borders: it is
 			// drawn hard against the scene's right edge, so the same press
 			// would otherwise be read as taking hold of that border to trim it
@@ -5006,6 +5071,20 @@ func (a *App) buildCut() gtk.Widgetter {
 			}
 			ed.setPlayhead(ed.tAtView(dragStartX))
 			ed.monStatus()
+			// ...and a click ON THE GREEN takes that scene in hand, which is
+			// what the same click on the green bar in the band already does.
+			// It is one object drawn in two rows, and it answered to one click
+			// in one of them and two in the other; the drawn thing is the
+			// bigger target and the one the hand goes to first.
+			//
+			// Last, so the scene's own account of itself is the line that
+			// stands. Clear of the green nothing is taken and the drop above
+			// (dropSeg, at the press) is what the click meant.
+			if area == ed.srcArea && ed.hitPics(dragStartY) {
+				if px := dragStartX + ed.viewX; ed.segOnGreen(px, dragStartY) >= 0 {
+					ed.grabSeg(px) // the same scene: segOnGreen asked segAtPx for it
+				}
+			}
 		})
 		area.AddController(drag)
 
@@ -5247,20 +5326,10 @@ func (a *App) buildCut() gtk.Widgetter {
 			ed.redoLast()
 		case keyval == gdk.KEY_Delete || keyval == gdk.KEY_BackSpace:
 			a.removeSelClicked()
-		// the arrows are the frame buttons for the hand that is already on the
+		// ← and → are the frame buttons for the hand that is already on the
 		// mouse, and they exist ONLY while an edge or a clip is held: unheld
-		// they are the focus keys GTK expects them to be
-		// ↑ and ↓ walk the lanes the cut can be heard on. Unguarded, unlike ←
-		// and → above: nothing else on this page wants them, and the choice is
-		// one for the whole cut rather than something that needs a thing in
-		// hand to apply to. Bubble phase still gives the notes box and the
-		// lists their own scrolling first.
-		case keyval == gdk.KEY_Up || keyval == gdk.KEY_Down:
-			d := 1
-			if keyval == gdk.KEY_Up {
-				d = -1
-			}
-			ed.cycleSound(d)
+		// they are the focus keys GTK expects them to be. Bubble phase still
+		// gives the notes box and the lists their own scrolling first.
 		case (ed.edgeOn || ed.segOn || ed.fxOn) && (keyval == gdk.KEY_Left || keyval == gdk.KEY_Right):
 			n := 1
 			if state&gdk.ShiftMask != 0 {

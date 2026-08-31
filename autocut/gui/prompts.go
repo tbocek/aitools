@@ -1,6 +1,6 @@
 package main
 
-// The system prompts, in one registry and editable per project.
+// The system prompts, in one registry and editable in the app.
 //
 // These are the tool's taste: what counts as a highlight, how the narration
 // sounds, what the vision model bothers to mention. Compiled in, they could
@@ -13,10 +13,13 @@ package main
 // no way to tell from the screen what the model was actually told. The box IS
 // the prompt now.
 //
-// An edited prompt is stored in the project; an untouched one is not. So a
-// project that never touched a prompt picks up improvements from a new build
-// instead of freezing today's wording forever, and project.json stays a record
-// of what the user decided rather than a copy of the binary.
+// An edited prompt is stored, an untouched one is not, and where it is stored
+// is ~/.config/autocut/prompts -- this machine's, not this project's, because
+// how you like to be edited for does not change between two sessions the way
+// the footage does (promptstore.go). So a job nobody has touched picks up
+// improvements from a new build instead of freezing today's wording forever,
+// and what is on disk is a record of what the user decided rather than a copy
+// of the binary.
 
 import (
 	"strings"
@@ -107,6 +110,11 @@ var promptDefs = []promptDef{
 	// gone from the registry, so a project that saved an edited copy of it just
 	// keeps a dead key nobody reads.
 	{key: "youtube", def: strings.TrimSpace(youtubeSystem)},
+	// last, because it is not a step of the edit: it is the tool asking about
+	// itself (improve.go). Editable like the rest all the same -- an answer
+	// that keeps missing the point is a prompt that needs a sentence, and
+	// there is no reason this one prompt should be the unreachable one.
+	{key: "improve", def: strings.TrimSpace(improveSystem)},
 }
 
 func promptDefFor(key string) promptDef {
@@ -250,62 +258,39 @@ func (a *App) dropPromptStyle(key, name string) {
 	}
 }
 
-// currentPromptStyles is what the project stores: only the wordings it has
-// something of its own to say about -- one it edited, or one it invented.
-func (a *App) currentPromptStyles() map[string][]promptStyle {
-	a.promptMu.Lock()
-	defer a.promptMu.Unlock()
-	out := map[string][]promptStyle{}
-	for k, list := range a.promptSty {
-		if len(list) > 0 {
-			out[k] = append([]promptStyle(nil), list...)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// currentPromptPick stores only a choice that is not the shipped default, so a
-// project that never touched the dropdown says nothing about it and follows
-// whatever a later build ships as the default.
-func (a *App) currentPromptPick() map[string]string {
-	out := map[string]string{}
-	for _, d := range promptDefs {
-		if n := a.promptPickName(d.key); n != d.styleName() {
-			out[d.key] = n
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// applyPromptStyles loads a project's wordings and its choices. A key the
-// project does not mention goes back to the shipped default: loading a project
-// is a full switch, and leaving the previous project's wording in a box would
-// be the worst kind of bug -- invisible, and it changes what the model writes.
+// applyPromptStyles takes in what a project has to say about the prompts --
+// which, now that they are the machine's (promptstore.go), is only ever what a
+// project written before that has to say. It ADOPTS rather than replaces: a
+// wording lands only where this machine has nothing of its own for the job,
+// and a pick only where the job is still on the shipped default.
+//
+// It used to be a full switch, everything the project did not mention going
+// back to the built-in, because the prompts were the project's and leaving the
+// last project's wording in a box would have been the worst kind of bug --
+// invisible, and it changes what the model writes. With the prompts kept per
+// machine the bug is the other way round: an old project opened for five
+// minutes must not overwrite the wording four videos were tuned with. On the
+// launch that first opens a pre-merge project this machine has nothing to say
+// about any job, so that project's wordings are adopted whole and nothing is
+// lost either.
 //
 // legacy is the pre-styles storage, where a project held one edited prompt per
 // key and no name for it. Those belong to whichever style was default at the
 // time, which is the default now: the shipped wording of a job did not move,
 // it only gained company.
 func (a *App) applyPromptStyles(styles map[string][]promptStyle, pick map[string]string, legacy map[string]string) {
-	a.promptMu.Lock()
-	a.promptSty = map[string][]promptStyle{}
-	a.promptPick = map[string]string{}
-	for k, list := range styles {
-		a.promptSty[k] = append([]promptStyle(nil), list...)
-	}
-	for k, n := range pick {
-		a.promptPick[k] = n
-	}
-	a.promptMu.Unlock()
 	for _, d := range promptDefs {
+		if a.promptStored(d.key) {
+			continue // this machine's own wording; a project does not overwrite it
+		}
+		for _, s := range styles[d.key] {
+			a.savePromptStyle(d.key, s.Name, s.Text)
+		}
 		if s := strings.TrimSpace(legacy[d.key]); s != "" && len(styles[d.key]) == 0 {
 			a.savePromptStyle(d.key, d.styleName(), s)
+		}
+		if n := pick[d.key]; n != "" {
+			a.pickPromptStyle(d.key, n)
 		}
 	}
 	// the box and the dropdown last, once the state they draw from is settled
@@ -342,6 +327,7 @@ func (a *App) pickPromptStyle(key, name string) {
 	a.promptPick[key] = name
 	delete(a.promptTxt, key) // the box is about to say it; prompt() reads the style
 	a.promptMu.Unlock()
+	a.rememberPromptPick(key, name) // one short name: straight to the file, no tick
 
 	if tv, ok := a.promptViews[key]; ok {
 		a.promptQuiet = true
@@ -479,9 +465,9 @@ func (a *App) markPromptRow(key string) {
 		row.drop.SetLabel("Remove")
 		row.drop.AddCSSClass("destructive-action")
 		row.drop.SetSensitive(true)
-		row.drop.SetTooltipText("Delete this wording from the project")
+		row.drop.SetTooltipText("Delete this wording from this machine")
 	case edited:
-		row.mark.SetText("edited — kept in this project")
+		row.mark.SetText("edited — kept in your settings")
 		row.drop.SetLabel("Reset")
 		row.drop.RemoveCSSClass("destructive-action")
 		row.drop.SetSensitive(true)

@@ -389,7 +389,7 @@ func (a *App) sepJoin(parts []string, dst string) error {
 	lf := filepath.Join(filepath.Dir(parts[0]), "join_"+filepath.Base(dst)+".txt")
 	var b strings.Builder
 	for _, p := range parts {
-		fmt.Fprintf(&b, "file '%s'\n", p)
+		b.WriteString(concatLine(p))
 	}
 	if err := os.WriteFile(lf, []byte(b.String()), 0o644); err != nil {
 		return err

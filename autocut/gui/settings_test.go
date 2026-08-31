@@ -8,6 +8,26 @@ import (
 	"testing"
 )
 
+// TestMain keeps the suite off the developer's own settings. The config used
+// to be a file beside the videos, so a test that built an App under a TempDir
+// was isolated by construction; it is ~/.config/autocut now, and without this
+// a test that writes a conf would overwrite the endpoints of the machine it is
+// running on -- and one that reads one would point a "local" test at whatever
+// server this machine talks to.
+//
+// A test that needs its own folder still says so with t.Setenv. This is the
+// floor, not the isolation.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "autocut-test-config")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("XDG_CONFIG_HOME", dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 // The whole point of the file, in one round trip: what was open when the window
 // closed is what the next launch opens. The bug it replaces is the one the user
 // hit -- save the session as jan-video.json, quit, come back to project.json --
@@ -32,9 +52,9 @@ func TestTheOpenProjectSurvivesARestart(t *testing.T) {
 	if got := (&App{root: root}).lastProject(); got != named {
 		t.Errorf("after a restart the project is %q, want %q", got, named)
 	}
-	if p := settingsPath(); !exists(p) {
+	if p := confPath(); !exists(p) {
 		t.Errorf("nothing was written to %s", p)
-	} else if !strings.HasSuffix(p, filepath.Join("autocut", "settings.json")) {
+	} else if !strings.HasSuffix(p, filepath.Join("autocut", "llm.conf")) {
 		t.Errorf("the settings live at %s, which is not the path the user was told", p)
 	}
 
@@ -89,7 +109,9 @@ func TestABrokenSettingsFileIsNotAFailedLaunch(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cfg, "autocut"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(settingsPath(), []byte("{not json at al"), 0o644); err != nil {
+	// a line-based file cannot really be "invalid", so this is the shape a
+	// half-written one takes: keys nobody knows, and a line with no = in it
+	if err := os.WriteFile(confPath(), []byte("{not a conf at al\nWHAT=\"who\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := (&App{root: root}).lastProject(); got != "" {
@@ -114,18 +136,18 @@ func TestABrokenSettingsFileIsNotAFailedLaunch(t *testing.T) {
 	}
 	// ...but the name is kept, because an unmounted drive looks the same as a
 	// deletion and forgetting it would make the difference permanent
-	if loadSettings().Projects[root] != named {
+	if (&App{root: root}).readGlobal().Projects[root] != named {
 		t.Error("the remembered name was pruned the first time the file was missing")
 	}
 
 	// nowhere to put the file at all
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "")
-	if p := settingsPath(); p != "" {
+	if p := confPath(); p != "" {
 		t.Errorf("with no HOME the settings path is %q, want it disabled", p)
 	}
-	b := &App{root: root}
-	b.rememberProject(named) // must not panic, must not fail
+	b := &App{root: t.TempDir()} // and nothing left beside the videos either
+	b.rememberProject(named)     // must not panic, must not fail
 	if got := b.lastProject(); got != "" {
 		t.Errorf("with no HOME the last project is %q", got)
 	}
@@ -137,6 +159,7 @@ func TestABrokenSettingsFileIsNotAFailedLaunch(t *testing.T) {
 // back to project.json -- that last one is how a Save could be undone by
 // pressing ▶, which would defeat all of the above.
 func TestWhatIsRememberedIsWhatTheNextLaunchOpens(t *testing.T) {
+	ownConfig(t)
 	p := readSrc(t, "project.go")
 	for _, fn := range []string{"saveProjectTo", "loadProjectFrom"} {
 		body := regexp.MustCompile(`(?s)func \(a \*App\) ` + fn + `\(path string\) \{.*?\n}\n`).FindString(p)
@@ -154,5 +177,51 @@ func TestWhatIsRememberedIsWhatTheNextLaunchOpens(t *testing.T) {
 	if strings.Contains(m, `a.saveProjectTo(filepath.Join(a.root, "project.json"))`) {
 		t.Error("running a step still renames the open project to the working copy, " +
 			"which un-names a project the user saved")
+	}
+}
+
+// ownConfig gives one test its own settings folder, made and empty. TestMain is
+// the floor -- it keeps the suite off the developer's real config -- but the
+// endpoints being global means every test that writes one writes the same file,
+// and then an SD_SERVER saved by one test is what the next one reads as "with
+// nothing set". The folder is created because a test that writes the file by
+// hand, rather than through writeConf, has nowhere to put it otherwise.
+func ownConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(confPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// One file now holds two kinds of answer: the endpoints, which the settings
+// dialog writes, and what was remembered without anyone being asked -- the open
+// project, the picked wordings. They are written by different code on different
+// occasions, so the dialog has to read before it writes: saving an ffmpeg path
+// must not be how you lose the project the next launch would have opened.
+func TestSavingTheSettingsKeepsWhatWasRemembered(t *testing.T) {
+	ownConfig(t)
+	root := t.TempDir()
+	a := &App{root: root}
+	named := filepath.Join(root, "jan-video.json")
+	if err := os.WriteFile(named, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.rememberProject(named)
+	a.rememberPromptPick("cut", "Highlights")
+
+	if err := a.writeConf(appConf{Server: "https://x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &App{root: root}
+	if got := b.lastProject(); got != named {
+		t.Errorf("saving the settings left the last project as %q, want %q", got, named)
+	}
+	if got := b.readGlobal().PromptPick["cut"]; got != "Highlights" {
+		t.Errorf("saving the settings left the cut wording as %q, want Highlights", got)
+	}
+	if got := b.readConf().Server; got != "https://x" {
+		t.Errorf("the endpoint that was saved reads back as %q", got)
 	}
 }

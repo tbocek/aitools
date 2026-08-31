@@ -91,7 +91,7 @@ func TestTwoChannelsCarryingOneSignalAreOneLane(t *testing.T) {
 			t.Errorf("%s probes as %d channel(s), want %d", c.name, got, c.chans)
 			continue
 		}
-		wf, err := buildWave(path, c.chans)
+		wf, err := buildWave(path, 0, c.chans)
 		if err != nil {
 			t.Errorf("%s: %v", c.name, err)
 			continue
@@ -115,7 +115,7 @@ func TestTwoChannelsCarryingOneSignalAreOneLane(t *testing.T) {
 func TestASilentStereoRecordingIsOneLaneToo(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "quiet.wav")
 	mustLavfi(t, "0|0", path)
-	wf, err := buildWave(path, 2)
+	wf, err := buildWave(path, 0, 2)
 	if err != nil {
 		t.Fatal(err)
 	}

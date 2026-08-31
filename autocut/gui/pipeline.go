@@ -284,13 +284,21 @@ func (a *App) syncPlayIcons() {
 		n.syncSpeakIcons()
 	}
 	if vp := a.voicePick; vp != nil {
-		setPlayIcon(vp.playBtn, vp.playing(),
+		// vp.spoken is what the player is holding: while the band walks the
+		// takes it is "" and the player is on the RECORDING, so a face drawn
+		// from playing() alone offered to pause a sample that is not there --
+		// and pressing it synthesized one instead
+		setPlayIcon(vp.playBtn, vp.playing() && vp.spoken != "",
 			"Speak the sample in the selected voice", "pause the sample")
 		if vp.stopBtn != nil {
 			// nothing loaded is nothing to stop: the sample's ⏹ is the one
 			// button on this page that the run bar's ⏹ no longer covers
 			vp.stopBtn.SetSensitive(vp.playing() || vp.cued())
 		}
+		// and the band's ▶ beside the dropdown, which wears ⏹ rather than ⏸
+		// while it walks the takes -- this is where a walk that simply ran out
+		// puts it back (narrate_takeband.go)
+		vp.band.syncPlayBtn()
 	}
 	// Produce is not here: it has no play button of its own. A finished run cues
 	// its result into the picture and the run bar is that video's transport from
@@ -837,6 +845,16 @@ func parseSilence(report string) []span {
 	return out
 }
 
+// concatLine is one row of an ffmpeg concat list. The quoting is the reason it
+// is a function: the demuxer reads 'file' arguments as single-quoted, so a path
+// with an apostrophe in it -- a project called "tom's cut", which names the
+// whole data folder -- ends the quote early and the rest of the list is read as
+// something else. ffmpeg spells an escaped quote the shell way: close, a
+// backslashed quote, open again.
+func concatLine(path string) string {
+	return "file '" + strings.ReplaceAll(path, "'", `'\''`) + "'\n"
+}
+
 func (a *App) diarize(out string, dur float64, name string, base, unit float64) error {
 	dir := filepath.Join(out, "diar")
 	os.RemoveAll(dir)
@@ -942,7 +960,7 @@ func (a *App) diarize(out string, dur float64, name string, base, unit float64) 
 			"-c:a", "pcm_s16le", f); err != nil {
 			return err
 		}
-		fmt.Fprintf(&list, "file '%s'\n", f)
+		list.WriteString(concatLine(f))
 	}
 	if err := os.WriteFile(filepath.Join(dir, "anchor.list"), []byte(list.String()), 0o644); err != nil {
 		return err
@@ -987,8 +1005,8 @@ func (a *App) diarize(out string, dur float64, name string, base, unit float64) 
 			"-c:a", "pcm_s16le", filepath.Join(dir, "seg.wav")); err != nil {
 			return err
 		}
-		cc := fmt.Sprintf("file '%s'\nfile '%s'\n",
-			filepath.Join(dir, "anchor.wav"), filepath.Join(dir, "seg.wav"))
+		cc := concatLine(filepath.Join(dir, "anchor.wav")) +
+			concatLine(filepath.Join(dir, "seg.wav"))
 		if err := os.WriteFile(filepath.Join(dir, "cc.list"), []byte(cc), 0o644); err != nil {
 			return err
 		}

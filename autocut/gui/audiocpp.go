@@ -218,9 +218,12 @@ func audioCatalog(url, key string) (map[string]audioModel, error) {
 	return got, nil
 }
 
-func sortedKeys(cat map[string]audioModel) []string {
-	ids := make([]string, 0, len(cat))
-	for id := range cat {
+// sortedKeys is a map read in an order that does not change between runs --
+// for an error message that must not reshuffle itself, and for a config file
+// that must not (rememberedBody).
+func sortedKeys[V any](m map[string]V) []string {
+	ids := make([]string, 0, len(m))
+	for id := range m {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)

@@ -153,8 +153,9 @@ func TestThePairingIsWired(t *testing.T) {
 			"ed.sel.aud = ed.pairAudAt(x+ed.viewX, y)",
 			// a right-drag on a strip moves the one recording under the hand
 			"slideSrcs = []string{ed.pairAudAt(x+ed.viewX, y)}",
-			// the heard marker moved up to the row's plate with the wave
-			`name += " · heard"`,
+			// and the badge saying whether the held scene hears that row's
+			// own sound is drawn on the strip, where the sound is
+			"ed.drawHearBadges(cr, ed.hearBadgesSrc(), vx0, vx1)",
 		},
 		"cut_audio.go": {
 			"func (ed *cutEditor) drawPairStrip(",

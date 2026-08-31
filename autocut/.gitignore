@@ -5,7 +5,7 @@ out/
 llm.conf
 gui/autocut-gui
 gui/gui
-step1/
+step*/
 *.json
 test*
 cache

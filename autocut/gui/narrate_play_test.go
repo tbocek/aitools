@@ -9,6 +9,7 @@ package main
 // off-by-one costs the user a wrong preview.
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -200,6 +201,64 @@ func TestAnEditedLineResumesCleanly(t *testing.T) {
 	}
 }
 
+// TestARowsPlayNeverStartsInsideTheLineAbove is "I press ▶ on line 5 and it
+// plays line 4".
+//
+// The run-in is a few seconds, and a clip carries as many lines as the writer
+// put on it -- three of them on one clip is ordinary. A few seconds ahead of the
+// second line on a clip is the FIRST one, still mid-sentence: entryAt gives
+// those seconds to it, because it owns the clip until the next line starts, so
+// the tick found it under the playhead and resumed its wav from wherever the
+// seek had landed inside it. The button said line 5 and the page spoke line 4.
+//
+// The run-in is kept where the seconds belong to nobody, which is most rows.
+func TestARowsPlayNeverStartsInsideTheLineAbove(t *testing.T) {
+	n := &narrator{a: &App{}, entries: []narrEntry{
+		{S: 100, E: 160, At: 4, Text: "first line on this clip"},
+		{S: 100, E: 160, At: 20, Text: "second line, same clip"},
+		{S: 200, E: 260, At: 30, Text: "a line on the next clip"},
+		{S: 300, E: 360, At: 1, Text: "and one written near a clip's head"},
+	}}
+	for _, c := range []struct {
+		i    int
+		want float64
+	}{
+		{0, 101}, // three seconds ahead of a line at +4: seconds that are nobody's
+		{1, 120}, // ...but ahead of the second line is the first one: start on the line
+		{2, 227}, // its own clip, its own run-in
+		{3, 300}, // clamped to the clip's head: there is no finished video before it
+	} {
+		if got := n.leadIn(c.i); math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("▶ on line %d starts the preview at %.2f, want %.2f", c.i+1, got, c.want)
+		}
+	}
+	// which is the whole point of it: whoever the tick finds under the playhead
+	// when the picture starts rolling is the row whose button was pressed, or
+	// nobody at all -- never another row
+	for i := range n.entries {
+		if j := n.entryAt(n.leadIn(i)); j >= 0 && j != i {
+			t.Errorf("▶ on line %d starts the preview inside line %d", i+1, j+1)
+		}
+	}
+
+	// ...and every ▶ on the page goes through it. Both of speakEntry's playing
+	// paths -- the spoken line and the caption, which has no voice to wake but
+	// the same wrong row to land on -- had the run-in written out in place, so
+	// either could keep the arithmetic while the other used the rule. Counted
+	// rather than merely found, because "contains" cannot tell two call sites
+	// apart and one of them regressing is exactly the bug this is about.
+	tts, err := os.ReadFile("narrate_tts.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(tts), "n.cue(n.leadIn(i), true)"); got != 2 {
+		t.Errorf("%d of speakEntry's 2 play paths cue through leadIn", got)
+	}
+	if strings.Contains(string(tts), "e.S+e.At-") {
+		t.Error("a ▶ works the run-in out for itself again — leadIn is the one place that decides")
+	}
+}
+
 // TestALineAuditionRollsThePicture: a line's ▶ plays the clip it was written
 // for, not the words alone over a frozen frame -- most of what there is to
 // judge about a narration line is whether it lands on what is on screen. Source
@@ -220,7 +279,7 @@ func TestALineAuditionRollsThePicture(t *testing.T) {
 	// a minute of silence. And the ▶ clears the line's failure mark: the tick
 	// runs a refused line mute so one bad request cannot stall every pass,
 	// which without a retry path reads as "the TTS stopped working".
-	for _, want := range []string{"n.cue(math.Max(e.S, e.S+e.At-3), true)", "n.solo, n.soloPic = i, true",
+	for _, want := range []string{"n.cue(n.leadIn(i), true)", "n.solo, n.soloPic = i, true",
 		"delete(n.synthFail, a.ttsWav(e))"} {
 		if !strings.Contains(string(speak), want) {
 			t.Errorf("a line's ▶ no longer rolls the picture with the voice (missing %s)", want)

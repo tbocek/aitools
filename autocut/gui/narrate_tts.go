@@ -540,7 +540,7 @@ func (a *App) speakEntry(i int) {
 		if ed := a.ed; ed != nil && n.player != nil && ed.videoAt(e.S) != nil {
 			n.claimVoice()
 			n.playSeg, n.jumped = -1, -1
-			n.cue(math.Max(e.S, e.S+e.At-3), true)
+			n.cue(n.leadIn(i), true)
 			n.selectRow(i)
 			n.syncSpeakIcons()
 			a.updateRunControls()
@@ -595,9 +595,10 @@ func (a *App) speakEntry(i int) {
 		n.solo, n.soloPic = i, true
 		// a few seconds ahead of the line, not the head of the clip: the line
 		// may sit a minute in ("at"), and a ▶ that answers with silence for a
-		// minute reads as a line that is not there. The lead-in is what the
-		// audition is FOR -- seeing the moment the line was placed on arrive
-		n.cue(math.Max(e.S, e.S+e.At-3), true)
+		// minute reads as a line that is not there. The run-in is what the
+		// audition is FOR -- seeing the moment the line was placed on arrive --
+		// and leadIn is where it may start without waking the line above
+		n.cue(n.leadIn(i), true)
 		n.selectRow(i) // the ▶ is inside the row but does not select it on its own
 		a.updateRunControls()
 		return

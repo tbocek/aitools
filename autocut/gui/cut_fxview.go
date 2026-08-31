@@ -29,10 +29,44 @@ import (
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
-// srcSize is the pixel size of the recording under the preview, for turning
-// normalized camera rectangles into places on the screen. Falls back to the
-// first recording, then to plain HD, so the overlay never divides by zero.
-func (ed *cutEditor) srcSize() (float64, float64) {
+// ---- what the Cut page answers for its screen (fxPage) -----------------------
+
+func (ed *cutEditor) fxCut() *cutEditor { return ed }
+func (ed *cutEditor) fxPlayer() *Player { return ed.player }
+func (ed *cutEditor) fxAt() float64     { return ed.playhead }
+
+// screen is this page's own fxScreen with the page wired into it, done here
+// rather than at construction because a cutEditor is a struct literal in a
+// hundred unit tests and none of them build a window -- the geometry and the
+// clock still have to answer there, and an editor is always its own page.
+//
+// These forwarders shadow the promoted ones, which is the whole reason they
+// exist: every ed.livePlayhead() and ed.syncPreviewZoom() in the file goes on
+// meaning what it did, and now runs the code the Narrate preview runs.
+func (ed *cutEditor) screen() *fxScreen {
+	if ed.fxScreen.page == nil {
+		ed.fxScreen.page = ed
+	}
+	return &ed.fxScreen
+}
+
+func (ed *cutEditor) livePlayhead() float64        { return ed.screen().livePlayhead() }
+func (ed *cutEditor) reLive(t float64)             { ed.screen().reLive(t) }
+func (ed *cutEditor) livePreview() bool            { return ed.screen().livePreview() }
+func (ed *cutEditor) srcSize() (float64, float64)  { return ed.screen().srcSize() }
+func (ed *cutEditor) liveSize() (float64, float64) { return ed.screen().liveSize() }
+func (ed *cutEditor) outAspect() float64           { return ed.screen().outAspect() }
+func (ed *cutEditor) syncPreviewZoom()             { ed.screen().syncPreviewZoom() }
+func (ed *cutEditor) syncCamLayer()                { ed.screen().syncCamLayer() }
+func (ed *cutEditor) fitStill()                    { ed.screen().fitStill() }
+func (ed *cutEditor) syncFxStill()                 { ed.screen().syncFxStill() }
+func (ed *cutEditor) paintLive(cr *cairo.Context, w, h int) bool {
+	return ed.screen().paintLive(cr, w, h)
+}
+
+// fxSrcSize falls back to the first recording, then to plain HD, so the
+// overlay never divides by zero.
+func (ed *cutEditor) fxSrcSize() (float64, float64) {
 	v := ed.playVideo
 	if v == nil && len(ed.vids) > 0 {
 		v = &ed.vids[0]
@@ -43,14 +77,17 @@ func (ed *cutEditor) srcSize() (float64, float64) {
 	return 1920, 1080
 }
 
-// outAspect is the shape of the finished video: the chosen aspect, or the
-// footage's own when none is chosen.
-func (ed *cutEditor) outAspect() float64 {
-	if a := parseAspect(ed.aspect); a > 0 {
-		return a
-	}
-	sw, sh := ed.srcSize()
-	return sw / sh
+// fxCamOK takes the camera layer down while an effect is being aimed by hand:
+// a zoom because you are framing and have to see everything the camera could
+// see, a text because its box is only editable on the layer that offers a grab
+// -- and a caption whose bar has been picked up but whose box cannot be found
+// on the picture is the whole of "I cannot change the text area". An armed TEXT
+// keeps the layer up: a text box lives on the OUTPUT frame, so it is drawn on
+// the finished framing, and dropping to the raw frame would have the box drawn
+// on a picture the render never shows.
+func (ed *cutEditor) fxCamOK() bool {
+	return ed.hasPlay && (ed.fxArm == "" || ed.fxOverArm()) &&
+		ed.fxRectHeld() == nil && ed.fxHeldBox() == nil
 }
 
 // fxRectHeld is the held effect if it is one with a camera rectangle.
@@ -149,14 +186,6 @@ func (ed *cutEditor) fxDragTarget() *cutFx {
 		return nil
 	}
 	return ed.camInForce(ed.playhead)
-}
-
-// livePreview is whether the zoomed live layer is the thing on screen. While
-// it is, the overlay draws only the black around the output box and offers
-// nothing to grab: framing is done on a paused picture, where the outline
-// shows everything the camera COULD see.
-func (ed *cutEditor) livePreview() bool {
-	return ed.fxZoom != nil && ed.fxZoom.Visible()
 }
 
 // fxHeldBox is the held effect if it is one of the two laid over the picture
@@ -418,17 +447,6 @@ func fxClampRect(f *cutFx) {
 	f.Cy = math.Min(math.Max(f.Cy, -2), 3)
 }
 
-// liveSize is the size the zoom layer's picture is actually drawn at: the
-// paintable's own pixels when it knows them, the probe's otherwise.
-func (ed *cutEditor) liveSize() (float64, float64) {
-	if ed.player != nil {
-		if pw, ph := ed.player.video.IntrinsicWidth(), ed.player.video.IntrinsicHeight(); pw > 0 && ph > 0 {
-			return float64(pw), float64(ph)
-		}
-	}
-	return ed.srcSize()
-}
-
 // liveZoom is the transform that puts the camera on the playing preview: the
 // scale s and offset tx,ty that map the picture, drawn 1:1 at sw×sh, so the
 // camera rect r fills the output-shaped box centred in a W×H widget.
@@ -438,59 +456,6 @@ func liveZoom(W, H, sw, sh, outA float64, r fxRect) (s, tx, ty float64) {
 	tx = bx + bw/2 - r.cx*sw*s
 	ty = by + bh/2 - r.cy*sh*s
 	return
-}
-
-// syncPreviewZoom puts the real camera on the preview. Whenever the cut has a
-// camera -- and nobody is framing by hand -- the layer shows the same video
-// again, transformed so the camera's window fills the output box: the preview
-// is the finished framing, glides included.
-//
-// It does NOT depend on whether the stream is running. It used to, and that
-// was wrong twice over: pausing dropped back to the raw frame letterboxed into
-// the widget, so the picture visibly changed size at every play/pause, and the
-// framing you were shown while paused was no framing at all. What the line
-// stands on is what the camera sees, moving or still.
-//
-// The layer does go away while a view or zoom is armed or held, because that
-// is framing: the outline then has to be drawn against everything the camera
-// COULD see, not against what it has been cropped to. An armed TEXT keeps the
-// layer up -- a text box lives on the OUTPUT frame, so it is drawn on the
-// finished framing, and dropping to the raw frame would have the box drawn on
-// a picture the render never shows.
-func (ed *cutEditor) syncPreviewZoom() {
-	ed.syncCamLayer()
-	ed.fitStill() // whatever the camera just did, the still does too
-}
-
-// fitStill puts a stop's frozen frame on the same mapping as the footage it is
-// standing over: the camera's, when the live-zoom layer is up, and the plain
-// aspect fit GtkPicture does when it is down -- an armed or held zoom, or no
-// camera on this session at all. Either way the still and the picture beneath
-// it are the same size in the same place, which is the whole of "the pause
-// stops the video and nothing else".
-func (ed *cutEditor) fitStill() {
-	pic, box := ed.fxStillPic, ed.fxStillBox
-	if pic == nil || box == nil || ed.fxArea == nil {
-		return
-	}
-	W := float64(ed.fxArea.AllocatedWidth())
-	H := float64(ed.fxArea.AllocatedHeight())
-	sw, sh := ed.liveSize()
-	if W <= 0 || H <= 0 || sw <= 0 || sh <= 0 {
-		return
-	}
-	// pinned to its own pixel size, so the transform below is the whole
-	// mapping -- a Fixed hands its children their natural size
-	if rw, rh := pic.SizeRequest(); rw != int(sw) || rh != int(sh) {
-		pic.SetSizeRequest(int(sw), int(sh))
-	}
-	outA := ed.outAspect()
-	s, tx, ty := stillFit(W, H, sw, sh, outA, ed.livePreview(),
-		fxRectAt(ed.fx, ed.livePlayhead(), sw/sh, outA))
-	if s <= 0 || math.IsNaN(s) || math.IsInf(s, 0) {
-		return
-	}
-	box.SetChildTransform(pic, zoomTransform(s, tx, ty))
 }
 
 // stillFit is that mapping, source pixels to widget pixels, as one scale and
@@ -505,48 +470,6 @@ func stillFit(W, H, sw, sh, outA float64, live bool, r fxRect) (s, tx, ty float6
 	}
 	s = math.Min(W/sw, H/sh)
 	return s, (W - sw*s) / 2, (H - sh*s) / 2
-}
-
-// syncCamLayer is syncPreviewZoom's own half: the live-zoom layer itself.
-func (ed *cutEditor) syncCamLayer() {
-	if ed.fxZoom == nil {
-		return
-	}
-	// A held effect takes the layer down: a zoom because you are aiming the
-	// camera and have to see everything it could see, a text because its box
-	// is only editable on the layer that offers a grab -- and a caption whose
-	// bar has been picked up but whose box cannot be found on the picture is
-	// the whole of "I cannot change the text area".
-	on := ed.player != nil && !ed.player.still && ed.hasPlay &&
-		fxHasCamera(ed.aspect, ed.fx) && (ed.fxArm == "" || ed.fxOverArm()) &&
-		ed.fxRectHeld() == nil && ed.fxHeldBox() == nil
-	if !on {
-		ed.fxZoom.SetVisible(false)
-		return
-	}
-	W := float64(ed.fxArea.AllocatedWidth())
-	H := float64(ed.fxArea.AllocatedHeight())
-	sw, sh := ed.liveSize()
-	if W <= 0 || H <= 0 || sw <= 0 || sh <= 0 {
-		ed.fxZoom.SetVisible(false)
-		return
-	}
-	// the picture is pinned to its own pixel size, so the transform below is
-	// the whole mapping (GtkFixed hands children their natural size)
-	if rw, rh := ed.fxZoomPic.SizeRequest(); rw != int(sw) || rh != int(sh) {
-		ed.fxZoomPic.SetSizeRequest(int(sw), int(sh))
-	}
-	// livePlayhead, not playhead: the transform is asked for once per display
-	// frame (buildFxOverlay's tick callback) and the playhead only moves ten
-	// times a second, so a glide sampled at the playhead would step
-	r := fxRectAt(ed.fx, ed.livePlayhead(), sw/sh, ed.outAspect())
-	s, tx, ty := liveZoom(W, H, sw, sh, ed.outAspect(), r)
-	if s <= 0 || math.IsNaN(s) || math.IsInf(s, 0) {
-		ed.fxZoom.SetVisible(false)
-		return
-	}
-	ed.fxZoom.SetChildTransform(ed.fxZoomPic, zoomTransform(s, tx, ty))
-	ed.fxZoom.SetVisible(true)
 }
 
 // zoomTransform is translate(tx,ty) then scale(s), as one call on no transform
@@ -579,51 +502,14 @@ func zoomTransform(s, tx, ty float64) *gsk.Transform {
 // its gestures. Everything the drag knows lives in the closure; what it emits
 // goes through the same addFx/updateFx as every other edit.
 func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
-	over := gtk.NewOverlay()
-	over.SetChild(ed.player.Picture)
+	// the three layers themselves are the shared ones (cut_fxscreen.go), so
+	// this page and Narrate's are the same picture; what is added here is
+	// everything only an editor has, starting with the gestures
+	over := ed.screen().buildLayers(ed, ed.player.Picture, ed.player.video)
 	// the wheel over the picture steps frames -- the preview is where you look
 	// while hunting for one, so it answers the scrub gesture itself
 	over.AddController(ed.wheelFrames())
-
-	// the live-zoom layer: a second picture of the same paintable, hidden
-	// until syncPreviewZoom has a playing camera to show. It sits under the
-	// drawing area, which paints the black outside the output box over it.
-	zfix := gtk.NewFixed()
-	zfix.SetOverflow(gtk.OverflowHidden)
-	zfix.SetCanTarget(false)
-	zpic := gtk.NewPicture()
-	zpic.SetPaintable(ed.player.video)
-	zfix.Put(zpic, 0, 0)
-	zfix.SetVisible(false)
-	ed.fxZoom, ed.fxZoomPic = zfix, zpic
-	over.AddOverlay(zfix)
-
-	// the stop effect's still: the frame at the stop's marker, faded over the
-	// running footage exactly as the render composites it (cut_fxstill.go).
-	// Above the live-zoom layer, under the drawing area's mask and titles.
-	//
-	// On a Fixed of its own, carrying the same transform the live-zoom layer
-	// carries, because a stop is a still the CAMERA STILL MOVES OVER. The
-	// render has always done it that way -- encodeClip splices the stills into
-	// the chain before the camera filters, so a zoom crops the frozen frame
-	// exactly as it crops the footage running under it -- but hung straight on
-	// the overlay, as this was, the still was the one thing on the picture the
-	// camera could not reach. A zoom during a stop then did nothing you could
-	// see: the layer under it zoomed and the frame you were looking at did not.
-	sfix := gtk.NewFixed()
-	sfix.SetOverflow(gtk.OverflowHidden)
-	sfix.SetCanTarget(false)
-	spic := gtk.NewPicture()
-	spic.SetCanTarget(false)
-	sfix.Put(spic, 0, 0)
-	sfix.SetVisible(false)
-	ed.fxStillBox, ed.fxStillPic = sfix, spic
-	over.AddOverlay(sfix)
-
-	area := gtk.NewDrawingArea()
-	ed.fxArea = area
-	over.AddOverlay(area)
-	area.SetCanTarget(false) // passive until armFx or a held view/zoom
+	area := ed.fxArea
 
 	// The camera's own clock. Everything else on this page is driven by a
 	// 100ms timer, which is right for a red line and wrong for a glide: ten
@@ -711,8 +597,7 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 
 	textPx := func(f cutFx) (x, y, w, h float64) {
 		ox, oy, ow, oh := outFramePx()
-		bx, by, bw, bh := f.textBox().px(ow, oh)
-		return ox + bx, oy + by, bw, bh
+		return fxOverPx(f, ox, oy, ow, oh)
 	}
 
 	// setTextPx is the way back: a rectangle on the widget written onto the
@@ -829,49 +714,13 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 		return x, y, w, h
 	}
 
-	// drawText paints one text effect where the render will put it: the same
-	// font size and the same line breaks (fitText answers for both), each line
-	// centred on its own measured width -- which is what SVG's text-anchor
-	// does too. The dark edge is eight offset copies rather than the SVG's
-	// stroke, because cairo's Go binding has no text path to stroke; it is the
-	// same idea at preview resolution.
-	drawText := func(cr *cairo.Context, f cutFx, alpha float64) {
-		tx, ty, tw, th := textPx(f)
-		size, lines := fitText(f.Text, tw, th)
-		if size <= 0 || alpha <= 0.01 {
-			return
-		}
-		cr.SelectFontFace("sans-serif", cairo.FontSlantNormal, cairo.FontWeightBold)
-		cr.SetFontSize(size)
-		base := textBaselines(ty, th, size, len(lines))
-		mid := tx + tw/2
-		d := math.Max(1, size*0.08)
-		for i, ln := range lines {
-			if strings.TrimSpace(ln) == "" {
-				continue
-			}
-			x := mid - cr.TextExtents(ln).XAdvance/2
-			cr.SetSourceRGBA(0, 0, 0, 0.85*alpha)
-			for _, o := range [8][2]float64{{-d, 0}, {d, 0}, {0, -d}, {0, d},
-				{-d, -d}, {d, -d}, {-d, d}, {d, d}} {
-				cr.MoveTo(x+o[0], base[i]+o[1])
-				cr.ShowText(ln)
-			}
-			cr.SetSourceRGBA(1, 1, 1, alpha)
-			cr.MoveTo(x, base[i])
-			cr.ShowText(ln)
-		}
-	}
-
 	// drawOver is either kind of overlay put on the picture the way the render
-	// will put it: the words drawn, or the drawing painted into its box.
+	// will put it, and the way the OTHER preview puts it: Narrate draws the
+	// same titles over the same finished frame (cut_fxpaint.go), so the words,
+	// the font fitting and the fades are shared and only the box is local.
 	drawOver := func(cr *cairo.Context, f cutFx, alpha float64) {
-		if f.Kind == "svg" {
-			x, y, w, h := textPx(f)
-			ed.drawSVG(cr, f, x, y, w, h, alpha)
-			return
-		}
-		drawText(cr, f, alpha)
+		ox, oy, ow, oh := outFramePx()
+		ed.drawFxOver(cr, f, alpha, ox, oy, ow, oh)
 	}
 
 	// boxOutline is the dashed violet frame around a text box, drawn only for
@@ -891,31 +740,12 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 			return // a card is on screen; the camera talks about footage
 		}
 		if ed.livePreview() {
-			// the camera is live on the picture underneath (syncPreviewZoom):
-			// paint everything the render will not have -- the picture
-			// outside the output box, and any box a pulled-back frame leaves
-			// bare -- and nothing else; the outline waits for the pause
-			lw, lh := ed.liveSize()
-			outA := ed.outAspect()
-			bx, by, bw, bh := fxDisp(float64(w), float64(h), outA)
-			now := ed.livePlayhead() // the same clock the layer under this runs on
-			s, tx, ty := liveZoom(float64(w), float64(h), lw, lh, outA,
-				fxRectAt(ed.fx, now, lw/lh, outA))
-			x0, y0 := math.Max(bx, tx), math.Max(by, ty)
-			x1, y1 := math.Min(bx+bw, tx+lw*s), math.Min(by+bh, ty+lh*s)
-			cr.SetSourceRGB(0, 0, 0)
-			cr.Rectangle(0, 0, float64(w), float64(h))
-			if x1 > x0 && y1 > y0 {
-				cr.NewSubPath()
-				cr.Rectangle(x0, y0, x1-x0, y1-y0)
-			}
-			cr.SetFillRule(cairo.FillRuleEvenOdd)
-			cr.Fill()
-			cr.SetFillRule(cairo.FillRuleWinding)
-			// the words go on while it plays, faded exactly as they will be:
-			// a title is a thing you watch, not a thing you inspect paused
-			for _, i := range textsAt(ed.fx, now) {
-				drawOver(cr, ed.fx[i], textAlpha(ed.fx[i], now))
+			// the camera is live on the picture underneath (syncPreviewZoom),
+			// so the mask and the titles are the shared painting the Narrate
+			// preview also does (fxScreen.paintLive) and nothing else -- the
+			// outline waits for the pause
+			if !ed.paintLive(cr, w, h) {
+				return
 			}
 			// an overlay's box being drawn by hand: the one arm that keeps
 			// this layer up (syncPreviewZoom), because the box is a fraction

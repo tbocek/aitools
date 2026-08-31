@@ -309,6 +309,7 @@ func TestTheIconIsAnSVGOrAPNGOrAJPGInThatOrder(t *testing.T) {
 // fails loudest -- gio treats an argument it was not told to expect as a usage
 // error and refuses to start at all.
 func TestADoubleClickedProjectOpensInAutocut(t *testing.T) {
+	ownConfig(t)
 	entry := desktopEntry("/opt/autocut/gui/autocut-gui", "/opt/autocut", "")
 	for _, want := range []string{
 		"Exec=/opt/autocut/gui/autocut-gui %f", // where the opened file is substituted

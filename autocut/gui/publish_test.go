@@ -352,6 +352,7 @@ func TestTheImageRowIsAddableAndRemovable(t *testing.T) {
 // key is gone from the registry rather than renamed, so a project that saved an
 // edited copy just keeps a dead key nobody reads.
 func TestThePublishPromptIsEditable(t *testing.T) {
+	ownConfig(t)
 	d := promptDefFor("youtube")
 	if d.key != "youtube" || strings.TrimSpace(d.def) == "" {
 		t.Fatal(`prompt "youtube" is not in promptDefs`)

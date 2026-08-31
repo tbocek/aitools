@@ -569,6 +569,11 @@ type App struct {
 	voiceSel  string
 	pitchSel  float64 // semitones the reference is shifted by, from step4/pitch.txt
 	pitchRead bool    // ...and whether that file has been read yet (0 is a real value)
+	// the hand-picked voice-clone takes, by recording (narrate_take.go), under
+	// the same lock and for the same reason: they are part of the cache key, so
+	// they are read by whatever thread is about to speak a line.
+	takesMap  map[string][]voiceTake
+	takesRead bool
 
 	progress *gtk.ProgressBar
 	playBtn  *gtk.Button
@@ -604,6 +609,10 @@ type App struct {
 	selVid   []string
 	selAud   []string
 	selNarr  [narratorSlots]string
+	// which audio tracks of each source the session uses, keyed on path. A path
+	// this says nothing about uses its first track alone, so an ordinary
+	// session's map is empty and every reader of it is a no-op (cut_tracks.go).
+	selTracks map[string][]int
 
 	// the editable system prompts. The views are the GUI thread's; promptTxt is
 	// the copy a runner reads, kept current by the buffers' changed handler --
@@ -617,6 +626,10 @@ type App struct {
 	// by style name. Under promptMu with promptTxt: setPrompt writes all three.
 	promptSty  map[string][]promptStyle
 	promptPick map[string]string
+	// what the prompt folder is believed to hold, so the flush that mirrors
+	// promptSty onto disk writes only what changed (promptstore.go). GUI
+	// thread only, like the views: it is written from the autosave tick.
+	promptDisk map[string]string
 	// the picker widgets, and the flag that stops filling them from reading as
 	// the user editing them. GUI thread only, so no lock (showPromptStyle).
 	promptRows  map[string]promptRow
@@ -987,10 +1000,28 @@ func (a *App) snapItems(items []sourceItem) (vids, auds []string) {
 	for n := 1; n <= narratorSlots; n++ {
 		narr[n-1] = l.narratorPath(n)
 	}
+	// only the rows that answered, so the map is empty for every session that
+	// has no multi-track file in it and nothing downstream has to tell "the
+	// first track" from "no answer" a second time
+	tracks := map[string][]int{}
+	for _, it := range items {
+		if len(it.tracks) > 0 {
+			tracks[it.path] = append([]int(nil), it.tracks...)
+		}
+	}
 	a.srcMu.Lock()
-	a.selItems, a.selVid, a.selAud, a.selNarr = items, vids, auds, narr
+	a.selItems, a.selVid, a.selAud, a.selNarr, a.selTracks = items, vids, auds, narr, tracks
 	a.srcMu.Unlock()
 	return
+}
+
+// snappedTracks is the per-file track choice from the run's snapshot, for the
+// background work that must not touch the list widget. Nil before any snapshot
+// has been taken, which reads as "nobody chose anything" and is the truth.
+func (a *App) snappedTracks() map[string][]int {
+	a.srcMu.Lock()
+	defer a.srcMu.Unlock()
+	return a.selTracks
 }
 
 func (a *App) snappedSources() (vids, auds []string) {
@@ -1073,7 +1104,11 @@ func (a *App) build(app *gtk.Application) {
 		".test-ok { color: #26a269; } .test-bad { color: #c01c28; } " +
 		// the bars a preview's aspect leaves over, in the color every other
 		// player puts there instead of the page background (see videoFrame)
-		".videoframe { background-color: #101010; }")
+		".videoframe { background-color: #101010; } " +
+		// a slider whose scale marks are words rather than numbers: three lines
+		// of body text stacked under a trough make the row taller than
+		// everything beside it, and the words are a legend, not a reading
+		".tinyscale value, .tinyscale marks label { font-size: 0.78em; }")
 	gtk.StyleContextAddProviderForDisplay(gtk.BaseWidget(a.win).Display(), css,
 		gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 	// fits a 1366x768 laptop with room for the panel: every page is either
@@ -1285,6 +1320,17 @@ func (a *App) build(app *gtk.Application) {
 	a.volBox = volumeCtl()
 	ctlRow.Append(a.volBox)
 	ctlRow.Append(a.progress)
+	// Ask about what just happened, from wherever you noticed it. On this bar
+	// and not on a page, because the complaint is never about the page you are
+	// standing on: what a cut kept is noticed while watching the produced file,
+	// and what the narration says is noticed after it has been spoken
+	// (improve.go).
+	improve := gtk.NewButtonWithLabel("Improve")
+	improve.SetTooltipText("Say what you did not like — the model reads this session's " +
+		"log and its own exchanges, says why it did that, and names the sentence in the " +
+		"prompt that would change it")
+	improve.ConnectClicked(a.improveClicked)
+	ctlRow.Append(improve)
 	// the one Outputs heading in the app; the group behind it is the visible
 	// page's own, swapped by showStep
 	outLbl := gtk.NewLabel("Outputs:")
@@ -1335,6 +1381,12 @@ func (a *App) build(app *gtk.Application) {
 	// after the log exists, so that a theme that cannot find the icon says so
 	// somewhere the user will look rather than only on stderr
 	a.setupIcons()
+
+	// The config left the session folder; a machine that has been cutting for
+	// months still has it there. Also after the log, because the one thing it
+	// does that is worth seeing is the line saying where the file went.
+	a.migrateConf()
+	a.loadGlobalPrompts()
 
 	// Pick up where the last session left off. A file handed over by the desktop
 	// comes first -- a double-click is somebody asking for THAT project, not for

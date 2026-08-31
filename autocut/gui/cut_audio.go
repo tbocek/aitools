@@ -84,6 +84,11 @@ type tlAudio struct {
 	dur    float64
 	chans  int  // 1 or 2 lanes; more than two is downmixed to a stereo picture
 	master bool // the footage's own track: heard by the preview already
+	// which of the file's audio streams this lane is, a:N. Nought for a
+	// recording, which is one file with one track, and for the first track of a
+	// video; above nought for the rest of a multi-track capture, where the same
+	// path is on several lanes and only this tells them apart (cut_tracks.go).
+	track int
 }
 
 // at is the second of the file heard at session second t, which is tlVideo.at
@@ -134,24 +139,6 @@ func (ed *cutEditor) soundOpen(path string, at, dur float64, m insMode) bool {
 	return !hasAudioStream(file) && ed.soundAt(at, dur)
 }
 
-// masterLanes is the footage's own sound as lanes. There is no placing to do --
-// a video's track starts where the video starts, by definition -- and a video
-// with no sound in it (a silent screen capture, a camera used only for its
-// pictures) gets no lane rather than a strip of ground and a decode that can
-// only fail.
-func masterLanes(vids []tlVideo) []tlAudio {
-	var out []tlAudio
-	for _, v := range vids {
-		ch := ffprobeChannels(v.path)
-		if ch < 1 {
-			continue
-		}
-		out = append(out, tlAudio{base: v.base, path: v.path, start: v.start,
-			off: v.off, dur: v.dur, chans: ch, master: true})
-	}
-	return out
-}
-
 // loadWaves gets an envelope for every lane that has not got one, in the
 // background and one goroutine each: decoding an hour of audio takes seconds,
 // and a page that waited for them would be a tab that does not open. A lane
@@ -181,7 +168,7 @@ func (ed *cutEditor) loadWaves() {
 		}
 		au := au
 		go func() {
-			wf, err := loadWave(a.waveCache(), au.path, au.chans)
+			wf, err := loadWave(a.waveCache(), au)
 			glib.IdleAdd(func() {
 				if err != nil {
 					a.logf("no waveform for %s: %v", au.base, err)
@@ -207,150 +194,6 @@ func sortLanes(auds []tlAudio) {
 		}
 		return auds[i].start < auds[j].start
 	})
-}
-
-// ---- which lane the cut is heard on -----------------------------------------
-
-// A session shot on two cameras is HEARD on one of them.
-//
-// Every camera records its own sound, so two of them is the same room recorded
-// twice: a few frames apart, at two different distances from whoever is
-// talking, with two different rooms' worth of tone. Cutting the sound with the
-// picture would put a seam in the audio at every change of camera -- the tone
-// jumps, a word half-said in one recording is half-said differently in the
-// other -- and it sounds broken in a way nobody can point at.
-//
-// So which sound is heard is a choice, made once for the whole cut and not tied
-// to the picture at all: ↑ and ↓ walk the lanes, every scene is heard with the
-// one that is picked, and the pictures cut where they like underneath. The
-// empty choice is every scene heard with the camera that shot it, which is
-// exactly what a one-camera session has always done and is why it is the
-// default and why a cut.json without the field still renders as it did.
-//
-// The PREVIEW does not follow it: it is one pipeline playing one file, and its
-// sound is that file's. What says which lane is heard is the lane's own plate
-// on the waveforms (drawAudio), and the render.
-
-// soundOf is where a scene's sound comes from under that choice: the file and
-// the second inside it, or "" meaning "the picture's own" -- which is both the
-// default and the answer whenever the chosen lane was not running.
-//
-// A choice naming a camera names the ROW, not one file: a camera stopped and
-// started again is several recordings in a line, and the sound carries across
-// them exactly as the picture does.
-func soundOf(vids []tlVideo, auds []tlAudio, snd string, t float64) (string, float64) {
-	if strings.TrimSpace(snd) == "" {
-		return "", 0
-	}
-	for i := range vids {
-		if vids[i].base != snd {
-			continue
-		}
-		if v := videoOn(vids, vids[i].lane, t); v != nil {
-			return v.path, v.at(t)
-		}
-		return "", 0 // that camera was not rolling here
-	}
-	for _, au := range auds {
-		if au.base == snd && t >= au.start && t < au.start+au.dur {
-			return au.path, au.at(t)
-		}
-	}
-	return "", 0
-}
-
-// sndChoices is what ↑ and ↓ walk, in order: "" first -- every scene heard with
-// the camera that shot it -- then one entry per camera row, named by the first
-// recording on it, then every separately recorded lane.
-//
-// One entry per ROW rather than per file, because a camera is picked whole. And
-// no camera at all when there is only one row: "" already means that camera,
-// and an arrow that cycles between two spellings of the same answer reads as a
-// key that does not work.
-func sndChoices(vids []tlVideo, auds []tlAudio) []string {
-	out := []string{""}
-	var rows []string
-	seen := map[int]bool{}
-	for _, v := range vids {
-		if !seen[v.lane] {
-			seen[v.lane] = true
-			rows = append(rows, v.base)
-		}
-	}
-	if len(rows) > 1 {
-		out = append(out, rows...)
-	}
-	for _, au := range auds {
-		if !au.master {
-			out = append(out, au.base)
-		}
-	}
-	return out
-}
-
-// sndLabel is a choice in a sentence.
-func sndLabel(vids []tlVideo, snd string) string {
-	if strings.TrimSpace(snd) == "" {
-		return "each camera's own sound"
-	}
-	for _, v := range vids {
-		if v.base == snd {
-			return fmt.Sprintf("camera %d — %s", v.lane+1, v.base)
-		}
-	}
-	return snd
-}
-
-// heardOn says this lane is the one the cut is heard on. Every recording on a
-// chosen camera's row answers yes, not only the one the choice was written
-// down as, because the choice was the row.
-func (ed *cutEditor) heardOn(base string) bool {
-	if strings.TrimSpace(ed.snd) == "" {
-		return false
-	}
-	if base == ed.snd {
-		return true
-	}
-	row := -1
-	for _, v := range ed.vids {
-		if v.base == ed.snd {
-			row = v.lane
-		}
-	}
-	if row < 0 {
-		return false
-	}
-	for _, v := range ed.vids {
-		if v.base == base {
-			return v.lane == row
-		}
-	}
-	return false
-}
-
-// cycleSound is ↑ and ↓ on the timeline: the next lane along, or the previous
-// one, wrapping. Not an undo step -- it is one keystroke to put back, and a
-// history full of "changed my mind about the microphone" is a history that has
-// lost the edit before it.
-func (ed *cutEditor) cycleSound(d int) {
-	ch := sndChoices(ed.vids, ed.auds)
-	if len(ch) < 2 {
-		ed.a.setStatus("this session was shot on one camera with nothing recorded " +
-			"separately — there is no other lane to hear the cut on")
-		return
-	}
-	at := 0
-	for i, c := range ch {
-		if c == ed.snd {
-			at = i
-		}
-	}
-	ed.snd = ch[((at+d)%len(ch)+len(ch))%len(ch)]
-	ed.persist()
-	ed.redrawTracks()
-	ed.a.setStatus(fmt.Sprintf("the whole cut is heard on %s — ↑ and ↓ walk the lanes. "+
-		"The preview still plays the picture's own sound; the render uses this",
-		sndLabel(ed.vids, ed.snd)))
 }
 
 // waveform is the peak envelope: one byte per bucket per channel, the loudest
@@ -483,16 +326,21 @@ const waveMagic = "AWV4"
 // modification time as well as its name: a session re-recorded to the same
 // filename is a different recording, and drawing the old one under it would be
 // a picture that quietly lies.
-func loadWave(dir, path string, chans int) (*waveform, error) {
-	fi, err := os.Stat(path)
+// Keyed on the LANE's name and not the file's, because a multi-track capture is
+// one file on several lanes: two tracks of one .mkv have the same size and the
+// same mtime, so a cache file named for the file alone would hand the second
+// lane the first one's envelope and every check that guards against a stale
+// picture would pass (cut_tracks.go).
+func loadWave(dir string, au tlAudio) (*waveform, error) {
+	fi, err := os.Stat(au.path)
 	if err != nil {
 		return nil, err
 	}
-	cf := filepath.Join(dir, baseName(path)+".wave")
+	cf := filepath.Join(dir, au.base+".wave")
 	if wf, ok := readWave(cf, fi.Size(), fi.ModTime().Unix()); ok {
 		return wf, nil
 	}
-	wf, err := buildWave(path, chans)
+	wf, err := buildWave(au.path, au.track, au.chans)
 	if err != nil {
 		return nil, err
 	}
@@ -567,16 +415,24 @@ func writeWave(file string, wf *waveform, size, mtime int64) error {
 // buildWave decodes the recording and keeps the loudest sample of every bucket.
 // Nothing is held but the envelope: the samples go past in a pipe, which is why
 // this can be pointed at an hour of 48 kHz stereo without asking what it costs.
-func buildWave(path string, chans int) (*waveform, error) {
+func buildWave(path string, track, chans int) (*waveform, error) {
 	if chans < 1 {
 		chans = 1
 	}
 	if chans > 2 {
 		chans = 2
 	}
-	cmd := exec.Command(ffTool("ffmpeg"), "-v", "error", "-i", path, "-vn",
-		"-ac", strconv.Itoa(chans), "-ar", strconv.Itoa(waveRate),
+	args := []string{"-v", "error", "-i", path, "-vn"}
+	// only for a track past the first: -vn already leaves ffmpeg picking the
+	// best audio stream, which for every single-track file in the world is the
+	// one meant, and adding a -map that says the same thing would change the
+	// command every existing .wave in the cache was built by.
+	if track > 0 {
+		args = append(args, "-map", fmt.Sprintf("0:a:%d", track))
+	}
+	args = append(args, "-ac", strconv.Itoa(chans), "-ar", strconv.Itoa(waveRate),
 		"-f", "s16le", "-c:a", "pcm_s16le", "-")
+	cmd := exec.Command(ffTool("ffmpeg"), args...)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -703,32 +559,6 @@ func abs16(v int) int {
 		return -v
 	}
 	return v
-}
-
-// ffprobeChannels is how many lanes a recording gets. Anything above stereo is
-// two, because ffmpeg's downmix is a stereo picture of it and five lanes of a
-// surround capture is not what anyone is looking at this page for.
-//
-// Zero means ffprobe found no audio stream, and the caller decides what that is
-// worth: a video with no sound gets no lane, because the lane would be a strip
-// of ground with nothing in it and a decode that can only fail, while a
-// recording gets its one lane anyway -- a file that is in the session to be
-// listened to and probes as having nothing is more likely a probe that went
-// wrong than a file with no sound in it.
-func ffprobeChannels(path string) int {
-	out, err := exec.Command(ffTool("ffprobe"), "-v", "error", "-select_streams", "a:0",
-		"-show_entries", "stream=channels", "-of", "csv=p=0", path).Output()
-	if err != nil {
-		return 1
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil || n < 1 {
-		if strings.TrimSpace(string(out)) == "" {
-			return 0 // ffprobe found no audio stream to report on
-		}
-		return 1
-	}
-	return min(2, n)
 }
 
 // ---- drawing ----------------------------------------------------------------
@@ -964,6 +794,10 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 		cr.LineTo(x, fh)
 		cr.Stroke()
 	}
+	// last inside the translation, so the badges lie over the waves rather
+	// than under them: they are what the hand is aiming at while a scene is
+	// in hand, and a control a waveform can bury is not one (cut_hear.go)
+	ed.drawHearBadges(cr, ed.hearBadgesAud(), vx0, vx1)
 	cr.Restore()
 
 	// the names last and un-translated: a mixer strip's labels stay where they
@@ -975,14 +809,6 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 		n := ed.lanes(au)
 		for ch := 0; ch < n; ch++ {
 			name := au.base + " " + laneName(ch, n, au.chans)
-			if ed.heardOn(au.base) {
-				// and which one the finished video is heard on, said on the
-				// lane itself: it is a choice with no other mark on the page,
-				// and a cut that came out sounding like the wrong microphone
-				// with nothing anywhere saying which was picked is a bug
-				// nobody can find
-				name += " · heard"
-			}
 			if d := ed.shiftOf(au.base); d != 0 {
 				// a corrected clock is a fact about the project that is
 				// otherwise invisible: the lane simply sits where it sits, and
