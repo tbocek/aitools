@@ -486,6 +486,18 @@ func (a *App) rerollEntry(i int) {
 	a.speakEntry(i)
 }
 
+// pausePress is whether pressing row i's button means "pause it" rather than
+// "start this row". It is the same question syncSpeakIcons draws the face from
+// -- the row the picture is running on is the row wearing the ⏸ -- asked in one
+// place so the button cannot show one thing and do another.
+//
+// Only the picture, not the voice: a line spoken over a still frame is a toggle
+// further down (voice.Toggle), which also knows how to play it again once it
+// has run out.
+func (n *narrator) pausePress(i int) bool {
+	return n.player != nil && n.player.Playing() && n.livePlayRow() == i
+}
+
 // speakEntry auditions one line: the clip it was written for, played with the
 // line spoken over it, and stopping at the end of that clip. A line read over a
 // frozen frame is not what it was written against -- half of judging a line is
@@ -497,6 +509,22 @@ func (a *App) speakEntry(i int) {
 	n := a.narr
 	n.pullRows()
 	if i < 0 || i >= len(n.entries) {
+		return
+	}
+	// The ⏸ a row is showing means that row, whatever is written on it. Only
+	// the wordless branch below ever asked, so pressing ⏸ on a LINE that was
+	// playing fell through to the audition at the bottom and re-cued it from
+	// its lead-in -- which starts the picture again -- and it took a second
+	// press, with solo now set, to actually pause. Ahead of every branch
+	// because every kind of row can be the one under the playhead: a line, a
+	// caption, a clip with nothing written on it.
+	if n.pausePress(i) {
+		n.player.Pause()
+		if n.voice != nil {
+			n.voice.Pause()
+		}
+		n.syncSpeakIcons()
+		a.updateRunControls()
 		return
 	}
 	e := n.entries[i]
@@ -513,15 +541,6 @@ func (a *App) speakEntry(i int) {
 		// silence. No solo either -- there is no line to hand the transport back
 		// after, this is simply a seek into the cut that plays.
 		if ed := a.ed; ed != nil && n.player != nil && ed.videoAt(e.S) != nil {
-			if n.player.Playing() && n.nearestEntry(n.pos) == i {
-				n.player.Pause() // the ⏸ this row is showing means this row
-				if n.voice != nil {
-					n.voice.Pause()
-				}
-				n.syncSpeakIcons()
-				a.updateRunControls()
-				return
-			}
 			n.claimVoice()
 			n.playSeg, n.jumped = -1, -1
 			n.cue(e.S, true)

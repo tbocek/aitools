@@ -348,13 +348,18 @@ func TestAClipWithNoLinePlaysFromItsRow(t *testing.T) {
 	}
 	for _, want := range []string{
 		"n.cue(e.S, true)", // the clip rolls, from its own start
-		"n.player.Pause()", // ...and the second press pauses it, like the ⏸ it draws
 		"n.selectRow(i)",   // the blue row follows the press
 		"n.claimVoice()",   // whatever was sounding gives the players up
 	} {
 		if !strings.Contains(string(empty), want) {
 			t.Errorf("a wordless clip's ▶ does not play it (missing %s)", want)
 		}
+	}
+	// ...and pressing it again pauses, like the ⏸ it draws. That is answered
+	// above the branch now, for every kind of row at once (pausePress), which
+	// is why it is asked of the whole function and not of this branch
+	if !strings.Contains(string(speak), "n.pausePress(i)") {
+		t.Error("a wordless clip that is playing no longer pauses on the press that shows ⏸")
 	}
 	// what it must NOT do is speak: an empty line costs a call and comes back
 	// as silence

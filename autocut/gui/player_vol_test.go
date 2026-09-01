@@ -54,9 +54,8 @@ func TestTheVolumeReachesEveryPipeline(t *testing.T) {
 		t.Errorf("applyVol is called %d times; the birth, the slider and the effect all need it", n)
 	}
 
-	// one builder, so the three sliders cannot drift into three behaviours
+	// one builder, so the two sliders cannot drift into two behaviours
 	for file, pin := range map[string]string{
-		"main.go":    "a.volBox = volumeCtl()",
 		"cut.go":     "bar.Append(volumeCtl())",
 		"narrate.go": "transport.Append(volumeCtl())",
 	} {
@@ -66,51 +65,49 @@ func TestTheVolumeReachesEveryPipeline(t *testing.T) {
 	}
 }
 
-// The run bar spans every page, but only one page plays from it. Produce's
-// preview has no transport of its own, so the bar's ▶ is its ▶ and the bar's
-// slider is its slider; Cut and Narrate have both of their own on the page,
-// and Prepare and Publish play nothing, so on those four the bar's slider is
-// either a duplicate in reach of the original or a control over silence.
-func TestTheRunBarsSliderIsOnlyOnThePageThatPlaysFromTheRunBar(t *testing.T) {
-	if !barVolume("produce") {
-		t.Error("Produce is watched from the run bar and has lost the bar's volume slider")
+// A volume slider belongs beside the ▶ that uses it, and nowhere else. The run
+// bar spans every page, so its slider was only ever justified by one of them:
+// Produce, which watched its own result and had no transport of its own. Produce
+// does not play anything now, which leaves the bar's slider a control over
+// silence on all five pages -- and a slider that does nothing on the page you
+// are standing on is worse than none, because it invites the turn that will not
+// help. The two pages that do play keep theirs, on the page, next to their own ▶.
+func TestTheVolumeSliderIsOnlyWhereSomethingPlays(t *testing.T) {
+	if src := readSrc(t, "main.go"); strings.Contains(src, "volumeCtl()") ||
+		strings.Contains(src, "volBox") {
+		t.Error("the run bar has a volume slider again, on four pages that play nothing")
 	}
-	// ...which means there has to be one on the bar for it to keep
-	if !strings.Contains(readSrc(t, "main.go"), "ctlRow.Append(a.volBox)") {
-		t.Error("the slider is built but never put on the run bar, so Produce plays with no volume control at all")
+	if strings.Contains(readSrc(t, "player.go"), "func barVolume(") {
+		t.Error("barVolume is back: the run bar is deciding which page its slider is for")
 	}
-	for _, page := range []string{"prep", "cut", "narrate", "publish"} {
-		if barVolume(page) {
-			t.Errorf("the run bar still offers a volume slider on %s", page)
+	// ...and the pages that do play still have one, which is the other half of
+	// the same claim (the pin map above names where)
+	for _, file := range []string{"cut.go", "narrate.go"} {
+		if !strings.Contains(readSrc(t, file), "volumeCtl()") {
+			t.Errorf("%s plays a preview with no volume control", file)
 		}
 	}
-	// every page name barVolume is asked about is a page that exists, so a
-	// renamed step cannot quietly turn the answer into "never"
-	for _, name := range []string{"prep", "cut", "narrate", "produce", "publish"} {
-		found := false
-		for _, s := range steps {
-			found = found || s.name == name
-		}
-		if !found {
-			t.Errorf("this test asks about a page %q that the app no longer has", name)
-		}
-	}
+}
 
-	// showStep is the one place a page change happens, so it is the one place
-	// that has to dress the bar for the page arriving
-	if !strings.Contains(funcBody(t, "main.go", `func \(a \*App\) showStep\(name string\) \{`),
-		"a.volBox.SetVisible(barVolume(name))") {
-		t.Error("showStep no longer hides the bar's slider on the pages that do not play from it")
+// Produce renders; it does not play. It used to cue the finished file into a
+// picture at the bottom of the page and take over the run bar's ▶ ⏹ to drive
+// it -- a second video player, in the app that has just written a video file,
+// with the settings that made it scrolled off the top of the page.
+func TestProduceRendersAndDoesNotPlay(t *testing.T) {
+	src := readSrc(t, "produce.go")
+	for _, pin := range []string{"p.player", "videoFrame(", "PlaySegment("} {
+		if strings.Contains(src, pin) {
+			t.Errorf("the Produce page is playing video again (%q)", pin)
+		}
 	}
-	// ...including the first page, which is why the opening showStep has to
-	// come after the bar it dresses is built
-	build := funcBody(t, "main.go", `func \(a \*App\) build\(app \*gtk.Application\) \{`)
-	made, opened := strings.Index(build, "a.volBox = volumeCtl()"), strings.Index(build, `a.showStep("prep")`)
-	if made < 0 || opened < 0 {
-		t.Fatalf("build no longer both makes the slider (%d) and opens the first page (%d)", made, opened)
+	// the run bar's ▶ is the render on this page, always -- there is no
+	// playback left for it to be handed to
+	if strings.Contains(funcBody(t, "pipeline.go", `func \(a \*App\) pageTransport\(`), `"produce"`) {
+		t.Error("the run bar still hands ▶ to a Produce preview that no longer exists")
 	}
-	if made > opened {
-		t.Error("the first page is opened before the bar's slider exists, so showStep dereferences nil")
+	// and the one shared player it borrowed goes with it
+	if strings.Contains(readSrc(t, "main.go"), "a.player") {
+		t.Error("main still builds the player Produce was the only user of")
 	}
 }
 

@@ -258,8 +258,14 @@ type narrator struct {
 	synthFail map[string]bool
 	list      *gtk.ListBox
 	rows      []*narrRow
-	building  bool // guards feedback loops while (re)building rows
-	rebuildQ  bool // a rebuild is waiting for the idle (queueRebuild)
+	// what typing owes the disk. The line boxes and the clock fields write
+	// the whole narration file and re-count the output folder, which is a
+	// write and a directory walk per keystroke unless they are collected
+	// (saveSoon, flushSave).
+	saveQ debounce
+
+	building bool // guards feedback loops while (re)building rows
+	rebuildQ bool // a rebuild is waiting for the idle (queueRebuild)
 
 	// speaking is the row whose line is on n.voice, -1 none: it is what draws
 	// that row's ⏸, and it is set whoever started the sound. solo answers the
@@ -401,6 +407,20 @@ func (n *narrator) load() {
 	// file can be written mid-edit, between a line moving clips and the rows
 	// being rebuilt around it.
 	n.sortEntries()
+}
+
+// saveSoon is save once the typing stops. Everything that edits a line as it is
+// typed goes through here; everything that is a decision -- a row added, a take
+// picked, a line silenced -- still calls save outright, because a decision you
+// watched happen must be on disk before you can doubt it.
+func (n *narrator) saveSoon() { n.saveQ.call(n.save) }
+
+// flushSave settles what typing owes before something else looks at the file.
+// Nil-safe, so the page that is not built yet costs its callers no guard.
+func (n *narrator) flushSave() {
+	if n != nil {
+		n.saveQ.flush()
+	}
 }
 
 func (n *narrator) save() {
@@ -821,6 +841,21 @@ func (n *narrator) rebuildRows() {
 					s += fmt.Sprintf("  ⚠ ~%.0f s of speech, %.0f s before %s", dur, win, edge)
 					warn = true
 				}
+				// ...and the clip's whole schedule, on the row it hangs off.
+				// The line above is about one line's room; this is about all
+				// of them stacked up, which is the thing the render moves
+				// (clipOverrun).
+				if n.clipTop(i) {
+					if over := n.clipOverrun(i); over > 0.05 {
+						how := "moved earlier"
+						if over > n.clipSlack(i) {
+							how = "moved earlier and sped up"
+						}
+						s += fmt.Sprintf("  ⚠ this clip's lines run %.1f s past it — the render will have them %s",
+							over, how)
+						warn = true
+					}
+				}
 			}
 			if warn {
 				tl.AddCSSClass("error")
@@ -855,7 +890,7 @@ func (n *narrator) rebuildRows() {
 			// the clip at one second and back again on the next keystroke.
 			// Landing somewhere else is a decision, and decisions are committed.
 			e.At = math.Min(math.Max(0, t-e.S), math.Max(0, e.E-e.S-1))
-			n.save()
+			n.saveSoon()
 			n.restamp(i)
 		})
 		// commit is what a finished edit means: the typed time is placed for
@@ -965,7 +1000,7 @@ The eight it mixes: happy, angry, sad, afraid, disgusted, melancholic, surprised
 		change := func() {
 			if !n.building {
 				n.pullRows()
-				n.save()
+				n.saveSoon() // a file write per keystroke, otherwise
 				n.restamp(i) // pullRows has just put what is in the box into e
 			}
 		}
@@ -1101,20 +1136,89 @@ func (n *narrator) setPlayhead(t float64) {
 //
 // None of the three needs a seek, so all three settle on the playhead itself
 // (setPlayhead) and are as true while scrubbing as while playing.
+// gameGain is the level the footage and the recordings under it play at, at
+// session second t: the cut's own say over those seconds (a volume effect),
+// times the game's level wherever the render is going to duck it.
+//
+// The render's rule is per CLIP, not per line: a clip with anything written on
+// it has its WHOLE bed at GameVol, start to end, rather than a duck that
+// follows the words (encodeClip). This page has to sound the same way, because
+// the one judgement it exists for -- is there room here for this line -- was
+// being made against a mix the finished video never has. The game played at
+// full level under every line, so every gap sounded narrower than it was going
+// to be, and lines were written short for room that was already there.
+func (n *narrator) gameGain(t float64) float64 {
+	g := 1.0
+	if n.a != nil && n.a.ed != nil {
+		g = fxGainAt(n.a.ed.fx, t)
+	}
+	if n.clipSpeaks(t) {
+		g *= n.a.gameVol()
+	}
+	return g
+}
+
+// clipSpeaks is whether the clip at session second t has anything written on
+// it. The render's own question, asked the render's way -- the whole clip, not
+// the seconds a line covers -- so that the level does not step up and down
+// inside a clip here while the video holds it flat.
+func (n *narrator) clipSpeaks(t float64) bool {
+	for _, e := range n.entries {
+		if t >= e.S && t < e.E && strings.TrimSpace(e.Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (n *narrator) syncFxSound() {
 	ed, p := n.a.ed, n.player
 	if ed == nil || p == nil {
 		return
 	}
-	p.SetFxGain(fxGainAt(ed.fx, n.pos))
-	p.SetMuted(freezeHush(ed.fx, n.pos))
+	p.SetFxGain(n.gameGain(n.pos))
+	s := n.heardScene(n.pos)
+	// Two silences, and this page owes both. freezeHush is a stop that asked
+	// for its seconds to be taken out of the sound; cardHush is a card laid
+	// over the footage, which takes those seconds' audio with the picture
+	// unless it was put there for the picture alone (keepsSoundUnder).
+	//
+	// The preview cannot load a card -- it is not one of the session's
+	// recordings, so cutVideoAt answers with whatever is on that lane and cue
+	// leaves the previous file running. The picture being wrong is a known
+	// hole; the SOUND being wrong is not survivable here, because the whole of
+	// this page is judging a line against the audio it has to fit between.
+	p.SetMuted(freezeHush(ed.fx, n.pos) || cardHush(overInsert(ed.segs, n.pos)))
 	base := ""
 	if v := ed.cutVideoAt(n.pos); v != nil {
 		base = v.base
 	} else if p.loaded != "" {
 		base = baseName(p.loaded) // past a clip's end: the file still running
 	}
-	p.Hush(hushOf(n.heardScene(n.pos), base))
+	p.Hush(hushOf(s, base))
+}
+
+// overInsert is the card the cut lays over the footage at t. Spliced cards are
+// deliberately not here: those own no session time at all (S == E, see
+// cutSeg.spliced) -- they are a point the footage is cut open at -- so a
+// playhead running down the session never sits inside one.
+func overInsert(segs []cutSeg, t float64) *cutSeg {
+	for i := range segs {
+		if s := &segs[i]; s.isInsert() && !s.spliced() && t >= s.S && t < s.E {
+			return s
+		}
+	}
+	return nil
+}
+
+// needsReload is the tick's one question about the file under the picture: is
+// the preview on the recording the CUT names at t. Split out of followPlayback
+// because the tick is GStreamer and this is arithmetic, and because the case it
+// was missing is invisible from inside the tick -- two scenes that touch, taken
+// on different lanes. Nothing moves, no gap is jumped, and the answer changes.
+func needsReload(segs []cutSeg, vids []tlVideo, loaded string, t float64) bool {
+	v := cutVideoOn(segs, vids, t)
+	return v != nil && loaded != v.path
 }
 
 // heardScene is the clip whose answer about the lanes the preview is under,
@@ -1935,6 +2039,67 @@ func (n *narrator) lineEnd(i int) float64 {
 	return n.entries[i].E
 }
 
+// clipTop is whether row i is the first line written for its clip -- the row
+// the whole clip's schedule hangs off, and the one a warning about the clip
+// belongs on.
+func (n *narrator) clipTop(i int) bool {
+	return i == 0 || math.Abs(n.entries[i].S-n.entries[i-1].S) > 0.05
+}
+
+// clipLines is a clip's rows in the shape the render packs them: every line
+// written for the same stretch, at the moment it was placed and as long as it
+// takes to say. Wordless rows are left out for the same reason the render
+// leaves them out -- there is nothing to speak, so there is nothing to fit.
+func (n *narrator) clipLines(top int) []prodLine {
+	var out []prodLine
+	for i := top; i < len(n.entries) && (i == top || !n.clipTop(i)); i++ {
+		if e := n.entries[i]; strings.TrimSpace(e.Text) != "" {
+			out = append(out, prodLine{at: e.At, dur: n.speechDur(e)})
+		}
+	}
+	return out
+}
+
+// clipOverrun is how far a clip's narration runs past the end of the clip after
+// the render has done everything it can that costs nothing: stacked the lines
+// up with a breath between them (packLines) and grown the slot as far as it is
+// allowed to (maxExtend). Zero when it fits.
+//
+// This is the render's own arithmetic, asked here, because the per-line ⚠ next
+// to it answers a different question -- "has THIS line room before the next one
+// arrives" -- and by construction cannot see the one the render complains
+// about. An overrun is CUMULATIVE: a first line three seconds too long pushes
+// every line under it three seconds later, each of which may have all the room
+// in the world of its own, and it is the last one that falls off the end. That
+// came back as seven lines of "the narration does not fit where it was placed"
+// after twenty minutes of encoding, about words that could have been changed in
+// ten seconds on this page.
+//
+// The footage bound the render also applies is deliberately not here: whether a
+// recording actually HAS four more seconds past the clip is a fact about the
+// file, and guessing at it would turn a warning that is right into one that is
+// sometimes right.
+func (n *narrator) clipOverrun(top int) float64 {
+	lines := n.clipLines(top)
+	if len(lines) == 0 {
+		return 0
+	}
+	e := n.entries[top]
+	return math.Max(0, narrRun(lines, 1)-(e.E-e.S)-maxExtend)
+}
+
+// clipSlack is how much earlier the render may slide a clip's whole schedule
+// before it has to start speeding the words up instead: the first line's
+// placement, down to the lead-in, and no further.
+func (n *narrator) clipSlack(top int) float64 {
+	lines := n.clipLines(top)
+	if len(lines) == 0 {
+		return 0
+	}
+	packLines(lines, 1)
+	return math.Max(0, lines[0].delay-narrLead)
+}
+
 // lineWindow is how long line i may speak: until the same clip's next line
 // starts, or -- for a clip's last line -- to the clip's end plus the growth
 // the render allows it (maxExtend). It is the number the ⚠ compares against.
@@ -2157,6 +2322,25 @@ func (n *narrator) followPlayback() bool {
 		return true
 	}
 	n.jumped = -1
+	// The cut can hand the picture to another camera with NO gap to jump: two
+	// scenes that touch, the second taken on a different lane, which is most of
+	// what stealing a scene for the other camera does. Only a gap re-cued, so
+	// nothing here noticed, and the preview went on playing the first camera's
+	// file straight through the second's clip.
+	//
+	// With the file came its SOUND -- at the wrong scene's levels, and past a
+	// lane the second scene silences, because syncFxSound reads its base off
+	// the cut (cutVideoAt) while the pipeline was still on the other recording.
+	// So the one thing this page is for -- writing a line to fit the gaps in
+	// the finished video's audio -- was judged against audio the finished video
+	// does not have.
+	//
+	// cue is the whole fix: same path, it is a seek and nothing more; a new
+	// one reloads and brings the mix, the rate and the hush with it.
+	if ed := n.a.ed; ed != nil && needsReload(ed.segs, ed.vids, n.player.loaded, t) {
+		n.seekTo(t)
+		return true
+	}
 	n.syncPlayRate() // the line has crossed into or out of a speed effect
 
 	ei := n.entryAt(t)

@@ -128,6 +128,20 @@ func (ed *cutEditor) bandClipIdx() int {
 	return -1
 }
 
+// bandBars is every scene the band draws a green bar for: all of the kept ones,
+// always, in the cut's own order. Inserts are not among them for the same reason
+// they are not bandClipIdx's answer -- a card is not a stretch of the recording,
+// and the bar is about where the recording is kept.
+func (ed *cutEditor) bandBars() []int {
+	var out []int
+	for i := range ed.segs {
+		if !ed.segs[i].isInsert() {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 // bandClipPartAt is what a press at timeline-x px takes hold of on the green
 // bar: which clip, and which part of it. The parts are the blue bar's own --
 // ends first, then the ✕, then the middle -- because the two bars share a row
@@ -506,7 +520,32 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 	// first, so an actual selection lands on top of it. And it answers the
 	// blue's verbs (bandClipPartAt), so it wears the blue's clothes: end
 	// handles, and the same rings for held and hovered.
-	if i := ed.bandClipIdx(); i >= 0 {
+	// Every kept scene, in the band, always. The green tint that says "kept"
+	// is drawn over the thumbnails, which means it is green over whatever the
+	// footage happens to be -- and on a dark game capture that is green on
+	// black: findable if you already know where to look, and invisible if you
+	// do not. The band has a flat ground of its own, so a bar on it answers
+	// "what does the cut keep" for the WHOLE timeline at a glance, which is
+	// the question this row is read for.
+	//
+	// Shorter and dimmer than the bar for the scene the hand can reach, and a
+	// pixel short of its own right edge so two scenes that touch read as two.
+	// Only one scene answers the hand here (bandClipPartAt), and two bars
+	// drawn alike where one has handles and the other has none would be a
+	// promise the row does not keep.
+	cur := ed.bandClipIdx()
+	cr.SetSourceRGBA(0.2, 0.8, 0.3, 0.4)
+	for _, i := range ed.bandBars() {
+		if i == cur {
+			continue
+		}
+		s := ed.segs[i]
+		if gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E); gx1 >= vx0 && gx0 <= vx1 {
+			cr.Rectangle(gx0, y+5, math.Max(1, gx1-gx0-1), selBandH-10)
+		}
+	}
+	cr.Fill()
+	if i := cur; i >= 0 {
 		s := ed.segs[i]
 		if gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E); gx1 >= vx0 && gx0 <= vx1 {
 			cr.SetSourceRGBA(0.2, 0.8, 0.3, 0.5)

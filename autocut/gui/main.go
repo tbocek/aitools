@@ -426,6 +426,10 @@ func stepIndex(name string) int {
 // for the bounce off a locked tab, and for sending a page whose prerequisites
 // vanished back to the start.
 func (a *App) showStep(name string) {
+	// whatever was half-typed on the page being left is on disk before it is
+	// left: the narration boxes write on a beat after the typing stops, and
+	// clicking a tab is exactly the moment that beat has not come yet
+	a.narr.flushSave()
 	a.tabGuard = true
 	for i, s := range steps {
 		a.tabs[i].SetActive(s.name == name)
@@ -433,7 +437,6 @@ func (a *App) showStep(name string) {
 	a.tabGuard = false
 	a.stack.SetVisibleChildName(name)
 	a.outStack.SetVisibleChildName(name) // the Outputs group on the shared bar is this page's
-	a.volBox.SetVisible(barVolume(name)) // ...and the bar's slider is only for the page that plays from it
 	a.updateRunControls()                // ▶ ⏹ belong to the new page's playback now
 	a.syncHelp()                         // and so does the ⓘ
 	// Cut's Inputs row lists what Suggest will be sent, and one of those things
@@ -533,7 +536,6 @@ type App struct {
 	logExp        *gtk.Expander // collapsed until something actually runs
 	helpTitle     *gtk.Label    // the ⓘ popover, refilled per page by syncHelp
 	helpBody      *gtk.Label
-	player        *Player // the Produce preview
 	log           *gtk.TextView
 	linkTag       *gtk.TextTag      // paths in the log that open on a click (logPath)
 	linkPaths     map[string]string // what a tagged path displays -> where it really is
@@ -579,7 +581,6 @@ type App struct {
 	playBtn  *gtk.Button
 	stopBtn  *gtk.Button
 	outStack *gtk.Stack // the visible step's Outputs group; each page adds its own by step name
-	volBox   *gtk.Box   // the run bar's volume slider, shown only on the page that needs it
 
 	// pipeline control: pause parks the runners at the next checkpoint, stop
 	// kills the in-flight subprocesses; finished stages stay on disk either
@@ -1084,15 +1085,6 @@ func (a *App) build(app *gtk.Application) {
 		a.win.Present()
 		return
 	}
-	var err error
-	a.player, err = NewPlayer()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "player:", err)
-		os.Exit(1)
-	}
-	a.player.OnState = a.updateRunControls
-	a.player.OnError = a.playerErr("the preview")
-
 	a.win = gtk.NewApplicationWindow(app)
 	a.win.SetTitle("Autocut")
 	// the few styles of our own: the no-timestamp flag on a source row, and the
@@ -1306,19 +1298,13 @@ func (a *App) build(app *gtk.Application) {
 	ctlRow.SetMarginBottom(2)
 	ctlRow.Append(a.playBtn)
 	ctlRow.Append(a.stopBtn)
-	// how loud the preview is -- on the pages that have a preview. A slider
-	// belongs beside the ▶ that uses it, and Cut and Narrate have their own ▶
-	// on the page, with their own slider next to it; Prepare and Publish play
-	// nothing at all. That leaves Produce, whose result is watched from this
-	// bar because the page has no transport of its own, so this is the one
-	// Produce uses and showStep hides it everywhere else (barVolume).
-	//
-	// All of them are one number (volumeCtl, SetPreviewVolume): the players
-	// live one per page, but the ear they play to is the same one, and a
-	// volume that reset on every tab switch would be settings pretending to be
-	// one setting.
-	a.volBox = volumeCtl()
-	ctlRow.Append(a.volBox)
+	// No volume slider on this bar. It was here for one page: Produce, which
+	// used to watch its own result and had no transport of its own to hang a
+	// slider off. Produce no longer plays anything -- the finished file is
+	// opened in whatever plays videos on this machine -- so the bar's slider
+	// was a control over silence on every page in the app. The two pages that
+	// do play have their own beside their own ▶ (cut.go, narrate.go), and
+	// those are still one number between them (volumeCtl, SetPreviewVolume).
 	ctlRow.Append(a.progress)
 	// Ask about what just happened, from wherever you noticed it. On this bar
 	// and not on a page, because the complaint is never about the page you are

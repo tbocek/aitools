@@ -201,7 +201,7 @@ func TestTheAudioInsertIsWired(t *testing.T) {
 			"length: s.length(), freeze: s.spliced(), snd: path, sndAt: s.Ss,", // spliced holds the frame
 			`case c.snd != "" && c.dropLane == "":`,                            // the file where the silence would go
 			"apad[snd];",                                                       // a short file padded out to the slot
-			`len(recs) == 0 || c.freeze || c.noLanes`,                          // no session mixes under it
+			"if c.freeze || c.noLanes {",                                       // no session mixes under it (laneOverlap)
 			`if c.ins != "" || c.snd != "" || c.freeze || c.speed() != 1 {`,    // -t makes the length exact
 		},
 	}

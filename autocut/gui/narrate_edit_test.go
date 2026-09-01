@@ -931,8 +931,8 @@ func TestASilencedLaneStaysSilentPastTheClipsEnd(t *testing.T) {
 	if own, quiet := hushOf(n.heardScene(20.4), "cam"); own || !laneQuiet(quiet, "mic") {
 		t.Errorf("the tail past a clip does not silence its lanes: own=%v quiet=%v", own, quiet)
 	}
-	if !strings.Contains(funcBody(t, "narrate.go", `func \(n \*narrator\) syncFxSound\(\)`),
-		"hushOf(n.heardScene(n.pos)") {
+	body := funcBody(t, "narrate.go", `func \(n \*narrator\) syncFxSound\(\)`)
+	if !strings.Contains(body, "n.heardScene(n.pos)") || !strings.Contains(body, "hushOf(s, base)") {
 		t.Error("the preview's sound is back on the playhead's own scene, so a gap hears everything")
 	}
 }

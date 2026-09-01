@@ -37,6 +37,8 @@ import (
 
 const (
 	narrLead  = 0.3  // the earliest a line may start into its clip (writer's "at" 0 lands here)
+	narrGap   = 0.3  // ...and the breath left between two lines on the same clip
+	narrTail  = 0.2  // ...and after the last one, before the clip is over
 	maxExtend = 4.0  // seconds a clip may grow to fit its line
 	maxTempo  = 1.25 // ... and how much the line may be sped up after that
 	loudFlt   = "loudnorm=I=-14:TP=-1.5:LRA=11"
@@ -126,9 +128,7 @@ type producer struct {
 	outFile                                          string
 	outAuto                                          bool       // still the default -- follows the output folder
 	inputs, info, out                                *gtk.Label // the two rows every step has, and the encode summary between them
-	player                                           *Player
-	started                                          bool // the result is being watched, so the run bar is its transport
-	guard                                            bool // suppresses feedback while applying a project
+	guard                                            bool       // suppresses feedback while applying a project
 }
 
 // ---- settings ---------------------------------------------------------------
@@ -164,7 +164,7 @@ func atoiOr(s string, def int) int {
 // and a 0 fps is not a video at all).
 func defaultProdSettings() prodSettings {
 	return prodSettings{Container: "mp4", Codec: "h264", CRF: 24, Preset: "veryslow",
-		FPS: 30, AudioKbps: 128, GameVol: 0.22, Subs: "sidecar"}
+		Height: 1080, FPS: 30, AudioKbps: 128, GameVol: 0.22, Subs: "sidecar"}
 }
 
 // UnmarshalJSON seeds the defaults before decoding, so that an ABSENT game_vol
@@ -186,6 +186,17 @@ func (s *prodSettings) UnmarshalJSON(b []byte) error {
 	}
 	*s = prodSettings(v)
 	return nil
+}
+
+// gameVol is the level the render plays the game at under a narration line.
+// Asked on its own because the Narrate preview has to duck to it on the
+// playback tick, and reading a page of widgets ten times a second to get one
+// number is not what that tick is for.
+func (a *App) gameVol() float64 {
+	if a == nil || a.prod == nil || a.prod.gvol == nil {
+		return defaultProdSettings().GameVol
+	}
+	return a.prod.gvol.Value()
 }
 
 func (a *App) prodSettings() prodSettings {
@@ -290,33 +301,11 @@ func (p *producer) syncExt() {
 	}
 }
 
-// The run bar drives the result through these; see transport in pipeline.go.
-// ▶ means produce until the result is actually being watched, because that is
-// what this page is for -- watching it back is the aside.
-func (p *producer) playing() bool { return p.player != nil && p.player.Playing() }
-func (p *producer) cued() bool    { return p.player != nil && p.player.Cued() }
-
-func (p *producer) toggle() {
-	if p.player != nil {
-		p.player.Toggle()
-		p.started = p.started || p.player.Playing()
-		p.a.updateRunControls()
-	}
-}
-
-func (p *producer) stop() {
-	if p.player != nil {
-		p.player.Stop()
-	}
-	p.started = false // ⏹ hands ▶ back to producing
-}
-
 // ---- page -------------------------------------------------------------------
 
 func (a *App) buildProduce() gtk.Widgetter {
 	p := &producer{a: a}
 	a.prod = p
-	p.player = a.player
 
 	// no paragraph at the top: what this step does is in the ⓘ in the header bar
 	// (steps[].help), which the settings below it can now have the space of
@@ -458,14 +447,6 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.info.SetWrap(true)
 	p.info.AddCSSClass("dim-label")
 
-	vframe := videoFrame(nil)
-	if p.player != nil {
-		p.player.Picture.SetVExpand(true)
-		p.player.Picture.SetSizeRequest(-1, 320)
-		vframe.SetChild(p.player.Picture)
-	}
-	vframe.SetMarginTop(4)
-
 	// The two rows every other step has, in the two places every other step has
 	// them: what this one is working from, at the top, and what it has put on
 	// disk, at the bottom right. Cut and Narrate answer the same question in the
@@ -503,7 +484,6 @@ func (a *App) buildProduce() gtk.Widgetter {
 	box.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
 	box.Append(destRow)
 	box.Append(p.info)
-	box.Append(vframe)
 
 	a.updateProduceInfo() // the three rows say something before anything is clicked
 
@@ -616,9 +596,16 @@ func (p *producer) updateSettings() {
 		return
 	}
 	st := p.a.prodSettings()
+	// the frame in pixels, not the word from the dropdown: "source resolution"
+	// over a 4K screen capture is a 4K upload, and the number is the only form
+	// of that fact anyone reads before waiting out the encode
 	res := "source resolution"
 	if st.Height > 0 {
 		res = fmt.Sprintf("%dp", st.Height)
+	}
+	if w, h, ok := p.a.footageSize(); ok {
+		ow, oh := outSize(w, h, st.Height)
+		res = fmt.Sprintf("%d×%d", ow, oh)
 	}
 	fps := "source fps"
 	switch {
@@ -719,6 +706,7 @@ func (a *App) produceEntries() []narrEntry {
 			return append([]narrEntry(nil), a.narr.entries...)
 		}
 	}
+	a.narr.flushSave() // a line typed a moment ago belongs in this render
 	b, err := os.ReadFile(a.narrPath())
 	if err != nil {
 		return nil
@@ -933,6 +921,14 @@ type stillCue struct {
 	// the stop asked for its seconds to be silent (cutFx.Mute) rather than
 	// letting the footage's sound run on under the held frame.
 	mute bool
+	// the size the held frame has to come out at, when that is not the size it
+	// already is. A stop's bar can hang across a cut into a clip cut from
+	// ANOTHER recording, and the frame it holds is still the one the stop
+	// started on -- so a 1280x720 webcam frame can end up laid over 3840x2160
+	// gameplay. The overlay has no size of its own and no scaling in it, so
+	// that frame would sit in the top-left corner at a third of the size. Left
+	// at nought when the two agree, which is every single-camera session.
+	w, h int
 }
 
 // bdrop is what a clip owes the parts of its frame the picture does not
@@ -1009,6 +1005,71 @@ func (b bdrop) chain(in string, k int) (string, string) {
 	}
 	fc += fmt.Sprintf("[%s][%s]overlay=%d:%d[%s];", bg, fg, b.x, b.y, out)
 	return fc, out
+}
+
+// clipSize is what one encoded clip actually came out at.
+type clipSize struct {
+	name string
+	w, h int
+}
+
+// joinMismatch is what to say about clips that will break the join. The clip
+// list goes into the concat demuxer as a stream copy: it does not scale, and
+// -- this is the part worth guarding -- it does not refuse either. A clip of
+// another size is written into the finished file and the decoder comes apart
+// on it, so the video plays as blocks and smears from that point on instead
+// of failing anywhere a person can see it.
+//
+// Every branch of encodeClip pins the size it comes out at, so a mismatch
+// here means one of them stopped doing it. Measured against the FIRST clip,
+// because that is the size the decoder is set up on, and reported by name so
+// the offending file in the clips folder can be looked at.
+func joinMismatch(made []clipSize) []string {
+	var out []string
+	for i, c := range made {
+		if i == 0 || (c.w == made[0].w && c.h == made[0].h) {
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"%s came out %d×%d where %s is %d×%d — the join is a stream copy and cannot mix sizes, so the video breaks at this clip",
+			c.name, c.w, c.h, made[0].name, made[0].w, made[0].h))
+	}
+	return out
+}
+
+// fitsFrame is whether this recording, scaled down until it fits the finished
+// frame, then covers it -- so that the edges need nothing filling in. Asked of
+// the source size the Prepare page probed; a recording nobody measured answers
+// no, because a wrong yes here is footage pulled out of shape.
+func fitsFrame(v *tlVideo, w, h int) bool {
+	if v == nil || v.w <= 0 || v.h <= 0 || w <= 0 || h <= 0 {
+		return false
+	}
+	// what force_original_aspect_ratio=decrease would come out at: the smaller
+	// of the two scales, so the picture never overshoots the frame and the
+	// only question left is what it falls SHORT of. Within a pixel on both
+	// axes is covered -- 1366x768 into 1920x1080 is not 16:9 to the last
+	// decimal, and a one-pixel seam of blur is not worth a filter chain
+	k := math.Min(float64(w)/float64(v.w), float64(h)/float64(v.h))
+	return float64(w)-float64(v.w)*k < 2 && float64(h)-float64(v.h)*k < 2
+}
+
+// stillSize is the size a held frame has to be brought to before it is laid
+// over a clip, or nought when it needs no bringing. Two recordings and the
+// question is only ever asked of a pair that a stop's bar reaches across; a
+// session shot on one camera answers nought here every time, and so does one
+// whose sizes were never probed -- a made-up size would be worse than none.
+func stillSize(from, over *tlVideo) (int, int) {
+	if from == nil || over == nil {
+		return 0, 0
+	}
+	if from.w <= 0 || from.h <= 0 || over.w <= 0 || over.h <= 0 {
+		return 0, 0
+	}
+	if from.w == over.w && from.h == over.h {
+		return 0, 0
+	}
+	return over.w, over.h
 }
 
 // stillMute is the ffmpeg enable expression for the seconds this clip's stops
@@ -1124,9 +1185,6 @@ func (a *App) produceClicked() {
 			a.progress.SetText(fmt.Sprintf("produced %s — %.1f s, %s",
 				filepath.Base(st.OutFile), dur, humanSize(size)))
 			a.updateProduceInfo()
-			if a.prod != nil && a.prod.player != nil {
-				a.prod.player.PlaySegment(st.OutFile, 0, -1, false)
-			}
 		})
 	}()
 }
@@ -1264,8 +1322,8 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			// vanishing out of the middle of the cut in silence reads as a
 			// render bug. It is nearly always an effect boundary landing just
 			// short of a cut, which is a thing the hand can move.
-			a.logfIdle("clip %d at %s is %.2f s — too short to render, dropped",
-				i+1, mmss(s.S), c.length)
+			a.logfIdle("clip %d at %s is %.2f s — too short to render, dropped%s",
+				i+1, mmss(s.S), c.length, spokenHere(entries, s))
 			continue
 		}
 		c.sessS = s.S
@@ -1312,19 +1370,8 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		// schedule slides earlier as one piece, and only as the last resort
 		// are the lines distorted
 		if len(c.lines) > 0 {
-			pack := func() float64 { // returns when the last line ends
-				prev := 0.0
-				for k := range c.lines {
-					d := math.Max(narrLead, c.lines[k].at)
-					if d < prev {
-						d = prev
-					}
-					c.lines[k].delay = d
-					prev = d + c.lines[k].dur/c.tempo + 0.3
-				}
-				return prev - 0.3
-			}
-			need := pack() + 0.2
+			pack := func() float64 { return narrRun(c.lines, c.tempo) }
+			need := pack()
 			if need > c.length {
 				c.length += math.Min(need-c.length, maxExtend)
 				// footage runs out; an insert does not -- a still or a loop is
@@ -1354,7 +1401,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				// repack with the sped-up lines, then slide once more: the
 				// placements are re-derived from at, so the schedule is the
 				// writer's shape at the new speed
-				need = pack() + 0.2
+				need = pack()
 				if over := need - c.length; over > 0 {
 					shift := math.Min(over, c.lines[0].delay-narrLead)
 					for k := range c.lines {
@@ -1376,24 +1423,8 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		clips[i].mix = clipMixes(clips[i], recs)
 	}
 	if len(recs) > 0 {
-		under := map[string]int{}
-		for i := range clips {
-			for _, m := range clips[i].mix {
-				under[m.base]++
-			}
-		}
-		// per recording rather than per clip: a hundred-clip cut would otherwise
-		// bury the run in a line each, and the only thing worth saying about a
-		// recording is whether it is in the video at all -- a recording that was
-		// running at another time of day says "not under any clip" here, which is
-		// the one sentence that explains a silent track
-		for _, au := range recs {
-			if n := under[au.base]; n > 0 {
-				a.logfIdle("%s is mixed into %d of the %d clips", au.base, n, len(clips))
-			} else {
-				a.logfIdle("%s was not running while any clip was — it is not in the render",
-					au.base)
-			}
+		for _, line := range laneReport(clips, recs) {
+			a.logfIdle("%s", line)
 		}
 	}
 	// every insert is fitted into the size the footage comes out at, which can
@@ -1486,9 +1517,11 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 				a.logfIdle("a stop at %.0f s falls in no recording — its still is skipped", cue.fx.T)
 				continue
 			}
-			c.stills = append(c.stills, stillCue{s: cue.s, e: cue.e, fin: cue.fin,
+			sc := stillCue{s: cue.s, e: cue.e, fin: cue.fin,
 				fout: cue.fout, path: v.path, at: v.at(cue.fx.T),
-				mute: cue.fx.Mute})
+				mute: cue.fx.Mute}
+			sc.w, sc.h = stillSize(v, c.video)
+			c.stills = append(c.stills, sc)
 		}
 	}
 
@@ -1518,6 +1551,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 	// 4. encode each clip -- the only video encode in the whole pipeline
 	ext := "." + st.Container
 	var list strings.Builder
+	var made []clipSize
 	// the queue: one task per clip to encode, which is where nearly all of the
 	// time goes and the only part of a render anyone counts. It is filled here
 	// rather than at the top because what the clips ARE is worked out above.
@@ -1559,8 +1593,14 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		if err := a.encodeClip(c, filepath.Join(clipDir, name), cueFile, st); err != nil {
 			return fmt.Errorf("clip %d: %w", i+1, err)
 		}
+		if w, h, err := ffprobeSize(filepath.Join(clipDir, name)); err == nil {
+			made = append(made, clipSize{name: name, w: w, h: h})
+		}
 		// bare name: concat-list entries resolve against the LIST's directory
 		list.WriteString(concatLine(name))
+	}
+	for _, line := range joinMismatch(made) {
+		a.logfIdle("%s", line)
 	}
 	lf := filepath.Join(clipDir, "concat.txt")
 	if err := os.WriteFile(lf, []byte(list.String()), 0o644); err != nil {
@@ -1762,7 +1802,6 @@ func safeStem(path string) string {
 // A cut of nothing but inserts has no footage to ask, so it falls back to the
 // output height at 16:9, which is the shape a video is unless told otherwise.
 func clipBox(clips []prodClip, st prodSettings) (int, int) {
-	h := st.Height
 	for _, c := range clips {
 		if c.video == nil {
 			continue
@@ -1771,18 +1810,49 @@ func clipBox(clips []prodClip, st prodSettings) (int, int) {
 		if err != nil {
 			continue
 		}
-		if h <= 0 {
-			h = h0
+		return outSize(w0, h0, st.Height)
+	}
+	return outSize(0, 0, st.Height)
+}
+
+// footageSize is the frame the footage was recorded at, as the Cut page has
+// already probed it. The Produce page asks so that it can say what the render
+// will come out at without opening a file in a label handler; the render itself
+// probes the clip it is actually about to encode (clipBox).
+func (a *App) footageSize() (int, int, bool) {
+	if a == nil || a.ed == nil {
+		return 0, 0, false
+	}
+	for _, v := range a.ed.vids {
+		if v.w > 0 && v.h > 0 {
+			return v.w, v.h, true
 		}
-		// the same arithmetic as scale=-2:h, including its rounding to an even
-		// width -- an insert one pixel off is a clip concat will not take
-		w := int(math.Round(float64(w0)*float64(h)/float64(h0)/2)) * 2
-		return w, h
+	}
+	return 0, 0, false
+}
+
+// outSize is the frame the render comes out at, given the footage's own size
+// and the height that was asked for: the asked-for height with the footage's
+// shape, or the footage's own frame when the answer is "keep source". Rounded
+// to an even width, the same as scale=-2:h -- an insert one pixel off is a clip
+// concat will not take.
+//
+// Its own function, over sizes that are already known, so the Produce page can
+// say the frame in pixels without opening a file. "source resolution" on a
+// 4K screen capture reads like a setting and lands as a 700 MB upload, and the
+// only moment that is worth knowing is before the encode, not after it.
+func outSize(w0, h0, height int) (int, int) {
+	h := height
+	if h <= 0 {
+		h = h0
 	}
 	if h <= 0 {
-		h = 1080
+		h = 1080 // nothing probed and nothing chosen
 	}
-	return int(math.Round(float64(h)*16/9/2)) * 2, h
+	if w0 <= 0 || h0 <= 0 {
+		return int(math.Round(float64(h)*16/9/2)) * 2, h
+	}
+	return int(math.Round(float64(w0)*float64(h)/float64(h0)/2)) * 2, h
 }
 
 // clipMixes is the stretch of every separate recording that was running while
@@ -1819,11 +1889,9 @@ func clipMixes(c prodClip, recs []tlAudio) []prodMix {
 		out = append(out, prodMix{base: baseName(c.snd), path: c.snd,
 			at: 0, ss: c.sndAt, dur: c.length})
 	}
-	if len(recs) == 0 || c.freeze || c.noLanes {
+	if len(recs) == 0 {
 		return out
 	}
-	s0 := c.sessS
-	s1 := s0 + c.length*c.speed()
 	for _, au := range recs {
 		if au.base == c.dropLane {
 			continue // this one is what the inserted sound was put in place of
@@ -1831,15 +1899,123 @@ func clipMixes(c prodClip, recs []tlAudio) []prodMix {
 		if laneQuiet(c.quiet, au.base) {
 			continue // and this one the scene was told not to hear
 		}
-		t0 := math.Max(s0, au.start)
-		t1 := math.Min(s1, au.start+au.dur)
-		if t1-t0 < 0.1 { // nothing worth an input, and a 0 s one ffmpeg refuses
+		t0, t1 := laneOverlap(c, au)
+		if t1-t0 < laneMinMix { // nothing worth an input, and a 0 s one ffmpeg refuses
 			continue
 		}
 		out = append(out, prodMix{base: au.base, path: au.path, track: au.track,
-			at: (t0 - s0) / c.speed(), ss: t0 - au.start, dur: t1 - t0})
+			at: (t0 - c.sessS) / c.speed(), ss: t0 - au.start, dur: t1 - t0})
 	}
 	return out
+}
+
+// laneMinMix is the shortest overlap worth an ffmpeg input -- and a zero-length
+// one it refuses outright.
+const laneMinMix = 0.1
+
+// laneReport is what the run has to say about each recording: whether it is in
+// the video at all, and when it is not, which of the two reasons it is out for.
+// Per recording rather than per clip -- a hundred-clip cut would otherwise bury
+// the run in a line each, and the only thing worth saying about a recording is
+// whether it reached the render.
+//
+// The two ways to be out are not the same news, and telling them apart is the
+// whole point of this being a function of its own. A recording that was running
+// at another time of day is a placement to go and look at; one the SCENES
+// silenced -- or whose sound a card was dropped over -- is the cut doing
+// exactly what it was told, which is what a split-off narrator track is. Both
+// used to print "was not running while any clip was", a sentence that sent you
+// hunting a timeline problem that was not there.
+//
+// Which reason a clip left it out for is deliberately not asked: whatever
+// clipMixes decided is the answer, so a lane the mix drops for a reason added
+// later still lands in the right sentence instead of quietly in the wrong one.
+func laneReport(clips []prodClip, recs []tlAudio) []string {
+	var out []string
+	for _, au := range recs {
+		under, past := 0, 0
+		for i := range clips {
+			mixed := false
+			for _, m := range clips[i].mix {
+				mixed = mixed || m.base == au.base
+			}
+			// three ways for a clip to stand to a recording, and every clip
+			// is exactly one of them. The overlap is read off the same
+			// function the mix is built from, so the count and the mix
+			// cannot disagree about which clips a track was running under.
+			if t0, t1 := laneOverlap(clips[i], au); mixed {
+				under++
+			} else if t1-t0 >= laneMinMix {
+				past++
+			}
+		}
+		switch {
+		case under > 0:
+			out = append(out, fmt.Sprintf("%s is mixed into %d of the %d clips",
+				au.base, under, len(clips)))
+		case past > 0:
+			out = append(out, fmt.Sprintf("%s runs under %d clip(s) and every one of them leaves it out — it is not in the render",
+				au.base, past))
+		default:
+			out = append(out, fmt.Sprintf("%s was not running while any clip was — it is not in the render",
+				au.base))
+		}
+	}
+	return out
+}
+
+// laneOverlap is the session stretch a clip and a recording were both running
+// in, empty when they were not. Its own function because two places ask: the
+// mix, which puts the overlapping seconds in, and the run's report, which has
+// to tell a recording that was somewhere else apart from one every scene
+// silenced -- and a second copy of these four lines could disagree with the
+// first about which of the two a track was.
+//
+// A freeze and a card have no overlap with anything by construction: a held
+// frame and an insert are time ADDED to the session, not a stretch of it, so
+// nothing was recorded underneath them.
+func laneOverlap(c prodClip, au tlAudio) (float64, float64) {
+	if c.freeze || c.noLanes {
+		return 0, 0
+	}
+	s0 := c.sessS
+	s1 := s0 + c.length*c.speed()
+	return math.Max(s0, au.start), math.Min(s1, au.start+au.dur)
+}
+
+// narrRun is the slot a clip's narration asks for: where the last line stops,
+// plus the moment of air the render leaves after it. It is the number every
+// decision about a clip's length is made against.
+func narrRun(lines []prodLine, tempo float64) float64 {
+	return packLines(lines, tempo) + narrTail
+}
+
+// packLines lays a clip's lines out in its slot and answers where the last one
+// stops. Each starts where the writer placed it, but never before the line
+// above has finished and a breath has passed -- so an overlong line pushes
+// everything under it later, and it is the LAST line that falls off the end of
+// the clip. The delays are written back into the slice, because that schedule
+// is what the render feeds adelay.
+//
+// A function rather than the closure it used to be, because the Narrate page
+// has to be able to ask the same question. Its own per-line ⚠ answers a
+// different one -- "has THIS line room before the next" -- and cannot see the
+// pushing, which is exactly what the render's "does not fit where it was
+// placed" is complaining about (clipOverrun, narrate.go).
+func packLines(lines []prodLine, tempo float64) float64 {
+	if tempo <= 0 {
+		tempo = 1 // a clip built by hand, and every arithmetic here divides
+	}
+	prev := 0.0
+	for k := range lines {
+		d := math.Max(narrLead, lines[k].at)
+		if d < prev {
+			d = prev
+		}
+		lines[k].delay = d
+		prev = d + lines[k].dur/tempo + narrGap
+	}
+	return prev - narrGap
 }
 
 // delayMS is a line's start in the units adelay actually reads: whole
@@ -2005,15 +2181,33 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 			bd = bdrop{w: pw, h: ph, x: pl, y: pt}
 		}
 		vf = append(vf, c.cam.chainOn(bd.on())...)
+	case c.boxW > 0 && c.boxH > 0:
+		// Plain footage, and it comes out at exactly the finished frame -- not
+		// at whatever this particular recording happens to be. The join is a
+		// stream copy, so a clip whose size differs from the one before it is
+		// not something the concat demuxer will take (the insert branch above
+		// says the same thing for the same reason), and a second camera at
+		// another size or another shape is exactly how that happens.
+		//
+		// Fitted rather than stretched, and so the same treatment the edges of
+		// an insert get: a 4:3 webcam among 16:9 gameplay keeps its shape on a
+		// blurred blow-up of itself instead of being pulled wide. Footage
+		// already of the frame's shape -- which is every ordinary session --
+		// takes the plain scale instead: the backdrop under it would be
+		// covered to the last pixel, and a split, a blow-up and a gaussian
+		// blur per frame is not a free way to render something nothing sees.
+		if fitsFrame(c.video, c.boxW, c.boxH) {
+			vf = append(vf, fmt.Sprintf("scale=%d:%d", c.boxW, c.boxH))
+		} else {
+			bd = bdrop{w: c.boxW, h: c.boxH, fit: true}
+		}
 	case st.Height > 0:
+		// no box was worked out for this clip -- which the render always does
+		// (clipBox), so this is a clip built by hand -- and the height that was
+		// asked for is then the best answer available
 		vf = append(vf, fmt.Sprintf("scale=-2:%d", st.Height))
 	}
 	bd.bare = st.Bare // black edges or a blurred blow-up: the region is the same
-	if len(c.texts) > 0 && c.ins == "" && c.cam == nil && st.Height <= 0 && c.boxW > 0 {
-		// nothing above has pinned this clip's size, and the overlay is drawn
-		// at the finished frame's -- so say the size out loud rather than hope
-		vf = append(vf, fmt.Sprintf("scale=%d:%d", c.boxW, c.boxH))
-	}
 	vf = append(vf, "setsar=1")
 	if cueFile != "" {
 		vf = append(vf, "subtitles="+ffEscape(cueFile))
@@ -2042,6 +2236,14 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 			fc += fmt.Sprintf("[%d:v]trim=end_frame=1,setpts=PTS-STARTPTS,"+
 				"tpad=stop_mode=clone:stop_duration=%.3f,format=rgba",
 				stillBase+k, c.length+0.2)
+			if sc.w > 0 && sc.h > 0 {
+				// fitted and centred rather than stretched, and padded with
+				// transparency (#00000000, not a black the toggle would owe an
+				// answer for) so the running footage shows around a held frame
+				// of another shape instead of a black border on a moving picture
+				fc += fmt.Sprintf(",scale=%d:%d:force_original_aspect_ratio=decrease,"+
+					"pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=#00000000", sc.w, sc.h, sc.w, sc.h)
+			}
 			if sc.fin > 0 {
 				fc += fmt.Sprintf(",fade=t=in:st=%.3f:d=%.3f:alpha=1", sc.s, sc.fin)
 			}
@@ -2348,6 +2550,28 @@ func soundUnder(s cutSeg, vids []tlVideo) (path string, at float64, note string)
 // edited after narrating can shift underneath, and a line silently dropped
 // from the render is the worst possible failure here. So: real overlap is
 // enough, merely touching is not.
+// spokenHere is what to add to the message about a clip being dropped, when
+// there are narration lines written on it. The lines go with the clip -- they
+// are attached further down, past the drop -- and a sentence disappearing out
+// of the finished video is worth more than the half-second of footage it was
+// written over. Empty for a clip nobody wrote on, which is the ordinary case.
+func spokenHere(entries []narrEntry, s cutSeg) string {
+	n := 0
+	for _, e := range matchEntries(entries, s) {
+		if strings.TrimSpace(e.Text) != "" {
+			n++
+		}
+	}
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return " — the narration line written on it is dropped with it"
+	default:
+		return fmt.Sprintf(" — the %d narration lines written on it are dropped with it", n)
+	}
+}
+
 func matchEntries(entries []narrEntry, s cutSeg) []*narrEntry {
 	var out []*narrEntry
 	for i := range entries {

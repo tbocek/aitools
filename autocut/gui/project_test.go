@@ -398,9 +398,18 @@ func TestClosingTheWindowWritesWhatTheTickHasNotSeen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// ...and everything the close writes is inside the one handler
+	close := funcBody(t, "project.go", `func \(a \*App\) startAutosave\(\)`)
+	close = close[strings.Index(close, "ConnectCloseRequest"):]
+	for _, want := range []string{"a.narr.flushSave()", "a.flushProject()", "a.flushPrompts()"} {
+		if !strings.Contains(close, want) {
+			t.Errorf("closing the window no longer runs %s", want)
+		}
+	}
 	for _, want := range []string{
 		"glib.TimeoutAdd(autosaveTick, func() bool {\n\t\ta.flushProject()",
-		"a.win.ConnectCloseRequest(func() bool {\n\t\t\ta.flushProject()",
+		"a.win.ConnectCloseRequest(func() bool {",
+		"a.narr.flushSave() // ...and the same for the last line typed",
 		"return false // false lets the window close; this only writes",
 	} {
 		if !strings.Contains(string(src), want) {

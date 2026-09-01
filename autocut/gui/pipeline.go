@@ -135,13 +135,6 @@ func (a *App) pageTransport() transport {
 		if a.narr != nil && (a.narr.playing() || a.narr.started) {
 			return a.narr
 		}
-	case "produce":
-		// same rule as narrate: the page's job owns ▶ until the result is
-		// actually playing, so a video watched once cannot leave ▶ meaning
-		// "watch it again" for the rest of the session
-		if a.prod != nil && (a.prod.playing() || a.prod.started) {
-			return a.prod
-		}
 	}
 	return nil
 }

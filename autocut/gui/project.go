@@ -466,6 +466,7 @@ func (a *App) startAutosave() {
 	// the tagging ran, the one that would have caught the untagging never did.
 	if a.win != nil {
 		a.win.ConnectCloseRequest(func() bool {
+			a.narr.flushSave() // ...and the same for the last line typed
 			a.flushProject()
 			a.flushPrompts()
 			return false // false lets the window close; this only writes

@@ -238,6 +238,10 @@ type publisher struct {
 	inputs, out       *gtk.Label
 	suggest           *gtk.Button
 	guard             bool // suppresses feedback while a project is being applied
+	// the Inputs line is redrawn from what is in the boxes, which means
+	// reading them and asking the disk whether a run has happened -- once the
+	// typing stops, not once per key (touched)
+	relabel debounce
 
 	// what the Inputs line says about things that live off this page. Cached,
 	// because that line is rewritten on every keystroke and these come from
@@ -481,7 +485,10 @@ func (p *publisher) touched() {
 	if p == nil || p.guard {
 		return
 	}
-	p.updateInputs()
+	// Typing a description says nothing new about this page until the sentence
+	// is finished: the line it redraws counts images and asks the disk whether
+	// a run has happened, neither of which a keystroke changes.
+	p.relabel.call(p.updateInputs)
 }
 
 // setFrames replaces the row. Everything that changes the list goes through

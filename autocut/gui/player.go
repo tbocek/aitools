@@ -431,16 +431,6 @@ func volumeCtl() *gtk.Box {
 	return box
 }
 
-// barVolume answers whether the run bar's slider belongs on the named page.
-//
-// A volume slider is only worth a place beside a ▶ that can use it. Cut and
-// Narrate have their own ▶ on the page and their own slider next to it, so the
-// bar would be showing a second copy of a control already in reach; Prepare and
-// Publish play nothing at all, so the bar would be offering to set the loudness
-// of silence. Produce is the page that plays from this bar -- its preview has
-// no transport of its own -- and so it is the page that keeps the slider.
-func barVolume(page string) bool { return page == "produce" }
-
 // SetFxGain is the cut's own say over this player's loudness: the volume
 // effect under the playhead, which the preview obeys for the same reason it
 // obeys a speed effect's rate -- a preview that does not is telling you about

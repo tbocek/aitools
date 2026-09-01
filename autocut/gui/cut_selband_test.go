@@ -292,17 +292,19 @@ func TestTheSelectionBandIsWired(t *testing.T) {
 	}
 }
 
-// Placing the red line inside a kept clip lights that clip up in the band: the
-// same green the tint over the thumbnails uses, in the same row the blue
-// selection bar lives in, so "where does the clip I am in begin and end" is
-// read where every other span on this page is read.
-func TestTheBandShowsTheKeptClipUnderThePlayhead(t *testing.T) {
+// Every kept clip is green in the band, always -- that is what makes the row
+// worth reading: the tint that says "kept" is drawn over the thumbnails, so on
+// a dark capture it is green on black, and the band's own flat ground is where
+// it can actually be seen. The clip the red line is inside is drawn taller than
+// the rest, because that is the one the hand can take hold of (bandClipPartAt).
+func TestTheBandShowsEveryKeptClipAndSingsOutTheOneUnderThePlayhead(t *testing.T) {
 	ed := bandEd(t) // clips 20-60 and 100-140; selection 200-230
 	ed.sel.active = false
 	ed.playhead, ed.hasPlay = 40, true
 	const w, h = 1300, 200
-	y := int(ed.selBandTop()) + selBandH/2
-	green := func(at func(x, y int) (uint8, uint8, uint8), x int) bool {
+	mid := int(ed.selBandTop()) + selBandH/2
+	top := int(ed.selBandTop()) + 3 // only the tall bar reaches this high
+	green := func(at func(x, y int) (uint8, uint8, uint8), x, y int) bool {
 		r, g, b := at(x, y)
 		return int(g) > int(r)+30 && int(g) > int(b)+30
 	}
@@ -310,26 +312,43 @@ func TestTheBandShowsTheKeptClipUnderThePlayhead(t *testing.T) {
 	at := renderTrack(t, ed, w, h)
 	// sampled a few px off 40 s: the playhead's own red line is drawn over the
 	// band at exactly xOf(40), and a red pixel is the line, not a missing bar
-	if !green(at, int(ed.xOf(40))+3) {
+	if !green(at, int(ed.xOf(40))+3, mid) {
 		t.Error("the playhead sits at 40 s inside the 20-60 clip and the band shows no green there")
 	}
 	// the bar is the clip's whole span, not a marker at the playhead...
-	if !green(at, int(ed.xOf(21))) || !green(at, int(ed.xOf(59))) {
+	if !green(at, int(ed.xOf(21)), mid) || !green(at, int(ed.xOf(59)), mid) {
 		t.Error("the green bar does not span its clip from 20 to 60")
 	}
-	// ...and it is that clip's alone
-	if green(at, int(ed.xOf(80))) || green(at, int(ed.xOf(120))) {
-		t.Error("the band is green over footage the playhead is not inside")
+	// ...the OTHER kept clip is green too, which is the point of the row...
+	if !green(at, int(ed.xOf(120)), mid) {
+		t.Error("a kept clip the playhead is not inside has no bar, so the band says nothing about the rest of the cut")
+	}
+	// ...and what the cut threw away is still not green
+	if green(at, int(ed.xOf(80)), mid) {
+		t.Error("the band is green over a stretch the cut does not keep")
+	}
+	// the tall one is the clip in hand's reach, and only that one
+	if !green(at, int(ed.xOf(21)), top) {
+		t.Error("the clip under the playhead is not drawn taller, so nothing says which bar answers the hand")
+	}
+	if green(at, int(ed.xOf(120)), top) {
+		t.Error("a clip the hand cannot reach is drawn at the full height that promises handles")
 	}
 
-	// no playhead, no bar -- and a playhead in a dropped stretch lights nothing
+	// no playhead: the bars stay -- "always" is the rule -- and none of them is
+	// the tall one, because none of them is in reach
 	ed.hasPlay = false
-	if green(renderTrack(t, ed, w, h), int(ed.xOf(40))) {
-		t.Error("the band is green with no playhead on the page")
+	at = renderTrack(t, ed, w, h)
+	if !green(at, int(ed.xOf(40)), mid) || !green(at, int(ed.xOf(120)), mid) {
+		t.Error("the band went blank when the playhead left the page")
 	}
+	if green(at, int(ed.xOf(40)), top) || green(at, int(ed.xOf(120)), top) {
+		t.Error("a bar is drawn as if the hand could reach it while nothing is in hand")
+	}
+	// a playhead in a dropped stretch takes the tall bar with it
 	ed.playhead, ed.hasPlay = 80, true
-	if green(renderTrack(t, ed, w, h), int(ed.xOf(40))) {
-		t.Error("a playhead in a dropped stretch lit a clip it is not inside")
+	if green(renderTrack(t, ed, w, h), int(ed.xOf(40)), top) {
+		t.Error("a clip the playhead is not inside is still drawn as the one in hand")
 	}
 }
 

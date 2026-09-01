@@ -363,3 +363,51 @@ func TestTheSilentStopWiringIsInPlace(t *testing.T) {
 		}
 	}
 }
+
+// A stop's bar can hang across a cut, and the frame it holds is the one the
+// stop started on -- so on a session shot on two cameras the held frame and
+// the footage it is laid over come from different recordings, at different
+// sizes. The overlay has no size and no scaling in it, so a 1280x720 webcam
+// frame over 3840x2160 gameplay sat in the top-left corner at a third of the
+// size, with the moving picture running around it.
+func TestAHeldFrameIsBroughtToTheSizeOfTheFootageItCovers(t *testing.T) {
+	big := &tlVideo{base: "game", w: 3840, h: 2160}
+	small := &tlVideo{base: "cam", w: 1280, h: 720}
+	if w, h := stillSize(small, big); w != 3840 || h != 2160 {
+		t.Errorf("a webcam frame over gameplay comes out %dx%d, want the gameplay's 3840x2160", w, h)
+	}
+	if w, h := stillSize(big, small); w != 1280 || h != 720 {
+		t.Errorf("and the other way round: %dx%d, want 1280x720", w, h)
+	}
+	// the same recording, which is every single-camera session: nothing to do,
+	// and saying so costs a scale pass on every stop in the render
+	if w, h := stillSize(big, big); w != 0 || h != 0 {
+		t.Errorf("a frame already the right size is rescaled to %dx%d", w, h)
+	}
+	// a size nobody probed is not a size to scale to -- a made-up one would
+	// shrink the frame to nothing
+	if w, h := stillSize(&tlVideo{w: 640}, big); w != 0 || h != 0 {
+		t.Errorf("a half-probed recording scaled to %dx%d", w, h)
+	}
+	if w, h := stillSize(small, &tlVideo{}); w != 0 || h != 0 {
+		t.Errorf("footage of unknown size took a still to %dx%d", w, h)
+	}
+	if w, h := stillSize(nil, big); w != 0 || h != 0 {
+		t.Errorf("a still from nowhere sized to %dx%d", w, h)
+	}
+	// and the encode acts on it: fitted and centred, not stretched, on
+	// transparency so the footage shows around a frame of another shape
+	body := funcBody(t, "produce.go", `func \(a \*App\) encodeClip\(`)
+	for _, want := range []string{
+		"if sc.w > 0 && sc.h > 0 {",
+		"scale=%d:%d:force_original_aspect_ratio=decrease,",
+		"pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=#00000000",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the still overlay no longer does %q", want)
+		}
+	}
+	if !strings.Contains(readSrc(t, "produce.go"), "sc.w, sc.h = stillSize(v, c.video)") {
+		t.Error("the plan stopped sizing a held frame against the clip it lands on")
+	}
+}
