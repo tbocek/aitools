@@ -83,21 +83,29 @@ func TestOneRowIsLabelledTheSameEverywhere(t *testing.T) {
 // Every prompt names the three labels, and none of them describes the input in
 // the words it used to be described in. A prompt the user has overridden is
 // their business; this is about the ones shipped.
+//
+// The labels are written once now, in the system context that goes in front of
+// every job (syscontext.go), so what is checked is what the model reads: the
+// system context and then the job's own wording. A job free to spell them out
+// again may -- describing them twice is not a fault -- but none of them has to.
 func TestEveryPromptDescribesTheSameThreeLabels(t *testing.T) {
 	for _, p := range []struct {
 		name, text string
 	}{
+		{"system context", sysSystem},
 		{"describe", describeSystem},
 		{"fix", fixSystem},
 		{"cut (general)", genericSystem},
 		{"cut (highlights)", suggestSystem},
 		{"cut (rating)", ratingSystem},
+		{"cut (showcase)", showcaseSystem},
 		{"cut (shorts)", shortsSystem},
 		{"audit", auditSystem},
 		{"narrate", narrSystem},
 	} {
+		sent := strings.TrimSpace(sysSystem) + "\n\n" + p.text
 		for _, want := range []string{"EVENT", "NARRATOR", "SPEAKER_"} {
-			if !strings.Contains(p.text, want) {
+			if !strings.Contains(sent, want) {
 				t.Errorf("the %s prompt never mentions %s, so it describes an input "+
 					"nobody builds", p.name, want)
 			}

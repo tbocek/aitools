@@ -131,11 +131,16 @@ func TestTheQuestionCarriesTheWholeSession(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("the question is %d messages, want a system prompt and the question", len(msgs))
 	}
-	// the system prompt is the registered one, so editing Improve on the bench
-	// changes what Improve does -- which is the only reason to expose it
-	a.setPrompt("improve", "answer in Swiss German")
-	if got := a.improveBrief("x")[0]["content"]; got != "answer in Swiss German" {
-		t.Errorf("the edited Improve prompt is not what gets sent: %q", got)
+	// the system message is the shared context and then Improve's own wording,
+	// which is a const and not a bench row: the bench is the steps of an edit,
+	// and this is the tool asking about itself
+	sys, _ := msgs[0]["content"].(string)
+	if !strings.HasPrefix(sys, strings.TrimSpace(sysSystem)) || !strings.HasSuffix(sys, improveSystem) {
+		t.Errorf("Improve is not sent the system context and then its own prompt: %q", sys)
+	}
+	if promptDefFor("improve").def != "" {
+		t.Error(`the "improve" prompt is on the bench again -- the bench is the prompts ` +
+			"the run sends, and an answer that rewrites them is not one of them")
 	}
 
 	body, _ := msgs[1]["content"].(string)
@@ -219,6 +224,111 @@ func TestImproveIsOnTheGlobalBarAndNotDuringARun(t *testing.T) {
 	for _, no := range []string{"a.running = true", "a.runCtx", "a.qJob("} {
 		if strings.Contains(body, no) {
 			t.Errorf("improveClicked touches %s -- asking a question is not a run", no)
+		}
+	}
+}
+
+// The answer is edits, not advice: which prompt, the sentence to find, what to
+// put there. What is parsed is what a card can act on, so an edit naming a
+// prompt this build does not have is dropped rather than shown under a button
+// that could only fail.
+func TestTheAnswerComesBackAsEditsToApply(t *testing.T) {
+	reply := "<think>hmm</think>\n```json\n" + `{"why":"the audit dropped it",
+	  "changes":[
+	    {"prompt":"cut","find":"Never cut into a sentence","replace":"Never cut mid-word","why":"too strict"},
+	    {"prompt":"nosuchjob","find":"whatever","replace":"x","why":"invented"},
+	    {"prompt":"audit","find":"","replace":"y","why":"nothing to find"}]}` + "\n```"
+	why, fixes := improveParse(reply)
+	if why != "the audit dropped it" {
+		t.Errorf("the explanation came out as %q", why)
+	}
+	if len(fixes) != 1 {
+		t.Fatalf("%d edits offered, want the one that can be made: %+v", len(fixes), fixes)
+	}
+	if fixes[0].Key != "cut" || fixes[0].Find != "Never cut into a sentence" ||
+		fixes[0].Replace != "Never cut mid-word" || fixes[0].Why != "too strict" {
+		t.Errorf("the edit came back as %+v", fixes[0])
+	}
+
+	// a model that answers in prose is not an error: the explanation is the
+	// useful half and it is still readable, there is just nothing to press
+	why, fixes = improveParse("WHY: it read the notes and kept the wrong minute.")
+	if why != "WHY: it read the notes and kept the wrong minute." || fixes != nil {
+		t.Errorf("a prose answer came back as %q / %+v", why, fixes)
+	}
+}
+
+// Apply is the only thing that writes, and it writes what typing in the box
+// writes: the picked wording, on this machine, marked as the user's own. A
+// sentence quoted wrong changes nothing -- there is no fuzzy match, because a
+// near-miss rewrite is this tool editing a wording nobody approved.
+func TestAnAppliedEditRewritesTheStoredWordingAndOnlyThen(t *testing.T) {
+	ownConfig(t)
+	a := &App{}
+	a.setPrompt("cut", "Keep the best bits.\nNever cut into a sentence.\nEnd on the payoff.")
+
+	if a.applyFix(promptFix{Key: "cut", Find: "Never cut mid-word", Replace: "x"}) {
+		t.Error("an edit whose sentence is not in the prompt was applied anyway")
+	}
+	if !strings.Contains(a.prompt("cut"), "Never cut into a sentence.") {
+		t.Error("a failed edit changed the prompt")
+	}
+
+	if !a.applyFix(promptFix{Key: "cut", Find: "Never cut into a sentence.",
+		Replace: "Never cut mid-word."}) {
+		t.Fatal("an exact sentence was not applied")
+	}
+	got := a.prompt("cut")
+	if !strings.Contains(got, "Never cut mid-word.") || strings.Contains(got, "into a sentence") {
+		t.Errorf("the prompt now reads:\n%s", got)
+	}
+	if !strings.Contains(got, "Keep the best bits.") || !strings.Contains(got, "End on the payoff.") {
+		t.Errorf("the rest of the prompt did not survive the edit:\n%s", got)
+	}
+	// stored, not just in hand: it is the same write the box makes, so the
+	// bench shows it and the ✎ says the wording is this machine's
+	if !a.promptOwned("cut") {
+		t.Error("an applied edit is not marked as this machine's own wording")
+	}
+	a.flushPrompts()
+	b := &App{}
+	b.loadGlobalPrompts()
+	if !strings.Contains(b.prompt("cut"), "Never cut mid-word.") {
+		t.Error("the applied edit did not reach the store, so the next run sends the old wording")
+	}
+
+	// an empty replacement is how a sentence is taken out
+	if !a.applyFix(promptFix{Key: "cut", Find: "\nEnd on the payoff."}) {
+		t.Fatal("a deletion was refused")
+	}
+	if strings.Contains(a.prompt("cut"), "End on the payoff") {
+		t.Error("an empty replacement did not remove the sentence")
+	}
+}
+
+// Nothing is applied by arriving. Every edit is a card with its own Apply, and
+// the only call that writes is behind that button -- an answer that rewrote the
+// prompts as it came back would be the tool editing the one thing it was told
+// to obey.
+func TestEveryOfferedEditIsDecidedByHand(t *testing.T) {
+	clicked := funcBody(t, "improve.go", `func \(a \*App\) improveClicked\(`)
+	if strings.Contains(clicked, "a.applyFix(") {
+		t.Error("the answer applies itself somewhere in improveClicked")
+	}
+	if !strings.Contains(clicked, "a.fixCard(f, cards)") {
+		t.Error("the offered edits are no longer shown as cards")
+	}
+	card := funcBody(t, "improve.go", `func \(a \*App\) fixCard\(`)
+	for _, want := range []string{
+		`gtk.NewButtonWithLabel("Apply")`,
+		`gtk.NewButtonWithLabel("Dismiss")`,
+		"apply.ConnectClicked(",
+		"a.applyFix(f)",
+		"list.Remove(frame)",
+		"apply.SetSensitive(false)", // a sentence that is not there cannot be pressed
+	} {
+		if !strings.Contains(card, want) {
+			t.Errorf("a card no longer has %q", want)
 		}
 	}
 }

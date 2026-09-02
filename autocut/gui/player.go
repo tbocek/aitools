@@ -281,7 +281,11 @@ type auxAudio struct {
 	// the lane's name, which is how a scene names the lanes it does not hear
 	// (cutSeg.Quiet). Empty for a card's own sound, which no scene silences.
 	base string
-	mute bool // last written to the pipeline; see applyMute
+	// the scene under the playhead does not hear this lane. Not merely
+	// turned down: a hushed lane is never cued, never seeked and never set
+	// to PLAYING (audible), so there is no sample of it to be heard early.
+	// See applyMute.
+	mute bool
 	// what to add to a time in the master's file to get the same instant in
 	// this one: (master's session start) - (this recording's session start).
 	delta float64
@@ -351,7 +355,9 @@ func newAux(name string, t mixTrack, vol float64) *auxAudio {
 		a.pend = -1
 		a.pb.Seek(a.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
 			gst.SeekTypeSet, at, gst.SeekTypeNone, 0)
-		if a.play {
+		// the hush may have landed while this preroll was in flight, and
+		// this callback is the one thing that would start the lane after it
+		if a.play && !a.mute {
 			a.pb.SetState(gst.StatePlaying)
 		}
 	})
@@ -538,15 +544,36 @@ func (p *Player) hushes(base string, own bool) bool {
 // applyMute writes that answer onto every pipeline, and only where it changed:
 // this runs from the playback tick, and a property written ten times a second
 // with the value it already holds is ten notifications a second for nothing.
+//
+// The footage's own sound is the video's pipeline and cannot be stopped -- the
+// picture comes out of it -- so for that one the answer is the mute property.
+// A separate recording is its own pipeline with nothing but sound in it, and
+// there the answer is to stop it: muting it still starts it, and a pipeline
+// that is started can be heard for the moment between the first buffer and the
+// mute reaching the sink, which is exactly the "I can hear the lane I switched
+// off, briefly" this exists to prevent. The property is written too, so the
+// sound stops at once rather than when the state change lands.
 func (p *Player) applyMute() {
 	if m := p.hushes("", true); m != p.ownMute {
 		p.ownMute = m
 		p.pb.SetObjectProperty("mute", m)
 	}
 	for _, a := range p.mix {
-		if m := p.hushes(a.base, false); m != a.mute {
-			a.mute = m
-			a.pb.SetObjectProperty("mute", m)
+		m := p.hushes(a.base, false)
+		if m == a.mute {
+			continue
+		}
+		a.mute = m
+		a.pb.SetObjectProperty("mute", m)
+		if m {
+			a.pend = -1
+			a.pb.SetState(gst.StatePaused)
+			continue
+		}
+		// heard again: it has been sitting still wherever it was stopped, so
+		// it is put back on the master's clock before it is let go
+		if pos, ok := p.Position(); ok {
+			p.place(a, pos, p.playing)
 		}
 	}
 }
@@ -593,7 +620,7 @@ func (p *Player) dropCard() {
 func (a *auxAudio) cue(t float64, play bool, rate float64) {
 	at := t + a.delta
 	a.rate = rate // the deferred seek fires with no player in reach
-	if at < 0 || (a.dur > 0 && at > a.dur) {
+	if !a.audible(t) {
 		a.pend = -1
 		a.pb.SetState(gst.StatePaused)
 		return
@@ -609,6 +636,15 @@ func (a *auxAudio) cue(t float64, play bool, rate float64) {
 func (a *auxAudio) running(t float64) bool {
 	at := t + a.delta
 	return at >= 0 && (a.dur <= 0 || at <= a.dur)
+}
+
+// audible is whether this lane is to be running at all: it has something at
+// this second AND the scene under the playhead hears it. Every path that
+// starts a recording asks this one question, because "silenced" has to mean
+// the same thing as "nothing recorded here" -- a pipeline that is not started
+// cannot be heard for the moment before the mute lands.
+func (a *auxAudio) audible(t float64) bool {
+	return !a.mute && a.running(t)
 }
 
 // setPlaying records the state and tells whoever is drawing a transport button
@@ -679,18 +715,28 @@ func (p *Player) syncMix(play bool) {
 		return
 	}
 	for _, a := range p.mix {
-		if !a.running(pos) {
-			a.pb.SetState(gst.StatePaused)
-			continue
-		}
-		a.pend, a.rate = -1, p.rate
-		a.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
-			gst.SeekTypeSet, int64((pos+a.delta)*1e9), gst.SeekTypeNone, 0)
-		if play {
-			a.pb.SetState(gst.StatePlaying)
-		} else {
-			a.pb.SetState(gst.StatePaused)
-		}
+		p.place(a, pos, play)
+	}
+}
+
+// place puts one recording at the master's time t and either lets it run or
+// holds it there. The one place a mix pipeline is started, so it is the one
+// place that has to know a lane with nothing to play here and a lane the scene
+// does not hear are the same thing to it (audible): both are a pipeline left
+// standing in PAUSED.
+func (p *Player) place(a *auxAudio, t float64, play bool) {
+	if !a.audible(t) {
+		a.pend = -1
+		a.pb.SetState(gst.StatePaused)
+		return
+	}
+	a.pend, a.rate = -1, p.rate
+	a.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
+		gst.SeekTypeSet, int64((t+a.delta)*1e9), gst.SeekTypeNone, 0)
+	if play {
+		a.pb.SetState(gst.StatePlaying)
+	} else {
+		a.pb.SetState(gst.StatePaused)
 	}
 }
 
@@ -737,16 +783,7 @@ func (p *Player) SeekTo(t float64) {
 	// the recordings land on the same instant, told in their own seconds --
 	// asking the master where it is would ask before this seek has taken
 	for _, a := range p.mix {
-		if !a.running(t) {
-			a.pb.SetState(gst.StatePaused)
-			continue
-		}
-		a.pend, a.rate = -1, p.rate
-		a.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
-			gst.SeekTypeSet, int64((t+a.delta)*1e9), gst.SeekTypeNone, 0)
-		if p.playing {
-			a.pb.SetState(gst.StatePlaying)
-		}
+		p.place(a, t, p.playing)
 	}
 }
 

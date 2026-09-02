@@ -89,6 +89,9 @@ func (d promptDef) builtins() []promptStyle {
 // Keys name the prompt in project.json and are therefore permanent -- renaming
 // one silently drops what a user wrote under the old name.
 var promptDefs = []promptDef{
+	// first, because it goes in front of every one of the others: the formats
+	// and the house rules they all work to (syscontext.go)
+	{key: "system", def: strings.TrimSpace(sysSystem)},
 	{key: "describe", def: strings.TrimSpace(describeSystem)},
 	{key: "fix", def: strings.TrimSpace(fixSystem)},
 	// four wordings, the generic one first: it is what a project that has never
@@ -97,6 +100,7 @@ var promptDefs = []promptDef{
 	{key: "cut", def: strings.TrimSpace(genericSystem), style: "General",
 		alts: []promptStyle{{"Highlights", strings.TrimSpace(suggestSystem)},
 			{"Rating / tier list", strings.TrimSpace(ratingSystem)},
+			{"Showcase", strings.TrimSpace(showcaseSystem)},
 			{shortsStyleName, strings.TrimSpace(shortsSystem)}}},
 	{key: "audit", def: strings.TrimSpace(auditSystem)},
 	// "effects" was here: the third call that decorated the audited cut. The
@@ -109,11 +113,13 @@ var promptDefs = []promptDef{
 	// gone from the registry, so a project that saved an edited copy of it just
 	// keeps a dead key nobody reads.
 	{key: "youtube", def: strings.TrimSpace(youtubeSystem)},
-	// last, because it is not a step of the edit: it is the tool asking about
-	// itself (improve.go). Editable like the rest all the same -- an answer
-	// that keeps missing the point is a prompt that needs a sentence, and
-	// there is no reason this one prompt should be the unreachable one.
-	{key: "improve", def: strings.TrimSpace(improveSystem)},
+	// "improve" was here: the Improve button's own prompt. It is off the bench
+	// now -- the bench is the steps of an edit, and Improve is the tool asking
+	// about itself. The technical half of what it used to say (how a stamp
+	// reads, that the answer is machine-read) is the system context at the top
+	// of this table; the rest is not a wording anyone tunes, because what the
+	// user says to Improve is the complaint they type, and what comes back is
+	// edits to the prompts that ARE here. See improve.go.
 }
 
 func promptDefFor(key string) promptDef {

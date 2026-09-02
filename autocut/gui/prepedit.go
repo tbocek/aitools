@@ -64,6 +64,10 @@ func prepRows() []prepRow {
 			"spelled, what to make sure ends up in the video.\n\nSent with every request " +
 			"this project makes: the frame describer, the transcript fixer, the cut and " +
 			"its audit, the narration and the upload text. Left empty, nothing is sent."},
+		{"System context", "system", "The formats every job works to: how the material " +
+			"is stamped and laid out, that times are session seconds, and that the answer " +
+			"is read by a machine.\n\nSent in front of every prompt below, so a fact about " +
+			"this tool is written once instead of in each of them."},
 		{"Describe", "describe", fmt.Sprintf(
 			"%d frames per request, plus the last %d descriptions and up to %d spoken "+
 				"lines either side as context. No frame is ever sent twice: those "+
@@ -81,9 +85,6 @@ func prepRows() []prepRow {
 			"session was and what matters in it."},
 		{"Upload text", "youtube", "Gets the cut and the narration — no images — and " +
 			"answers with the YouTube title, the thumbnail instruction and the description."},
-		{"Improve", "improve", "How the Improve button answers: it gets your complaint, " +
-			"every prompt above, the run log and the recorded exchanges, and has to come " +
-			"back with why it did that and which sentence to change."},
 	}
 }
 

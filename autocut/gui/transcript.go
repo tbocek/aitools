@@ -509,7 +509,7 @@ func contains(list []string, s string) bool {
 func (a *App) fixRows(s *src, ctxFor func(*src, float64, float64) string,
 	done *int, total int, span float64) ([]seg4, error) {
 
-	system := a.prompt("fix")
+	system := a.sysPrompt("fix")
 	var out []seg4
 	nblocks := (len(s.rows) + fixBlock - 1) / fixBlock
 	for b := 0; b < nblocks; b++ {

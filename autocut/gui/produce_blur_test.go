@@ -274,9 +274,9 @@ func countLabels(t *testing.T, fc, in, out string) {
 	}
 }
 
-// The toggle exists on the Produce grid, is read into the settings, is written
-// back out of them, and says so on the summary line -- the same four points
-// every other Produce setting is pinned at.
+// The toggle exists on the Produce grid, is read into the settings and is
+// written back out of them -- the same three points every other Produce
+// setting is pinned at.
 func TestTheBackdropToggleIsWired(t *testing.T) {
 	b, err := os.ReadFile("produce.go")
 	if err != nil {
@@ -286,10 +286,9 @@ func TestTheBackdropToggleIsWired(t *testing.T) {
 	for _, want := range []string{
 		`p.blur = gtk.NewCheckButtonWithLabel("Blurred backdrop")`,
 		`p.blur.SetActive(true)`,
-		`at(0, 5, "Empty frame edges:", p.blur)`,
+		`at(0, 5, "Frame edges:", p.blur)`,
 		`Bare:      !p.blur.Active(),`,
 		`p.blur.SetActive(!st.Bare)`,
-		`edges = " · empty frame edges black"`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("produce.go does not contain %q", want)

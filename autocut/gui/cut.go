@@ -110,25 +110,17 @@ const (
 // know you have one.
 const genericSystem = `You choose the moments a video is cut from. The recording is a session of something happening -- a game, a build, a lesson, a conversation, a drive -- and nobody has told you which. Read it first, then cut what is worth watching.
 
-You get the whole session as one timeline, [mm:ss] then who, then the line. The minutes keep counting past 59, so [72:30] is 4350 seconds.
-  [12:04] EVENT: what was on screen then, and whether it was hectic or calm
-  [12:04] SPEAKER_01: something said out loud, which the video plays
-  [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it, so a good NARRATOR line is worth cutting for.
-
 Return strict JSON, nothing else:
 {"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
 
 Rules.
 
-- start and end are session seconds: mm*60+ss from the stamps.
 - 6 to 20 segments, chronological, never overlapping. 8 to 45 seconds each, longer when a moment needs its whole build-up and payoff.
 - The total must land within about a tenth of the target length, or you are asked again.
-- Only times the timeline shows, and only stretches with EVENT lines: a span without them has no footage and is thrown away.
 
 What this session is.
 
-- The request may open with a block headed ABOUT THIS SESSION, written by someone who was there. It says what the recording is and what matters in it, and it outranks every rule below.
-- With no such block, work it out from the timeline: what the speakers say they are doing in the first minutes, and what the EVENT lines keep showing. Cut for THAT, not for what a session like it usually contains.
+- With no notes, work it out from the timeline: what the speakers say they are doing in the first minutes, and what the EVENT lines keep showing. Cut for THAT, not for what a session like it usually contains.
 - Everything the notes name becomes a segment. Find where it happens from the speech and the EVENT lines around it, and take the WHOLE beat -- the setup, the thing itself, and what came of it, even when they are minutes apart.
 - Never invent a moment the timeline does not show, even one the notes expect.
 
@@ -148,24 +140,16 @@ Where to cut.
 
 const suggestSystem = `You choose the moments for a highlight video of a gaming session, cut for YouTube. Someone who was not there should enjoy it from start to finish.
 
-You get the whole session as one timeline, [mm:ss] then who, then the line. The minutes keep counting past 59, so [72:30] is 4350 seconds.
-  [12:04] EVENT: what was on screen then, and whether it was hectic or calm
-  [12:04] SPEAKER_01: something said out loud, which the video plays
-  [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it, so a good NARRATOR line is worth cutting for.
-
 Return strict JSON, nothing else:
 {"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
 
 Rules.
 
-- start and end are session seconds: mm*60+ss from the stamps.
 - 6 to 20 segments, chronological, never overlapping. 8 to 45 seconds each, longer when a moment needs its whole build-up and payoff.
 - The total must land within about a tenth of the target length, or you are asked again.
-- Only times the timeline shows, and only stretches with EVENT lines: a span without them has no footage and is thrown away.
 
 The session notes.
 
-- The request may open with a block headed ABOUT THIS SESSION, written by someone who was there. It outranks every rule below.
 - Everything the notes name becomes a segment. Find where it happens from the speech and EVENT lines around it, and take the WHOLE beat -- setup, the thing itself, and the reaction after it, even when they are minutes apart. Cutting at the first mention hands the viewer a setup with no payoff.
 - Never invent a moment the timeline does not show, even one the notes expect.
 
@@ -201,26 +185,19 @@ Where to cut.
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 const ratingSystem = `You cut a rating video: a session where people play, watch or try several things and end by ranking them. The viewer should finish knowing what was rated, what each one was like, and where each landed.
 
-You get the whole session as one timeline, [mm:ss] then who, then the line. The minutes keep counting past 59, so [72:30] is 4350 seconds.
-  [12:04] EVENT: what was on screen then, and whether it was hectic or calm
-  [12:04] SPEAKER_01: something said out loud, which the video plays
-  [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it, so a good NARRATOR line is worth cutting for.
-
 Return strict JSON, nothing else:
 {"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
 
 Rules.
 
-- start and end are session seconds: mm*60+ss from the stamps.
 - Chronological, never overlapping. Segments play in timeline order, so you cannot gather the items into a montage: cover each one where it happens.
 - 8 to 45 seconds each; a verdict or a reveal runs as long as it needs.
 - The total must land within about a tenth of the target length, or you are asked again.
-- Only times the timeline shows, and only stretches with EVENT lines: a span without them has no footage and is thrown away.
 
 First, work out what is being rated.
 
 - List the items from the speech and the EVENT lines: the maps, levels, weapons, songs -- whatever this session scores.
-- If a block headed ABOUT THIS SESSION names the items or the scoring, that is the list and it outranks anything you infer.
+- If the notes name the items or the scoring, that is the list.
 - Find the ranking. It is almost always near the end: the tier list, the countdown, the "so the winner is".
 
 The shape, in this order.
@@ -236,6 +213,57 @@ Priorities.
 - Spare length goes to the items the group argued about or changed their mind on, and to funny lines that land on items you cover anyway.
 - End a segment on the judgement -- someone saying what they think -- not the moment the action stops.
 - Never cut into a sentence, and never invent a moment, a name or a score. If the timeline does not show where an item was rated, take the nearest stretch where it is discussed.` + cutSpeech + fxRules
+
+// showcaseSystem is the cut for a session whose subject is a THING rather than
+// a stretch of time: an unboxing, a paint job, a new unit, a printed model, a
+// tool on a bench. Highlights cuts for the loudest reactions and finds none,
+// because nothing loud happens; the generic wording cuts for what would be
+// missed if it were gone and takes the talking, because the talking is where
+// the sentences are. Both give the viewer a video about a thing they never
+// properly saw.
+//
+// So this one cuts for LOOKING. Its unit is not a moment, it is a pass over the
+// object -- named, seen whole, seen close, seen working, judged -- and its one
+// hard rule is that a segment where the thing is not on screen is not a
+// showcase segment however good the line over it is. Several objects is the
+// same shape repeated, which is why the wording says to split the length before
+// choosing anything: three figures on a 3-minute cut is a minute each, and a
+// showcase that spends four minutes on the first of them is the fault this
+// wording exists to prevent.
+//
+// One paragraph or bullet per line, unwrapped: see describeSystem.
+const showcaseSystem = `You cut a showcase: a session where someone shows a thing -- a model, a figure, a unit, a machine, a build, a piece of kit -- to a viewer who wants to see it. They should finish knowing what it is, what it looks like up close, and what it does.
+
+Return strict JSON, nothing else:
+{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
+
+Rules.
+
+- Chronological, never overlapping. You cannot go back to a thing the session has moved past: take it where it is.
+- 8 to 45 seconds each. A slow look over the object runs as long as the camera takes -- cutting a pan in half wastes the one shot that shows the whole thing.
+- The total must land within about a tenth of the target length, or you are asked again.
+
+First, work out what is being shown.
+
+- Name the subject from the speech and the EVENT lines: what is on the table, in the hand, on the screen. If the notes name it, that is the subject.
+- Count the things. One object, or several? Several is the same job repeated -- divide the target length by how many there are, and that is each one's share before you look at any of them. Going long on the first leaves the last with nothing.
+- Find where each thing enters and where the session leaves it. Everything about it is between those two, and nothing outside them belongs to it.
+
+The shape, for each thing, in this order.
+
+- 1. What it is: where it is first named or first properly in frame. One segment, and the viewer knows what they are looking at.
+- 2. The whole of it: the pass where the camera holds on it or goes around it, so its size, its shape and its finish are seen once. Every showcase needs this segment and it is the one most often missing.
+- 3. The details: the close views, the parts the speaker points out, the things they say are good or wrong. This is where the length goes. A close view with the explanation over it is the best segment this video has.
+- 4. It doing what it is for: assembled, switched on, played, driven, fired, worn, put next to something for scale.
+- 5. The verdict on it: what the speaker makes of it, what it cost, whether they would have another. End the thing here.
+
+Priorities.
+
+- The thing must be on screen. A stretch where it is out of frame is not a showcase segment however good the line over it is -- the EVENT lines say what was on screen, so use them.
+- Picture and words together beat either alone. A close view nobody explains is wallpaper; an explanation over something else is a podcast.
+- Skip the box, the packaging and the setting-up unless something in it is worth seeing.
+- Repetition is the enemy: two segments of the same view of the same part is one segment. Every segment shows something the viewer has not seen yet.
+- Never cut into a sentence, and never invent a part, a name or a price.` + cutSpeech + fxRules
 
 // shortsStyleName is how the Shorts wording is picked and stored; the style
 // clamp in suggestClicked reads the same name, so the two cannot drift apart.
@@ -308,17 +336,12 @@ func (a *App) styleTarget(key, name string) {
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 const shortsSystem = `You cut a YouTube Short from a gaming session: one vertical clip of 20 to 30 seconds, watched on a phone mid-scroll. The first two seconds have to already be the good part, or the viewer is gone.
 
-You get the whole session as one timeline, [mm:ss] then who, then the line. The minutes keep counting past 59, so [72:30] is 4350 seconds.
-  [12:04] EVENT: what was on screen then, and whether it was hectic or calm
-  [12:04] SPEAKER_01: something said out loud, which the video plays
-  [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it.
-
 Return strict JSON, nothing else:
 {"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
 
 The plan. Budget the seconds before you touch the timeline.
 
-- The request opens with a block headed ABOUT THIS SESSION: what the editor says this Short is about. Count the parts it calls important -- those are the beats of this Short, told in order. Find where each one happens on the timeline.
+- The notes say what this Short is about. Count the parts they call important -- those are the beats of this Short, told in order. Find where each one happens on the timeline.
 - Divide the target length by the number of beats: that is each beat's opening share. The notes decide how many there are -- one part, three, five -- and the arithmetic is the same at every count: five beats against a 25-second target open at 5 seconds each, a single beat opens with all 25.
 - Now trade seconds between beats, keeping the same total. A beat that is only setup or a lull gets squeezed to what it needs to be understood -- 5 seconds is often plenty -- and every second it gives up goes to a beat that earns it, usually the opener or the payoff. A beat that carries the clip may take more than one segment; a dull one never gets more time to breathe. How the seconds fall across the named parts is your judgement -- the notes say what matters, you decide what each part is worth.
 - The beats are one story told in parts, not a compilation: each segment is there because the notes asked for it. A good moment outside the named parts belongs to a different Short -- leave it.
@@ -327,10 +350,8 @@ The plan. Budget the seconds before you touch the timeline.
 
 Rules.
 
-- start and end are session seconds: mm*60+ss from the stamps.
 - As many segments as the beats need and no more -- usually one per beat. Chronological, never overlapping.
 - The total must land within about a tenth of the target length, or you are asked again.
-- Only times the timeline shows, and only stretches with EVENT lines.
 - Open mid-action: no introduction, the hook IS the clip. A caption added in a later pass can carry the one fact a viewer needs.
 - Never cut into a sentence, but cut HARD: start on the last line of setup that still makes the payoff land, and end on the reaction's peak, not its tail. The last second decides the rewatch.
 
@@ -1521,14 +1542,24 @@ func (ed *cutEditor) setPlayhead(t float64) {
 		// before the seek, never after: a rate only takes hold at a seek, and
 		// this is the seek. Setting it afterwards would need a second one.
 		ed.player.SetRate(fxRateAt(ed.fx, t))
-		if ed.playVideo == v {
-			ed.player.SeekTo(v.at(t)) // same file: cheap in-place seek
-		} else {
+		same := ed.playVideo == v
+		if !same {
 			ed.playVideo = v
 			// which recordings are under THIS piece of footage, and by how far
 			// their clocks differ from its own -- both change with the file, so
 			// they are settled before the file is
 			ed.player.SetMix(ed.mixUnder(v))
+		}
+		// and which of them this scene hears, before either line below tells
+		// them to play: a lane the scene silences is not started at all rather
+		// than started and hushed (Player.applyMute). showInsert settles it
+		// again at the bottom of this function, which is where every OTHER
+		// path reaches it -- but by then these pipelines are already running,
+		// and a lane switched off is not to be heard for that moment either.
+		ed.syncHush()
+		if same {
+			ed.player.SeekTo(v.at(t)) // same file: cheap in-place seek
+		} else {
 			ed.player.PlaySegment(v.path, v.at(t), -1, wasPlaying)
 		}
 	}
@@ -4363,6 +4394,10 @@ func (ed *cutEditor) toggle() {
 		// it, which under cut-only is exactly what is not to be played
 		ed.cutOnlySnap()
 	}
+	// what this scene hears, settled before the transport moves rather than in
+	// the showInsert below it: ▶ starts the recordings (syncMix), and a lane
+	// this scene silences is one ▶ must not start at all
+	ed.syncHush()
 	ed.player.Toggle()
 	// the black "no footage on this row" frame comes and goes with the
 	// standstill (showInsert), and pausing is a standstill nothing else

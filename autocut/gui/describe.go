@@ -568,7 +568,7 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 				float64(i)*p.interval, i+1, hi-lo)), part)
 		}
 		reply, err := a.llmChatRetry("describe", []map[string]any{
-			msg("system", a.prompt("describe")), msg("user", content),
+			msg("system", a.sysPrompt("describe")), msg("user", content),
 		}, false)
 		if err != nil {
 			if errors.Is(err, errStopped) {

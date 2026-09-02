@@ -2927,7 +2927,7 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 	rows := a.sessionRows()
 	// the box on the page is the whole system message: what used to be a
 	// separate context field is part of it now (see buildNarrate)
-	system := a.prompt("narrate")
+	system := a.sysPrompt("narrate")
 	if a.narratorMic() == "" {
 		system += "\n\n" + narrNoMicNote
 	}

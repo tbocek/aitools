@@ -239,7 +239,7 @@ func TestTheLineTellsThePreviewWhatTheSceneHears(t *testing.T) {
 		// answer for all of them is the bug this fixed.
 		"if m := p.hushes(\"\", true); m != p.ownMute {",
 		"p.pb.SetObjectProperty(\"mute\", m)",
-		"if m := p.hushes(a.base, false); m != a.mute {",
+		"m := p.hushes(a.base, false)",
 		"a.pb.SetObjectProperty(\"mute\", m)",
 		"newAux(fmt.Sprintf(\"mix%d\", i), t, p.vol())",
 	} {

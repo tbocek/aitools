@@ -186,10 +186,7 @@ func (a *App) suggestClicked() {
 // it will extend an end.
 const auditSystem = `You are checking a proposed highlight cut against the brief it was made from, before anyone watches it. You did not choose these moments; your job is to find where they are wrong.
 
-You get the brief, the target length, the session timeline and the proposed segments. Timeline lines are [mm:ss] then who, then the line. The minutes keep counting past 59, so [72:30] is 4350 seconds.
-  [12:04] EVENT: what was on screen then
-  [12:04] SPEAKER_01: something said out loud, which the video plays
-  [12:04] NARRATOR: something said on the narrator's own microphone, which the voice-over will say
+You get the brief, the target length, the session timeline and the proposed segments.
 
 Return strict JSON, nothing else:
 {"checks":[{"i":<number>,"verdict":"ok","start":<sec>,"end":<sec>,"why":"<short>"}],"add":[{"start":<sec>,"end":<sec>,"why":"<short>"}],"fxchecks":[{"i":<number>,"verdict":"ok","start":<sec>,"end":<sec>,"why":"<short>"}]}
@@ -211,7 +208,6 @@ What to check, hardest first.
 
 Hard rules.
 
-- Only times the timeline shows, and only stretches with EVENT lines: a span without them has no footage.
 - After your corrections the segments must still be in order and must not overlap. If extending one runs into the next, extend it and drop the next, saying so.
 - Keep the total near the target: pay for additions by dropping the weakest segments.
 - When a segment is right, say ok. A change for its own sake is worse than no check at all.`
@@ -259,7 +255,7 @@ func (a *App) auditCut(session string, target float64, segs []cutSeg, fx []cutFx
 	}
 	user := a.ctxBlock() + fmt.Sprintf("THE BRIEF THE CUT WAS MADE FROM:\n%s\n\nTARGET LENGTH: %.0f seconds.\n\n"+
 		"PROPOSED SEGMENTS:\n%s\n%sSESSION TIMELINE:\n%s", a.prompt("cut"), target, props.String(), fxBlock, session)
-	msgs := []map[string]any{msg("system", a.prompt("audit")), msg("user", user)}
+	msgs := []map[string]any{msg("system", a.sysPrompt("audit")), msg("user", user)}
 
 	if err := a.checkpoint(); err != nil {
 		return segs, fx
@@ -605,7 +601,7 @@ func fxFromReply(in []sugFx) []cutFx {
 }
 
 func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutFx, error) {
-	system := a.prompt("cut")
+	system := a.sysPrompt("cut")
 	user := a.ctxBlock() + fmt.Sprintf("TARGET LENGTH: %.0f seconds.\n\nSESSION TIMELINE:\n%s", target, session)
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
 	// The bar, while a call that takes minutes runs: segments counted as they

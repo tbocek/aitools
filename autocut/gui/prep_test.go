@@ -218,13 +218,31 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 		"the session's files on the left":  "outer.SetStartChild(sources)",
 		"the switchable box on the right":  "outer.SetEndChild(bench)",
 		"a right half that grows too":      "outer.SetResizeEndChild(true)",
-		"the handle opening at the middle": "outer.SetPosition(outer.AllocatedWidth() / 2)",
+		"the handle opening at the middle": "openAtHalf(outer)",
 		"room over the shared bar below":   "outer.SetMarginBottom(6)",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the page is missing %s (%s)", what, want)
 		}
 	}
+	// Produce is the other page built out of two halves that are both the work
+	// -- the picture being made and the words that go up with it -- and it
+	// opens the same way. Left to itself the pane gave the thumbnail whatever
+	// it asked for and the title, the description and every encoder setting
+	// what was left over.
+	if !strings.Contains(funcBody(t, "produce.go", `func \(a \*App\) buildProduce\(`), "openAtHalf(outer)") {
+		t.Error("the Produce page no longer opens its split at the middle")
+	}
+	// and the placement itself: measured first, once, and never again -- Map
+	// fires on every tab switch, and re-halving there would throw away a handle
+	// the user has moved
+	half := funcBody(t, "prep.go", `func openAtHalf\(p \*gtk\.Paned\) \{`)
+	for _, want := range []string{"p.SetPosition(p.AllocatedWidth() / 2)", "if split {", "glib.IdleAdd("} {
+		if !strings.Contains(half, want) {
+			t.Errorf("openAtHalf lost %q", want)
+		}
+	}
+
 	// neither prompt machinery may come back to the page itself: the box
 	// planted here would be one the dropdowns cannot mark with a ✎, and the
 	// bottom bar it used to ride is gone
@@ -375,9 +393,9 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	got := a.prepEditNames()
-	want := []string{"User Context", "Describe (Default)", "Transcript (Default)",
+	want := []string{"User Context", "System context (Default)", "Describe (Default)", "Transcript (Default)",
 		"Cut (General)", "Audit (Default)", "Narration (Default)",
-		"Upload text (Default)", "Improve (Default)"}
+		"Upload text (Default)"}
 	if len(got) != len(want) {
 		t.Fatalf("the menu offers %v, want %v", got, want)
 	}
@@ -387,10 +405,10 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 		}
 	}
 	a.setPrompt("describe", "my own wording")
-	if got := a.prepEditNames(); got[1] != "Describe (Default) ✎" {
-		t.Errorf("an edited describe prompt reads %q in the menu, want the ✎", got[1])
+	if got := a.prepEditNames(); got[2] != "Describe (Default) ✎" {
+		t.Errorf("an edited describe prompt reads %q in the menu, want the ✎", got[2])
 	}
-	if got := a.prepEditNames(); got[2] != "Transcript (Default)" {
+	if got := a.prepEditNames(); got[3] != "Transcript (Default)" {
 		t.Errorf("editing one prompt marked the other: %q", got)
 	}
 	// the Style's reach is what the parentheticals are for: one pick beside
@@ -398,11 +416,11 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	// and only those -- the context row stays bare
 	a.applyStyle("Highlights")
 	got = a.prepEditNames()
-	if got[3] != "Cut (Highlights)" {
-		t.Errorf("after the style pick the cut row reads %q, want Cut (Highlights)", got[3])
+	if got[4] != "Cut (Highlights)" {
+		t.Errorf("after the style pick the cut row reads %q, want Cut (Highlights)", got[4])
 	}
-	if got[5] != "Narration (Default)" {
-		t.Errorf("a job with no Highlights wording reads %q, want its default", got[5])
+	if got[6] != "Narration (Default)" {
+		t.Errorf("a job with no Highlights wording reads %q, want its default", got[6])
 	}
 	if got[0] != "User Context" {
 		t.Errorf("the context row grew a wording name: %q", got[0])

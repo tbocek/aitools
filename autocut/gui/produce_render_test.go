@@ -221,13 +221,18 @@ func TestProduceSaysWhatItReadsAndWroteLikeEveryOtherStep(t *testing.T) {
 	if p, err := os.ReadFile("pipeline.go"); err == nil && strings.Contains(string(p), "setPlayIcon(p.playBtn") {
 		t.Error("the run bar still draws a play button Produce no longer has — that is a nil dereference")
 	}
-	// three lines, three jobs, one entry point that redraws all of them
+	// two rows, two jobs, one entry point that redraws both -- the encoder
+	// summary line between them is gone: it repeated the grid beside it
+	if strings.Contains(src, "updateSettings") {
+		t.Error("produce.go grew the settings summary line back")
+	}
 	for _, want := range []string{
 		"func (p *producer) updateInputs()",
-		"func (p *producer) updateSettings()",
 		"func (p *producer) updateOut()",
-		"p.updateInputs()\n\tp.updateSettings()\n\tp.updateOut()",
+		"p.updateInputs()\n\tp.updateOut()",
 		`gtk.NewLabel("Save to:")`,
+		// a dropdown at its own width, not stretched to the CRF slider's
+		"d.SetHAlign(gtk.AlignStart)",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("produce.go no longer has %s", want)

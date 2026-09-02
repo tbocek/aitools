@@ -10,79 +10,40 @@ import (
 	"testing"
 )
 
-// The title is not drawn on afterwards any more -- it is lettered by the image
-// model, which means it has to reach the model as part of the one instruction
-// it is given. Two things can go wrong there and both are silent: the title
-// gets appended in a way that reads as a continuation of the edit ("...and blur
-// the background Ghost Ship Disaster"), or an empty title leaves behind an
-// instruction asking for lettering that says nothing.
-func TestTheTitleTravelsInTheInstruction(t *testing.T) {
+// The title does not travel in the instruction any more -- it is printed
+// onto the picture after the draw (drawPubTexts), with the marked texts. What
+// the instruction has to carry instead is the no-lettering sentence: an image
+// model asked for a thumbnail letters something unless told not to, and its
+// words would sit underneath ours. History: the title used to be appended
+// here as its own "Write the exact text" sentence, and an instruction that
+// already named the title got it lettered twice.
+func TestTheInstructionAsksForNoLetteringInsteadOfTheTitle(t *testing.T) {
 	edit := "brighten the character and blur the background"
 
-	both := editInstruction(pubSettings{Prompt: edit, Title: "Ghost Ship Disaster"})
-	if !strings.Contains(both, edit) {
-		t.Error("the edit instruction was lost when a title was added")
+	got := editInstruction(pubSettings{Prompt: edit, Title: "Ghost Ship Disaster"})
+	if !strings.Contains(got, edit) {
+		t.Error("the edit instruction was lost")
 	}
-	if !strings.Contains(both, `"Ghost Ship Disaster"`) {
-		t.Error("the title is not quoted, so the model cannot tell where it ends")
+	if strings.Contains(got, "Ghost Ship Disaster") {
+		t.Errorf("the title is still sent to the image model, so it is lettered twice:\n%s", got)
 	}
-	if !strings.Contains(both, "\n\n") {
-		t.Error("the title runs on from the edit instead of standing as its own sentence")
+	if !strings.Contains(got, pubNoLettering) {
+		t.Error("the instruction no longer forbids lettering -- the model's words end up under the printed title")
 	}
-
-	// an empty title means no lettering at all, not lettering of ""
-	only := editInstruction(pubSettings{Prompt: edit})
-	if only != edit {
-		t.Errorf("an empty title still changed the instruction: %q", only)
+	if !strings.Contains(got, "\n\n") {
+		t.Error("the no-lettering sentence runs on from the edit instead of standing on its own")
 	}
-	if strings.Contains(strings.ToLower(only), "text") {
-		t.Errorf("an untitled thumbnail is still asked for lettering: %q", only)
-	}
-
-	// and a title on its own is a complete instruction: this is the "keep my
-	// frame, just put a title on it" case, which used to need the image model
-	// bypassed entirely
-	title := editInstruction(pubSettings{Title: "Ghost Ship Disaster"})
-	if !strings.Contains(title, `"Ghost Ship Disaster"`) || strings.HasPrefix(title, "\n") {
-		t.Errorf("a title with no edit did not stand alone: %q", title)
-	}
-}
-
-// The thumbnail came back with the last line printed twice.
-//
-// The instruction said "2 lines: 1st line X, 2nd line Y", the title was Y, and
-// editInstruction appended its own "Write the exact text \"Y\"" sentence
-// underneath -- so the model was asked for Y once inside the layout and once
-// more on its own, and an edit model that letters well obliges with both. The
-// page showed nothing wrong: the instruction box said two lines, the picture
-// had three.
-//
-// It got worse, not better, when the model started writing the instruction:
-// asked for a title and a thumbnail line in one reply, it naturally puts the
-// title into the line. So an instruction that already names the title is left
-// exactly as it is -- it is already asking for those words, in the layout that
-// was asked for, which is more than the appended sentence knows how to say.
-func TestATitleAlreadyInTheInstructionIsNotAskedForTwice(t *testing.T) {
-	const title = "500 Wins Badge Awarded"
-	laid := "Big red text in the middle of the picture in 2 lines: " +
-		"1st line: Slap Battles Tower Defense 2nd line: " + title
-	got := editInstruction(pubSettings{Prompt: laid, Title: title})
-	if got != laid {
-		t.Errorf("the title was asked for a second time:\n%s", got)
+	// the sentence has to hold the title's band open too, or the print lands
+	// on a busy top edge
+	if !strings.Contains(strings.ToLower(pubNoLettering), "upper part") {
+		t.Error("the no-lettering sentence does not ask for a calm upper part, where the title goes")
 	}
 
-	// case is not the difference: a model writes "500 wins badge awarded" in a
-	// sentence and Title-Cases it in the title box, and those are the same words
-	lower := "big red text reading 500 wins badge awarded across the bottom"
-	if got := editInstruction(pubSettings{Prompt: lower, Title: title}); got != lower {
-		t.Errorf("a differently-cased title was appended anyway:\n%s", got)
-	}
-
-	// and an instruction that does NOT name it still gets the sentence: this is
-	// the rule doing its job rather than switching itself off
-	edit := "brighten the character and blur the background"
-	if got := editInstruction(pubSettings{Prompt: edit, Title: title}); !strings.Contains(got, `"`+title+`"`) {
-		t.Errorf("an instruction that never mentions the title lost it:\n%s", got)
+	// an empty instruction is empty, not the boilerplate on its own: a model
+	// with nothing to do but "don't letter" draws boilerplate, and the caller
+	// treats "" as the stop-and-say-so case
+	if got := editInstruction(pubSettings{Title: "Ghost Ship Disaster"}); got != "" {
+		t.Errorf("a title with no edit conjured an instruction: %q", got)
 	}
 }
 
@@ -294,20 +255,27 @@ func TestTheWholeRowIsSentInOrder(t *testing.T) {
 	}
 }
 
-// The ffmpeg title is gone, and gone means gone. Half a removal is the worst
-// outcome available here: the model letters the title AND ffmpeg burns a second
-// copy underneath it, which is exactly what the screenshot that started this
-// showed. The Settings probe is checked too -- it used to demand the drawtext
-// filter, and an ffmpeg build without one nothing uses is not a broken build.
-func TestNothingDrawsTheTitleAfterTheModelHas(t *testing.T) {
+// One printer. The words go on through drawPubTexts and nothing else: not
+// ffmpeg's drawtext (gone since the model lettered, and still gone now that
+// cairo prints), and not the image model (editInstruction forbids it). Half a
+// removal is the worst outcome here -- two printers is the title twice, which
+// is the screenshot that started the original removal. The Settings probe is
+// checked too: it used to demand the drawtext filter, and an ffmpeg build
+// without one nothing uses is not a broken build.
+func TestOnlyDrawPubTextsPrintsTheWords(t *testing.T) {
 	src := readSrc(t, "publish.go")
-	for _, gone := range []string{"drawtext", "title.txt", "func (a *App) drawTitle("} {
+	for _, gone := range []string{"drawtext", "title.txt", "Write the exact text"} {
 		if strings.Contains(src, gone) {
-			t.Errorf("publish.go still refers to %q, so the title may be burned on twice", gone)
+			t.Errorf("publish.go still refers to %q — a second printer for the words", gone)
 		}
 	}
 	if strings.Contains(readSrc(t, "setup.go"), `"drawtext"`) {
 		t.Error("ffFilters still requires drawtext, failing builds over a filter nothing uses")
+	}
+	// the one printer runs inside the draw, from the plain copy
+	body := funcBody(t, "publish.go", `func \(a \*App\) drawThumbnail\(st pubSettings, aspect string\) error \{`)
+	if !strings.Contains(body, "drawPubTexts(") {
+		t.Error("drawThumbnail never prints the words, so ▶ makes a thumbnail without its title")
 	}
 }
 
@@ -370,8 +338,8 @@ func TestThePublishPromptIsEditable(t *testing.T) {
 	}
 	src := readSrc(t, "publish.go")
 	// the page sends it; the box that edits it is on Prepare (prepedit.go)
-	if !strings.Contains(src, `a.prompt("youtube")`) {
-		t.Error(`step6 no longer sends a.prompt("youtube") -- an editable prompt that is not sent is a lie`)
+	if !strings.Contains(src, `a.sysPrompt("youtube")`) {
+		t.Error(`step6 no longer sends a.sysPrompt("youtube") -- an editable prompt that is not sent is a lie`)
 	}
 	if strings.Contains(src, "a.promptBar(") || strings.Contains(src, "promptSlot{") {
 		t.Error("step6 builds a prompt editor again -- every prompt lives in the one box on Prepare")
@@ -400,10 +368,9 @@ func TestThePublishPromptMatchesHowTheAnswerIsUsed(t *testing.T) {
 	if strings.Contains(youtubeSystem, "strict JSON") {
 		t.Error("the upload-text prompt asks for JSON; the answer is prose and is read as prose")
 	}
-	// The thumbnail line must not ask for lettering. The title is appended to
-	// the instruction by editInstruction, so a model that asks for the title in
-	// the picture as well is asking for it twice -- which is exactly what an
-	// edit model gives you.
+	// The thumbnail line must not ask for lettering. The title is printed onto
+	// the picture after the draw, so a model that asks for it in the picture
+	// as well puts a second copy underneath the print.
 	low := strings.ToLower(youtubeSystem)
 	if !strings.Contains(low, "no text") && !strings.Contains(low, "no lettering") {
 		t.Error("the upload-text prompt does not tell the model to keep words out of the " +

@@ -103,21 +103,7 @@ func (a *App) buildPrep() gtk.Widgetter {
 	outer.SetEndChild(bench)
 	outer.SetResizeStartChild(true)
 	outer.SetResizeEndChild(true)
-	// The handle opens at the middle. A Paned with no position set gives each
-	// child what it asks for, which here is whatever the file list happens to
-	// want -- so the split is set to half the real width once the pane is on
-	// screen and measured. Map fires again every time the tab is shown, hence
-	// the once guard; after that first placement the handle is the user's.
-	split := false
-	outer.ConnectMap(func() {
-		if split {
-			return
-		}
-		split = true
-		glib.IdleAdd(func() {
-			outer.SetPosition(outer.AllocatedWidth() / 2)
-		})
-	})
+	openAtHalf(outer)
 	// Shrink off on both ends: shrink means a child may be allocated less than
 	// it needs, and what these two need includes a heading row and a button
 	// row. With it off, GtkPaned clamps the handle to what both children need,
@@ -612,4 +598,24 @@ func (a *App) understand(videos, audios []string) error {
 	}
 	a.qJob(trackFix, "transcript", 2, 2)
 	return a.fixTranscripts(videos, audios, 0.5)
+}
+
+// openAtHalf opens a pane's handle at the middle of the window. A GtkPaned with
+// no position set gives each child what it asks for, which is whatever the
+// widest thing inside one of them happens to want -- on Prepare the file list,
+// on Produce the thumbnail -- and the other side gets the remainder. Half each
+// is the honest opening for two sides that are both the work.
+//
+// It has to wait for the widget to be measured: at build time there is no width
+// to halve. Map fires again every time the tab is shown, hence the once guard;
+// after that first placement the handle is the user's.
+func openAtHalf(p *gtk.Paned) {
+	split := false
+	p.ConnectMap(func() {
+		if split {
+			return
+		}
+		split = true
+		glib.IdleAdd(func() { p.SetPosition(p.AllocatedWidth() / 2) })
+	})
 }

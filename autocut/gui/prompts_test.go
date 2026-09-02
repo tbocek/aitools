@@ -74,6 +74,16 @@ func TestEveryPromptIsExposed(t *testing.T) {
 	if len(declared) == 0 {
 		t.Fatal("found no system prompts at all -- the pattern went stale, not the code")
 	}
+	// improveSystem is the one prompt that is deliberately not on the bench:
+	// Improve is the tool asking about itself rather than a step of the edit,
+	// what the user brings to it is the complaint they type, and the technical
+	// half of it is the system context every job now gets (improve.go).
+	if !declared["improve"] {
+		t.Error("improveSystem is gone -- if the Improve prompt moved, this exemption " +
+			"should move with it rather than sitting here excusing nothing")
+	}
+	delete(declared, "improve")
+
 	// counted across the wordings, not the jobs: a job can ship several, so what
 	// has to match is how many prompts exist against how many the dropdowns offer
 	exposed := 0
@@ -374,7 +384,7 @@ func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
 	for _, st := range d.builtins() {
 		names[st.Name] = true
 	}
-	for _, want := range []string{"Highlights", "Rating / tier list", shortsStyleName} {
+	for _, want := range []string{"Highlights", "Rating / tier list", "Showcase", shortsStyleName} {
 		if !names[want] {
 			t.Errorf("the %q wording is gone -- moving the default is not the same as "+
 				"dropping the one it replaced", want)
@@ -388,16 +398,26 @@ func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
 	}
 
 	// the contract every cut wording shares, because the parser and the audit
-	// read the same reply whichever one wrote it
+	// read the same reply whichever one wrote it. Half of it is the wording's
+	// own -- the shape of the reply, the length to hit -- and half is the same
+	// sentence for every job in the app, which is why it is said once in the
+	// system context instead of in each wording (syscontext.go).
 	for _, want := range []string{
 		`{"segments":[{"start":<sec>,"end":<sec>}],"fx":[`, // what suggestParse reads
-		"session seconds", // on which clock
-		"target length",   // the length the run checks
-		"EVENT lines",     // a span without them has no footage
+		"target length", // the length the run checks
 	} {
 		if !strings.Contains(def, want) {
 			t.Errorf("the default cut wording never says %q -- the reply is read by the "+
 				"same code whichever wording asked for it", want)
+		}
+	}
+	for _, want := range []string{
+		"session seconds", // on which clock
+		"EVENT lines",     // a span without them has no footage
+	} {
+		if !strings.Contains(sysSystem, want) {
+			t.Errorf("the system context never says %q -- it was taken out of the "+
+				"wordings on the promise that every job is told it once", want)
 		}
 	}
 }

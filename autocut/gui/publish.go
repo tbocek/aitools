@@ -20,10 +20,13 @@ package main
 // way to say "change this and leave that": strength renoises the whole frame
 // and resamples it, so a green ghost came back as purple mush and there was no
 // value that did not do it. An edit model is given an instruction and touches
-// only what the instruction names. It also renders legible lettering, so the
-// title is part of the instruction rather than something ffmpeg burns on
-// afterwards, and it takes any number of references, so an instruction may
-// borrow from any of the others.
+// only what the instruction names, and it takes any number of references, so
+// an instruction may compose one picture out of all of them.
+//
+// No words come from the model. The title and any marked texts are printed
+// onto the picture locally after the draw (publish_text.go), so rewording
+// them never costs a GPU run -- and the instruction tells the model to keep
+// the upper part of the frame calm and letter nothing (editInstruction).
 //
 // One model job, and its prompt lives on Prepare with all the others
 // (prepedit.go) -- this page shows only the two boxes that describe THIS
@@ -49,9 +52,9 @@ package main
 // rewording the instruction and redrawing has nothing to do with the
 // description -- so they do not share a column and fight for its height.
 //
-// step6/thumbnail.png        the upload
-// step6/thumbnail-plain.png  the same picture, kept so a failed re-roll does
-//                            not lose the one before it
+// step6/thumbnail.png        the upload: the picture with the words printed on
+// step6/thumbnail-plain.png  the picture as the model drew it, no words --
+//                            what every rewording re-prints from
 // step6/description.txt      the YouTube description
 // step6/publish.json         all of it as data, beside the files
 
@@ -73,11 +76,11 @@ import (
 const (
 	// How many frames the FIRST run takes from the cut. Only a starting point:
 	// the row is a list you add to and remove from, so a session can end up
-	// with none, one, or several. Two is what a first run is worth -- enough
-	// for the model to have a choice of base image, few enough that both can
-	// be shown at a size where you can actually tell whether the subject
-	// survives being shrunk.
-	defPubFrames = 2
+	// with none, one, or several. Three, because the instruction composes ONE
+	// picture out of them -- the topic, the game, the moment -- and few
+	// enough that each is shown at a size where you can tell whether its
+	// subject survives being shrunk.
+	defPubFrames = 3
 
 	// And how many the row will hold. Not a technical limit -- sd.cpp takes as
 	// many references as you send it -- but every image here is also attached
@@ -100,17 +103,17 @@ Return three parts in this order, with a blank line between them: the title on o
 
 The title.
 
-- Four to seven words. It is both the YouTube title and the lettering printed across the thumbnail, and it is read at the size of a phone's sidebar, so every extra word costs one that mattered.
+- Four to seven words. It is the YouTube title, and it is also printed across the upper part of the thumbnail afterwards, read at the size of a phone's sidebar -- every extra word costs one that mattered.
 - Say the specific thing that happens in THIS video: the moment, the mistake, the win, the thing nobody expected. A title that would fit any session of this game is a wasted title.
 - Plain words people say out loud. No colons splitting a subtitle off, no clickbait punctuation, no ALL CAPS -- it is drawn in large letters already.
 - Never promise something the clips do not contain.
 
 The thumbnail instruction.
 
-- One or two sentences on a single line, telling an image model what to CHANGE about a frame taken from this video so that it reads as a thumbnail.
-- It is an instruction, not a description. Anything you do not mention is left alone, so describing the whole scene gets a picture of something else instead of the moment that was filmed. Say what to brighten, blur, push forward, or clear out of the way.
+- One or two sentences on a single line, telling an image model how to compose ONE picture out of the frames it is given: what this video is about, the game it is, the moment it shows. The first frame is the picture being edited; the rest are references to pull from, named by position ("the ship from the second image").
+- It is an instruction, not a description. Anything you do not mention is left alone, so describing the whole scene gets a picture of something else instead of the moment that was filmed. Say what to combine, brighten, push forward, or clear out of the way.
 - Name only things the clips contain. "Add the dragon" to a video with no dragon in it is a thumbnail that lies about the video.
-- Ask for no text, no lettering, no title and no logo. The title is appended to your instruction automatically as its own sentence, and asking for it here prints it twice.
+- Ask for no text, no lettering, no title and no logo. The title is printed onto the upper part of the finished picture afterwards, so ask for that part to stay calm and uncluttered -- lettering the model draws there ends up underneath it.
 
 The description.
 
@@ -154,6 +157,12 @@ type pubSettings struct {
 	// is a legitimate place to drag one TO and a project written before the
 	// box existed must not read as "pushed into the top-left corner".
 	Crop *pubPoint `json:"crop,omitempty"`
+
+	// The words printed onto the picture after the draw (publish_text.go):
+	// each a box in fractions of the finished thumbnail and the text fitted
+	// into it. The title is not one of them -- it has its own field below and
+	// its own fixed band (pubTitleBox).
+	Texts []pubText `json:"texts,omitempty"`
 
 	Title    string `json:"title,omitempty"`
 	Prompt   string `json:"prompt,omitempty"`
@@ -229,6 +238,18 @@ type publisher struct {
 	crop   *pubPoint
 	aspect string
 
+	// the marked words and the layer that shows them (publish_text.go).
+	// texts is the state, like frames; shotPath and shotA are what showShot
+	// last put in the picture, cached because the overlay's draw handler and
+	// gestures must not open the file per frame; quiet stops apply's SetText
+	// from re-printing what a run just printed.
+	texts    []pubText
+	shotOver *gtk.DrawingArea
+	shotPath string
+	shotA    float64
+	letter   debounce
+	quiet    bool
+
 	title *gtk.Entry
 	// The four editable boxes, split by column: prompt and neg are the drawing
 	// side and are typed by hand, title and desc are the writing side and are
@@ -300,13 +321,13 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	// entries: an instruction is a paragraph, and a negative prompt is a list
 	// that outgrows one line the moment a picture goes wrong in a new way.
 	var promptBox, negBox, descBox *gtk.ScrolledWindow
-	p.prompt, promptBox = p.textBox(4, "What the image model is told to CHANGE about the first image. "+
+	p.prompt, promptBox = p.textBox(4, "What the image model is told to make out of the images. "+
 		"Written by the same call that writes the title, and yours to rewrite. "+
 		"Plain sentences: \"blur the background\", \"add the ship from the second image behind them\". "+
 		"Anything you do not mention is left alone, so describing the whole scene gets you a different one. "+
-		"The title is added after this automatically — ask for it here and it is lettered twice.")
-	p.neg, negBox = p.textBox(2, "What must stay out of the picture — watermarks, logos, extra limbs. "+
-		"Not \"text\" any more: the title is lettering this model is being asked for on purpose.")
+		"No words: the title and the marked texts are printed on afterwards, and the model is told to letter nothing.")
+	p.neg, negBox = p.textBox(2, "What must stay out of the picture — watermarks, logos, "+
+		"lettering, extra limbs.")
 
 	// The result, at the size it will be judged at, under the boxes that make
 	// it -- so pressing ▶ after rewording the instruction shows the change in
@@ -315,7 +336,7 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	p.shot.SetCanShrink(true)
 	p.shot.SetSizeRequest(-1, 320)
 	p.shot.SetVExpand(true)
-	shotFrame := videoFrame(p.shot)
+	shotFrame := videoFrame(p.textOverlay(p.shot))
 	shotFrame.SetMarginTop(4)
 
 	// LEFT: everything that makes the picture, in the order it happens --
@@ -346,16 +367,25 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	// edit to the wording something you can judge.
 	//
 	// The title lives here rather than beside the drawing even though it is
-	// lettered into the picture, because this is what writes it and this is
-	// where it is read from: it is the YouTube title first and the thumbnail's
-	// lettering second.
+	// printed onto the picture, because this is what writes it and this is
+	// where it is read from: it is the YouTube title first and the words on
+	// the thumbnail second.
 	p.title = gtk.NewEntry()
 	p.title.SetHExpand(true)
 	p.title.SetPlaceholderText("the video's title, also printed on the thumbnail — ▶ suggests one")
-	p.title.SetTooltipText("The YouTube title, and the words the image model letters into the " +
-		"picture — it is asked for them as its own sentence, so retyping the title does not mean " +
-		"rewriting the instruction. Four to seven words: a thumbnail is read at the size of a " +
-		"phone's sidebar. Empty means no lettering at all.")
+	p.title.SetTooltipText("The YouTube title, printed across the upper part of the thumbnail " +
+		"after it is drawn — retyping it re-prints the words without redrawing the picture. " +
+		"Four to seven words: a thumbnail is read at the size of a phone's sidebar. " +
+		"Empty means no title on the picture.")
+	// retyping the title re-prints it on the picture, a beat after the typing
+	// stops -- through the same one place every word lands (recomposite).
+	// quiet, because apply writes this entry with what a run just printed.
+	p.title.ConnectChanged(func() {
+		if p.quiet {
+			return
+		}
+		p.letter.call(p.recomposite)
+	})
 
 	p.desc, descBox = p.textBox(8, "The text under the video on the YouTube page. Written by the "+
 		"prompt above, and yours to rewrite.")
@@ -374,7 +404,7 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	wrote := gtk.NewBox(gtk.OrientationVertical, 6)
 	wrote.SetMarginTop(4)
 	wrote.SetMarginStart(6)
-	wrote.Append(p.heading("Title", "The YouTube title, and the lettering on the thumbnail", p.suggest))
+	wrote.Append(p.heading("Title", "The YouTube title, printed across the top of the thumbnail", p.suggest))
 	wrote.Append(p.title)
 	wrote.Append(p.heading("YouTube description", "The text under the video on the upload page"))
 	wrote.Append(descBox)
@@ -624,7 +654,8 @@ func (p *publisher) pickImage(title, start string, done func(string)) {
 // rule as snapSources: a goroutine never touches a widget, and a value copied
 // out before the run is a value the run cannot see change under it.
 func (p *publisher) snapshot() pubSettings {
-	st := pubSettings{Frames: append([]string(nil), p.frames...), Crop: p.crop}
+	st := pubSettings{Frames: append([]string(nil), p.frames...), Crop: p.crop,
+		Texts: append([]pubText(nil), p.texts...)}
 	st.Title = strings.TrimSpace(p.title.Text())
 	st.Prompt = strings.TrimSpace(viewText(p.prompt))
 	st.Negative = strings.TrimSpace(viewText(p.neg))
@@ -637,7 +668,16 @@ func (p *publisher) snapshot() pubSettings {
 func (p *publisher) apply(st pubSettings) {
 	p.crop = st.Crop
 	p.setFrames(st.Frames)
+	// quiet: the title entry re-prints the words when TYPED in, and this is
+	// not typing -- a run or a project load is putting back words that are
+	// already on the picture (or about to be printed by the run itself)
+	p.quiet = true
 	p.title.SetText(st.Title)
+	p.quiet = false
+	p.texts = append([]pubText(nil), st.Texts...)
+	if p.shotOver != nil {
+		p.shotOver.QueueDraw()
+	}
 	setViewText(p.prompt, st.Prompt)
 	setViewText(p.neg, st.Negative)
 	setViewText(p.desc, st.Desc)
@@ -661,7 +701,8 @@ func (a *App) currentPublish() *pubSettings {
 		st.Frames[i] = a.relToRoot(f)
 	}
 	// nothing chosen and nothing written is not worth a key in the file
-	if len(st.Frames) == 0 && st.Crop == nil && st.Title == "" && st.Prompt == "" && st.Desc == "" {
+	if len(st.Frames) == 0 && st.Crop == nil && len(st.Texts) == 0 &&
+		st.Title == "" && st.Prompt == "" && st.Desc == "" {
 		return nil
 	}
 	return &st
@@ -710,18 +751,29 @@ func (p *publisher) showShot() {
 	if p == nil || p.shot == nil {
 		return
 	}
-	// the finished one first, then the plain copy: they hold the same picture
-	// now that the model letters it, but a run interrupted between the two
-	// writes leaves only the plain one, and that is still the thumbnail
+	// the finished one first, then the plain copy: the plain one is what a
+	// run interrupted between the two writes leaves behind, and a picture
+	// without its words is still the thumbnail
 	for _, name := range []string{"thumbnail.png", "thumbnail-plain.png"} {
 		if f := filepath.Join(p.a.publishDir(), name); exists(f) {
 			p.shot.SetFilename(f)
 			p.shot.SetTooltipText("step6/" + name)
+			// cached for the marking layer: its draw handler and its drag
+			// both need to know where the picture is, per pointer move
+			p.shotPath = f
+			p.shotA = imageAspect(f)
+			if p.shotOver != nil {
+				p.shotOver.QueueDraw()
+			}
 			return
 		}
 	}
+	p.shotPath, p.shotA = "", 0
 	p.shot.SetPaintable(nil)
 	p.shot.SetTooltipText("nothing drawn yet — ▶ below draws it")
+	if p.shotOver != nil {
+		p.shotOver.QueueDraw()
+	}
 }
 
 // reread reloads the cut's aspect off disk -- the one thing the drawing side
@@ -891,7 +943,7 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 // it -- rewrite it and press ▶ again.
 func (a *App) writeUpload(brief string) (title, instr, desc string, err error) {
 	msgs := []map[string]any{
-		msg("system", a.prompt("youtube")),
+		msg("system", a.sysPrompt("youtube")),
 		msg("user", a.ctxBlock()+brief),
 	}
 	if err := a.checkpoint(); err != nil {
@@ -940,7 +992,7 @@ func splitUpload(reply string) (title, instr, desc string) {
 // peelLabel takes "NAME: value" off the front when the first line carries it,
 // and says whether it did. The quotes come off the value: a model asked for a
 // title on a labelled line very often gives it to you in quotation marks, and
-// those would be lettered into the picture.
+// those would be printed onto the picture.
 func peelLabel(s, name string) (val, rest string, ok bool) {
 	line := s
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
@@ -1142,37 +1194,26 @@ func (a *App) writePublishFiles(st pubSettings) error {
 	return nil
 }
 
+// pubNoLettering rides at the end of every instruction: the words are printed
+// on locally after the draw (drawPubTexts), so a model that letters anything
+// -- and asked for a thumbnail, an image model letters something -- puts its
+// words underneath ours. The calm-top half is for the title's band: a busy
+// top edge is a title nobody can read.
+const pubNoLettering = "Do not write any words, letters, titles, logos or " +
+	"captions into the picture. Keep the upper part of the picture calm and " +
+	"uncluttered: a title will be printed across it afterwards."
+
 // editInstruction is what the image model is actually sent: the edit the
-// instruction box describes, then the title as its own sentence.
-//
-// They are joined here rather than stored joined so that the title stays one
-// editable field. Retyping four words should not mean rewriting the paragraph
-// that surrounds them, and the model that wrote them is not asked again.
+// instruction box describes, plus the no-lettering sentence. The title is NOT
+// in it any more -- it is printed onto the picture afterwards, with the
+// marked texts (publish_text.go), which is what lets retyping it cost a PNG
+// encode instead of a GPU run.
 func editInstruction(st pubSettings) string {
 	edit := strings.TrimSpace(st.Prompt)
-	title := strings.TrimSpace(st.Title)
-	if title == "" {
-		return edit
-	}
-	// Never twice. An instruction that already names the title is asking for
-	// those words itself -- either because the model wrote both in one reply, or
-	// because the hand that typed the instruction laid the lines out in it -- and
-	// appending the sentence below asks for them a second time. The model obliges:
-	// a request for two lines of lettering comes back with three, the last one
-	// repeated, and nothing on the page says why.
-	if edit != "" && strings.Contains(strings.ToLower(edit), strings.ToLower(title)) {
-		return edit
-	}
-	// The quotes matter. Qwen-Image-Edit reproduces quoted spans literally,
-	// and an unquoted title gets read as a description of the scene -- ask for
-	// "August 2026 Pirate Ghost Live Event" without them and it paints a ghost.
-	want := fmt.Sprintf("Write the exact text %q across the lower part of the image "+
-		"in large bold letters that are easy to read at small size, with enough "+
-		"contrast against what is behind them.", title)
 	if edit == "" {
-		return want
+		return ""
 	}
-	return edit + "\n\n" + want
+	return edit + "\n\n" + pubNoLettering
 }
 
 // drawThumbnail is the sd.cpp half: hand the model the chosen frame, the other
@@ -1183,10 +1224,11 @@ func editInstruction(st pubSettings) string {
 // the user can type into the box without also having to arrange for it to be
 // sent -- an edit model ignores a reference nothing refers to.
 //
-// The result is written twice, to thumbnail.png and thumbnail-plain.png. They
-// are identical now that the title is drawn by the model; the plain copy is
-// kept because it is what the page shows while a new one is being made, and
-// because losing the previous render to a failed re-roll is worse than a few
+// The result is written to thumbnail-plain.png as it came back -- no words --
+// and then the title and the marked texts are printed onto a copy, which is
+// thumbnail.png, the upload (drawPubTexts). The plain one is what every later
+// rewording re-prints from, and what the page shows while a new one is being
+// made; losing the previous render to a failed re-roll is worse than a few
 // hundred kB.
 //
 // aspect is the cut's, and it decides both halves of the shape question: the
@@ -1206,7 +1248,7 @@ func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 	}
 	instr := editInstruction(st)
 	if strings.TrimSpace(instr) == "" {
-		return fmt.Errorf("nothing to tell the image model — write an instruction or a title first")
+		return fmt.Errorf("nothing to tell the image model — write an edit instruction first (▶ suggests one)")
 	}
 	dir := a.publishDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1275,7 +1317,15 @@ func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 	if err := os.WriteFile(filepath.Join(dir, "thumbnail-plain.png"), img, 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "thumbnail.png"), img, 0o644)
+	// the words go on last, locally: the title across the top band, each
+	// marked text filling its box. A print that fails still has a good
+	// picture in hand, and a thumbnail without its words beats no thumbnail.
+	if err := drawPubTexts(filepath.Join(dir, "thumbnail-plain.png"),
+		filepath.Join(dir, "thumbnail.png"), st.Texts, st.Title); err != nil {
+		a.logfIdle("    publish: printing the words failed (%v) — the plain picture stands", err)
+		return os.WriteFile(filepath.Join(dir, "thumbnail.png"), img, 0o644)
+	}
+	return nil
 }
 
 func (a *App) publishDone(err error) {
@@ -1294,6 +1344,12 @@ func (a *App) publishDone(err error) {
 			}
 			a.progress.SetText("suggestions stopped")
 			return
+		}
+		// the fresh title is words on the picture too: re-print it onto the
+		// last drawn thumbnail, so the suggestion is visible where it will
+		// land and not only in the entry. No-op when nothing is drawn yet.
+		if p := a.pub; p != nil {
+			p.recomposite()
 		}
 		a.progress.SetFraction(1)
 		a.progress.SetText("title, instruction and description rewritten — ▶ draws and renders")

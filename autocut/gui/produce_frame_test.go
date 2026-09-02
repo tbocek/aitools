@@ -142,28 +142,11 @@ func TestTheProducePageSaysTheFrameItWillComeOutAt(t *testing.T) {
 	if w, h := outSize(0, 0, 0); w != 1920 || h != 1080 {
 		t.Errorf("with nothing known at all the frame is %dx%d, want 1920x1080", w, h)
 	}
-	// the render works it out the same way, off the file it is about to encode
+	// the render works this out off the file it is about to encode -- the one
+	// place the frame is decided, now that the page's summary line is gone
 	body := funcBody(t, "produce.go", `func clipBox\(`)
 	if !strings.Contains(body, "outSize(w0, h0, st.Height)") {
-		t.Error("the render sizes the frame its own way again, so the page can be wrong about it")
-	}
-	said := funcBody(t, "produce.go", `func \(p \*producer\) updateSettings\(\)`)
-	if !strings.Contains(said, "outSize(w, h, st.Height)") ||
-		!strings.Contains(said, `res = fmt.Sprintf("%d×%d", ow, oh)`) {
-		t.Error("the page no longer says the frame it will come out at, in pixels")
-	}
-
-	// and it asks the Cut page, which has already probed every recording --
-	// rather than opening a file inside a label handler
-	a := &App{ed: &cutEditor{vids: []tlVideo{
-		{base: "a lane that was never probed"},
-		{base: "the footage", w: 3840, h: 2160},
-	}}}
-	if w, h, ok := a.footageSize(); !ok || w != 3840 || h != 2160 {
-		t.Errorf("the footage frame reads as %dx%d (ok=%v), want the 3840x2160 that was probed", w, h, ok)
-	}
-	if _, _, ok := (&App{}).footageSize(); ok {
-		t.Error("a page with no cut behind it reports a frame size anyway")
+		t.Error("the render no longer sizes the frame through outSize")
 	}
 }
 
@@ -342,12 +325,9 @@ func TestTheResolutionTiersNameTheShortSide(t *testing.T) {
 		t.Error("the restore no longer speaks the dropdown's language, so a saved height matches no row")
 	}
 
-	// the page's own info line says the frame the render will make: when the
-	// cut names an aspect it must reshape the number the same way (tierBox),
-	// not quote the footage's shape as if no aspect had been picked
-	said := funcBody(t, "produce.go", `func \(p \*producer\) updateSettings\(\)`)
-	if !strings.Contains(said, "if asp := parseAspect(p.a.ed.aspect); asp > 0 {") ||
-		!strings.Contains(said, "ow, oh = tierBox(asp, h, st.Height)") {
-		t.Error("the info line ignores the cut's aspect, so it lies exactly when the shape was changed on purpose")
+	// when the cut names an aspect the render must reshape the frame the same
+	// way (tierBox), not keep the footage's shape as if none had been picked
+	if !strings.Contains(readSrc(t, "produce_fx.go"), "return tierBox(a, h0, st.Height)") {
+		t.Error("the render ignores the cut's aspect exactly when the shape was changed on purpose")
 	}
 }

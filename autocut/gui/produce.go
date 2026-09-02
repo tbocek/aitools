@@ -113,9 +113,8 @@ var (
 	prodHeights    = []string{"720p", "1080p", "original"}
 	prodFPS        = []string{"source", "60", "30", "24"}
 	prodABR        = []string{"128", "192", "256", "320"}
-	prodSubsLbl    = []string{"burned into the picture", "separate track in the file",
-		"sidecar .srt file only", "none"}
-	prodSubsKey = []string{"burn", "mux", "sidecar", "none"}
+	prodSubsLbl    = []string{"burned in", "track in file", "sidecar .srt", "none"}
+	prodSubsKey    = []string{"burn", "mux", "sidecar", "none"}
 )
 
 type producer struct {
@@ -127,7 +126,7 @@ type producer struct {
 	outLbl                                           *gtk.Label
 	outFile                                          string
 	outAuto                                          bool       // still the default -- follows the output folder
-	inputs, info, out                                *gtk.Label // the two rows every step has, and the encode summary between them
+	inputs, out                                      *gtk.Label // the two rows every step has
 	guard                                            bool       // suppresses feedback while applying a project
 }
 
@@ -335,11 +334,10 @@ func (a *App) buildProduce() gtk.Widgetter {
 		d := gtk.NewDropDownFromStrings(list)
 		d.SetSelected(uint(sel))
 		d.SetTooltipText(tip)
-		d.Connect("notify::selected", func() {
-			if !p.guard {
-				a.updateProduceInfo()
-			}
-		})
+		// its own width, not the column's: the grid column is as wide as the
+		// CRF slider, and "mp4" stretched to slider width reads as a text
+		// field, not a menu
+		d.SetHAlign(gtk.AlignStart)
 		return d
 	}
 
@@ -350,7 +348,8 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.height = dd(prodHeights, 1, "the short side of the frame — the cut page's aspect sets its shape; original keeps the footage's own size")
 	p.fps = dd(prodFPS, 2, "output frame rate — a ceiling rather than a target with VFR on")
 	p.abr = dd(prodABR, 0, "audio bitrate in kbit/s")
-	p.subs = dd(prodSubsLbl, 2, "what to do with the narration subtitles")
+	p.subs = dd(prodSubsLbl, 2, "what to do with the narration subtitles: burned "+
+		"into the picture, a separate track inside the file, an .srt beside it, or nothing")
 
 	// VFR makes the rate above a ceiling. Capture from a headset is variable by
 	// nature -- it renders what it can, and the rate above is the peak it
@@ -360,11 +359,6 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.vfr.SetTooltipText("Treat the frame rate above as a ceiling: footage faster than it is " +
 		"dropped down to it, footage slower keeps its own rate instead of having frames " +
 		"duplicated. Off, every clip is resampled to exactly that rate.")
-	p.vfr.ConnectToggled(func() {
-		if !p.guard {
-			a.updateProduceInfo()
-		}
-	})
 
 	// Stereo out of habit rather than out of the footage: a screen capture is
 	// usually one signal written to two channels (the timeline says so -- it
@@ -376,11 +370,6 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.mono.SetTooltipText("Mix the finished audio down to a single channel. Worth it when " +
 		"the capture's two sides carry the same signal — the same bitrate then goes on " +
 		"one channel instead of two. Leave it off for anything with a real stereo image.")
-	p.mono.ConnectToggled(func() {
-		if !p.guard {
-			a.updateProduceInfo()
-		}
-	})
 
 	// What fills the frame where the picture does not reach: a camera pulled
 	// back past the edge of the recording, a portrait cut of widescreen
@@ -396,11 +385,6 @@ func (a *App) buildProduce() gtk.Widgetter {
 		"copy of the picture itself, instead of black. Off gives plain black bars — " +
 		"which is also what the Cut preview draws, so turn it off if you want the " +
 		"finished video to look exactly like the preview did.")
-	p.blur.ConnectToggled(func() {
-		if !p.guard {
-			a.updateProduceInfo()
-		}
-	})
 
 	p.crf = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 14, 34, 1)
 	p.crf.SetValue(24)
@@ -408,14 +392,12 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.crf.SetSizeRequest(200, -1)
 	p.crf.SetTooltipText("quality: lower is better and bigger (18–24 is the usual range)")
 	p.crf.AddMark(24, gtk.PosBottom, "24")
-	p.crf.ConnectValueChanged(func() { a.updateProduceInfo() })
 
 	p.gvol = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 1, 0.02)
 	p.gvol.SetValue(0.22)
 	p.gvol.SetDrawValue(true)
 	p.gvol.SetSizeRequest(200, -1)
 	p.gvol.SetTooltipText("how loud the original game audio sits under the narration")
-	p.gvol.ConnectValueChanged(func() { a.updateProduceInfo() }) // it is on the settings line now
 
 	at(0, 0, "Container:", p.container)
 	at(0, 1, "Video codec:", p.codec)
@@ -424,11 +406,11 @@ func (a *App) buildProduce() gtk.Widgetter {
 	at(1, 0, "Resolution:", p.height)
 	at(1, 1, "Frame rate:", p.fps)
 	at(1, 2, "Audio bitrate:", p.abr)
-	at(1, 3, "Game audio under voice:", p.gvol)
+	at(1, 3, "Game audio:", p.gvol)
 	at(0, 4, "Subtitles:", p.subs)
 	at(1, 4, "Frame timing:", p.vfr)
 	at(1, 5, "Audio channels:", p.mono)
-	at(0, 5, "Empty frame edges:", p.blur)
+	at(0, 5, "Frame edges:", p.blur)
 
 	// Where the video is written. This is a setting, not the Outputs line: it
 	// says where the file WILL go, and the row at the foot of the page says
@@ -453,10 +435,6 @@ func (a *App) buildProduce() gtk.Widgetter {
 	// the picture below by itself -- a "Preview result" button beside a second
 	// ▶ was two more ways to press the one thing the run bar already does, and
 	// the pair of ▶s did not even mean the same thing.
-	p.info = gtk.NewLabel("")
-	p.info.SetXAlign(0)
-	p.info.SetWrap(true)
-	p.info.AddCSSClass("dim-label")
 
 	// The two rows every other step has, in the two places every other step has
 	// them: what this one is working from, at the top, and what it has put on
@@ -494,7 +472,6 @@ func (a *App) buildProduce() gtk.Widgetter {
 	box.Append(grid)
 	box.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
 	box.Append(destRow)
-	box.Append(p.info)
 
 	a.updateProduceInfo() // the rows say something before anything is clicked
 
@@ -529,6 +506,11 @@ func (a *App) buildProduce() gtk.Widgetter {
 	outer.SetShrinkEndChild(false)
 	outer.SetVExpand(true)
 	outer.SetMarginEnd(12)
+	// half each, like Prepare: the picture being made and the words that go up
+	// with it are both the work of this page, and left to itself the pane gave
+	// the thumbnail whatever it asked for and the title, the description and
+	// every encoder setting what was left
+	openAtHalf(outer)
 
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
 	page.Append(inRow)
@@ -551,16 +533,15 @@ func (a *App) chooseOutFileDialog() {
 	})
 }
 
-// updateProduceInfo redraws all three lines: what the render reads, what it will
-// encode, and what it has written. Everything that changes any of them comes
-// through here -- a dropdown, a cut edited next door, a finished run.
+// updateProduceInfo redraws both rows: what the render reads and what it has
+// written. Everything that changes either comes through here -- a cut edited
+// next door, a finished run, a project load.
 func (a *App) updateProduceInfo() {
 	p := a.prod
 	if p == nil {
 		return
 	}
 	p.updateInputs()
-	p.updateSettings()
 	p.updateOut()
 }
 
@@ -639,52 +620,6 @@ func (p *producer) updateInputs() {
 	}
 	p.inputs.SetText(line)
 	p.inputs.SetTooltipText(strings.TrimSpace(detail))
-}
-
-// updateSettings echoes the grid above it in the words the encoder would use --
-// the one line on this page that is neither an input nor an output, which is
-// why it sits between them and beside the controls it is reporting.
-func (p *producer) updateSettings() {
-	if p == nil || p.info == nil {
-		return
-	}
-	st := p.a.prodSettings()
-	// the frame in pixels, not the word from the dropdown: "original" over a
-	// 4K screen capture is a 4K upload, and the number is the only form of
-	// that fact anyone reads before waiting out the encode
-	res := "original size"
-	if st.Height > 0 {
-		res = fmt.Sprintf("%dp", st.Height)
-	}
-	if w, h, ok := p.a.footageSize(); ok {
-		ow, oh := outSize(w, h, st.Height)
-		// an aspect picked on the cut page reshapes the frame (outBox does,
-		// for the render) -- the number here has to be the frame the render
-		// will actually make, or the one line on this page that exists to be
-		// believed is wrong exactly when the shape was changed on purpose
-		if p.a.ed != nil {
-			if asp := parseAspect(p.a.ed.aspect); asp > 0 {
-				ow, oh = tierBox(asp, h, st.Height)
-			}
-		}
-		res = fmt.Sprintf("%d×%d", ow, oh)
-	}
-	fps := "source fps"
-	switch {
-	case st.FPS > 0 && st.VFR:
-		fps = fmt.Sprintf("up to %g fps", st.FPS)
-	case st.FPS > 0:
-		fps = fmt.Sprintf("%g fps", st.FPS)
-	case st.VFR:
-		fps = "source fps, variable"
-	}
-	edges := "" // the blurred backdrop is the default; only its absence is news
-	if st.Bare {
-		edges = " · empty frame edges black"
-	}
-	p.info.SetText(fmt.Sprintf("%s, %s, %s crf %d · %s · audio %d kbit/s %s, game at %.0f%% under the voice · subtitles %s%s",
-		res, fps, st.Codec, st.CRF, st.Container, st.AudioKbps, audLayout(st), st.GameVol*100,
-		prodSubsLbl[subsIndex(st.Subs)], edges))
 }
 
 // updateOut is the line every step ends on. Here it is one file rather than a
@@ -1919,22 +1854,6 @@ func clipBox(clips []prodClip, st prodSettings) (int, int) {
 		return outSize(w0, h0, st.Height)
 	}
 	return outSize(0, 0, st.Height)
-}
-
-// footageSize is the frame the footage was recorded at, as the Cut page has
-// already probed it. The Produce page asks so that it can say what the render
-// will come out at without opening a file in a label handler; the render itself
-// probes the clip it is actually about to encode (clipBox).
-func (a *App) footageSize() (int, int, bool) {
-	if a == nil || a.ed == nil {
-		return 0, 0, false
-	}
-	for _, v := range a.ed.vids {
-		if v.w > 0 && v.h > 0 {
-			return v.w, v.h, true
-		}
-	}
-	return 0, 0, false
 }
 
 // outSize is the frame the render comes out at, given the footage's own size
