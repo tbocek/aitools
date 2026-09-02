@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"regexp"
@@ -178,13 +179,13 @@ func TestTheLabelledLinesArePeeledOffTheDescription(t *testing.T) {
 // suggestions land conditionally and the description -- always present, since
 // whatever is left over IS the description -- lands flat.
 func TestAForgottenLabelKeepsWhatWasAlreadyThere(t *testing.T) {
-	body := funcBody(t, "publish.go", `func \(a \*App\) publishRun\(textOnly bool\) \{`)
+	body := funcBody(t, "publish.go", `func \(a \*App\) publishStage\(`)
 	for _, want := range []string{
 		`if title != "" {`,
 		`if instr != "" {`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("publishRun is missing %s -- a reply that forgot one label "+
+			t.Errorf("publishStage is missing %s -- a reply that forgot one label "+
 				"would blank a box the user had filled", want)
 		}
 	}
@@ -331,13 +332,19 @@ func TestTheImageRowIsAddableAndRemovable(t *testing.T) {
 	// the row is capped, and the cap has to be enforced where the row is set
 	// rather than only where the button is pressed -- a project file can carry
 	// any number of frames
-	if !strings.Contains(funcBody(t, "publish.go", `func \(p \*publisher\) putFrames\(fs \[\]string\) \{`),
-		"maxPubFrames") {
-		t.Error("putFrames does not cap the row, so a hand-edited project can send twenty images")
+	p := &publisher{a: &App{}} // widget-free: rebuildFrames and the info line both stand down
+	long := make([]string, maxPubFrames+7)
+	for i := range long {
+		long[i] = fmt.Sprintf("f%d.jpg", i)
+	}
+	p.setFrames(long)
+	if len(p.frames) != maxPubFrames {
+		t.Errorf("setFrames kept %d images, want the row capped at %d -- a hand-edited "+
+			"project would send them all to the vision call", len(p.frames), maxPubFrames)
 	}
 	// and loading a project has to go through the same cap, not around it
 	if !strings.Contains(funcBody(t, "publish.go", `func \(p \*publisher\) apply\(st pubSettings\) \{`),
-		"p.putFrames(") {
+		"p.setFrames(") {
 		t.Error("apply sets the row directly, so a project file skips the cap")
 	}
 }
@@ -451,11 +458,11 @@ func TestOneCallAnswersWithAllThreeParts(t *testing.T) {
 // written is never overwritten by ▶, which is what makes ▶ the button you press
 // after rewording the instruction.
 func TestPublishWritesTheTextBeforeItDraws(t *testing.T) {
-	body := funcBody(t, "publish.go", `func \(a \*App\) publishRun\(textOnly bool\) \{`)
+	body := funcBody(t, "publish.go", `func \(a \*App\) publishStage\(`)
 	iDesc := strings.Index(body, "a.writeUpload(brief)")
 	iDraw := strings.Index(body, "drawThumbnail")
 	if iDesc < 0 || iDraw < 0 {
-		t.Fatalf("publishRun no longer does both: %d %d", iDesc, iDraw)
+		t.Fatalf("publishStage no longer does both: %d %d", iDesc, iDraw)
 	}
 	if iDesc > iDraw {
 		t.Error("the thumbnail is drawn before the text is written -- a failed draw would then " +
@@ -464,67 +471,77 @@ func TestPublishWritesTheTextBeforeItDraws(t *testing.T) {
 	if !strings.Contains(body, "landPublish") {
 		t.Error("nothing lands the written text on the page, so a failed draw would lose it")
 	}
-	// The model writes this page's text once per session. What makes ▶ safe to
+	// The model writes this page's text once per project. What makes ▶ safe to
 	// press over and over -- with the instruction reworded, with a different base
 	// frame -- is that the gate is the record on disk and not the state of the
 	// boxes: a title you emptied is a deletion you made, not a gap to refill.
-	if !strings.Contains(body, "a.publishRecorded()") ||
-		!strings.Contains(body, "needText := textOnly || !written") ||
-		!strings.Contains(body, "if needText {") {
-		t.Error("publishRun no longer gates its model call on the step6 record; " +
-			"▶ would go back to the LLM after the first run")
+	// The gate is read where ▶ lands, on the GTK thread, and handed in.
+	clicked := funcBody(t, "produce.go", `func \(a \*App\) produceClicked\(\) \{`)
+	if !strings.Contains(clicked, "written := a.publishRecorded()") ||
+		!strings.Contains(clicked, "!written, written, false") {
+		t.Error("▶ no longer gates the model call on the step6 record; " +
+			"it would go back to the LLM on every press")
 	}
-	// and the ↻ beside the frames is the opposite: it rewrites and does NOT draw
-	if !strings.Contains(body, "if textOnly {\n\t\t\treturn\n\t\t}") {
+	// and Suggest again is the opposite: it always rewrites and never draws
+	sug := funcBody(t, "publish.go", `func \(a \*App\) publishSuggest\(\) \{`)
+	if !strings.Contains(sug, "true, written, true)") {
+		t.Error("Suggest again no longer forces a rewrite (needText, textOnly)")
+	}
+	if !strings.Contains(body, "if textOnly {\n\t\treturn nil\n\t}") {
 		t.Error("Suggest again no longer stops before drawing")
 	}
 }
 
-// The page is split because the two halves are worked on at different times:
-// you reword the instruction and press ▶ half a dozen times without touching
-// the description, then you rewrite the description without redrawing. Stacked
-// in one column they fought for height and the picture -- the thing you are
-// judging -- ended up below the fold.
+// The drawing and the words are two panes worked on at different times: you
+// reword the instruction and press ▶ half a dozen times without touching the
+// description, then rewrite the description without redrawing. Since the merge
+// they are panes of Produce -- the drawing the whole left, the words above the
+// encoder settings on the right -- and the split itself lives in buildProduce.
 //
 // This is a fact about the source because a GTK page cannot be built without a
 // display. What it pins is the assignment: which widget went into which side.
 func TestThePageIsSplitBetweenTheDrawingAndTheWords(t *testing.T) {
-	body := funcBody(t, "publish.go", `func \(a \*App\) buildPublish\(\) gtk.Widgetter \{`)
-	iSplit := strings.Index(body, "outer := gtk.NewPaned(gtk.OrientationHorizontal)")
-	if iSplit < 0 {
-		t.Fatal("the page is no longer two columns")
-	}
+	body := funcBody(t, "publish.go", `func \(a \*App\) buildPublishPanes\(\)`)
 	// left: the images, what to change, what to keep out, the result
 	for _, want := range []string{
-		"draw.Append(p.framesBox)",
-		"draw.Append(promptBox)",
-		"draw.Append(negBox)",
-		"draw.Append(shotFrame)",
+		"col.Append(p.framesBox)",
+		"col.Append(promptBox)",
+		"col.Append(negBox)",
+		"col.Append(shotFrame)",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the drawing column is missing %s", want)
 		}
 	}
-	// right: the words themselves, and only those -- the prompt that writes
-	// them is on Prepare
+	// right top: the words themselves, and only those -- the prompt that
+	// writes them is on Prepare
 	for _, want := range []string{
-		"said.Append(p.title)",
-		"said.Append(descBox)",
+		"wrote.Append(p.title)",
+		"wrote.Append(descBox)",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the text column is missing %s", want)
 		}
 	}
-	// and the Inputs line that belongs to neither column stays above the
-	// split, full width; the Outputs group left the page for the shared
-	// bottom bar (outStack in main.go)
-	iRun := strings.Index(body, "page.Append(inRow)")
-	iOuter := strings.Index(body, "page.Append(outer)")
+	// and buildProduce is where the panes meet
+	prod := funcBody(t, "produce.go", `func \(a \*App\) buildProduce\(\)`)
+	if !strings.Contains(prod, "outer := gtk.NewPaned(gtk.OrientationHorizontal)") {
+		t.Fatal("the page is no longer two columns")
+	}
+	iSaid := strings.Index(prod, "right.Append(said)")
+	iSet := strings.Index(prod, "right.Append(scroll)")
+	if iSaid < 0 || iSet < 0 || iSaid > iSet {
+		t.Errorf("the words are no longer above the encoder settings: %d %d", iSaid, iSet)
+	}
+	// the Inputs line that belongs to neither pane stays above the split,
+	// full width, and step6's files ride the shared Outputs group
+	iRun := strings.Index(prod, "page.Append(inRow)")
+	iOuter := strings.Index(prod, "page.Append(outer)")
 	if iRun < 0 || iOuter < 0 || iRun > iOuter {
 		t.Errorf("the Inputs row is no longer above the split: %d %d", iRun, iOuter)
 	}
-	if strings.Contains(body, "page.Append(outRow)") {
-		t.Error("the Outputs row is back on the page beside the one on the shared bar")
+	if !strings.Contains(prod, "outRow.Append(gtk.NewSeparator(gtk.OrientationVertical))\n\toutRow.Append(pubOuts)") {
+		t.Error("step6's files fell off the shared Outputs group, or sit unfenced against the video's")
 	}
 }
 
@@ -595,22 +612,57 @@ func TestThePublishPageIsSavedWithTheProject(t *testing.T) {
 	}
 }
 
-// The tab exists, is in the stack under its own name, and ▶ on it runs the
-// step. All three are separate lists, and a page missing from any one of them
-// is a tab that opens onto nothing or a ▶ that does nothing.
-func TestPublishIsWiredIntoTheShell(t *testing.T) {
-	if stepIndex("publish") != len(steps)-1 {
-		t.Errorf("step6 is at %d of %d; Publish is the last step", stepIndex("publish"), len(steps))
+// Publish is no longer a tab: its panes live on Produce and its work runs off
+// Produce's ▶. Each absence below is a way the old page could quietly come
+// back -- as a step, as a stack page, or as a ▶ case -- and the order pin at
+// the end is the merge's whole point: one press writes the words, draws the
+// picture, and only then starts the long render.
+func TestPublishIsFoldedIntoProduce(t *testing.T) {
+	if i := stepIndex("publish"); i != -1 {
+		t.Errorf("publish is still a tab (index %d) -- it was merged into Produce", i)
 	}
-	if steps[stepIndex("publish")].label != "Publish" {
-		t.Errorf("the tab is labelled %q", steps[stepIndex("publish")].label)
+	if stepIndex("produce") != len(steps)-1 {
+		t.Errorf("produce is at %d of %d; the merged page is the last step",
+			stepIndex("produce"), len(steps))
 	}
-	if !strings.Contains(readSrc(t, "main.go"), `a.stack.AddNamed(a.buildPublish(), "publish")`) {
-		t.Error("the Publish page is not in the stack; the tab would show an empty page")
+	if strings.Contains(readSrc(t, "main.go"), `"publish"`) {
+		t.Error(`main.go still routes something to a "publish" page`)
 	}
-	body := funcBody(t, "pipeline.go", `func \(a \*App\) playClicked\(\) \{`)
-	if !strings.Contains(body, `case "publish":`) || !strings.Contains(body, "a.publishRun(false)") {
-		t.Error("▶ does nothing on the Publish page")
+	play := funcBody(t, "pipeline.go", `func \(a \*App\) playClicked\(\) \{`)
+	if strings.Contains(play, `case "publish":`) {
+		t.Error("▶ still dispatches to a Publish page that is not there")
+	}
+	// arriving on Produce reads the thumbnail folder, since the picture on
+	// the page is the file on disk rather than something remembered
+	show := funcBody(t, "main.go", `func \(a \*App\) showStep\(`)
+	if !strings.Contains(show, "a.pub.refresh()") {
+		t.Error("arriving on Produce no longer rereads the thumbnail from disk")
+	}
+	// ...and the page's Inputs row speaks for both halves: the images going
+	// to the image model, and whether the first ▶ still owes the text
+	ins := funcBody(t, "produce.go", `func \(p \*producer\) updateInputs\(`)
+	if !strings.Contains(ins, "if pub := a.pub; pub != nil {") ||
+		!strings.Contains(ins, "thumbnail image(s)") ||
+		!strings.Contains(ins, "a.publishRecorded()") {
+		t.Error("the merged Inputs row says nothing about the thumbnail half")
+	}
+	// an edit to the image row is an edit to that line, wherever it came from
+	if !strings.Contains(funcBody(t, "publish.go", `func \(p \*publisher\) setFrames\(`),
+		"p.a.updateProduceInfo()") {
+		t.Error("changing the image row leaves a stale count on the Inputs line")
+	}
+	// cheap and fails-fast before long: the words and the picture, then the
+	// render -- an sd.cpp that is down costs seconds, not a finished encode
+	body := funcBody(t, "produce.go", `func \(a \*App\) produceClicked\(\) \{`)
+	// the model call has no byte count to report, so the bar pulses until the
+	// first real part is counted -- without this ▶ looks hung while it thinks
+	if !strings.Contains(body, "a.pulseUntilCounted()") {
+		t.Error("nothing moves the bar while the model thinks")
+	}
+	iStage := strings.Index(body, "a.publishStage(")
+	iRender := strings.Index(body, "a.produce(segs, entries, st, vids, auds)")
+	if iStage < 0 || iRender < 0 || iStage > iRender {
+		t.Errorf("▶ no longer runs the publish stage before the render: %d %d", iStage, iRender)
 	}
 }
 

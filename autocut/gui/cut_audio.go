@@ -764,16 +764,6 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 			cr.Fill()
 		}
 	}
-	// the playhead crosses every lane, because reading a waveform against the
-	// picture is the whole reason the lanes are here
-	if ed.hasPlay {
-		x := ed.xOf(ed.playhead)
-		cr.SetSourceRGB(0.9, 0.15, 0.15)
-		cr.SetLineWidth(2)
-		cr.MoveTo(x, 0)
-		cr.LineTo(x, fh)
-		cr.Stroke()
-	}
 	// the border under the pointer, then the one being held. The lanes answer to
 	// the mouse as the picture band does, so they have to show the same offer:
 	// a cut point you can see through the sound but cannot tell you are about to

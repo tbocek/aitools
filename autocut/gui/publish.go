@@ -1,7 +1,8 @@
 package main
 
-// Publish. The two things a finished video still needs before anyone
-// can watch it -- a thumbnail, and the text under it on the YouTube page.
+// The thumbnail half of the Produce page -- once a Publish step of its own.
+// The two things a finished video still needs before anyone can watch it: a
+// thumbnail, and the text under it on the YouTube page.
 //
 // The thumbnail is usually an EDIT of a real frame of the session, which is
 // the whole reason this talks to sd.cpp's native API rather than its
@@ -235,21 +236,8 @@ type publisher struct {
 	// ones -- an edit instruction is a paragraph and a description is several.
 	prompt, neg, desc *gtk.TextView
 	shot              *gtk.Picture // what was drawn last
-	inputs, out       *gtk.Label
+	out               *gtk.Label
 	suggest           *gtk.Button
-	guard             bool // suppresses feedback while a project is being applied
-	// the Inputs line is redrawn from what is in the boxes, which means
-	// reading them and asking the disk whether a run has happened -- once the
-	// typing stops, not once per key (touched)
-	relabel debounce
-
-	// what the Inputs line says about things that live off this page. Cached,
-	// because that line is rewritten on every keystroke and these come from
-	// files (the cut, the narration) and from the config; see reread.
-	clips    int
-	clipSecs float64
-	lines    int
-	sdWhere  string
 }
 
 // pubSlot is one image in the row: which position it is in, what is in it, and
@@ -276,22 +264,17 @@ func (a *App) publishRecorded() bool {
 	return exists(filepath.Join(a.publishDir(), "publish.json"))
 }
 
-func (a *App) buildPublish() gtk.Widgetter {
+// buildPublishPanes is the thumbnail-and-words half of the Produce page, in
+// parts: the drawing column (the images, the instruction, the picture they
+// make), the written column (the title and the description), and the row
+// saying what is on disk. It was a page of its own -- the Publish step -- and
+// it is handed back in pieces now because Produce owns the page: the drawing
+// goes left, the words top right above the encoder settings, and one ▶ makes
+// everything the upload needs. No Inputs row of its own any more either --
+// the page's row (Produce's) already says what both halves read.
+func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	p := &publisher{a: a}
 	a.pub = p
-
-	p.inputs = gtk.NewLabel("")
-	p.inputs.SetXAlign(0)
-	p.inputs.SetHExpand(true)
-	p.inputs.SetEllipsize(pango.EllipsizeEnd)
-	inLbl := gtk.NewLabel("Inputs:")
-	inLbl.AddCSSClass("heading")
-	inRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	inRow.SetMarginStart(12)
-	inRow.SetMarginEnd(12)
-	inRow.SetMarginTop(6)
-	inRow.Append(inLbl)
-	inRow.Append(p.inputs)
 
 	// The images, side by side and in order. A row rather than a column because
 	// the first question asked of them is which one is the base, and that is a
@@ -338,21 +321,21 @@ func (a *App) buildPublish() gtk.Widgetter {
 	// LEFT: everything that makes the picture, in the order it happens --
 	// choose the images, say what to change, say what to keep out, look at what
 	// came back. Nothing on this side calls the language model: the instruction
-	// arrives from the one call the other side makes, and is then this page's.
-	draw := gtk.NewBox(gtk.OrientationVertical, 6)
-	draw.SetMarginTop(4)
-	draw.SetMarginStart(12)
-	draw.SetMarginEnd(6)
-	draw.Append(framesHead)
-	draw.Append(p.framesBox)
-	draw.Append(p.heading("Edit instruction", "What to change about the first image, sent to sd.cpp with the whole row — ▶ writes one, and it is yours to rewrite"))
-	draw.Append(promptBox)
-	draw.Append(p.heading("Negative prompt", "What must not appear"))
-	draw.Append(negBox)
-	draw.Append(shotFrame)
+	// arrives from the one call the words' side makes, and is then this side's.
+	col := gtk.NewBox(gtk.OrientationVertical, 6)
+	col.SetMarginTop(4)
+	col.SetMarginStart(12)
+	col.SetMarginEnd(6)
+	col.Append(framesHead)
+	col.Append(p.framesBox)
+	col.Append(p.heading("Edit instruction", "What to change about the first image, sent to sd.cpp with the whole row — ▶ writes one, and it is yours to rewrite"))
+	col.Append(promptBox)
+	col.Append(p.heading("Negative prompt", "What must not appear"))
+	col.Append(negBox)
+	col.Append(shotFrame)
 
 	drawScroll := gtk.NewScrolledWindow()
-	drawScroll.SetChild(draw)
+	drawScroll.SetChild(col)
 	drawScroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	drawScroll.SetVExpand(true)
 
@@ -373,7 +356,6 @@ func (a *App) buildPublish() gtk.Widgetter {
 		"picture — it is asked for them as its own sentence, so retyping the title does not mean " +
 		"rewriting the instruction. Four to seven words: a thumbnail is read at the size of a " +
 		"phone's sidebar. Empty means no lettering at all.")
-	p.title.ConnectChanged(func() { p.touched() })
 
 	p.desc, descBox = p.textBox(8, "The text under the video on the YouTube page. Written by the "+
 		"prompt above, and yours to rewrite.")
@@ -387,38 +369,17 @@ func (a *App) buildPublish() gtk.Widgetter {
 	p.suggest.SetTooltipText("Ask the model for a fresh title, thumbnail instruction and " +
 		"description — the only thing that does. ▶ never rewrites text that has already been " +
 		"written, and nothing here redraws the picture; ▶ does that")
-	p.suggest.ConnectClicked(func() { a.publishRun(true) })
+	p.suggest.ConnectClicked(func() { a.publishSuggest() })
 
-	said := gtk.NewBox(gtk.OrientationVertical, 6)
-	said.SetMarginTop(4)
-	said.SetMarginStart(6)
-	said.Append(p.heading("Title", "The YouTube title, and the lettering on the thumbnail", p.suggest))
-	said.Append(p.title)
-	said.Append(p.heading("YouTube description", "The text under the video on the upload page"))
-	said.Append(descBox)
+	wrote := gtk.NewBox(gtk.OrientationVertical, 6)
+	wrote.SetMarginTop(4)
+	wrote.SetMarginStart(6)
+	wrote.Append(p.heading("Title", "The YouTube title, and the lettering on the thumbnail", p.suggest))
+	wrote.Append(p.title)
+	wrote.Append(p.heading("YouTube description", "The text under the video on the upload page"))
+	wrote.Append(descBox)
 	descBox.SetVExpand(true)
-
-	// The prompt was a box above these two, taking about half the column for
-	// something a project touches once; then a dropdown at the top of the
-	// column. It is on Prepare with all the others now (prepedit.go). What is
-	// left on this page is the two image boxes, which are not prompts in that
-	// sense at all -- they are this thumbnail's instructions, rewritten and
-	// redrawn as often as it takes to get the picture right.
-	text := gtk.NewBox(gtk.OrientationVertical, 6)
-	text.Append(said)
-	said.SetVExpand(true)
-	text.SetVExpand(true)
-	text.SetSizeRequest(340, -1)
-
-	outer := gtk.NewPaned(gtk.OrientationHorizontal)
-	outer.SetStartChild(drawScroll)
-	outer.SetEndChild(text)
-	outer.SetResizeStartChild(true)
-	outer.SetResizeEndChild(true)
-	outer.SetShrinkStartChild(false)
-	outer.SetShrinkEndChild(false)
-	outer.SetVExpand(true)
-	outer.SetMarginEnd(12)
+	wrote.SetVExpand(true)
 
 	openOut := gtk.NewButtonFromIconName("folder-open-symbolic")
 	openOut.SetTooltipText("step6/ — the thumbnail, the title and the description")
@@ -427,14 +388,9 @@ func (a *App) buildPublish() gtk.Widgetter {
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	outRow.Append(openOut)
 	outRow.Append(p.out)
-	a.outStack.AddNamed(outRow, "publish") // the shared bar's Outputs group; see outStack in main.go
-
-	page := gtk.NewBox(gtk.OrientationVertical, 4)
-	page.Append(inRow)
-	page.Append(outer)
 
 	p.refresh()
-	return page
+	return drawScroll, wrote, outRow
 }
 
 // heading is the one-line label above each field, with anything the caller
@@ -469,7 +425,6 @@ func (p *publisher) textBox(lines int, tip string) (*gtk.TextView, *gtk.Scrolled
 	tv.SetLeftMargin(6)
 	tv.SetRightMargin(6)
 	tv.SetTooltipText(tip)
-	tv.Buffer().ConnectChanged(func() { p.touched() })
 	sc := gtk.NewScrolledWindow()
 	sc.SetChild(tv)
 	sc.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
@@ -478,38 +433,20 @@ func (p *publisher) textBox(lines int, tip string) (*gtk.TextView, *gtk.Scrolled
 	return tv, sc
 }
 
-// touched is every edit on this page: the project is bytes-compared by the
-// autosave, so nothing has to be flagged dirty -- what this refreshes is the
-// line at the top, which counts what a run would use.
-func (p *publisher) touched() {
-	if p == nil || p.guard {
-		return
-	}
-	// Typing a description says nothing new about this page until the sentence
-	// is finished: the line it redraws counts images and asks the disk whether
-	// a run has happened, neither of which a keystroke changes.
-	p.relabel.call(p.updateInputs)
-}
-
 // setFrames replaces the row. Everything that changes the list goes through
-// here, so there is one place that keeps the widgets, the Inputs line and the
-// project in step with each other.
+// here -- a user gesture and apply alike -- so one place keeps the widgets,
+// the cap and the Inputs line in step. Nothing flags the edit beyond that:
+// the project is bytes-compared by the autosave. The cap lives here rather
+// than on the Add button so that it also holds for a hand-edited project
+// file: the row is what gets attached to the vision call, and twenty images
+// is a call that costs a fortune and answers worse.
 func (p *publisher) setFrames(fs []string) {
-	p.putFrames(fs)
-	p.touched()
-}
-
-// putFrames is setFrames without the feedback, for apply -- which is already
-// inside the guard and reports once at the end. The cap lives here rather than
-// on the Add button so that it also holds for a hand-edited project file: the
-// row is what gets attached to the vision call, and twenty images is a call
-// that costs a fortune and answers worse.
-func (p *publisher) putFrames(fs []string) {
 	p.frames = append([]string(nil), fs...)
 	if len(p.frames) > maxPubFrames {
 		p.frames = p.frames[:maxPubFrames]
 	}
 	p.rebuildFrames()
+	p.a.updateProduceInfo() // the page's Inputs row counts these images
 }
 
 // rebuildFrames throws the row away and builds it again from p.frames. Cheaper
@@ -696,12 +633,10 @@ func (p *publisher) snapshot() pubSettings {
 }
 
 // apply is snapshot's inverse: what a run wrote, or what a project holds, put
-// back on the page. Guarded, because every field here reports its own edits.
+// back on the page.
 func (p *publisher) apply(st pubSettings) {
-	p.guard = true
-	defer func() { p.guard = false; p.updateInputs() }()
 	p.crop = st.Crop
-	p.putFrames(st.Frames)
+	p.setFrames(st.Frames)
 	p.title.SetText(st.Title)
 	setViewText(p.prompt, st.Prompt)
 	setViewText(p.neg, st.Negative)
@@ -764,7 +699,6 @@ func (p *publisher) refresh() {
 	// CUT's shape, and the cut is the thing most likely to have been reshaped
 	// since this page was last looked at
 	p.rebuildFrames()
-	p.updateInputs()
 	p.updateOut()
 	p.showShot()
 }
@@ -790,72 +724,11 @@ func (p *publisher) showShot() {
 	p.shot.SetTooltipText("nothing drawn yet — ▶ below draws it")
 }
 
-// reread reloads the parts of the Inputs line that come off disk -- the cut,
-// the narration, the image endpoint. Only on arrival and after a run, never on
-// a keystroke: updateInputs runs on every character typed into the description,
-// and re-reading the cut and the narration as you type is what made Cut's row
-// stutter before it was split the same way.
+// reread reloads the cut's aspect off disk -- the one thing the drawing side
+// still reads from another step's file. Only on arrival and after a run, never
+// per frame: the crop box is redrawn on every pointer move.
 func (p *publisher) reread() {
-	segs := p.a.produceSegs()
-	p.clips, p.clipSecs = len(segs), 0
-	for _, s := range segs {
-		p.clipSecs += s.length()
-	}
-	p.lines = 0
-	for _, e := range p.a.produceEntries() {
-		if strings.TrimSpace(e.Text) != "" {
-			p.lines++
-		}
-	}
-	p.sdWhere = p.a.sdURL()
 	p.aspect = p.a.produceCut().Aspect
-}
-
-func (p *publisher) updateInputs() {
-	if p == nil || p.inputs == nil {
-		return
-	}
-	st := p.snapshot()
-	// what the row amounts to: which picture is being edited, and how many
-	// others are along for the instruction to name
-	imgs := "no image, drawn from the instruction alone"
-	if b := st.basePath(); b != "" {
-		imgs = "over " + strings.TrimSuffix(filepath.Base(b), filepath.Ext(b))
-		if n := len(st.Frames) - 1; n > 0 {
-			imgs = fmt.Sprintf("%s + %d reference", imgs, n)
-			if n > 1 {
-				imgs += "s"
-			}
-		}
-	}
-	// What ▶ would do, which after the first run is always the same thing: draw.
-	// The model's half of this page happens once, and the line says so rather
-	// than reporting an empty box as work still to come -- an empty box after
-	// the first run is a deletion, not a gap.
-	todo := "▶ redraws the picture — the text is written"
-	if !p.a.publishRecorded() {
-		want := []string{}
-		if st.Title == "" || st.Prompt == "" {
-			want = append(want, "title + image prompt")
-		}
-		if st.Desc == "" {
-			want = append(want, "description")
-		}
-		todo = "▶ redraws the picture"
-		if len(want) > 0 {
-			todo = "▶ writes the " + strings.Join(want, " and the ") + ", once"
-		}
-	}
-	p.inputs.SetText(fmt.Sprintf("%d clips, %d:%02d · %d narration lines · %s · %s",
-		p.clips, int(p.clipSecs)/60, int(p.clipSecs)%60, p.lines, imgs, todo))
-	tw, th := pubBox(p.aspect)
-	p.inputs.SetTooltipText(fmt.Sprintf(
-		"The thumbnail is edited from the first image by sd.cpp at %s, %dx%d, following "+
-			"the instruction below — including the title, which this model letters into "+
-			"the picture itself. The rest of the row goes with it, unchanged, for the "+
-			"instruction to refer to.\n"+
-			"The title and the description are written by the LLM from the clips and the narration.",
-		p.sdWhere, tw, th))
 }
 
 func (p *publisher) updateOut() {
@@ -1116,14 +989,11 @@ func cleanDescription(reply string) string {
 
 // ---- the run --------------------------------------------------------------------
 
-// publishRun is ▶ on this page, and the "Suggest again" button beside the
-// frames. textOnly is that button: it rewrites the suggestions and stops,
-// where ▶ fills in whatever is still empty and then draws the picture.
-//
-// The order matters. The text is written first and landed on the page before
-// anything is drawn, so an sd.cpp that is down or busy costs the picture and
-// not the two model calls that were already paid for.
-func (a *App) publishRun(textOnly bool) {
+// publishSuggest is the "Suggest again" button beside the title: one LLM call
+// rewrites the title, the thumbnail instruction and the description, and
+// nothing is drawn or rendered. It is the only thing that rewrites them -- ▶
+// (produceClicked) writes them once and then never touches them again.
+func (a *App) publishSuggest() {
 	if a.running {
 		a.setStatus("a run is already active — stop it first (⏹)")
 		return
@@ -1139,24 +1009,10 @@ func (a *App) publishRun(textOnly bool) {
 	}
 	st := p.snapshot()
 	entries := a.produceEntries()
-	// the cut's shape, read once on this thread: the thumbnail comes out the
-	// shape the video does, and the goroutine below must not go reading the
-	// editor for it
+	// the cut's shape, read once on this thread: the goroutine below must not
+	// go reading the editor for it
 	aspect := a.produceCut().Aspect
-
-	// The model writes this page's text -- the title and the description --
-	// once per session and then never again. ▶ is the redraw button: press it
-	// as often as you like with the instruction reworded or the images
-	// changed, and it costs GPU time and no thinking.
-	//
-	// The record is the folder, not the boxes. Gating on "is the title empty"
-	// -- which is what this did -- meant clearing a field you did not like
-	// silently bought you a fresh model call on the next ▶, and it also meant
-	// a run that failed at the drawing rewrote the words it had just written.
-	// Deleting step6/ is the deliberate way to start the text over, and
-	// "Suggest again" is the way to do it without losing the pictures.
 	written := a.publishRecorded()
-	needText := textOnly || !written
 	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
 
 	a.running = true
@@ -1166,95 +1022,85 @@ func (a *App) publishRun(textOnly bool) {
 	a.qReset()
 	a.updateRunControls()
 	a.logExp.SetExpanded(true)
-
-	switch {
-	case textOnly:
-		a.logf(">>> publish: rewriting the title, instruction and description — one LLM call")
-	case needText:
-		a.logf(">>> publish: writing the title, instruction and description, "+
-			"then drawing the thumbnail on %s", a.sdURL())
-	default:
-		a.logf(">>> publish: redrawing the thumbnail on %s from what the boxes say", a.sdURL())
-	}
-	// The model calls have nothing countable in them, so the bar pulses until
-	// the drawing starts. What stops it is the drawing's own first fraction
-	// rather than a flag set from the goroutine: Pulse and SetFraction drive the
-	// same needle, so the one that lasts has to be the one with real news --
-	// and reading progParts under its mutex is also the only way to ask this
-	// question from the GUI thread without racing the runner.
+	a.logf(">>> publish: rewriting the title, instruction and description — one LLM call")
 	a.qJob(trackSTT, "publish", 0, 0)
 	a.prog(trackSTT, 0, "thinking")
-	glib.TimeoutAdd(150, func() bool {
-		if !a.running {
-			return false
-		}
-		a.progMu.Lock()
-		drawing := a.progParts[trackSTT] > 0
-		a.progMu.Unlock()
-		if drawing {
-			return false
-		}
-		a.progress.Pulse()
-		return true
-	})
+	a.pulseUntilCounted()
 
 	go func() {
 		var failed error
-		defer func() { a.publishDone(failed, textOnly) }()
-
-		// A starting image on the very first run, so the row is not empty the
-		// first time the page is opened. Nothing chooses between them any more
-		// -- the first is simply the base -- so this is a convenience, not a
-		// decision: swap them, add to them, or empty the row entirely.
-		//
-		// Not on a redraw. A row the user has emptied is a decision ("draw it
-		// from the instruction alone"), not a gap to quietly refill with frames
-		// they threw away.
-		if len(st.Frames) == 0 && !written {
-			a.logfIdle("    publish: no images chosen — taking %d from the cut", defPubFrames)
-			if st.Frames = pickShots(a.publishShots(), segs, defPubFrames); len(st.Frames) > 0 {
-				a.landPublish(st)
-			} else {
-				a.logfIdle("    publish: no frames extracted either — drawing from the instruction alone")
-			}
-		}
-
-		if needText {
-			brief := a.publishBrief(segs, entries)
-			a.logCtx("publish")
-			a.prog(trackSTT, 0, "writing the title, the instruction and the description")
-			title, instr, desc, err := a.writeUpload(brief)
-			if err != nil {
-				failed = err
-				return
-			}
-			// a reply that forgot one of its labelled lines still has a good
-			// description in it, and an empty box is easier to notice than a
-			// wrong line -- so a missing part leaves what was there rather than
-			// clearing it
-			if title != "" {
-				st.Title = title
-			}
-			if instr != "" {
-				st.Prompt = instr
-			}
-			st.Desc = desc
-			a.logfIdle("    publish: title %q, instruction %d characters, description %d characters",
-				st.Title, len(st.Prompt), len(desc))
-			a.landPublish(st)
-		}
-		if err := a.writePublishFiles(st); err != nil {
-			a.logfIdle("    publish: %v", err) // the text is on the page either way
-		}
-		if textOnly {
-			return
-		}
-		a.prog(trackSTT, 0.5, "drawing the thumbnail")
-		if err := a.drawThumbnail(st, aspect); err != nil {
-			failed = err
-			return
-		}
+		defer func() { a.publishDone(failed) }()
+		failed = a.publishStage(st, aspect, segs, entries, true, written, true)
 	}()
+}
+
+// publishStage is the writing-and-drawing half of a run, on the runner's
+// goroutine: fill the image row the first time, write the upload text, land
+// it, then draw the thumbnail. The order matters -- the text is written and
+// landed on the page before anything is drawn, so an sd.cpp that is down or
+// busy costs the picture and not the model calls that were already paid for.
+// textOnly stops before the drawing; that is Suggest again.
+//
+// The model writes the text -- the title, the instruction and the description
+// -- once per project and then never again (needText, which ▶ passes as "has
+// the step6 record never been written"). ▶ after that redraws and re-renders:
+// press it as often as you like with the instruction reworded or the images
+// changed, and it costs GPU time and no thinking. The record is the folder,
+// not the boxes. Gating on "is the title empty" meant clearing a field you
+// did not like silently bought you a fresh model call on the next ▶, and it
+// also meant a run that failed at the drawing rewrote the words it had just
+// written. Deleting step6/ is the deliberate way to start the text over, and
+// "Suggest again" is the way to do it without losing the pictures.
+func (a *App) publishStage(st pubSettings, aspect string, segs []cutSeg,
+	entries []narrEntry, needText, written, textOnly bool) error {
+	// A starting image on the very first run, so the row is not empty the
+	// first time the page is opened. Nothing chooses between them any more
+	// -- the first is simply the base -- so this is a convenience, not a
+	// decision: swap them, add to them, or empty the row entirely.
+	//
+	// Not on a redraw. A row the user has emptied is a decision ("draw it
+	// from the instruction alone"), not a gap to quietly refill with frames
+	// they threw away.
+	if len(st.Frames) == 0 && !written {
+		a.logfIdle("    publish: no images chosen — taking %d from the cut", defPubFrames)
+		if st.Frames = pickShots(a.publishShots(), segs, defPubFrames); len(st.Frames) > 0 {
+			a.landPublish(st)
+		} else {
+			a.logfIdle("    publish: no frames extracted either — drawing from the instruction alone")
+		}
+	}
+
+	if needText {
+		brief := a.publishBrief(segs, entries)
+		a.logCtx("publish")
+		a.prog(trackSTT, 0, "writing the title, the instruction and the description")
+		title, instr, desc, err := a.writeUpload(brief)
+		if err != nil {
+			return err
+		}
+		// a reply that forgot one of its labelled lines still has a good
+		// description in it, and an empty box is easier to notice than a
+		// wrong line -- so a missing part leaves what was there rather than
+		// clearing it
+		if title != "" {
+			st.Title = title
+		}
+		if instr != "" {
+			st.Prompt = instr
+		}
+		st.Desc = desc
+		a.logfIdle("    publish: title %q, instruction %d characters, description %d characters",
+			st.Title, len(st.Prompt), len(desc))
+		a.landPublish(st)
+	}
+	if err := a.writePublishFiles(st); err != nil {
+		a.logfIdle("    publish: %v", err) // the text is on the page either way
+	}
+	if textOnly {
+		return nil
+	}
+	a.prog(trackSTT, 0.5, "drawing the thumbnail")
+	return a.drawThumbnail(st, aspect)
 }
 
 // landPublish puts a stage's result on the page from the runner's goroutine and
@@ -1432,7 +1278,7 @@ func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 	return os.WriteFile(filepath.Join(dir, "thumbnail.png"), img, 0o644)
 }
 
-func (a *App) publishDone(err error, textOnly bool) {
+func (a *App) publishDone(err error) {
 	glib.IdleAdd(func() {
 		a.running = false
 		a.updateRunControls()
@@ -1440,25 +1286,16 @@ func (a *App) publishDone(err error, textOnly bool) {
 			p.refresh()
 		}
 		a.updateGates()
-		what := "publish"
-		if textOnly {
-			what = "suggestions"
-		}
 		if err != nil {
 			if !errors.Is(err, errStopped) {
-				a.logf("%s FAILED: %v", what, err)
-				a.progress.SetText(what + " failed — see log")
+				a.logf("suggestions FAILED: %v", err)
+				a.progress.SetText("suggestions failed — see log")
 				return
 			}
-			a.progress.SetText(what + " stopped")
+			a.progress.SetText("suggestions stopped")
 			return
 		}
 		a.progress.SetFraction(1)
-		if textOnly {
-			a.progress.SetText("title, instruction and description rewritten — ▶ draws the thumbnail")
-			return
-		}
-		n := a.logOutputs("publish", a.publishDir())
-		a.progress.SetText(fmt.Sprintf("thumbnail and description ready — %d file(s)", n))
+		a.progress.SetText("title, instruction and description rewritten — ▶ draws and renders")
 	})
 }

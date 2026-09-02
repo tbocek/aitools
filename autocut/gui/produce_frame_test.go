@@ -96,12 +96,12 @@ func TestAFreshProjectRendersAt1080AndTheDropdownAgrees(t *testing.T) {
 	}
 	// the dropdown's own starting pick is the same number, from the same list
 	src := readSrc(t, "produce.go")
-	if !strings.Contains(src, `p.height = dd(prodHeights, 3,`) {
+	if !strings.Contains(src, `p.height = dd(prodHeights, 1,`) {
 		t.Error("the height dropdown no longer starts where it did")
 	}
-	if prodHeights[3] != "1080" {
+	if prodHeights[1] != "1080p" {
 		t.Errorf("the dropdown starts on %q while a new project renders at 1080",
-			prodHeights[3])
+			prodHeights[1])
 	}
 	// ...and a project that already says "keep source" still gets it
 	var st prodSettings
@@ -120,12 +120,20 @@ func TestTheProducePageSaysTheFrameItWillComeOutAt(t *testing.T) {
 	if w, h := outSize(3840, 2160, 0); w != 3840 || h != 2160 {
 		t.Errorf("source resolution over 4K footage is %dx%d, want 3840x2160", w, h)
 	}
-	// a height asked for: that height, the footage's shape, and an even width
+	// a tier asked for: the footage's shape with its SHORT side on the tier
 	if w, h := outSize(3840, 2160, 1080); w != 1920 || h != 1080 {
-		t.Errorf("1080 over 4K footage is %dx%d, want 1920x1080", w, h)
+		t.Errorf("1080p over 4K footage is %dx%d, want 1920x1080", w, h)
 	}
 	if w, h := outSize(1440, 1080, 720); w != 960 || h != 720 {
-		t.Errorf("720 over 4:3 footage is %dx%d, want 960x720", w, h)
+		t.Errorf("720p over 4:3 footage is %dx%d, want 960x720", w, h)
+	}
+	// ...which for tall footage is the width: a phone clip at 1080p is a real
+	// 1080×1920, not shrunk to 608 wide because the tier was read as a height
+	if w, h := outSize(1080, 1920, 1080); w != 1080 || h != 1920 {
+		t.Errorf("1080p over tall footage is %dx%d, want 1080x1920", w, h)
+	}
+	if w, h := outSize(2160, 3840, 720); w != 720 || h != 1280 {
+		t.Errorf("720p over tall 4K footage is %dx%d, want 720x1280", w, h)
 	}
 	if w, _ := outSize(1080, 1080, 719); w%2 != 0 {
 		t.Errorf("an odd height gives an odd width (%d) — scale=-2 will not", w)
@@ -273,5 +281,73 @@ func TestAClipOfTheWrongSizeIsCalledOutBeforeTheJoinSwallowsIt(t *testing.T) {
 		if !strings.Contains(src, want) {
 			t.Errorf("the render no longer does %q", want)
 		}
+	}
+}
+
+// The resolution dropdown offers three sizes worth choosing between -- 720p,
+// 1080p, original -- and the p-number names the short side of the frame, so a
+// 9:16 cut at 1080p renders 1080×1920 (the frame outBox makes) rather than a
+// 608-wide strip. The words on the control and the number in the settings
+// round-trip through tierLabel and the "p"-trim, and a height an old project
+// saved that is no longer offered falls back to the default pick instead of
+// matching nothing forever.
+func TestTheResolutionTiersNameTheShortSide(t *testing.T) {
+	want := []string{"720p", "1080p", "original"}
+	if len(prodHeights) != len(want) {
+		t.Fatalf("the dropdown offers %v, want %v", prodHeights, want)
+	}
+	for i, s := range want {
+		if prodHeights[i] != s {
+			t.Errorf("dropdown entry %d is %q, want %q", i, prodHeights[i], s)
+		}
+	}
+	// the stored number and the word on the control are the same fact
+	for _, c := range []struct {
+		label string
+		h     int
+	}{{"720p", 720}, {"1080p", 1080}, {"original", 0}} {
+		if got := tierLabel(c.h); got != c.label {
+			t.Errorf("tierLabel(%d) = %q, want %q", c.h, got, c.label)
+		}
+		if got := atoiOr(strings.TrimSuffix(c.label, "p"), 0); got != c.h {
+			t.Errorf("%q reads back as height %d, want %d", c.label, got, c.h)
+		}
+	}
+	// a saved 2160 has no row to land on; setPick leaves the default standing,
+	// which tierLabel makes explicit by naming a word not in the list
+	if got := tierLabel(2160); got != "2160p" {
+		t.Errorf("tierLabel(2160) = %q, want the honest %q", got, "2160p")
+	}
+	// the tall-cut frame itself, as the render builds it
+	if w, h := tierBox(9.0/16, 0, 1080); w != 1080 || h != 1920 {
+		t.Errorf("a 9:16 cut at 1080p renders %dx%d, want 1080x1920", w, h)
+	}
+	// original + aspect: the footage's height stays the frame's height -- the
+	// crop a 9:16 aspect takes from 2160-tall footage is 1216×2160 of real
+	// pixels, and "original" means keeping them
+	if w, h := tierBox(9.0/16, 2160, 0); w != 1216 || h != 2160 {
+		t.Errorf("a 9:16 cut at original over 4K renders %dx%d, want 1216x2160", w, h)
+	}
+
+	// ...and the round trip above is only real if the page actually takes it:
+	// the settings read the number through the p-trim, and the restore writes
+	// the word through tierLabel -- not the old bare-number fmtOpt, which
+	// matches no row and silently re-picks the default on every load
+	read := funcBody(t, "produce.go", `func \(a \*App\) prodSettings\(\)`)
+	if !strings.Contains(read, `atoiOr(strings.TrimSuffix(pickText(p.height, prodHeights), "p"), 0)`) {
+		t.Error(`the settings no longer trim the "p", so every tier reads back as 0 -- original`)
+	}
+	wrote := funcBody(t, "produce.go", `func \(a \*App\) applyProdSettings\(`)
+	if !strings.Contains(wrote, "setPick(p.height, prodHeights, tierLabel(st.Height))") {
+		t.Error("the restore no longer speaks the dropdown's language, so a saved height matches no row")
+	}
+
+	// the page's own info line says the frame the render will make: when the
+	// cut names an aspect it must reshape the number the same way (tierBox),
+	// not quote the footage's shape as if no aspect had been picked
+	said := funcBody(t, "produce.go", `func \(p \*producer\) updateSettings\(\)`)
+	if !strings.Contains(said, "if asp := parseAspect(p.a.ed.aspect); asp > 0 {") ||
+		!strings.Contains(said, "ow, oh = tierBox(asp, h, st.Height)") {
+		t.Error("the info line ignores the cut's aspect, so it lies exactly when the shape was changed on purpose")
 	}
 }

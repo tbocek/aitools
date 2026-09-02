@@ -73,8 +73,8 @@ func prepRows() []prepRow {
 			"The fixer: %d transcript lines per request, each block given what every "+
 				"other source showed or said at the same moment.", fixBlock)},
 		{"Cut", "cut", "The rules ▶ Suggest works to, plus what this session was and " +
-			"what matters in it. The wording list here is the same choice as the Style " +
-			"dropdown on the Cut page's bar."},
+			"what matters in it. Its wordings are the styles: the Style dropdown under " +
+			"the sources picks between them, for every prompt at once."},
 		{"Audit", "audit", "How the suggestion is read back: what counts as ending too " +
 			"early, and how readily a segment is dropped."},
 		{"Narration", "narrate", "The rules the narration is written to, plus what this " +
@@ -87,16 +87,22 @@ func prepRows() []prepRow {
 	}
 }
 
-// prepEditNames is the menu's rows, each wearing the ✎ that says a wording of
-// your own is being held for it (promptOwned). The context never wears one:
-// it is this session's own text and there is nothing built-in for it to differ
-// from.
+// prepEditNames is the menu's rows, each prompt named with the wording the
+// Style turned it to -- "Cut (Highlights)" -- because the choice is made once,
+// beside Language, and this menu is where its reach over every job has to be
+// readable. The ✎ still marks a wording this machine reworded (promptOwned).
+// The context wears neither: it is this session's own text, with no wording to
+// name and nothing built-in to differ from.
 func (a *App) prepEditNames() []string {
 	rows := prepRows()
 	out := make([]string, len(rows))
 	for i, r := range rows {
 		out[i] = r.menu
-		if r.key != "" && a.promptOwned(r.key) {
+		if r.key == "" {
+			continue
+		}
+		out[i] += " (" + a.promptPickName(r.key) + ")"
+		if a.promptOwned(r.key) {
 			out[i] += " ✎"
 		}
 	}
@@ -105,7 +111,10 @@ func (a *App) prepEditNames() []string {
 
 // prepEditor is the right-hand half of the Prepare page: one box, and in its
 // heading the menu for what the box shows plus the controls that belong to a
-// prompt -- which wording, save this as a new one, put the built-in back.
+// prompt -- save this as a new wording, put the built-in back. Which wording
+// the box shows is not chosen here: the Style dropdown on the bottom row sets
+// it for every job at once (applyStyle), and the menu's row names say what it
+// chose.
 //
 // There is nothing to save before switching away: every keystroke writes
 // through, to the context cache or through setPrompt to the picked wording. And
@@ -141,14 +150,12 @@ func (a *App) prepEditor() gtk.Widgetter {
 	mark.SetTooltipText("Your wording is kept in ~/.config/autocut/prompts, so a newer " +
 		"built-in prompt will not replace it. Reset puts it back.")
 
-	names := gtk.NewStringList(nil)
-	wording := gtk.NewDropDown(names, nil)
-	wording.SetTooltipText("Which wording this project uses for this job.\n" +
-		"＋ copies what is in the box to a new name; the button beside it " +
-		"undoes your edits to a built-in wording, or deletes one you added.")
 	add := gtk.NewButtonWithLabel("＋")
 	add.AddCSSClass("flat")
-	add.SetTooltipText("Save what is in the box under a new name")
+	add.SetTooltipText("Save what is in the box as a new wording. The Style " +
+		"dropdown finds wordings by name: saved for the cut, a new name is a " +
+		"new style; saved for another job under a style's name, it is what " +
+		"that style sends for the job.")
 	drop := gtk.NewButtonWithLabel("Reset")
 	drop.AddCSSClass("flat")
 
@@ -156,12 +163,11 @@ func (a *App) prepEditor() gtk.Widgetter {
 	quiet := false
 
 	// showCtx is the heading with the prompt controls taken off it. The context
-	// has one wording by definition -- the one you wrote -- so a wording list, a
-	// ＋ and a Reset would each be a control with nothing to do, and a greyed
-	// row of them says "this row is broken" rather than "this row is different".
+	// has one wording by definition -- the one you wrote -- so a ＋ and a Reset
+	// would each be a control with nothing to do, and a greyed row of them says
+	// "this row is broken" rather than "this row is different".
 	showCtx := func(on bool) {
 		mark.SetVisible(!on)
-		wording.SetVisible(!on)
 		add.SetVisible(!on)
 		drop.SetVisible(!on)
 	}
@@ -213,40 +219,32 @@ func (a *App) prepEditor() gtk.Widgetter {
 			a.promptRows = map[string]promptRow{}
 		}
 		a.promptViews[r.key] = tv
-		a.promptRows[r.key] = promptRow{pick: wording, names: names, mark: mark, drop: drop}
+		a.promptRows[r.key] = promptRow{mark: mark, drop: drop}
 		quiet = false
-		// fills the box, the wording list and the mark, all from the store --
-		// which is why switching away and back is lossless however much was
-		// typed in between
+		// fills the box and the mark from the store -- which is why switching
+		// away and back is lossless however much was typed in between
 		a.showPromptStyle(r.key, a.promptPickName(r.key))
 	}
 
-	// pickPromptStyle, not showPromptStyle: this runs inside GtkDropDown's own
-	// notify::selected, with the popup still closing, and rebuilding the list
-	// model from there hangs the list view that is drawing it (see
-	// showPromptStyle). The name comes out of the model rather than out of a
-	// freshly computed list, so it is the row the user actually clicked even if
-	// the two ever drift.
-	wording.NotifyProperty("selected", func() {
-		if a.promptQuiet {
-			return
-		}
-		if r := rows[cur]; r.key != "" {
-			if i := wording.Selected(); i < names.NItems() {
-				a.pickPromptStyle(r.key, names.String(i))
-			}
-		}
-	})
 	add.ConnectClicked(func() {
 		r := rows[cur]
 		if r.key == "" {
 			return
 		}
-		a.askName("Name this wording", "It joins the list for "+r.menu+" on this machine.",
+		a.askName("Name this wording", "Kept on this machine, and what "+r.menu+
+			" sends from now on. The Style dropdown finds wordings by name: for the "+
+			"cut a new name is a new style, and for any other job a style's name is "+
+			"what that style sends here.",
 			func(name string) {
 				b := tv.Buffer()
 				a.savePromptStyle(r.key, name, b.Text(b.StartIter(), b.EndIter(), false))
 				a.showPromptStyle(r.key, name)
+				if r.key == "cut" {
+					// a new cut wording is a new style, and saving one is
+					// picking it -- the rest of the prompts have to turn with
+					// it, exactly as the dropdown would have turned them
+					a.applyStyle(name)
+				}
 			})
 	})
 	drop.ConnectClicked(func() {
@@ -266,6 +264,12 @@ func (a *App) prepEditor() gtk.Widgetter {
 			"Remove", func() {
 				a.dropPromptStyle(r.key, name)
 				a.showPromptStyle(r.key, promptDefFor(r.key).styleName())
+				if r.key == "cut" {
+					// the removed wording was a style; a project cannot stay
+					// on a style that no longer exists, so every prompt turns
+					// back to the default the box just went to
+					a.applyStyle(promptDefFor(r.key).styleName())
+				}
 			})
 	})
 
@@ -273,8 +277,8 @@ func (a *App) prepEditor() gtk.Widgetter {
 	pick := gtk.NewDropDown(menu, nil)
 	pick.SetTooltipText("What the box shows. The context is this session's facts, " +
 		"sent with every request; the rest are the prompts, in the order the " +
-		"pipeline sends them. ✎ marks a prompt this project has something of " +
-		"its own to say about.")
+		"pipeline sends them, each named with the wording the Style turned it " +
+		"to. ✎ marks a wording edited on this machine.")
 	pick.NotifyProperty("selected", func() {
 		if a.promptQuiet {
 			return // prepSync is redrawing the rows; the pick did not move
@@ -306,7 +310,6 @@ func (a *App) prepEditor() gtk.Widgetter {
 	head.Append(lbl)
 	head.Append(mark)
 	head.Append(pick)
-	head.Append(wording)
 	head.Append(add)
 	head.Append(drop)
 	return a.editorBody(head, tv)

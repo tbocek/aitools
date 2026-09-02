@@ -135,25 +135,6 @@ func TestANarrationLineReachesTheDiskWhenTheTypingStops(t *testing.T) {
 	}
 }
 
-// The Publish page's Inputs line counts images and asks the disk whether a run
-// has happened -- neither of which a keystroke in the description changes.
-func TestTypingADescriptionDoesNotRedrawTheInputsLinePerKeystroke(t *testing.T) {
-	c := &clock{}
-	p := &publisher{}
-	p.relabel.arm = c.arm
-	p.touched()
-	if !p.relabel.pending() {
-		t.Error("a keystroke in a Publish box redraws the Inputs line on the spot")
-	}
-	// ...and a project being applied still says nothing at all
-	p.relabel.flush()
-	p.guard = true
-	p.touched()
-	if p.relabel.pending() {
-		t.Error("applying a project reports its own writes as edits")
-	}
-}
-
 // Typing a narration line used to write the whole narration file AND walk the
 // output folder counting files, per keystroke. The words go into memory as they
 // are typed -- what is on screen is what is stored -- and the disk hears about

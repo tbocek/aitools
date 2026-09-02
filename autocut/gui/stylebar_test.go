@@ -1,14 +1,15 @@
 package main
 
-// The kind of cut ▶ builds -- highlights, a rating, a Short -- picked on the
-// bar itself. The only way to that choice used to be Prompts menu → Edit → the
-// wording dropdown: three levels deep, the right depth for rewording a prompt
-// and the wrong one for the one choice made before every suggest run. styleBar
-// surfaces the same list on the Cut toolbar. There is exactly one stored
-// choice under both dropdowns (promptPick), so what these tests hold is the
-// store and the seams: a pick lands in the store wherever it is made, every
-// dropdown showing the choice is told about a pick made in the other, and the
-// list refresh that follows an added or deleted wording reaches both.
+// The kind of video ▶ builds -- highlights, a rating, a Short -- picked once,
+// beside Language on Prepare. The only way to that choice used to be Prompts
+// menu → Edit → the wording dropdown: three levels deep, the right depth for
+// rewording a prompt and the wrong one for the one choice made before every
+// run. The Style dropdown is that choice now, and it is the ONLY wording
+// picker left: a pick turns every job to its wording named after the style,
+// or to its default when it has none (applyStyle). What these tests hold is
+// the store and the seams: a pick lands in every job's store, and the list
+// refresh that follows an added or deleted wording reaches the surfaced
+// dropdown.
 
 import (
 	"strings"
@@ -35,26 +36,59 @@ func TestAPickIsStoredNoMatterWhichDropdownMadeIt(t *testing.T) {
 
 func TestTheStyleBarIsWiredToTheOneStore(t *testing.T) {
 	ownConfig(t)
-	// the bar carries the dropdown...
-	if !strings.Contains(readSrc(t, "cut.go"), `bar.Append(a.styleBar("cut", "Style",`) {
-		t.Error("the Cut bar no longer surfaces the style dropdown")
+	// the Prepare page carries the dropdown...
+	if !strings.Contains(readSrc(t, "prep.go"), `bottom.Append(a.styleBar("cut", "Style",`) {
+		t.Error("Prepare no longer surfaces the style dropdown")
 	}
-	// ...whose pick goes through the same store as the editor's dropdown,
-	// selection-only for the reason showPromptStyle documents
+	// ...whose pick turns every prompt, through the selection-only half for
+	// the reason showPromptStyle documents
 	pick := readSrc(t, "stylebar.go")
-	if !strings.Contains(pick, "a.pickPromptStyle(key, d.names.String(i))") {
-		t.Error("styleBar no longer writes picks through pickPromptStyle")
+	if !strings.Contains(pick, "a.applyStyle(d.names.String(i))") {
+		t.Error("styleBar no longer turns every prompt through applyStyle")
 	}
-	// a pick made anywhere lands in every dropdown that shows the choice, and
-	// a changed wording list reaches the surfaced dropdown as well as the
-	// editor's
+	// a pick made in the store lands back in the surfaced dropdown, and a
+	// changed wording list reaches it too
 	prompts := readSrc(t, "prompts.go")
 	for _, want := range []string{
 		"a.syncStylePicks(key, name)",
-		"bar, barOK := a.styleDrops[key]",
+		"bar, ok := a.styleDrops[key]",
 	} {
 		if !strings.Contains(prompts, want) {
-			t.Errorf("prompts.go does not contain %q — the two style dropdowns can drift apart", want)
+			t.Errorf("prompts.go does not contain %q — the store and the Style dropdown can drift apart", want)
 		}
+	}
+}
+
+// TestOneStyleTurnsEveryPrompt: applyStyle headless, against the stores. The
+// style's name reaches every job that has a wording under it -- shipped or
+// saved on this machine -- and leaves the rest on their defaults, so a job
+// never silently keeps the LAST style's wording either: turning back releases
+// it.
+func TestOneStyleTurnsEveryPrompt(t *testing.T) {
+	ownConfig(t)
+	a := &App{root: t.TempDir()}
+	// a narration wording saved under a shipped style's name is that style's
+	// narration from then on
+	a.savePromptStyle("narrate", shortsStyleName, "narrate for a Short")
+
+	a.applyStyle(shortsStyleName)
+	if got := a.promptPickName("cut"); got != shortsStyleName {
+		t.Errorf("after the style pick the cut is on %q, want %q", got, shortsStyleName)
+	}
+	if got := a.prompt("narrate"); got != "narrate for a Short" {
+		t.Errorf("the narration prompt reads %q, want the wording saved under the style's name", short(got))
+	}
+	if got := a.promptPickName("describe"); got != defStyle {
+		t.Errorf("a job with nothing under the style's name is on %q, want its default", got)
+	}
+
+	// turning to another style releases the narration wording too: nothing
+	// stays picked to a style that is no longer the project's
+	a.applyStyle("General")
+	if got := a.promptPickName("cut"); got != "General" {
+		t.Errorf("after General the cut is on %q", got)
+	}
+	if got := a.promptPickName("narrate"); got != defStyle {
+		t.Errorf("after General the narration is still on %q, want its default", got)
 	}
 }

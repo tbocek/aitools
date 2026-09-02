@@ -153,8 +153,8 @@ func TestOneTabAndOnePressDoTheWholeStep(t *testing.T) {
 			t.Errorf("%q is still a tab (index %d) -- it was merged into Prepare", gone, i)
 		}
 	}
-	if len(steps) != 5 {
-		t.Errorf("%d tabs, want the five steps", len(steps))
+	if len(steps) != 4 {
+		t.Errorf("%d tabs, want the four steps", len(steps))
 	}
 
 	play := funcBody(t, "pipeline.go", `func \(a \*App\) playClicked\(`)
@@ -288,11 +288,15 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 	}
 
 	// the prompt controls in the heading, and the context row with none of
-	// them: one wording by definition -- the one you wrote -- so a wording
-	// list, a ＋ and a Reset would each be a control with nothing to do
+	// them: one wording by definition -- the one you wrote -- so a ＋ and a
+	// Reset would each be a control with nothing to do. No wording list here
+	// any more: the Style dropdown on the bottom row is the one place a
+	// wording is picked, for every job at once (applyStyle)
+	if strings.Contains(ed, "head.Append(wording)") {
+		t.Error("the editor grew a wording list back -- the Style dropdown is the one place a wording is picked")
+	}
 	for what, want := range map[string]string{
 		"the menu in the heading":      "head.Append(pick)",
-		"the wording list beside it":   "head.Append(wording)",
 		"＋ to save a new wording":      "head.Append(add)",
 		"Reset/Remove":                 "head.Append(drop)",
 		"the context row without them": "showCtx(r.key == \"\")",
@@ -304,11 +308,10 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 	// what ＋ and Reset do, both of them refusing the context row rather than
 	// guessing what "reset the context" would mean
 	for what, want := range map[string]string{
-		"＋ saves under a new name":        "a.savePromptStyle(r.key, name,",
-		"Reset undoes edits":              "a.dropPromptStyle(r.key, name)",
-		"Remove confirms first":           "a.confirm(",
-		"the built-in comes back":         "a.showPromptStyle(r.key, promptDefFor(r.key).styleName())",
-		"a wording pick is the safe half": "a.pickPromptStyle(r.key, names.String(i))",
+		"＋ saves under a new name": "a.savePromptStyle(r.key, name,",
+		"Reset undoes edits":       "a.dropPromptStyle(r.key, name)",
+		"Remove confirms first":    "a.confirm(",
+		"the built-in comes back":  "a.showPromptStyle(r.key, promptDefFor(r.key).styleName())",
 	} {
 		if !strings.Contains(ed, want) {
 			t.Errorf("the prompt controls are missing %s (%s)", what, want)
@@ -372,8 +375,9 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	got := a.prepEditNames()
-	want := []string{"User Context", "Describe", "Transcript", "Cut", "Audit", "Narration",
-		"Upload text", "Improve"}
+	want := []string{"User Context", "Describe (Default)", "Transcript (Default)",
+		"Cut (General)", "Audit (Default)", "Narration (Default)",
+		"Upload text (Default)", "Improve (Default)"}
 	if len(got) != len(want) {
 		t.Fatalf("the menu offers %v, want %v", got, want)
 	}
@@ -383,11 +387,25 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 		}
 	}
 	a.setPrompt("describe", "my own wording")
-	if got := a.prepEditNames(); got[1] != "Describe ✎" {
+	if got := a.prepEditNames(); got[1] != "Describe (Default) ✎" {
 		t.Errorf("an edited describe prompt reads %q in the menu, want the ✎", got[1])
 	}
-	if got := a.prepEditNames(); got[2] != "Transcript" {
+	if got := a.prepEditNames(); got[2] != "Transcript (Default)" {
 		t.Errorf("editing one prompt marked the other: %q", got)
+	}
+	// the Style's reach is what the parentheticals are for: one pick beside
+	// Language renames every row that has a wording under the style's name,
+	// and only those -- the context row stays bare
+	a.applyStyle("Highlights")
+	got = a.prepEditNames()
+	if got[3] != "Cut (Highlights)" {
+		t.Errorf("after the style pick the cut row reads %q, want Cut (Highlights)", got[3])
+	}
+	if got[5] != "Narration (Default)" {
+		t.Errorf("a job with no Highlights wording reads %q, want its default", got[5])
+	}
+	if got[0] != "User Context" {
+		t.Errorf("the context row grew a wording name: %q", got[0])
 	}
 }
 

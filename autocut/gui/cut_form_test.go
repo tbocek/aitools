@@ -35,16 +35,21 @@ func TestTheCutPageSendsPromptsItDoesNotEdit(t *testing.T) {
 		t.Error("cut.go drops the prompts without pointing at where they live now")
 	}
 
-	// the style bar is on the side of the rule where things change the cut
-	i, j := strings.Index(src, `a.styleBar("cut", "Style"`), strings.Index(src, "bar.Append(rule()) // past here nothing changes the cut")
-	if i < 0 {
-		t.Fatal("the Cut page no longer offers the style choice on its bar")
+	// the style choice left this bar for Prepare, where its prompts are
+	// edited -- picking a style and rewording it are one place now
+	if strings.Contains(src, `a.styleBar(`) {
+		t.Error("cut.go still builds the style dropdown -- it lives on Prepare")
 	}
-	if j < 0 {
+	if !strings.Contains(src, "bar.Append(rule()) // past here nothing changes the cut") {
 		t.Fatal("cut.go no longer marks where the bar stops changing the cut")
 	}
-	if i > j {
-		t.Error("the style menu is built past the rule, among the controls that only change what you see")
+	prep := readSrc(t, "prep.go")
+	i, j := strings.Index(prep, "bottom.Append(a.langEntry)"), strings.Index(prep, `a.styleBar("cut", "Style"`)
+	if j < 0 {
+		t.Fatal("Prepare does not offer the style choice")
+	}
+	if i < 0 || i > j {
+		t.Error("the style dropdown is not after the Language entry on Prepare's bottom row")
 	}
 }
 

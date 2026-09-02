@@ -161,9 +161,10 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"rather than stretched to fit. The waveforms appear a moment after the page does; " +
 			"each is decoded once and kept.\n\n" +
 			"The two prompts this step sends — the cut, and the audit that reads it " +
-			"back — are on Prepare, in the box that holds every prompt in the app. " +
-			"What stays on this bar is the choice they are sent with: Style is what ▶ " +
-			"asks for. General is the one to start on — it works out what the session " +
+			"back — are on Prepare, in the box that holds every prompt in the app, and " +
+			"so is the Style they are sent with: which kind of cut ▶ asks for, picked " +
+			"after Language, beside the prompts it chooses between. " +
+			"General is the one to start on — it works out what the session " +
 			"is before it cuts, and it is what a new project uses. The other three " +
 			"already know what they are looking at, and cut better than General when " +
 			"they are right: Highlights fills the length with the best moments of a " +
@@ -172,7 +173,7 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"minute and decorates it with effects. Whichever you pick, what the cut is " +
 			"actually about comes from the User Context on Prepare. It is the same " +
 			"choice as the wording list beside the Cut prompt there — one store, two " +
-			"views — so ＋ adds your own on Prepare and it appears here.\n\n" +
+			"views — so ＋ adds your own and the Style list offers it.\n\n" +
 			"That column is where every form on this page opens — the insert's questions, " +
 			"an effect's numbers — rather than in a window over the timeline, so the band " +
 			"or the card a question is about stays on screen, and live, while it is " +
@@ -332,55 +333,39 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"with surprise mixed into it, which is what excitement sounds like " +
 			"and what plain happiness does not. Any name none of these knows sends the " +
 			"line back to the judge rather than guessing at an axis."},
-	{"produce", "Produce", "applications-multimedia-symbolic", "Render the video and write the upload text",
+	{"produce", "Produce", "applications-multimedia-symbolic", "Write the upload text, draw the thumbnail and render the video",
 		"Finish Cut first — there is no cut to produce a video from",
-		"▶ below renders the final video: every clip is cut from its own recording, " +
-			"the narration is laid over ducked game audio, and the whole thing is " +
-			"loudness-normalized to -14 LUFS for YouTube. Lines that have not been " +
-			"synthesized yet are spoken first.\n\nA session's separate recordings are " +
-			"in the sound as well as in the picture: whatever was running while a clip " +
-			"was running is mixed into it, from the second of that recording the clip " +
-			"actually falls on — the same placement the blue lanes on Cut are drawn " +
-			"from, with the footage as the master. It joins the game audio rather than " +
-			"the narration, so \"Game audio under voice\" ducks both together and the " +
-			"spoken lines still sit on top. Cards are left silent: a card is time added " +
-			"to the cut, not a moment of the session, so there is nothing that was said " +
-			"under it.\n\nWhen it finishes, the result is " +
-			"waiting in the picture below: ▶ then plays it rather than producing " +
-			"again, and ⏹ hands ▶ back to producing. The row at the top says what " +
-			"is going in — the cut, the lines, and how many of them still have to " +
-			"be spoken — and the row at the foot says what is on disk."},
-	{"publish", "Publish", "send-to-symbolic", "Draw the thumbnail and write the upload text",
-		"Finish Cut first — there is nothing to make a thumbnail of yet",
-		"The two things a finished video still needs: a thumbnail, and the text " +
-			"under it on the upload page. The page is split the same way — the " +
-			"picture and everything that makes it on the left, the words on the " +
-			"right.\n\nThe first ▶ writes the title and the description, and then " +
-			"draws. Every ▶ after that only draws — the model is not asked again, " +
-			"however much you edit the boxes, so rewording the instruction or " +
-			"changing the images costs GPU time and no thinking. Deleting the step6 " +
-			"folder is what starts the text over; Suggest again, beside the title, " +
-			"rewrites both without redrawing.\n\nThe edit instruction is yours to " +
-			"write — nothing suggests one. There was a second model job that picked " +
-			"a frame and wrote an instruction for it, and it was removed because it " +
-			"did neither well.\n\nThe picture is usually not made from nothing — " +
-			"it is an edit of one of your own frames, which is what keeps it " +
+		"Everything the upload needs, from one ▶: the first press writes the " +
+			"title, the thumbnail instruction and the description; every press " +
+			"draws the thumbnail; and then the final video is rendered — every " +
+			"clip cut from its own recording, the narration laid over ducked game " +
+			"audio, the whole thing loudness-normalized to -14 LUFS for YouTube. " +
+			"Lines that have not been synthesized yet are spoken first.\n\nThe " +
+			"model is not asked for the text again after the first run, however " +
+			"much you edit the boxes: rewording the edit instruction or swapping " +
+			"the images costs GPU time and no thinking. Deleting the step6 folder " +
+			"is what starts the text over; Suggest again, beside the title, " +
+			"rewrites it without redrawing or rendering.\n\nThe thumbnail is " +
+			"usually an edit of one of your own frames, which is what keeps it " +
 			"recognizably this video rather than a stock illustration of the " +
-			"genre. Two are taken from the cut on the first run, and the row is " +
-			"yours after that: Add image… puts another one in, − takes one out, " +
-			"Change… swaps one in place. The first in the row is the picture being " +
-			"edited; the others are references the instruction can name by " +
-			"position — \"put the ship from the second image behind them\" — and " +
-			"Make base promotes one of them to the front. Empty the row and the " +
-			"thumbnail is drawn from the instruction alone.\n\nWrite the instruction as instructions, not as a description " +
-			"of a picture — say what to change, and everything you do not mention " +
-			"stays as it is. That is the whole reason this is an edit model rather " +
-			"than the image-to-image one it used to be: there, a single strength " +
-			"dial renoised the entire frame, so asking for one change altered every " +
-			"other thing too.\n\nThe title is lettered by the image model as part " +
-			"of the instruction. Keep it to four or five words — that is what " +
-			"survives being shrunk to a phone's sidebar, and it is also what a model " +
-			"spells reliably. Leave it empty and the picture comes back without any."},
+			"genre. The first image in the row is the picture being edited; the " +
+			"others are references the instruction can name by position — \"put " +
+			"the ship from the second image behind them\" — and Make base " +
+			"promotes one to the front. Empty the row and it is drawn from the " +
+			"instruction alone. Write the instruction as instructions, not as a " +
+			"description of a picture: say what to change, and everything you do " +
+			"not mention stays as it is. The title is lettered into the picture " +
+			"by the image model — four or five words survive being shrunk to a " +
+			"phone's sidebar, and an empty title means no lettering.\n\nA " +
+			"session's separate recordings are in the sound as well as in the " +
+			"picture: whatever was running while a clip was running is mixed into " +
+			"it, from the second of that recording the clip actually falls on — " +
+			"the same placement the blue lanes on Cut are drawn from, with the " +
+			"footage as the master. It joins the game audio rather than the " +
+			"narration, so \"Game audio under voice\" ducks both together and " +
+			"the spoken lines still sit on top. Cards are left silent: a card is " +
+			"time added to the cut, not a moment of the session, so there is " +
+			"nothing that was said under it."},
 }
 
 // stepLocked reports whether a tab's prerequisites are missing. Prepare
@@ -402,12 +387,6 @@ func (a *App) stepLocked(i int) bool {
 		// decides nothing you cannot decide again afterwards.
 		return a.narrateLocked
 	case "produce":
-		return a.produceLocked
-	case "publish":
-		// the thumbnail is painted over a frame the cut kept and its text is
-		// written from the clips, so this waits on the same thing Produce does --
-		// but not on the video itself, which is a long render you should be able
-		// to start the upload text without waiting for
 		return a.produceLocked
 	}
 	return false
@@ -466,11 +445,12 @@ func (a *App) showStep(name string) {
 	// something that may have moved since it was last looked at.
 	if name == "produce" {
 		a.updateProduceInfo()
-	}
-	// Publish reads all of that AND the folder it wrote into last time, since the
-	// thumbnail on the page is the file on disk rather than something remembered
-	if name == "publish" && a.pub != nil {
-		a.pub.refresh()
+		// ...and the thumbnail half reads the folder it wrote into last time,
+		// since the picture on the page is the file on disk rather than
+		// something remembered
+		if a.pub != nil {
+			a.pub.refresh()
+		}
 	}
 }
 
@@ -1218,7 +1198,6 @@ func (a *App) build(app *gtk.Application) {
 	a.stack.AddNamed(a.buildCut(), "cut")
 	a.stack.AddNamed(a.buildNarrate(), "narrate")
 	a.stack.AddNamed(a.buildProduce(), "produce")
-	a.stack.AddNamed(a.buildPublish(), "publish")
 
 	// Tabs, not a sidebar down the left. The steps are a fixed five, so a list
 	// spent 170px of width on five rows and a column of empty space under them;

@@ -364,24 +364,44 @@ func (p *camPath) maxZoom() float64 {
 }
 
 // outBox is the frame size every clip comes out at: the footage's own shape
-// (clipBox) until an aspect is chosen, and then the settings' height -- or
-// the footage's -- inside that aspect.
+// (clipBox) until an aspect is chosen, and then the settings' tier -- or the
+// footage's own height -- inside that aspect (tierBox).
 func outBox(clips []prodClip, st prodSettings, aspect string) (int, int) {
 	a := parseAspect(aspect)
 	if a <= 0 {
 		return clipBox(clips, st)
 	}
-	h := st.Height
-	if h <= 0 {
+	h0 := 0
+	if st.Height <= 0 {
 		for _, c := range clips {
 			if c.video == nil {
 				continue
 			}
-			if _, h0, err := ffprobeSize(c.video.path); err == nil {
-				h = h0
+			if _, fh, err := ffprobeSize(c.video.path); err == nil {
+				h0 = fh
 				break
 			}
 		}
+	}
+	return tierBox(a, h0, st.Height)
+}
+
+// tierBox is the frame a chosen aspect comes out at. The tier names the SHORT
+// side -- the height of a wide frame, the width of a tall one: "1080p" on a
+// 9:16 cut is 1080×1920, the size a Short is actually uploaded at, not a
+// 608-wide strip. With no tier ("original") the footage's height names the
+// frame's height, which for a tall cut is the full height of the crop the
+// aspect takes out of the footage. Both sides rounded even because yuv420
+// says so. Pure, so the Produce page's info line can say the same frame the
+// render will make without opening a file.
+func tierBox(a float64, h0, height int) (int, int) {
+	if a < 1 && height > 0 {
+		w := height - height%2
+		return w, int(math.Round(float64(w)/a/2)) * 2
+	}
+	h := height
+	if h <= 0 {
+		h = h0
 	}
 	if h <= 0 {
 		h = 1080

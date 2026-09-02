@@ -13,10 +13,9 @@ import (
 // both read as a bug in the step rather than in the table -- which is where the
 // renumbering that comes with every merged page actually breaks things.
 //
-// One flag may gate more than one tab, and produceLocked does: Produce and
-// Publish both wait on the cut and on nothing else. Publish deliberately does
-// NOT wait on the rendered video -- writing the upload text is the thing you
-// want to be doing while the render runs.
+// Since Publish folded into Produce each flag gates exactly one tab again,
+// and produceLocked waits on the cut and nothing else -- not on the rendered
+// video, which its own ▶ is what makes.
 func TestEachGateLocksExactlyItsOwnTab(t *testing.T) {
 	for _, c := range []struct {
 		pages []string
@@ -24,7 +23,7 @@ func TestEachGateLocksExactlyItsOwnTab(t *testing.T) {
 	}{
 		{[]string{"cut"}, func(a *App) { a.cutLocked = true }},
 		{[]string{"narrate"}, func(a *App) { a.narrateLocked = true }},
-		{[]string{"produce", "publish"}, func(a *App) { a.produceLocked = true }},
+		{[]string{"produce"}, func(a *App) { a.produceLocked = true }},
 	} {
 		a := &App{}
 		c.set(a)
@@ -98,7 +97,9 @@ func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
 		`inRow.Append(inLbl)`,
 		`.SetEllipsize(pango.EllipsizeEnd)`, // never a floor under the window
 	}
-	for _, f := range []string{"prep.go", "cut.go", "narrate.go", "produce.go", "publish.go"} {
+	// publish.go is absent: since the merge it builds panes inside Produce's
+	// page, and Produce's Inputs row is the one above them
+	for _, f := range []string{"prep.go", "cut.go", "narrate.go", "produce.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -221,14 +222,15 @@ func TestThePagesAreNamedForWhatTheyDoAndTheFoldersForWhatTheyWere(t *testing.T)
 		}
 	}
 
-	// one page file per tab, called what the tab is called
-	for _, f := range []string{"prep.go", "cut.go", "narrate.go", "produce.go", "publish.go"} {
+	// one page file per tab, called what the tab is called -- publish.go
+	// stays on disk as the thumbnail pane's source, but it is Produce's now
+	for _, f := range []string{"prep.go", "cut.go", "narrate.go", "produce.go"} {
 		if _, err := os.Stat(f); err != nil {
 			t.Errorf("%s is missing -- one file per page, named for the page", f)
 		}
 	}
-	if len(steps) != 5 {
-		t.Errorf("%d tabs against 5 page files", len(steps))
+	if len(steps) != 4 {
+		t.Errorf("%d tabs against 4 page files", len(steps))
 	}
 
 	// ...and no identifier is numbered either. A page whose builder is called

@@ -43,14 +43,13 @@ type promptStyle struct {
 	Text string `json:"text"`
 }
 
-// promptRow is the widgets above one prompt box: the wording picker, the label
-// that says what the project is holding, and the button that lets go of it.
-// Held so that loading a project can redraw a page that is already built.
+// promptRow is the widgets above one prompt box: the label that says what this
+// machine is holding for the shown wording, and the button that lets go of it.
+// The wording itself is not picked here any more -- the Style dropdown on
+// Prepare's bottom row turns every job at once (applyStyle).
 type promptRow struct {
-	pick  *gtk.DropDown
-	names *gtk.StringList
-	mark  *gtk.Label
-	drop  *gtk.Button
+	mark *gtk.Label
+	drop *gtk.Button
 }
 
 // promptDef is one editable prompt. A blurb explaining what changing it would
@@ -339,31 +338,48 @@ func (a *App) pickPromptStyle(key, name string) {
 	a.syncStylePicks(key, name)
 }
 
-// syncStylePicks lands a pick in every dropdown that shows this key's wording
-// -- the editor's and the surfaced one on the page (styleBar). Selection
-// only, never the lists: this runs inside one of their own notify::selected
-// handlers, where replacing the model hangs the view drawing the closing
-// popup (see showPromptStyle). Setting the OTHER dropdown's selection is
-// safe, and setting one that is already set is a no-op.
-func (a *App) syncStylePicks(key, name string) {
-	land := func(names *gtk.StringList, pick *gtk.DropDown) {
-		for i := uint(0); i < names.NItems(); i++ {
-			if names.String(i) != name {
-				continue
+// applyStyle makes name the whole project's style. One dropdown, beside
+// Language: picking "Highlights" there turns every job to the wording called
+// Highlights where it has one -- shipped, or saved on this machine under that
+// name -- and to its shipped default where it does not. The User Context is
+// not in promptDefs and is not touched: it is this session's facts, not a
+// wording.
+//
+// Selection-only underneath (pickPromptStyle), so it is safe from the Style
+// dropdown's own notify::selected.
+func (a *App) applyStyle(name string) {
+	for _, d := range promptDefs {
+		target := d.styleName()
+		for _, s := range a.promptStyleList(d.key) {
+			if s.Name == name {
+				target = name
+				break
 			}
-			if pick.Selected() != i {
-				a.promptQuiet = true
-				pick.SetSelected(i)
-				a.promptQuiet = false
-			}
-			return
 		}
+		a.pickPromptStyle(d.key, target)
 	}
-	if row, ok := a.promptRows[key]; ok {
-		land(row.names, row.pick)
+}
+
+// syncStylePicks lands a pick in the dropdown that surfaces this key's wording
+// on a page (styleBar). Selection only, never the list: this runs inside that
+// dropdown's own notify::selected handler, where replacing the model hangs the
+// view drawing the closing popup (see showPromptStyle), and setting a
+// selection that is already set is a no-op.
+func (a *App) syncStylePicks(key, name string) {
+	bar, ok := a.styleDrops[key]
+	if !ok {
+		return
 	}
-	if bar, ok := a.styleDrops[key]; ok {
-		land(bar.names, bar.pick)
+	for i := uint(0); i < bar.names.NItems(); i++ {
+		if bar.names.String(i) != name {
+			continue
+		}
+		if bar.pick.Selected() != i {
+			a.promptQuiet = true
+			bar.pick.SetSelected(i)
+			a.promptQuiet = false
+		}
+		return
 	}
 }
 
@@ -383,9 +399,8 @@ func (a *App) syncStylePicks(key, name string) {
 func (a *App) showPromptStyle(key, name string) {
 	a.pickPromptStyle(key, name)
 
-	row, rowOK := a.promptRows[key]
-	bar, barOK := a.styleDrops[key]
-	if !rowOK && !barOK {
+	bar, ok := a.styleDrops[key]
+	if !ok {
 		return
 	}
 	list := a.promptStyleList(key)
@@ -397,26 +412,15 @@ func (a *App) showPromptStyle(key, name string) {
 			sel = i
 		}
 	}
-	drops := []styleDrop{}
-	if rowOK {
-		drops = append(drops, styleDrop{row.names, row.pick})
-	}
-	if barOK {
-		drops = append(drops, bar)
-	}
 	a.promptQuiet = true
 	// only when the names really moved: a plain switch does not change them,
 	// and a model replaced for nothing is a menu that flickers and a selection
-	// that bounces through every index on the way. The same refresh lands on
-	// the editor's dropdown and the page's (styleBar) -- two views of the one
-	// stored choice.
-	for _, d := range drops {
-		if !sameStrings(d.names, fresh) {
-			d.names.Splice(0, d.names.NItems(), fresh)
-		}
-		if d.pick.Selected() != uint(sel) {
-			d.pick.SetSelected(uint(sel))
-		}
+	// that bounces through every index on the way
+	if !sameStrings(bar.names, fresh) {
+		bar.names.Splice(0, bar.names.NItems(), fresh)
+	}
+	if bar.pick.Selected() != uint(sel) {
+		bar.pick.SetSelected(uint(sel))
 	}
 	a.promptQuiet = false
 	// no markPromptRow here: pickPromptStyle already did it, and nothing the
@@ -441,7 +445,7 @@ func (a *App) markPromptRow(key string) {
 	// the ✎ in every picker's menu first, and unconditionally: it says the same
 	// thing this row does -- "the project is holding something here" -- and it
 	// is the only place that says it once the boxes are behind a button, so it
-	// cannot depend on a box being open (promptpick.go).
+	// cannot depend on a box being open (prepedit.go).
 	a.syncPromptMarks()
 
 	row, ok := a.promptRows[key]

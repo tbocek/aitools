@@ -294,6 +294,15 @@ func (a *App) buildSources() *gtk.Box {
 	bottom.Append(a.scalePick)
 	bottom.Append(gtk.NewLabel("Language:"))
 	bottom.Append(a.langEntry)
+	// Which kind of video ▶ Suggest builds -- highlights, a rating, a Short.
+	// One choice for the whole project: every prompt follows it (applyStyle),
+	// which is why it is picked here where the project is set up, beside the
+	// bench its wordings are edited in (prepedit.go) -- see styleBar.
+	bottom.Append(a.styleBar("cut", "Style",
+		"Which kind of cut ▶ Suggest builds. Every prompt follows it: a job with "+
+			"a wording named after the style sends that wording, the rest stay "+
+			"on their defaults — the prompt menu on the right names what each "+
+			"one sends."))
 
 	// No margins of its own: it is one side of the page's divider now, and the
 	// page keeps its columns 12 from the window's edges as Cut and Narrate do.

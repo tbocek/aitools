@@ -507,7 +507,7 @@ func sameRows(a, b map[string]int) bool {
 // the raw file clocks, and a clock corrected by hand afterwards is exactly the
 // thing it cannot know about: a line it places at 4:10 is where that recording
 // USED to be, so Suggest would be told the wrong seconds, and Narrate and
-// Publish would gather the wrong lines under each clip. Which recording each
+// the upload text would gather the wrong lines under each clip. Which recording each
 // line came off is in the file (tsvRow.src), so the correction is one addition
 // per line.
 func (a *App) sessionRows() []tsvRow {

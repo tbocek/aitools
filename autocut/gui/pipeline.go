@@ -187,14 +187,10 @@ func (a *App) playClicked() {
 		// speaking half, with the writing on a button beside the video.
 		a.narrateRun()
 	case "produce":
+		// the whole end of the pipeline in one press: the upload text once,
+		// the thumbnail, then the render -- whatever of it is still missing is
+		// made, and what is already written is never rewritten (produceClicked)
 		a.produceClicked()
-	case "publish":
-		// same shape as Narrate's: one press does whatever is still missing.
-		// Empty boxes are written first, then the picture is drawn -- and with
-		// everything already written it only draws, which is what makes ▶ the
-		// button you press after rewording the instruction or swapping the base
-		// frame.
-		a.publishRun(false)
 	}
 }
 
@@ -395,7 +391,7 @@ func ffprobeDur(f string) (float64, error) {
 	return v, nil
 }
 
-// ffprobeSize is a still's pixel size. The Publish step needs it because the
+// ffprobeSize is a still's pixel size. The thumbnail stage needs it because the
 // title is drawn at a fraction of the picture's height, and the picture's
 // height is the image server's decision, not ours: it is asked for 1280x720
 // and a model with a fixed latent size may hand back something else.

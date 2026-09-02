@@ -226,7 +226,6 @@ func (s *pubSlot) cropOverlay(pic *gtk.Picture) gtk.Widgetter {
 		p.crop = &pubPoint{X: r.cx, Y: r.cy}
 		area.QueueDraw()
 	})
-	g.ConnectDragEnd(func(float64, float64) { p.touched() })
 	area.AddController(g)
 
 	ov := gtk.NewOverlay()

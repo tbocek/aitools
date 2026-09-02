@@ -568,21 +568,28 @@ func short(s string) string {
 // of the split.
 func TestChoosingAWordingDoesNotRebuildTheMenuUnderItself(t *testing.T) {
 	ownConfig(t)
-	b, err := os.ReadFile("prepedit.go")
+	b, err := os.ReadFile("stylebar.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(b)
 
-	m := regexp.MustCompile(`(?s)wording\.NotifyProperty\("selected".*?\n\t\}\)`).FindString(src)
+	m := regexp.MustCompile(`(?s)d\.pick\.NotifyProperty\("selected".*?\n\t\}\)`).FindString(src)
 	if m == "" {
-		t.Fatal("the dropdown no longer connects notify::selected — find where a pick lands now")
+		t.Fatal("the Style dropdown no longer connects notify::selected — find where a pick lands now")
 	}
 	if strings.Contains(m, "showPromptStyle") {
 		t.Errorf("the pick handler rebuilds the menu it was called from:\n%s", m)
 	}
-	if !strings.Contains(m, "pickPromptStyle") {
-		t.Errorf("the pick handler no longer shows the wording that was picked:\n%s", m)
+	if !strings.Contains(m, "a.applyStyle(") {
+		t.Errorf("the pick handler no longer turns every prompt to the picked style:\n%s", m)
+	}
+	// ...and applyStyle itself stays on the safe half: it runs inside that
+	// same emission, so the wording it lands per job must go through
+	// pickPromptStyle, never through the model-splicing showPromptStyle
+	apply := funcBody(t, "prompts.go", `func \(a \*App\) applyStyle\(`)
+	if strings.Contains(apply, "showPromptStyle") || !strings.Contains(apply, "a.pickPromptStyle(d.key, target)") {
+		t.Errorf("applyStyle left the safe half of the split:\n%s", apply)
 	}
 	// the half that may touch the model has to still exist as its own function,
 	// or the split is only a rename away from being undone
@@ -606,7 +613,7 @@ func TestChoosingAWordingDoesNotRebuildTheMenuUnderItself(t *testing.T) {
 	}
 	// the prep menu itself is spliced for the same reason: syncPromptMarks
 	// redraws it on every project load
-	if !strings.Contains(src, "menu.Splice(") {
+	if !strings.Contains(readSrc(t, "prepedit.go"), "menu.Splice(") {
 		t.Error("the row menu is no longer replaced in a single items-changed")
 	}
 }

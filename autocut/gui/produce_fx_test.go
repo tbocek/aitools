@@ -18,29 +18,26 @@ import (
 
 // The frame every clip comes out at. With no aspect chosen it is clipBox --
 // the footage's own shape -- which is every cut made before this feature
-// existed. With one chosen, the settings' height names the output height and
-// the aspect names the width, rounded even because yuv420 says so.
+// existed. With one chosen, the settings' tier names the SHORT side of the
+// frame -- so "1080p" on a 9:16 cut is 1080×1920, the size a Short is
+// uploaded at, and not a 608-wide strip -- rounded even because yuv420 says
+// so.
 func TestOutBoxFollowsTheAspect(t *testing.T) {
 	for _, c := range []struct {
 		aspect string
 		h      int
 		w, wh  int
 	}{
-		{"9:16", 1080, 608, 1080}, // 1080*9/16 = 607.5, rounded even
+		{"9:16", 1080, 1080, 1920}, // the tier is the width of a tall frame
+		{"9:16", 720, 720, 1280},
 		{"1:1", 1080, 1080, 1080},
-		{"16:9", 720, 1280, 720},
-		{"4:5", 1080, 864, 1080},
-		{"9:16", 0, 1080, 1080}, // no height set and no footage: 1080 stands in
+		{"16:9", 720, 1280, 720}, // ...and the height of a wide one, as ever
+		{"4:5", 1080, 1080, 1350},
+		{"9:16", 0, 608, 1080}, // original, nothing probed: 1080 tall stands in
 	} {
 		w, h := outBox(nil, prodSettings{Height: c.h}, c.aspect)
-		if c.aspect == "9:16" && c.h == 0 {
-			if w != 608 || h != 1080 {
-				t.Errorf("aspect %s with no height gives %dx%d, want 608x1080", c.aspect, w, h)
-			}
-			continue
-		}
 		if w != c.w || h != c.wh {
-			t.Errorf("aspect %s at height %d gives %dx%d, want %dx%d", c.aspect, c.h, w, h, c.w, c.wh)
+			t.Errorf("aspect %s at tier %d gives %dx%d, want %dx%d", c.aspect, c.h, w, h, c.w, c.wh)
 		}
 	}
 	// "source" and "" are the absence of a choice: clipBox's answer, untouched

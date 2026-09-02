@@ -110,7 +110,7 @@ var (
 	prodContainers = []string{"mp4", "mkv", "webm"}
 	prodCodecs     = []string{"h264", "h265", "vp9"}
 	prodPresets    = []string{"ultrafast", "veryfast", "fast", "medium", "slow", "veryslow"}
-	prodHeights    = []string{"source", "2160", "1440", "1080", "720", "480"}
+	prodHeights    = []string{"720p", "1080p", "original"}
 	prodFPS        = []string{"source", "60", "30", "24"}
 	prodABR        = []string{"128", "192", "256", "320"}
 	prodSubsLbl    = []string{"burned into the picture", "separate track in the file",
@@ -209,7 +209,7 @@ func (a *App) prodSettings() prodSettings {
 		Codec:     pickText(p.codec, prodCodecs),
 		CRF:       int(math.Round(p.crf.Value())),
 		Preset:    pickText(p.preset, prodPresets),
-		Height:    atoiOr(pickText(p.height, prodHeights), 0),
+		Height:    atoiOr(strings.TrimSuffix(pickText(p.height, prodHeights), "p"), 0),
 		FPS:       float64(atoiOr(pickText(p.fps, prodFPS), 0)),
 		VFR:       p.vfr.Active(),
 		AudioKbps: atoiOr(pickText(p.abr, prodABR), 128),
@@ -236,7 +236,7 @@ func (a *App) applyProdSettings(st *prodSettings) {
 	setPick(p.container, prodContainers, st.Container)
 	setPick(p.codec, prodCodecs, st.Codec)
 	setPick(p.preset, prodPresets, st.Preset)
-	setPick(p.height, prodHeights, fmtOpt(float64(st.Height)))
+	setPick(p.height, prodHeights, tierLabel(st.Height))
 	setPick(p.fps, prodFPS, fmtOpt(st.FPS))
 	p.vfr.SetActive(st.VFR)
 	setPick(p.abr, prodABR, strconv.Itoa(st.AudioKbps))
@@ -277,6 +277,17 @@ func (a *App) followOutDir() {
 }
 
 // fmtOpt renders a numeric dropdown value, with 0 meaning "source".
+// tierLabel is the dropdown's word for a stored height: 0 is "original" and
+// anything else its p-name. A height an old project saved that is no longer
+// offered ("2160") matches nothing, and setPick then leaves the default 1080p
+// standing -- the same trade the shorter list itself makes.
+func tierLabel(h int) string {
+	if h <= 0 {
+		return "original"
+	}
+	return fmt.Sprintf("%dp", h)
+}
+
 func fmtOpt(v float64) string {
 	if v <= 0 {
 		return "source"
@@ -336,7 +347,7 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.container.Connect("notify::selected", func() { p.syncExt() })
 	p.codec = dd(prodCodecs, 0, "h264 is the safe upload; h265 is smaller but slower; vp9 is for webm")
 	p.preset = dd(prodPresets, 5, "how long the encoder may think — slower means smaller at the same quality")
-	p.height = dd(prodHeights, 3, "output height; the width follows the source aspect")
+	p.height = dd(prodHeights, 1, "the short side of the frame — the cut page's aspect sets its shape; original keeps the footage's own size")
 	p.fps = dd(prodFPS, 2, "output frame rate — a ceiling rather than a target with VFR on")
 	p.abr = dd(prodABR, 0, "audio bitrate in kbit/s")
 	p.subs = dd(prodSubsLbl, 2, "what to do with the narration subtitles")
@@ -485,17 +496,43 @@ func (a *App) buildProduce() gtk.Widgetter {
 	box.Append(destRow)
 	box.Append(p.info)
 
-	a.updateProduceInfo() // the three rows say something before anything is clicked
+	a.updateProduceInfo() // the rows say something before anything is clicked
 
-	// only the settings scroll: the two rows are the page's frame, and a frame
-	// that slides out from under the reader is the thing they are there to stop
+	// The thumbnail half of the step -- what was the Publish page. The drawing
+	// side fills the left of this page; the words the model wrote sit top
+	// right, where they are read back and reworded; and the encoder settings
+	// sit under them -- the knobs set once, below the text reread every run.
+	// One page because one ▶ runs it all (produceClicked), and what that ▶
+	// makes is one thing: the upload.
+	drawSide, said, pubOuts := a.buildPublishPanes()
+	outRow.Append(gtk.NewSeparator(gtk.OrientationVertical))
+	outRow.Append(pubOuts) // step6's files ride the same Outputs group, fenced off the video's
+
+	// only the settings scroll: the words above stay put, and a settings grid
+	// taller than its half slides rather than pushing the title off the page
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetChild(box)
-	scroll.SetVExpand(true)
+	scroll.SetPropagateNaturalHeight(true)
+
+	right := gtk.NewBox(gtk.OrientationVertical, 6)
+	right.SetSizeRequest(360, -1)
+	right.Append(said)
+	right.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
+	right.Append(scroll)
+
+	outer := gtk.NewPaned(gtk.OrientationHorizontal)
+	outer.SetStartChild(drawSide)
+	outer.SetEndChild(right)
+	outer.SetResizeStartChild(true)
+	outer.SetResizeEndChild(true)
+	outer.SetShrinkStartChild(false)
+	outer.SetShrinkEndChild(false)
+	outer.SetVExpand(true)
+	outer.SetMarginEnd(12)
 
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
 	page.Append(inRow)
-	page.Append(scroll)
+	page.Append(outer)
 	return page
 }
 
@@ -584,6 +621,22 @@ func (p *producer) updateInputs() {
 			detail += "\n\nSpoken by " + v.name + " (step4/voice_ref.wav)"
 		}
 	}
+	// the thumbnail half's inputs, now that this page owns both: what the
+	// image model is given, and whether the first ▶ still owes the language
+	// model the text -- the once-per-project call the step6 record gates
+	// (publishStage)
+	if pub := a.pub; pub != nil {
+		if n := len(pub.frames); n > 0 {
+			line += fmt.Sprintf(" · %d thumbnail image(s)", n)
+		}
+		if a.publishRecorded() {
+			line += " · upload text written"
+			detail += "\n\nstep6/publish.json — the upload text is written; ▶ redraws and re-renders without asking the model again (deleting step6/ starts the text over)"
+		} else {
+			line += " · upload text still to write"
+			detail += "\n\nNo step6/publish.json yet — the first ▶ writes the title, the thumbnail instruction and the description before drawing anything"
+		}
+	}
 	p.inputs.SetText(line)
 	p.inputs.SetTooltipText(strings.TrimSpace(detail))
 }
@@ -596,15 +649,24 @@ func (p *producer) updateSettings() {
 		return
 	}
 	st := p.a.prodSettings()
-	// the frame in pixels, not the word from the dropdown: "source resolution"
-	// over a 4K screen capture is a 4K upload, and the number is the only form
-	// of that fact anyone reads before waiting out the encode
-	res := "source resolution"
+	// the frame in pixels, not the word from the dropdown: "original" over a
+	// 4K screen capture is a 4K upload, and the number is the only form of
+	// that fact anyone reads before waiting out the encode
+	res := "original size"
 	if st.Height > 0 {
 		res = fmt.Sprintf("%dp", st.Height)
 	}
 	if w, h, ok := p.a.footageSize(); ok {
 		ow, oh := outSize(w, h, st.Height)
+		// an aspect picked on the cut page reshapes the frame (outBox does,
+		// for the render) -- the number here has to be the frame the render
+		// will actually make, or the one line on this page that exists to be
+		// believed is wrong exactly when the shape was changed on purpose
+		if p.a.ed != nil {
+			if asp := parseAspect(p.a.ed.aspect); asp > 0 {
+				ow, oh = tierBox(asp, h, st.Height)
+			}
+		}
 		res = fmt.Sprintf("%d×%d", ow, oh)
 	}
 	fps := "source fps"
@@ -1129,9 +1191,17 @@ func (c prodClip) name() string {
 	return c.video.base
 }
 
+// produceClicked is ▶ on this page: everything the upload needs, in the order
+// it can be lost. The upload text is written once and the thumbnail is drawn
+// (publishStage -- seconds, and the part a dead server fails fast), and only
+// then is the video rendered -- minutes that must not be paid before the cheap
+// half has succeeded, and must not be re-paid to get a reworded thumbnail.
 func (a *App) produceClicked() {
 	if a.running {
 		a.setStatus("a run is already active — stop it first (⏹)")
+		return
+	}
+	if a.pub == nil {
 		return
 	}
 	segs := a.produceSegs()
@@ -1142,20 +1212,56 @@ func (a *App) produceClicked() {
 	entries := a.produceEntries()
 	st := a.prodSettings()
 	vids, auds := a.snapSources()
+	// the drawing half's inputs, read on this thread like everything above:
+	// the goroutine below must not go reading widgets or the editor
+	pst := a.pub.snapshot()
+	aspect := a.produceCut().Aspect
+	written := a.publishRecorded()
 	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
 
 	a.running = true
 	a.stopFlag.Store(false)
 	a.pauseFlag.Store(false)
+	a.runCtx, a.runCancel = context.WithCancel(context.Background())
 	a.updateRunControls()
 	a.logExp.SetExpanded(true)
-	a.logf(">>> producing %s: %d clips, %s/%s crf %d", filepath.Base(st.OutFile),
-		len(segs), st.Container, st.Codec, st.CRF)
+	if written {
+		a.logf(">>> producing %s: redraw the thumbnail, then render %d clips, %s/%s crf %d",
+			filepath.Base(st.OutFile), len(segs), st.Container, st.Codec, st.CRF)
+	} else {
+		a.logf(">>> producing %s: write the upload text, draw the thumbnail, then render %d clips, %s/%s crf %d",
+			filepath.Base(st.OutFile), len(segs), st.Container, st.Codec, st.CRF)
+	}
 	a.qReset()
-	a.qJob(trackSTT, "render", 0, 0)
-	a.prog(trackSTT, 0, "preparing")
+	a.qJob(trackSTT, "publish", 0, 0)
+	a.prog(trackSTT, 0, "thinking")
+	a.pulseUntilCounted()
 
 	go func() {
+		if err := a.publishStage(pst, aspect, segs, entries, !written, written, false); err != nil {
+			glib.IdleAdd(func() {
+				a.running = false
+				a.updateRunControls()
+				if p := a.pub; p != nil {
+					p.refresh() // whatever was written landed before the failure
+				}
+				a.updateGates()
+				if errors.Is(err, errStopped) {
+					a.progress.SetText("production stopped")
+					return
+				}
+				a.logf("produce FAILED: %v", err)
+				a.progress.SetText("production failed — see log")
+			})
+			return
+		}
+		glib.IdleAdd(func() {
+			if p := a.pub; p != nil {
+				p.refresh() // the thumbnail and the text, up before the long half starts
+			}
+			a.qJob(trackSTT, "render", 0, 0)
+			a.prog(trackSTT, 0, "preparing")
+		})
 		err := a.produce(segs, entries, st, vids, auds)
 		glib.IdleAdd(func() {
 			a.running = false
@@ -1832,27 +1938,30 @@ func (a *App) footageSize() (int, int, bool) {
 }
 
 // outSize is the frame the render comes out at, given the footage's own size
-// and the height that was asked for: the asked-for height with the footage's
-// shape, or the footage's own frame when the answer is "keep source". Rounded
-// to an even width, the same as scale=-2:h -- an insert one pixel off is a clip
+// and the tier that was asked for. The tier names the SHORT side of the frame:
+// the height of a wide video -- which is all "1080p" has ever meant there --
+// and the width of a tall one, where 1080p is 1080×1920, the size a Short is
+// uploaded at, not a 608-wide strip. "original" (0) keeps the footage's own
+// frame. Both sides rounded even -- an insert one pixel off is a clip a
 // concat will not take.
 //
 // Its own function, over sizes that are already known, so the Produce page can
-// say the frame in pixels without opening a file. "source resolution" on a
-// 4K screen capture reads like a setting and lands as a 700 MB upload, and the
-// only moment that is worth knowing is before the encode, not after it.
+// say the frame in pixels without opening a file. "original" on a 4K screen
+// capture reads like a setting and lands as a 700 MB upload, and the only
+// moment that is worth knowing is before the encode, not after it.
 func outSize(w0, h0, height int) (int, int) {
-	h := height
-	if h <= 0 {
-		h = h0
-	}
-	if h <= 0 {
-		h = 1080 // nothing probed and nothing chosen
-	}
 	if w0 <= 0 || h0 <= 0 {
-		return int(math.Round(float64(h)*16/9/2)) * 2, h
+		h := height
+		if h <= 0 {
+			h = 1080 // nothing probed and nothing chosen
+		}
+		return int(math.Round(float64(h)*16/9/2)) * 2, h - h%2
 	}
-	return int(math.Round(float64(w0)*float64(h)/float64(h0)/2)) * 2, h
+	k := 1.0 // original: the footage's own frame
+	if height > 0 {
+		k = float64(height) / float64(min(w0, h0))
+	}
+	return int(math.Round(float64(w0)*k/2)) * 2, int(math.Round(float64(h0)*k/2)) * 2
 }
 
 // clipMixes is the stretch of every separate recording that was running while

@@ -216,6 +216,29 @@ func (a *App) prog(track int, f float64, format string, args ...any) {
 	a.showProg()
 }
 
+// pulseUntilCounted keeps the bar moving while a model thinks. The LLM calls
+// have nothing countable in them, so the bar pulses until something with real
+// news -- the thumbnail's first drawing fraction -- takes the needle. What
+// stops it is that fraction rather than a flag set from the goroutine: Pulse
+// and SetFraction drive the same needle, so the one that lasts has to be the
+// one with news -- and reading progParts under its mutex is also the only way
+// to ask this question from the GUI thread without racing the runner.
+func (a *App) pulseUntilCounted() {
+	glib.TimeoutAdd(150, func() bool {
+		if !a.running {
+			return false
+		}
+		a.progMu.Lock()
+		counted := a.progParts[trackSTT] > 0
+		a.progMu.Unlock()
+		if counted {
+			return false
+		}
+		a.progress.Pulse()
+		return true
+	})
+}
+
 // showProg puts the two halves on the bar: the fractions summed, the lines
 // joined. Callers are worker goroutines, so the widget is touched on the GUI
 // thread and nowhere else.

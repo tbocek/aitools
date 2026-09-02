@@ -718,7 +718,13 @@ type cutEditor struct {
 	// recording that is not some row's own track. A camera's sound is drawn
 	// under its own pictures in srcArea instead (drawPairStrip), so in the
 	// common cameras-only session this band is not there at all.
-	audArea  *gtk.DrawingArea
+	audArea *gtk.DrawingArea
+	// the red line's own transparent layer over both bands, so the playback
+	// tick has something thin to repaint (cut_playline.go); lineIdx is the
+	// scene the green bar stood on when the bands were last painted, the one
+	// other thing on them the running clock alone can move
+	lineArea *gtk.DrawingArea
+	lineIdx  int
 	scopeHov int // which half of the ▲▼ handle the pointer is on; see cut_scope.go
 	total    *gtk.Label
 	clock    *gtk.Label // the red line's time in numbers, beside the transport
@@ -1763,14 +1769,11 @@ func liveClock(playhead, posT float64, posAt time.Time, liveMax, rate float64, p
 // on pause the queries stop and the line simply stays put.
 // syncPlayRate puts the preview on the clock the footage under the line runs
 // on, so a slowed stretch is slow to watch and not just rose-tinted on the
-// track. Called as the line moves under playback -- a rate that changes with
-// nowhere to seek to has to be seeked to where the stream already is, which is
-// the one thing SetRate deliberately will not do for itself.
-//
-// Every seek here is a flushing one, so each boundary costs a small hitch. An
-// instant-rate-change seek would not, but support for it varies by element and
-// a preview that silently keeps the old rate is worse than one that stutters
-// for a frame at the edge of an effect.
+// track. Called as the line moves under playback -- a rate change with no seek
+// on the way to carry it, which is the one case SetRate deliberately leaves to
+// its caller. SetRateNow asks the running pipeline for an instant rate change
+// and falls back to a flushing seek-in-place only where that is refused
+// (player.go has the story), so a ramp's stairs no longer each cost a hitch.
 // syncPlayGain puts the preview at the loudness the volume effects give the
 // second under the line, on top of whatever the slider says (SetFxGain). The
 // preview's half of a volume effect, and the reason it is beside syncPlayRate
@@ -1784,13 +1787,8 @@ func (ed *cutEditor) syncPlayGain() {
 }
 
 func (ed *cutEditor) syncPlayRate() {
-	if ed.player == nil || !ed.player.SetRate(fxRateAt(ed.fx, ed.playhead)) {
-		return
-	}
-	if ed.player.playing {
-		if pos, ok := ed.player.Position(); ok {
-			ed.player.SeekTo(pos)
-		}
+	if ed.player != nil {
+		ed.player.SetRateNow(fxRateAt(ed.fx, ed.playhead))
 	}
 }
 
@@ -1890,7 +1888,13 @@ func (ed *cutEditor) followPlayback() bool {
 		ed.syncPlayRate()   // the line has crossed into or out of a speed effect
 		ed.syncPlayGain()   // and into or out of a volume one
 		ed.revealPlayhead() // playback runs the line off the view; recenter and follow
-		ed.redrawTracks()
+		// the bands' pixels only change when the green bar walks onto another
+		// scene; every other tick moves nothing but the line's own layer
+		if ed.bandClipIdx() != ed.lineIdx {
+			ed.redrawTracks()
+		} else {
+			ed.redrawLine()
+		}
 	}
 	return true // keep the timer alive
 }
@@ -3148,6 +3152,13 @@ func (ed *cutEditor) redrawTracks() {
 	if ed.audArea != nil {
 		ed.audArea.QueueDraw()
 	}
+	// the line layer scrolls and zooms with the bands, and the green bar the
+	// bands were painted with is remembered so the playback tick can tell a
+	// line that moved from a line that moved ONTO another scene (redrawLine)
+	ed.lineIdx = ed.bandClipIdx()
+	if ed.lineArea != nil {
+		ed.lineArea.QueueDraw()
+	}
 	// the framing overlay is a view of the same state -- where the camera is
 	// at the playhead, what is held -- and its pointer-grabbing follows the
 	// same state, so both are settled here rather than at every call site
@@ -4211,16 +4222,6 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 			cr.Fill()
 		}
 	}
-
-	// the red select point / playhead
-	if ed.hasPlay {
-		x := ed.xOf(ed.playhead)
-		cr.SetSourceRGB(0.9, 0.15, 0.15)
-		cr.SetLineWidth(2)
-		cr.MoveTo(x, 0)
-		cr.LineTo(x, float64(h))
-		cr.Stroke()
-	}
 }
 
 func (ed *cutEditor) inCut(t float64) bool {
@@ -4677,13 +4678,6 @@ func (a *App) buildCut() gtk.Widgetter {
 	bar.Append(ed.aspectDD)
 	bar.Append(fxDD)
 	bar.Append(linked(ed.undoBtn, ed.redoBtn, ed.revertBtn))
-	// Which kind of cut ▶ suggests -- highlights, a rating, a Short -- pulled
-	// out of the prompt editor and onto the bar. It lived three levels deep
-	// (Prompts menu, Edit, the wording list): the right depth for REWORDING a
-	// prompt, the wrong one for the choice made before every suggest run.
-	// Same choice, same store, two views -- see styleBar.
-	bar.Append(a.styleBar("cut", "Style",
-		"Which kind of cut ▶ Suggest builds — the same choice as the wording list in the Cut prompt editor"))
 	// The two prompts this page sends -- the rules Suggest works to and the
 	// audit that reads its answer back -- were a dropdown and an Edit button
 	// here. They are on Prepare with all the others now (prepedit.go): a prompt
@@ -5285,9 +5279,11 @@ func (a *App) buildCut() gtk.Widgetter {
 	ed.hbar = gtk.NewScrollbar(gtk.OrientationHorizontal, ed.hadj)
 	ed.hbar.SetVisible(false)
 
+	band := gtk.NewBox(gtk.OrientationVertical, 4)
+	band.Append(ed.srcArea)
+	band.Append(ed.audArea) // the recorders' band: the sound nobody filmed
 	tracks := gtk.NewBox(gtk.OrientationVertical, 4)
-	tracks.Append(ed.srcArea)
-	tracks.Append(ed.audArea) // the recorders' band: the sound nobody filmed
+	tracks.Append(ed.lineOver(band)) // the red line, on a layer of its own
 	tracks.Append(ed.hbar)
 	tracks.SetVExpand(true)
 	tracks.SetVAlign(gtk.AlignStart) // the tracks are their own height; the rest is air

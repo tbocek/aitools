@@ -78,16 +78,16 @@ func TestClipBoxFallsBackToTheOutputShape(t *testing.T) {
 	}{
 		{1080, 1920, 1080},
 		{720, 1280, 720},
-		{0, 1920, 1080}, // no height chosen either: a video is 1080p unless told
-		{721, 1282, 721},
+		{0, 1920, 1080},  // no height chosen either: a video is 1080p unless told
+		{721, 1282, 720}, // an odd height (hand-edited settings) lands even
 	} {
 		w, h := clipBox(cards, prodSettings{Height: c.h})
 		if w != c.w || h != c.wantH {
 			t.Errorf("height %d: box is %dx%d, want %dx%d", c.h, w, h, c.w, c.wantH)
 		}
 		// odd is what concat refuses and what yuv420p cannot even represent
-		if w%2 != 0 {
-			t.Errorf("height %d: box width %d is odd", c.h, w)
+		if w%2 != 0 || h%2 != 0 {
+			t.Errorf("height %d: box %dx%d has an odd side", c.h, w, h)
 		}
 	}
 }

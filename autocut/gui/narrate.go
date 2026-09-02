@@ -248,6 +248,7 @@ type narrator struct {
 	seekArmed bool
 
 	durCache map[string]float64 // wav path -> seconds, so ⚠ never probes twice
+	durProbe map[string]bool    // wav paths an ffprobe is out measuring right now
 	synthing bool               // a playback-triggered synthesis is in flight
 	held     bool               // the preview is paused by us, not by the user
 	// the user has started the preview and not stopped it, which is what makes
@@ -470,7 +471,8 @@ func (n *narrator) pullRows() {
 
 func (a *App) buildNarrate() gtk.Widgetter {
 	n := &narrator{a: a, playSeg: -1, jumped: -1, speaking: -1, solo: -1, liveRow: -1,
-		synthFail: map[string]bool{}, durCache: map[string]float64{}}
+		synthFail: map[string]bool{}, durCache: map[string]float64{},
+		durProbe: map[string]bool{}}
 	a.narr = n
 	if p, err := NewPlayer(); err == nil {
 		n.player = p
@@ -1268,13 +1270,8 @@ func (n *narrator) heardScene(t float64) *cutSeg {
 // the stream already is. The same bargain Cut makes -- a small hitch at each
 // boundary, in exchange for a preview that is actually the speed it claims.
 func (n *narrator) syncPlayRate() {
-	if n.player == nil || n.a.ed == nil || !n.player.SetRate(fxRateAt(n.a.ed.fx, n.pos)) {
-		return
-	}
-	if n.player.playing {
-		if pos, ok := n.player.Position(); ok {
-			n.player.SeekTo(pos)
-		}
+	if n.player != nil && n.a.ed != nil {
+		n.player.SetRateNow(fxRateAt(n.a.ed.fx, n.pos))
 	}
 }
 
@@ -2127,24 +2124,41 @@ const (
 	rateMax = 28.0
 )
 
-// measured is the take's real length, or 0 if it has not been spoken. Probed
-// once per wav and then remembered: the ⚠ asks for this on every rebuild.
+// measured is the take's real length, or 0 if it has not been measured yet.
+// Probed once per wav and then remembered -- and probed off the GTK thread,
+// because this is asked on every rebuild and on every playback tick, and an
+// ffprobe is a spawned process: a page that waited for one per fresh take
+// stood still for as long as the answers took, which read as the whole UI
+// hitching. The estimate stands in for the take until the answer lands
+// (speechDur), and the landing rebuilds the rows so the ⚠ and the printed
+// ends are re-measured against the real length.
 func (n *narrator) measured(e narrEntry) float64 {
 	wav := n.a.ttsWav(e)
 	if d, ok := n.durCache[wav]; ok {
 		return d
 	}
-	if !exists(wav) {
+	// headless (tests) has no idle loop for the answer to land on; a probe
+	// already in flight needs no second one; a take not yet spoken has
+	// nothing to measure. A probe that failed is none of these: it stays
+	// unmarked and is simply tried again when next asked, exactly as the
+	// synchronous version retried -- the wav may still have been being
+	// written when the first probe read it.
+	if n.durCache == nil || n.durProbe == nil || n.durProbe[wav] || !exists(wav) {
 		return 0
 	}
-	d, err := ffprobeDur(wav)
-	if err != nil {
-		return 0
-	}
-	if n.durCache != nil {
-		n.durCache[wav] = d
-	}
-	return d
+	n.durProbe[wav] = true
+	go func() {
+		d, err := ffprobeDur(wav)
+		glib.IdleAdd(func() {
+			delete(n.durProbe, wav)
+			if err != nil {
+				return
+			}
+			n.durCache[wav] = d
+			n.queueRebuild() // the (~) rows re-measure against the real length
+		})
+	}()
+	return 0
 }
 
 // spokenRate is speechRate corrected by this narration's own takes. Every

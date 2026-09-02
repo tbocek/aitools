@@ -778,6 +778,57 @@ func (p *Player) SetRate(r float64) bool {
 	return true
 }
 
+// SetRateNow is SetRate for a rate change with no seek on the way to carry it:
+// a speed effect's edge crossing under a running preview. A rate only takes
+// hold at a seek, and the seek-in-place this used to mean -- flush, preroll,
+// decode back up to the frame we were already on -- is a visible stumble, and
+// a speed ramp crosses an edge at every stair, so it stumbled all the way
+// down. GStreamer has a seek built for exactly this: INSTANT_RATE_CHANGE, no
+// flush, no position, the multiplier simply handed downstream. Support for it
+// varies by element, but the call says whether it was taken, so trying costs
+// nothing: the old seek-in-place stays as the fallback, and a preview that
+// stutters at an edge still beats one that silently keeps the old speed.
+func (p *Player) SetRateNow(r float64) {
+	if !p.SetRate(r) {
+		return
+	}
+	if !p.playing {
+		return // parked: whatever seek starts the stream again carries it
+	}
+	if p.instantRate() {
+		return
+	}
+	if pos, ok := p.Position(); ok {
+		p.SeekTo(pos)
+	}
+}
+
+// instantRate hands the stored rate to the running pipelines without moving
+// them, and reports whether the master took it. The mix lanes have to ride the
+// same clock or they drift audibly, so a lane that refuses the instant change
+// gets the old flushing seek-in-place all by itself -- one lane stuttering at
+// an effect's edge, not the picture.
+func (p *Player) instantRate() bool {
+	if !p.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagInstantRateChange,
+		gst.SeekTypeNone, 0, gst.SeekTypeNone, 0) {
+		return false
+	}
+	p.seekRate = p.rate
+	for _, a := range p.mix {
+		if a.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagInstantRateChange,
+			gst.SeekTypeNone, 0, gst.SeekTypeNone, 0) {
+			a.rate = p.rate
+			continue
+		}
+		if pos, ok := p.Position(); ok && a.running(pos) {
+			a.pend, a.rate = -1, p.rate
+			a.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
+				gst.SeekTypeSet, int64((pos+a.delta)*1e9), gst.SeekTypeNone, 0)
+		}
+	}
+	return true
+}
+
 // Position reports the current playback position in seconds.
 func (p *Player) Position() (float64, bool) {
 	ns, ok := p.pb.QueryPosition(gst.FormatTime)

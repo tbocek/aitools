@@ -88,8 +88,8 @@ type Project struct {
 	PromptPick   map[string]string        `json:"prompt_pick,omitempty"`
 
 	Produce *prodSettings `json:"produce,omitempty"`
-	// the thumbnail and the upload text. Absent until the Publish page has
-	// something on it, so an older project -- or a session that stops at the
+	// the thumbnail and the upload text. Absent until the thumbnail half of
+	// Produce has something on it, so an older project -- or a session that stops at the
 	// rendered video -- stays as short a file as it was.
 	Publish *pubSettings `json:"publish,omitempty"`
 }

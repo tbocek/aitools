@@ -1,7 +1,7 @@
 package main
 
-// The Style dropdown on the Cut bar, and the ✎ that says a project has changed
-// a prompt.
+// The Style dropdown on Prepare's bottom row, and the ✎ that says a project
+// has changed a prompt.
 //
 // Every step page used to show its system prompts in full, permanently: two on
 // Prepare, three on Cut, one each on Narrate and Publish. That cost every page a
@@ -15,32 +15,33 @@ package main
 // worth a permanent pixel wherever a prompt is named, and it is one glyph rather
 // than a column.
 //
-// And the wording list for the cut, because it is not a prompt-editing control
-// at all: which KIND of cut ▶ builds -- highlights, a rating, a Short -- is the
-// choice made before every suggest run, and burying it in the bench three levels
-// from the button that acts on it was the wrong depth for it.
+// And the Style, because it is not a prompt-editing control at all: which KIND
+// of video ▶ builds -- highlights, a rating, a Short -- is a choice about the
+// project, and burying it in the bench three levels deep was the wrong depth
+// for it. It sat on the Cut bar for a while; it is one dropdown on Prepare's
+// bottom row now, after Language, and it is the ONLY place a wording is picked:
+// choosing a style turns every prompt to its wording of that name, or to its
+// default when it has none (applyStyle). The bench edits wordings; it no
+// longer chooses between them.
 
 import (
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
-// styleDrop is a wording dropdown that lives on the page itself rather than in
-// the bench. The bench's own list is on another tab, which is the right place
-// for REWORDING a prompt and the wrong one for a choice made before every run:
-// which KIND of cut ▶ builds (highlights, a rating, a Short). styleBar
-// surfaces that list where it can be seen; both dropdowns write through
-// pickPromptStyle, which lands a pick in whichever of the two exists
-// (syncStylePicks), and showPromptStyle refreshes both lists when the
-// wordings themselves change.
+// styleDrop is the Style dropdown on the page. Its list is the cut's wordings
+// -- the cut is the job every style ships one for, and saving a cut wording
+// under a new name is how a new style is born -- and a pick is applied to
+// every prompt at once (applyStyle). The bench's menu shows the result: each
+// row named with the wording the style gave it (prepEditNames).
 type styleDrop struct {
 	names *gtk.StringList
 	pick  *gtk.DropDown
 }
 
 // styleBar builds the surfaced dropdown: a dim label and the wordings the
-// registry offers for key, the project's own included. A pick here is exactly
-// a pick in the editor -- the stored choice, the ✎ marks and the Shorts
-// target correction (styleTarget) all follow.
+// registry offers for key, this machine's own included. A pick here is the
+// project's style -- every prompt's stored choice, the bench menu's labels
+// and the Shorts target correction (styleTarget) all follow.
 func (a *App) styleBar(key, label, tip string) *gtk.Box {
 	d := styleDrop{names: gtk.NewStringList(nil), pick: nil}
 	d.pick = gtk.NewDropDown(d.names, nil)
@@ -49,15 +50,15 @@ func (a *App) styleBar(key, label, tip string) *gtk.Box {
 		a.styleDrops = map[string]styleDrop{}
 	}
 	a.styleDrops[key] = d
-	// pickPromptStyle, not showPromptStyle, for the same reason the editor's
-	// dropdown uses it: this fires with the popup still closing, and splicing
+	// applyStyle is selection-only underneath (pickPromptStyle, never
+	// showPromptStyle): this fires with the popup still closing, and splicing
 	// the model under a closing popup hangs the view (see showPromptStyle)
 	d.pick.NotifyProperty("selected", func() {
 		if a.promptQuiet {
 			return
 		}
 		if i := d.pick.Selected(); i < d.names.NItems() {
-			a.pickPromptStyle(key, d.names.String(i))
+			a.applyStyle(d.names.String(i))
 		}
 	})
 	a.showPromptStyle(key, a.promptPickName(key)) // fill the list, land on the stored pick
@@ -71,15 +72,13 @@ func (a *App) styleBar(key, label, tip string) *gtk.Box {
 	return box
 }
 
-// promptOwned is whether anything of your own is being said about a prompt:
-// a wording it edited or invented, or a shipped wording other than the default
-// picked. Either is worth the ✎ -- both change what the model is told, and
-// neither is visible anywhere else while another row is shown.
+// promptOwned is whether this machine has a wording of its own stored under
+// the name the job is picked to: an edit of a shipped wording, or one it
+// invented. WHICH wording is picked stopped being worth the ✎ when the pick
+// went into every row's name (prepEditNames) -- the mark is kept for the one
+// thing the name cannot say, that what the model reads is not what shipped.
 func (a *App) promptOwned(key string) bool {
 	name := a.promptPickName(key)
-	if name != promptDefFor(key).styleName() {
-		return true
-	}
 	a.promptMu.Lock()
 	defer a.promptMu.Unlock()
 	for _, s := range a.promptSty[key] {

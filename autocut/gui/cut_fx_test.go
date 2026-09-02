@@ -677,12 +677,55 @@ func TestThePreviewClockIsWired(t *testing.T) {
 	}
 	src = string(b)
 	for _, want := range []string{
-		"ed.player.SetRate(fxRateAt(ed.fx, t))",      // set before the seek that carries it
-		"ed.syncPlayRate()",                          // and again as the line runs
-		"if ed.player == nil || !ed.player.SetRate(", // a rate that did not change costs nothing
+		"ed.player.SetRate(fxRateAt(ed.fx, t))",              // set before the seek that carries it
+		"ed.syncPlayRate()",                                  // and again as the line runs
+		"ed.player.SetRateNow(fxRateAt(ed.fx, ed.playhead))", // ...without a flush per boundary
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the cut page no longer contains %q", want)
 		}
+	}
+}
+
+// A speed boundary crossed while the preview runs used to cost a flushing
+// seek-in-place -- flush, preroll, decode back to the frame already on screen
+// -- and a ramp crosses one at every stair, so slowing down stuttered all the
+// way down. The player now asks the running pipeline for an instant rate
+// change and keeps the old seek only as the fallback for a pipeline that
+// refuses. The pipelines cannot run headless, so the shape is the fact.
+func TestASpeedEdgeCrossedMidPlayDoesNotFlushThePipeline(t *testing.T) {
+	body := funcBody(t, "player.go", `func \(p \*Player\) SetRateNow\(r float64\) \{`)
+	for _, want := range []string{
+		"if !p.SetRate(r) {", // a rate that did not change still costs nothing
+		"if !p.playing {",    // parked: the seek that starts the stream carries it
+		"if p.instantRate() {",
+		"p.SeekTo(pos)", // the refusal fallback: the old seek-in-place
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SetRateNow no longer contains %q", want)
+		}
+	}
+
+	body = funcBody(t, "player.go", `func \(p \*Player\) instantRate\(\) bool \{`)
+	// the master's ask: instant, and carrying no position to flush to
+	if !strings.Contains(body,
+		"if !p.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagInstantRateChange,\n\t\tgst.SeekTypeNone, 0, gst.SeekTypeNone, 0) {") {
+		t.Error("the master's rate change is no longer an instant, position-free seek")
+	}
+	for _, want := range []string{
+		"p.seekRate = p.rate",       // Rate() answers with the clock actually running
+		"for _, a := range p.mix {", // the lanes ride the same clock or drift audibly
+		"a.rate = p.rate",
+		"gst.SeekFlagFlush|gst.SeekFlagAccurate", // a lane that refuses stutters alone
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("instantRate no longer contains %q", want)
+		}
+	}
+
+	// and both pages' boundary crossings go through it
+	if !strings.Contains(readSrc(t, "narrate.go"),
+		"n.player.SetRateNow(fxRateAt(n.a.ed.fx, n.pos))") {
+		t.Error("the Narrate preview's speed boundaries no longer use the instant path")
 	}
 }

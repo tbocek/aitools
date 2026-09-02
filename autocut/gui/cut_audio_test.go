@@ -423,7 +423,7 @@ func TestTheLanesAreWiredUnderTheCut(t *testing.T) {
 	}
 	src := string(b)
 	for _, want := range []string{
-		"tracks.Append(ed.audArea) // the recorders' band: the sound nobody filmed",
+		"band.Append(ed.audArea) // the recorders' band: the sound nobody filmed",
 		"ed.audArea.SetDrawFunc(",
 		// every sound in the session gets a lane: the footage's own first, then
 		// the sources the Inputs step did NOT mark as footage, placed by the

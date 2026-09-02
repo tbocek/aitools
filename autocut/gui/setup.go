@@ -381,7 +381,7 @@ AUDIOCPP_SEP_MODEL=%q
 # taken from the same folder as whatever is named here.
 FFMPEG=%q
 
-# stable-diffusion.cpp's sd-server -- it draws the thumbnail on the Publish
+# stable-diffusion.cpp's sd-server -- it draws the thumbnail on the Produce
 # step; empty means 127.0.0.1:%d. There is no model key: the server serves the
 # one model it was started with (SD_ARGS in cpp/run.sh), and nothing autocut
 # sends can change it.
@@ -815,7 +815,7 @@ func (a *App) setupDialog() {
 	ttsKey.SetText(c.TTSKey)
 	ttsKey.SetHExpand(true)
 
-	// the sd.cpp server the Publish step draws its thumbnail on -- the compose
+	// the sd.cpp server Produce draws its thumbnail on -- the compose
 	// "sd" service by default, like the one above
 	sd := gtk.NewEntry()
 	sd.SetText(c.SD)
@@ -1227,7 +1227,7 @@ func (a *App) setupDialog() {
 	// no model id to send per request, so there is nothing here to choose. Test
 	// reports which weights it found rather than checking them against a box.
 	grid.Attach(head("Drawing", "The stable-diffusion.cpp server that paints the thumbnail on "+
-		"the Publish step. Empty means the compose service on loopback.\n\nExpects sd.cpp's own "+
+		"the Produce step. Empty means the compose service on loopback.\n\nExpects sd.cpp's own "+
 		"asynchronous API, not an OpenAI-shaped one: GET /sdcpp/v1/capabilities, POST "+
 		"/sdcpp/v1/img_gen for a job id, then GET /sdcpp/v1/jobs/{id} until the picture "+
 		"arrives.\n\nThere is no model box: sd-server loads one model when it starts and "+

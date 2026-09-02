@@ -1,7 +1,7 @@
 package main
 
 // The sd.cpp server: one endpoint, one GPU, one image job -- the thumbnail on
-// the Publish step. It is leejet/stable-diffusion.cpp's sd-server, the same
+// the Produce step. It is leejet/stable-diffusion.cpp's sd-server, the same
 // process the compose file starts as the "sd" service, and it is talked to
 // over HTTP exactly like audio.cpp is: autocut never launches it, and the
 // weights it serves are the stack's business, not this program's.
