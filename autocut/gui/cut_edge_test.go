@@ -180,9 +180,9 @@ func TestTheEdgeToolIsWired(t *testing.T) {
 		// arrows nudge, but only while something is held
 		"case (ed.edgeOn || ed.segOn || ed.fxOn) && (keyval == gdk.KEY_Left || keyval == gdk.KEY_Right):",
 		"|| ed.selOn || ed.copyOn || ed.fxArm != \"\") && keyval == gdk.KEY_Escape:",
-		"if ed.edgeOn && ed.nudgeEdge(n) {",                                  // ‹f and f› are the edge's while one is held
-		"if ed.edgeOn && !ed.playing() {\n\t\ted.setPlayhead(ed.edgeTime())", // ▶ plays from the held edge
-		"if ed.edgeOn && ed.edgeSeg < len(ed.segs) {",                        // ...and the held edge is drawn
+		"if ed.edgeOn && ed.nudgeEdge(n) {",                    // ‹f and f› are the edge's while one is held
+		"case ed.edgeOn:\n\t\t\ted.setPlayhead(ed.edgeTime())", // ▶ plays from the held edge
+		"if ed.edgeOn && ed.edgeSeg < len(ed.segs) {",          // ...and the held edge is drawn
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the cut page no longer contains %q", want)

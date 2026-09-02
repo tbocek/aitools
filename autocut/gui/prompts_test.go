@@ -509,6 +509,110 @@ func TestAPickedWordingThatIsGoneFallsBackToTheBuiltIn(t *testing.T) {
 	}
 }
 
+// What the Style dropdown is for: a pick reaches every job, and a job that has
+// no wording under that name answers generally rather than being left on
+// whatever the last pick gave it. Nothing about a job's own name for its
+// shipped wording enters into it -- there is one fallback name, defStyle, and
+// this is the rule that spends it.
+func TestAStylePickReachesEveryJobAndFallsBackToTheGeneralWording(t *testing.T) {
+	ownConfig(t)
+	a := &App{}
+	// a wording only the cut ships, so every other job has to fall back
+	a.applyStyle("Highlights")
+	for _, d := range promptDefs {
+		if d.solo {
+			continue
+		}
+		want := defStyle
+		for _, s := range d.builtins() {
+			if s.Name == "Highlights" {
+				want = "Highlights"
+			}
+		}
+		if got := a.promptPickName(d.key); got != want {
+			t.Errorf("under Highlights the %s job is on %q, want %q", d.key, got, want)
+		}
+	}
+	// and a job picked away from the general wording comes back to it, rather
+	// than staying where an earlier pick left it
+	a.applyStyle("a style nothing ships")
+	for _, d := range promptDefs {
+		if d.solo {
+			continue
+		}
+		if got := a.promptPickName(d.key); got != defStyle {
+			t.Errorf("with nothing to match, the %s job is on %q, want %q", d.key, got, defStyle)
+		}
+	}
+}
+
+// The name of that fallback is one string. A job that spelled its own out --
+// the cut shipped `style: "General"` beside a defStyle that said "Default" --
+// is how the bench came to read "Cut (General)" next to "Describe (Default)"
+// for what is one state.
+func TestEveryJobCallsItsShippedWordingTheSameThing(t *testing.T) {
+	for _, d := range promptDefs {
+		if got := d.styleName(); got != defStyle {
+			t.Errorf("the %s job calls its shipped wording %q, want %q", d.key, got, defStyle)
+		}
+		if d.solo {
+			continue
+		}
+		if got := d.builtins()[0].Name; got != defStyle {
+			t.Errorf("the %s job's first wording is %q, want %q", d.key, got, defStyle)
+		}
+	}
+}
+
+// The wording every job ships with was called "Default" before it was called
+// "General", and a machine that had edited one has it on disk under the old
+// name. It is the same wording, so it has to come back as the picked one rather
+// than as a second row in the dropdown that nothing reads -- and the stale file
+// has to go, or every launch reads a wording the app can no longer write to.
+func TestAnEditSavedUnderTheOldDefaultNameIsReadAsTheNewOne(t *testing.T) {
+	ownConfig(t)
+	dir := filepath.Join(promptsDir(), "narrate")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(dir, legacyDefStyle+promptExt)
+	if err := os.WriteFile(old, []byte("say it the way I said it\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &App{}
+	a.loadGlobalPrompts()
+	if got := a.promptPickName("narrate"); got != defStyle {
+		t.Errorf("the job is picked to %q, want %q", got, defStyle)
+	}
+	if got := a.prompt("narrate"); got != "say it the way I said it" {
+		t.Errorf("the old file's wording is not what the runner reads: %q", short(got))
+	}
+	var names []string
+	for _, s := range a.promptStyleList("narrate") {
+		names = append(names, s.Name)
+	}
+	for _, n := range names {
+		if n == legacyDefStyle {
+			t.Errorf("the dropdown offers %v, want no row under the old name", names)
+		}
+	}
+	if len(names) != len(promptDefFor("narrate").builtins()) {
+		t.Errorf("the dropdown offers %v, want only the built-ins", names)
+	}
+
+	// and the file moves, once, on the launch that read it
+	a.flushPrompts()
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("the file under the old name is still there: %v", err)
+	}
+	b := &App{}
+	b.loadGlobalPrompts()
+	if got := b.prompt("narrate"); got != "say it the way I said it" {
+		t.Errorf("after the move the wording is %q", short(got))
+	}
+}
+
 // TestMigrateHintsFoldsNotesIntoThePrompt: describe, fix and narrate used to
 // have a notes box that the runner glued onto the system prompt at request
 // time. The boxes are gone, so a project written before the merge has to have

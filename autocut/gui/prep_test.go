@@ -393,9 +393,9 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	got := a.prepEditNames()
-	want := []string{"User Context", "System context", "Describe (Default)", "Transcript (Default)",
-		"Cut (General)", "Audit (Default)", "Narration (Default)",
-		"Upload text (Default)"}
+	want := []string{"User Context", "System context", "Describe (General)", "Transcript (General)",
+		"Cut (General)", "Audit (General)", "Narration (General)",
+		"Upload text (General)"}
 	if len(got) != len(want) {
 		t.Fatalf("the menu offers %v, want %v", got, want)
 	}
@@ -405,10 +405,10 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 		}
 	}
 	a.setPrompt("describe", "my own wording")
-	if got := a.prepEditNames(); got[2] != "Describe (Default) ✎" {
+	if got := a.prepEditNames(); got[2] != "Describe (General) ✎" {
 		t.Errorf("an edited describe prompt reads %q in the menu, want the ✎", got[2])
 	}
-	if got := a.prepEditNames(); got[3] != "Transcript (Default)" {
+	if got := a.prepEditNames(); got[3] != "Transcript (General)" {
 		t.Errorf("editing one prompt marked the other: %q", got)
 	}
 	// the Style's reach is what the parentheticals are for: one pick beside
@@ -419,7 +419,7 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	if got[4] != "Cut (Highlights)" {
 		t.Errorf("after the style pick the cut row reads %q, want Cut (Highlights)", got[4])
 	}
-	if got[6] != "Narration (Default)" {
+	if got[6] != "Narration (General)" {
 		t.Errorf("a job with no Highlights wording reads %q, want its default", got[6])
 	}
 	if got[0] != "User Context" {

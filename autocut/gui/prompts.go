@@ -58,12 +58,12 @@ type promptRow struct {
 // pages a wall of prose.
 type promptDef struct {
 	key, def string
-	// what def is called in the dropdown, and the other wordings shipped for
-	// the same job. Style names are stored in project.json exactly as they read
-	// here, so renaming one orphans a project's edit of it the same way
-	// renaming a key would -- add a style, do not rename one.
-	style string
-	alts  []promptStyle
+	// the other wordings shipped for the same job; def is the one called
+	// defStyle. Style names are stored on disk and in project.json exactly as
+	// they read here, so renaming one orphans an edit of it the same way
+	// renaming a key would -- add a style, do not rename one. legacyDefStyle is
+	// what undoing that costs, for the one rename there has been.
+	alts []promptStyle
 	// solo is a prompt that has no wordings at all: one text, the same under
 	// every style. The system context is the only one -- it is the formats the
 	// material and the answers are in, which a style has no opinion about --
@@ -72,17 +72,44 @@ type promptDef struct {
 	solo bool
 }
 
-// defStyle names the wording a job ships with when it ships only one. It reads
-// as a name in the dropdown rather than as a description of what the prompt
-// does, which is deliberate: every box says what it is for in its heading, and
-// six dropdowns all reading "Describe" would say nothing at all.
-const defStyle = "Default"
+// defStyle names the wording a job ships with when it ships only one. It is the
+// cut's generic wording by the same name on purpose: the Style beside Language
+// turns every job to the wording called what it is set to, and a job that has
+// only its shipped one is still the general answer to that job. A bench reading
+// "Cut (General), Describe (Default)" made the one state look like two, which is
+// the whole thing the parentheticals are there to say.
+const defStyle = "General"
 
-func (d promptDef) styleName() string {
-	if d.style != "" {
-		return d.style
+// legacyDefStyle is what defStyle was called before that. It is still on disk
+// wherever a machine edited the shipped wording of a job -- prompts/fix/
+// Default.txt -- and still in any project written then, and it means what
+// defStyle means now, so both are read as it (styleAlias). Left unhandled the
+// edit comes back as a second wording nothing picks, sitting in the dropdown
+// under the old name.
+const legacyDefStyle = "Default"
+
+// styleName is what a job's shipped wording is called in the dropdown, and it
+// is defStyle for every job: the wording you get before you have picked a shape
+// is the general one, whether or not the job ships any other. A job could name
+// its own -- the cut did, spelling "General" out a second time -- and two copies
+// of the fallback's name is exactly the drift that put "Cut (General)" beside
+// "Describe (Default)". There is one copy now.
+func (promptDef) styleName() string { return defStyle }
+
+// styleAlias reads a name that came from outside -- a file on disk, a name in a
+// project -- as one of this job's own. Only the rename above is undone, and only
+// where the job does not ship a wording that really is called that; anything
+// else is a wording somebody invented and keeps the name they gave it.
+func (d promptDef) styleAlias(name string) string {
+	if name != legacyDefStyle {
+		return name
 	}
-	return defStyle
+	for _, s := range d.builtins() {
+		if s.Name == legacyDefStyle {
+			return name
+		}
+	}
+	return d.styleName()
 }
 
 // builtins is every wording shipped for this job, the default first -- which is
@@ -102,10 +129,12 @@ var promptDefs = []promptDef{
 	{key: "system", def: strings.TrimSpace(sysSystem), solo: true},
 	{key: "describe", def: strings.TrimSpace(describeSystem)},
 	{key: "fix", def: strings.TrimSpace(fixSystem)},
-	// four wordings, the generic one first: it is what a project that has never
-	// picked gets, and it is the only one that does not already believe it
-	// knows what the footage is (see genericSystem).
-	{key: "cut", def: strings.TrimSpace(genericSystem), style: "General",
+	// five wordings, the generic one first: def, so it is called defStyle like
+	// every other job's, it is what a project that has never picked gets, and it
+	// is the only one that does not already believe it knows what the footage is
+	// (see genericSystem). The four after it are what the Style dropdown offers
+	// beyond it, since the dropdown's list is this job's (styleBar).
+	{key: "cut", def: strings.TrimSpace(genericSystem),
 		alts: []promptStyle{{"Highlights", strings.TrimSpace(suggestSystem)},
 			{"Rating / tier list", strings.TrimSpace(ratingSystem)},
 			{"Showcase", strings.TrimSpace(showcaseSystem)},
@@ -297,13 +326,13 @@ func (a *App) applyPromptStyles(styles map[string][]promptStyle, pick map[string
 			continue // this machine's own wording; a project does not overwrite it
 		}
 		for _, s := range styles[d.key] {
-			a.savePromptStyle(d.key, s.Name, s.Text)
+			a.savePromptStyle(d.key, d.styleAlias(s.Name), s.Text)
 		}
 		if s := strings.TrimSpace(legacy[d.key]); s != "" && len(styles[d.key]) == 0 {
 			a.savePromptStyle(d.key, d.styleName(), s)
 		}
 		if n := pick[d.key]; n != "" {
-			a.pickPromptStyle(d.key, n)
+			a.pickPromptStyle(d.key, d.styleAlias(n))
 		}
 	}
 	// the box and the dropdown last, once the state they draw from is settled

@@ -132,6 +132,61 @@ func TestTheCutOnlyPreviewIsWired(t *testing.T) {
 	}
 }
 
+// Where ▶✂ starts is the red line. Inside a clip that is a second the cut
+// keeps, so the finished video runs from there; outside one there is nothing to
+// run, so the line moves to the next clip and starts from that. Nothing else
+// gets a say -- and something else used to: a held clip or edge moves the line
+// under plain ▶, which is right there (it is the thing you just trimmed and the
+// reason you pressed play), and was also happening under ▶✂, where the question
+// is not "show me what I am editing" but "how does the video run from here".
+// Asking that wound you back to a boundary you had not asked about.
+func TestTheCutPreviewStartsFromTheRedLine(t *testing.T) {
+	segs := []cutSeg{{S: 5, E: 20}, {S: 30, E: 55}}
+	for _, c := range []struct {
+		what     string
+		at, want float64
+	}{
+		{"inside the first clip", 12, 12},
+		{"inside the second", 40, 40},
+		{"on a clip's own first frame", 30, 30},
+		{"in the run-up to the cut", 2, 5},
+		{"in a hole between two clips", 25, 30},
+		// nothing ahead to move to: the line stays, and the tick stops the
+		// preview there rather than playing the tail (skipGap)
+		{"past the last clip", 80, 80},
+	} {
+		ed := &cutEditor{a: &App{}, cutOnly: true, segs: segs, playhead: c.at, hasPlay: true}
+		ed.cutOnlySnap()
+		if ed.playhead != c.want {
+			t.Errorf("%s: ▶✂ starts at %.0fs, want %.0fs", c.what, ed.playhead, c.want)
+		}
+	}
+	// the recording's own preview is not snapped at all: under ▶ a dropped
+	// stretch is footage like any other, and moving the line out of it would
+	// take away the one way to watch what the cut removed
+	ed := &cutEditor{a: &App{}, segs: segs, playhead: 25, hasPlay: true}
+	ed.cutOnlySnap()
+	if ed.playhead != 25 {
+		t.Errorf("▶ moved the line off a removed stretch to %.0fs", ed.playhead)
+	}
+
+	// and a hold does not get to move the line first. All three arms are one
+	// switch so the order IS the rule; cut-only ahead of both holds is what
+	// keeps a picked-up clip from outranking the line.
+	body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) toggle\(\) \{`)
+	only, edge := strings.Index(body, "case ed.cutOnly:"), strings.Index(body, "case ed.edgeOn:")
+	held := strings.Index(body, "case s != nil:")
+	if only < 0 || edge < 0 || held < 0 {
+		t.Fatalf("toggle no longer chooses where ▶ starts in one switch:\n%s", body)
+	}
+	if only > edge {
+		t.Error("a held edge is asked about before the cut-only preview, so ▶✂ starts at the edge again")
+	}
+	if only > held {
+		t.Error("a held clip is asked about before the cut-only preview, so ▶✂ starts at the clip again")
+	}
+}
+
 // An empty cut under ✂ Cut only is an empty video, so ▶ has nothing it could
 // honestly play -- with no clips there are no gaps to skip, and the preview
 // would run the whole recording against the mode's one promise. The button

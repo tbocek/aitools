@@ -4,7 +4,7 @@ package main
 // per wording, beside the settings that are also this machine's (settings.go).
 //
 //	prompts/cut/Highlights.txt
-//	prompts/narrate/Default.txt
+//	prompts/narrate/General.txt
 //
 // It used to be the project file, one prompt per key inside project.json, and
 // that was wrong about what a prompt is. A prompt is not a fact about this
@@ -71,12 +71,13 @@ func promptFileName(name string) string {
 // promptStyleName is the name a file holds a wording for: the built-in it
 // matches, or the file's own name for a wording this machine invented.
 func promptStyleName(key, file string) string {
-	for _, s := range promptDefFor(key).builtins() {
+	d := promptDefFor(key)
+	for _, s := range d.builtins() {
 		if promptFileName(s.Name) == file {
 			return s.Name
 		}
 	}
-	return file
+	return d.styleAlias(file)
 }
 
 // loadGlobalPrompts is the startup read: every wording on disk, plus which one
@@ -104,8 +105,20 @@ func (a *App) loadGlobalPrompts() {
 			if text == "" {
 				continue
 			}
-			name := promptStyleName(d.key, strings.TrimSuffix(e.Name(), promptExt))
+			file := strings.TrimSuffix(e.Name(), promptExt)
+			name := promptStyleName(d.key, file)
 			sty[d.key] = append(sty[d.key], promptStyle{Name: name, Text: text})
+			// promptDisk is what is believed to be on disk, so it is keyed by
+			// the wording -- except for one still under the old name for the
+			// default (legacyDefStyle), which is keyed by that instead. The
+			// next flush then finds the new name missing and the old one gone
+			// from memory, which writes the wording out as defStyle and drops
+			// the stale file: the rename, done once, on the launch that reads
+			// it. Any other file the two names agree.
+			if file == legacyDefStyle && name != file {
+				disk[d.key+"\x00"+file] = text
+				continue
+			}
 			disk[d.key+"\x00"+name] = text
 		}
 	}

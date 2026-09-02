@@ -4378,21 +4378,31 @@ func (ed *cutEditor) toggle() {
 		ed.monRow = 0
 		ed.redrawTracks() // the dashed outline goes with it
 	}
-	// With a clip edge held, ▶ plays from the EDGE. It is the thing you are
-	// working on and the only reason to press play while holding it is to watch
-	// what you have just trimmed to; starting from wherever the playhead was
-	// last left meant winding back to the boundary by hand every time. Only on
-	// the way into playing -- ⏸ has to stop where it is, not jump.
-	if ed.edgeOn && !ed.playing() {
-		ed.setPlayhead(ed.edgeTime())
-	} else if s := ed.heldSeg(); s != nil && !ed.playing() {
-		ed.setPlayhead(s.S) // a held clip plays from its own start, for the same reason
-	}
+	// Where ▶ starts, which is not always where the line is. Only on the way
+	// into playing, whichever branch takes it: ⏸ has to stop where it is.
 	if !ed.playing() {
-		// last, because the two branches above may themselves have put the line
-		// in a gap -- an edge's own time is the first frame of the stretch after
-		// it, which under cut-only is exactly what is not to be played
-		ed.cutOnlySnap()
+		switch s := ed.heldSeg(); {
+		// ▶✂ is asked a different question from ▶ -- not "show me the thing I
+		// am editing" but "how does the FINISHED video run from here" -- and
+		// here is the red line, wherever the hand last put it. Inside a clip
+		// that is a second the cut keeps, so it plays from there; outside one
+		// there is nothing to play, so the line moves to the next clip and
+		// plays from that (cutOnlySnap). Holding a clip is how you edit it, not
+		// how you choose where the video starts, so neither hold below moves
+		// the line here: winding back to a boundary you were not asking about
+		// is the same chore in reverse.
+		case ed.cutOnly:
+			ed.cutOnlySnap()
+		// With a clip edge held, ▶ plays from the EDGE. It is the thing you are
+		// working on and the only reason to press play while holding it is to
+		// watch what you have just trimmed to; starting from wherever the
+		// playhead was last left meant winding back to the boundary by hand
+		// every time.
+		case ed.edgeOn:
+			ed.setPlayhead(ed.edgeTime())
+		case s != nil:
+			ed.setPlayhead(s.S) // a held clip plays from its own start, for the same reason
+		}
 	}
 	// what this scene hears, settled before the transport moves rather than in
 	// the showInsert below it: ▶ starts the recordings (syncMix), and a lane
