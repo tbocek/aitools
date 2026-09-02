@@ -58,11 +58,32 @@ type hearBadge struct {
 	on     bool    // this scene hears this lane
 }
 
-// hearX is where the badges for the held scene go, and whether it is wide
-// enough to wear any. Timeline px, like everything else drawn in a translated
-// area.
+// hearScene is the scene the badges are about: the one in hand, or, with
+// nothing in hand, the one under the line.
+//
+// They used to be the held scene's alone, and the hush the preview applies
+// follows the LINE (syncHush) -- so a lane could be switched on in the scene
+// you were holding while the line played a scene that silenced it, and the
+// page showed a green badge over silence. That was a real afternoon: a cut
+// whose first scene quieted the voice lane, the voice lane's badge lit on
+// another scene, and nothing anywhere saying which scene the ear was in.
+// Following the line when nothing is held is what makes the badge the thing
+// you hear: it changes as the line moves, and pressing it changes the scene
+// that is playing.
+func (ed *cutEditor) hearScene() *cutSeg {
+	if s := ed.heldSeg(); s != nil {
+		return s
+	}
+	if i := ed.segAt(ed.playhead); i >= 0 {
+		return &ed.segs[i]
+	}
+	return nil
+}
+
+// hearX is where the badges for the scene go, and whether it is wide enough
+// to wear any. Timeline px, like everything else drawn in a translated area.
 func (ed *cutEditor) hearX() (float64, bool) {
-	s := ed.heldSeg()
+	s := ed.hearScene()
 	if s == nil || s.isInsert() {
 		// an insert brings its own sound or replaces the lane it was laid in
 		// (dropLane), and neither is a question about which lanes are heard
@@ -83,7 +104,7 @@ func (ed *cutEditor) hearBadgesAud() []hearBadge {
 	if !ok {
 		return nil
 	}
-	s := ed.heldSeg()
+	s := ed.hearScene()
 	var out []hearBadge
 	y := wavePad
 	for _, au := range ed.sepAuds() {
@@ -103,7 +124,7 @@ func (ed *cutEditor) hearBadgesSrc() []hearBadge {
 	if !ok {
 		return nil
 	}
-	s := ed.heldSeg()
+	s := ed.hearScene()
 	v := pickVideoOn(ed.vids, s.Cam, s.S)
 	au := ed.pairAud(v.base)
 	if v == nil || au == nil {
@@ -128,14 +149,15 @@ func (ed *cutEditor) hearAt(px, y float64, src bool) string {
 	return ""
 }
 
-// toggleHear turns one lane off or on for the held scene.
+// toggleHear turns one lane off or on for the scene the badges are about
+// (hearScene): the held one, or the one under the line.
 //
 // A FRESH list every time, never an append into the one that is there: the undo
 // snapshot copies the segment slice but not the strings inside it, so growing
 // the held scene's list in place would silently rewrite every snapshot holding
 // the same one -- and Undo would put back the state it was already in.
 func (ed *cutEditor) toggleHear(base string) {
-	s := ed.heldSeg()
+	s := ed.hearScene()
 	if s == nil || base == "" {
 		return
 	}
@@ -169,7 +191,7 @@ func (ed *cutEditor) toggleHear(base string) {
 //
 // Called from inside each area's translation, so x is timeline px.
 func (ed *cutEditor) drawHearBadges(cr *cairo.Context, badges []hearBadge, vx0, vx1 float64) {
-	s := ed.heldSeg()
+	s := ed.hearScene()
 	if s == nil {
 		return
 	}
@@ -325,7 +347,21 @@ func (ed *cutEditor) syncHush() {
 	if ed.playVideo != nil {
 		base = ed.playVideo.base
 	}
-	ed.player.Hush(hushOf(s, base))
+	// and how long the answer holds: to the end of this scene, or, in a gap,
+	// to the start of the next -- in the master's own seconds, which is the
+	// clock the lanes are placed on. A lane started now stops there by
+	// itself (auxAudio.stopAt), which is what keeps the first sound of the
+	// next scene from being a tick's worth of the lane it silences.
+	until := 0.0
+	if ed.playVideo != nil {
+		if s != nil {
+			until = ed.playVideo.at(s.E)
+		} else if _, next := gapAt(ed.segs, ed.playhead); next >= 0 {
+			until = ed.playVideo.at(ed.segs[next].S)
+		}
+	}
+	own, quiet := hushOf(s, base)
+	ed.player.Hush(own, quiet, until)
 }
 
 // hushOf is what a scene does not hear, in the two pieces the preview keeps its

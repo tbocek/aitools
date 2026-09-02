@@ -145,13 +145,13 @@ func TestEveryCallGoesThroughTheRecorder(t *testing.T) {
 	for file, wants := range map[string][]string{
 		"llm.go": {
 			"rec := a.recordChatStart(step, thinking, msgs)",
-			"rec.done(reply, time.Since(t0), err)",
+			"rec.done(rep.recorded(), time.Since(t0), err)",
 		},
 		"describe.go":    {"a.llmChat" + `Retry("describe", `},
 		"transcript.go":  {"a.llmChat" + `Retry("transcript", `},
-		"cut_suggest.go": {`a.llmChatRetryOn("suggest", `, `a.llmChatRetryOn("audit", `},
-		"narrate.go":     {`a.llmChatRetryOn("narrate", `},
-		"publish.go":     {"a.llmChat" + `Retry("publish", `}, // split: the guard must not read pins as calls
+		"cut_suggest.go": {`a.llmChatRetryTools("suggest", `, `a.llmChatRetryOn("audit", `},
+		"narrate.go":     {`a.llmChatRetryTools("narrate", `},
+		"publish.go":     {"a.llmChat" + `RetryTools("publish", `}, // split: the guard must not read pins as calls
 		"llmlog.go": {
 			"buf.ApplyTag(a.linkTag,",    // the path is tagged...
 			"a.log.AddController(click)", // ...and the tag is what the click resolves

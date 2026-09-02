@@ -136,8 +136,8 @@ func TestTheDescribeRequestIsAllOnOneClock(t *testing.T) {
 	if !strings.Contains(src, `"[%+.1fs] FRAME %d of %d"`) {
 		t.Error("the frame markers no longer carry a stamp on the same clock as the speech")
 	}
-	if !strings.Contains(describeSystem, "on that same clock") {
-		t.Error("the prompt no longer promises one clock, which the request goes to some trouble to keep")
+	if !strings.Contains(sysSystem, `"[+2.0s] FRAME 3 of 4" on the same clock as the speech`) {
+		t.Error("the system context no longer promises the frames one clock with the speech, which the request goes to some trouble to keep")
 	}
 	if !strings.Contains(sysSystem, "Negative is before it") {
 		t.Error("nothing tells the model that a stamp on that clock can be negative, and the earlier events are")

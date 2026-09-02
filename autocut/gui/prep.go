@@ -20,8 +20,8 @@ package main
 // page room all session for a control used in the first ten minutes. Here they
 // cost nothing and gain something: reading down the menu is reading the run.
 //
-// The jobs stay separate on disk -- step1/, step2/describe/ and
-// step2/transcript/ -- because the describer resumes per chunk and the fixer
+// The jobs stay separate on disk -- inputs/, understand/describe/ and
+// understand/transcript/ -- because the describer resumes per chunk and the fixer
 // does not, and because a folder layout that changes with the tabs orphans
 // every project made before the change.
 //
@@ -138,11 +138,11 @@ func (a *App) buildPrep() gtk.Widgetter {
 		dir       func() string
 		into      **gtk.Label
 	}{
-		{"Inputs", "step1/ — the transcripts, the frames, and who spoke when",
+		{"Inputs", "inputs/ — the transcripts, the frames, and who spoke when",
 			a.inputsDir, &p.inputsOut},
-		{"Describe", "step2/describe/ — the event logs, one per video",
+		{"Describe", "understand/describe/ — the event logs, one per video",
 			a.describeDir, &p.describeOut},
-		{"Transcript", "step2/transcript/ — the fixed transcripts, the subtitles and the session timeline",
+		{"Transcript", "understand/transcript/ — the fixed transcripts, the subtitles and the session timeline",
 			a.transcriptDir, &p.transcriptOut},
 	} {
 		dir := o.dir
@@ -437,10 +437,10 @@ func (a *App) prepRun() {
 		a.setStatus("add at least one source")
 		return
 	}
-	// two sources of the same name would write into one folder under step1/,
+	// two sources of the same name would write into one folder under inputs/,
 	// and the second would quietly overwrite the first's transcript
 	if x, y := a.srcList.clash(); x != "" {
-		a.logf("!!! %s and %s are both step1/%s -- rename one", x, y, baseName(x))
+		a.logf("!!! %s and %s are both inputs/%s -- rename one", x, y, baseName(x))
 		a.setStatus(fmt.Sprintf("%s and %s have the same name — rename one",
 			filepath.Base(x), filepath.Base(y)))
 		return

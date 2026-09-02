@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -66,11 +67,26 @@ func (a *App) sepDir() string { return filepath.Join(a.outDir, "stems") }
 // giving a recording a new soundtrack never costs it a re-encode.
 func sepNames(dir, src string) (rest, voice string) {
 	base := baseName(src)
-	rest = filepath.Join(dir, base+".novoice.wav")
+	rest = filepath.Join(dir, base+".split-novoice.wav")
 	if isVideo(src) {
-		rest = filepath.Join(dir, base+".novoice.mkv")
+		rest = filepath.Join(dir, base+".split-novoice.mkv")
 	}
-	return rest, filepath.Join(dir, base+".voice.wav")
+	return rest, filepath.Join(dir, base+".split-voice.wav")
+}
+
+// splitProduct is whether a path is one half of a split: the name says so,
+// and the name is the only thing a stem carries (see the file header). It is
+// what keeps the scissors off a row that is already a half -- splitting the
+// voice off a voice is a wish that produces x.split-voice.split-voice.wav.
+// The old spellings are read too, for a project split before they changed.
+func splitProduct(path string) bool {
+	b := baseName(path)
+	for _, s := range []string{".split-novoice", ".split-voice", ".novoice", ".voice"} {
+		if strings.HasSuffix(b, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // sepResult is one granted wish: the row that asked, and the two files it is
@@ -321,7 +337,55 @@ func (a *App) separateOne(src string, base, unit float64) (sepResult, error) {
 	done = true
 	a.logfIdle(">>> [%s] split into %s and %s", baseName(src),
 		filepath.Base(rest), filepath.Base(voice))
+	// and how the sound fell between them, said now: a residual 13 dB under
+	// the mix is a recording the model heard as voice from end to end --
+	// other players talking in game chat, say -- and the half named for the
+	// room then has next to nothing in it. Found by ear a day later, that
+	// reads as "the footage is silent", and it is not the footage.
+	if m, v, r := sepLoudness(mix), sepLoudness(voice), sepLoudness(restWav); m != "" {
+		a.logfIdle(">>> [%s] the mix averaged %s: the voice half %s, the rest %s%s",
+			baseName(src), m, v, r, sepLopsided(mix, restWav))
+	}
 	return sepResult{src, rest, voice}, nil
+}
+
+// sepLoudness is a file's mean level, as ffmpeg's volumedetect reports it, or
+// "" when it cannot be measured -- a line of the log, not a step of the run.
+func sepLoudness(path string) string {
+	out, err := exec.Command(ffTool("ffmpeg"), "-v", "info", "-i", path, "-vn",
+		"-af", "volumedetect", "-f", "null", "-").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		if i := strings.Index(l, "mean_volume:"); i >= 0 {
+			return strings.TrimSpace(l[i+len("mean_volume:"):])
+		}
+	}
+	return ""
+}
+
+// sepLopsided is the note for a rest that is sepLopsidedDB or more under the
+// mix: what it means, and what to do about it.
+func sepLopsided(mix, rest string) string {
+	m, r := sepMeanDB(sepLoudness(mix)), sepMeanDB(sepLoudness(rest))
+	if m == 0 && r == 0 || m-r < sepLopsidedDB {
+		return ""
+	}
+	return fmt.Sprintf(" -- the rest is %.0f dB under the mix: the model heard this recording as "+
+		"voice nearly throughout, so the half named for the room has little in it. Hear the voice "+
+		"half where the game is wanted, or cut from the original instead of the split.", m-r)
+}
+
+// sepLopsidedDB is how far under the mix the rest has to fall before the log
+// says so. 10 dB is a third of the loudness: past it the rest is a residue.
+const sepLopsidedDB = 10.0
+
+// sepMeanDB reads volumedetect's "-49.3 dB" back as a number; 0 for "".
+func sepMeanDB(s string) float64 {
+	var v float64
+	fmt.Sscanf(strings.TrimSuffix(strings.TrimSpace(s), " dB"), "%g", &v)
+	return v
 }
 
 // sepChunk runs one piece through the model and writes its two halves, giving

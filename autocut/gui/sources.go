@@ -319,7 +319,7 @@ func (s *sourceList) split() (footage, rest []string) {
 // clash names two sources that would be written to the same place. Every step
 // keys a source's output folder on its file name without the extension, so
 // clip.mkv and clip.flac -- a camera and its separate sound take, which is a
-// normal way to record -- are both step1/clip, and the second run would find
+// normal way to record -- are both inputs/clip, and the second run would find
 // the first's words.json and skip itself. The list can hold them (they are
 // different files, and dedupe is by path), so the run has to refuse: one clear
 // message beats a transcript that is quietly the wrong file's. "" when the
@@ -476,6 +476,9 @@ func (s *sourceList) row(i int) *gtk.Box {
 		"voice and everything else. This row keeps everything else; the voice\n" +
 		"is added as a track of its own, so it can be cut and mixed apart.")
 	sep.ConnectToggled(func() { s.setSepVoice(i, sep.Active()) })
+	// a row that IS a half of a split offers no scissors: there is no voice
+	// left to take off a voice, and the name says which rows those are
+	sep.SetVisible(!splitProduct(it.path))
 
 	del := gtk.NewButtonFromIconName("user-trash-symbolic")
 	del.AddCSSClass("flat")

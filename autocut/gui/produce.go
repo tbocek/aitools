@@ -12,8 +12,8 @@ package main
 // pass copies the video. Burned subtitles therefore go into the clip encode,
 // not into a second full-video pass.
 //
-// step5/clips/c000.<ext>   per-clip encodes
-// step5/final.srt          subtitles on the produced timeline
+// produce/clips/c000.<ext>   per-clip encodes
+// produce/final.srt          subtitles on the produced timeline
 // <output file>            the upload
 
 import (
@@ -456,7 +456,7 @@ func (a *App) buildProduce() gtk.Widgetter {
 	inRow.Append(p.inputs)
 
 	openOut := gtk.NewButtonFromIconName("folder-open-symbolic")
-	openOut.SetTooltipText("Open the folder holding the produced file (step5/ beside it holds the per-clip encodes)")
+	openOut.SetTooltipText("Open the folder holding the produced file (produce/ beside it holds the per-clip encodes)")
 	openOut.ConnectClicked(func() { a.openFolder(filepath.Dir(p.outFile)) })
 	p.out = gtk.NewLabel("")
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
@@ -483,7 +483,7 @@ func (a *App) buildProduce() gtk.Widgetter {
 	// makes is one thing: the upload.
 	drawSide, said, pubOuts := a.buildPublishPanes()
 	outRow.Append(gtk.NewSeparator(gtk.OrientationVertical))
-	outRow.Append(pubOuts) // step6's files ride the same Outputs group, fenced off the video's
+	outRow.Append(pubOuts) // publish's files ride the same Outputs group, fenced off the video's
 
 	// only the settings scroll: the words above stay put, and a settings grid
 	// taller than its half slides rather than pushing the title off the page
@@ -562,7 +562,7 @@ func (p *producer) updateInputs() {
 		total += s.length()
 	}
 	line := fmt.Sprintf("%d clip(s) · %s of video", len(segs), mmss(total))
-	detail := fmt.Sprintf("step3/cut.json — %d clips, %s of video (the produced file grows a little where the narration needs room)",
+	detail := fmt.Sprintf("cut/cut.json — %d clips, %s of video (the produced file grows a little where the narration needs room)",
 		len(segs), mmss(total))
 	if len(segs) == 0 {
 		line, detail = "no cut yet — build one on the Cut step", ""
@@ -578,11 +578,11 @@ func (p *producer) updateInputs() {
 		line += " · no narration — the clips would carry only game audio"
 	case spoken < len(entries):
 		line += fmt.Sprintf(" · %d line(s), %d still to speak", len(entries), len(entries)-spoken)
-		detail += fmt.Sprintf("\n\nstep4/narration.json — %d lines, %d already in step4/tts; the other %d are spoken first, before any video is encoded",
+		detail += fmt.Sprintf("\n\nnarrate/narration.json — %d lines, %d already in narrate/tts; the other %d are spoken first, before any video is encoded",
 			len(entries), spoken, len(entries)-spoken)
 	default:
 		line += fmt.Sprintf(" · %d line(s), all spoken", len(entries))
-		detail += fmt.Sprintf("\n\nstep4/narration.json — %d lines, all of them already in step4/tts", len(entries))
+		detail += fmt.Sprintf("\n\nnarrate/narration.json — %d lines, all of them already in narrate/tts", len(entries))
 	}
 	// the separate recordings go into the sound now, so this row has to say so:
 	// a render whose game audio suddenly has the room in it is otherwise a
@@ -599,12 +599,12 @@ func (p *producer) updateInputs() {
 	if vp := a.voicePick; vp != nil && len(entries) > 0 {
 		if v, ok := vp.current(); ok {
 			line += " · voice: " + v.name
-			detail += "\n\nSpoken by " + v.name + " (step4/voice_ref.wav)"
+			detail += "\n\nSpoken by " + v.name + " (narrate/voice_ref.wav)"
 		}
 	}
 	// the thumbnail half's inputs, now that this page owns both: what the
 	// image model is given, and whether the first ▶ still owes the language
-	// model the text -- the once-per-project call the step6 record gates
+	// model the text -- the once-per-project call the publish record gates
 	// (publishStage)
 	if pub := a.pub; pub != nil {
 		if n := len(pub.frames); n > 0 {
@@ -612,10 +612,10 @@ func (p *producer) updateInputs() {
 		}
 		if a.publishRecorded() {
 			line += " · upload text written"
-			detail += "\n\nstep6/publish.json — the upload text is written; ▶ redraws and re-renders without asking the model again (deleting step6/ starts the text over)"
+			detail += "\n\npublish/publish.json — the upload text is written; ▶ redraws and re-renders without asking the model again (deleting publish/ starts the text over)"
 		} else {
 			line += " · upload text still to write"
-			detail += "\n\nNo step6/publish.json yet — the first ▶ writes the title, the thumbnail instruction and the description before drawing anything"
+			detail += "\n\nNo publish/publish.json yet — the first ▶ writes the title, the thumbnail instruction and the description before drawing anything"
 		}
 	}
 	p.inputs.SetText(line)
@@ -624,7 +624,7 @@ func (p *producer) updateInputs() {
 
 // updateOut is the line every step ends on. Here it is one file rather than a
 // folder: the video is the whole point of the page, so its size and age are
-// what "what is on disk" means -- with step5/ named too, because a run that
+// what "what is on disk" means -- with produce/ named too, because a run that
 // stopped half way leaves its finished clips there and nothing else says so.
 func (p *producer) updateOut() {
 	if p == nil || p.out == nil {
@@ -632,7 +632,7 @@ func (p *producer) updateOut() {
 	}
 	part := ""
 	if s := summarizeOutputs(p.a.produceDir()); s != "nothing yet" {
-		part = " · step5/ " + s
+		part = " · produce/ " + s
 	}
 	fi, err := os.Stat(p.outFile)
 	if err != nil {

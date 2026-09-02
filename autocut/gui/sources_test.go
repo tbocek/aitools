@@ -306,7 +306,7 @@ func TestSourcesThatWouldShareAnOutputFolderAreFound(t *testing.T) {
 	s.add(same[0])
 	x, y := s.clash()
 	if x != paths[0] || y != same[0] {
-		t.Fatalf("clash = (%q, %q), want the two files that are both step1/clip", x, y)
+		t.Fatalf("clash = (%q, %q), want the two files that are both inputs/clip", x, y)
 	}
 	if len(s.items) != 3 {
 		t.Errorf("the list dropped one of them: %+v", s.items)

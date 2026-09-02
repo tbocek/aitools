@@ -15,7 +15,7 @@ package main
 // CC0 references that ship beside audio.cpp's models, plus anything added with
 // "Add sample…", which converts and copies it in. The list shows file names
 // because that is what they are: a row can be opened, replaced or deleted in
-// the folder the button beside it opens. The pick is installed as step4/voice_ref.wav
+// the folder the button beside it opens. The pick is installed as narrate/voice_ref.wav
 // because that is the file the TTS server is handed, and the output folder is
 // the one mounted into the server at its own absolute path -- the voices folder
 // sits at a different path inside the container, so aiming the server straight
@@ -523,13 +523,13 @@ func (a *App) ensureVoiceBase() error {
 	hand := a.takesFor(base)
 	picks := handPicks(hand)
 	if len(picks) == 0 {
-		turns, err := loadSpans(filepath.Join(a.outDir, "step1", base, "turns.json"))
+		turns, err := loadSpans(filepath.Join(a.inputsDir(), base, "turns.json"))
 		if err != nil {
 			return fmt.Errorf("no diarization for %s -- run Prepare, or pick the seconds by hand under the video", base)
 		}
 		// the transcript of the same recording, on the same clock: what refCuts
 		// weighs the stretches by. Missing is allowed and means unweighed.
-		rows := loadSeg4(filepath.Join(a.outDir, "step1", base, "transcript.tsv"))
+		rows := loadSeg4(filepath.Join(a.inputsDir(), base, "transcript.tsv"))
 		if picks = refCuts(turns, rows); len(picks) == 0 {
 			return fmt.Errorf("no clean solo stretch found for the voice reference")
 		}
@@ -537,7 +537,7 @@ func (a *App) ensureVoiceBase() error {
 	dir := a.narrateDir()
 	os.MkdirAll(dir, 0o755)
 	// the pieces and the list that names them are scaffolding for one concat.
-	// They were left in step4 afterwards, where a later build with fewer takes
+	// They were left in narrate/ afterwards, where a later build with fewer takes
 	// leaves the extra ones lying beside the reference looking like part of it.
 	var tmp []string
 	defer func() {

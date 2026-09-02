@@ -2,11 +2,11 @@ package main
 
 // The first half of Prepare, natively: STT both inputs and dump frames
 // at an interval, into
-// step1/. ffmpeg is driven via os/exec and the audio.cpp server over HTTP
+// inputs/. ffmpeg is driven via os/exec and the audio.cpp server over HTTP
 // (audiocpp.go); the anchored diarization and the segment merge are real code
 // here, not awk.
 //
-// step1/
+// inputs/
 //   <input-basename>/  voice16k.wav, transcript.{txt,tsv,srt}, words.json,
 //                      turns.json  (per input, video and voice alike)
 //   frames/<input-basename>/2026-08-08_19-59-00.jpg   one per interval, named
@@ -471,7 +471,7 @@ func spansFrom(b []byte) ([]span, error) {
 // server's models and the log lines for both halves -- this is only the work.
 
 func (a *App) ingest(videos, audios []string, interval float64, scaleName, scaleVF string) error {
-	inDir := filepath.Join(a.outDir, "step1")
+	inDir := a.inputsDir()
 	if err := os.MkdirAll(inDir, 0o755); err != nil {
 		return err
 	}
@@ -1254,7 +1254,7 @@ func (a *App) mergeSegments(out string) error {
 
 // ---- frames ----------------------------------------------------------------
 
-// extractFrames dumps one video's frames into step1/frames/<basename>/.
+// extractFrames dumps one video's frames into inputs/frames/<basename>/.
 // A marker file records interval + size, so re-runs skip until either changes.
 func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, inDir string, base, unit float64) error {
 	name := baseName(video)

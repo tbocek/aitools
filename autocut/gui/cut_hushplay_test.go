@@ -26,7 +26,7 @@ import (
 func TestASilencedLaneIsNotStartedAtAll(t *testing.T) {
 	// a recording that covers the whole session, half a minute behind the
 	// footage's clock
-	a := &auxAudio{base: "mic", delta: -30, dur: 600}
+	a := &auxAudio{base: "mic", delta: -30, hi: 600}
 	if !a.audible(60) {
 		t.Fatal("a lane the scene hears, with material at this second, is not played")
 	}
@@ -58,7 +58,7 @@ func TestOnlyOnePathStartsARecording(t *testing.T) {
 		{`func \(p \*Player\) place\(a \*auxAudio, t float64, play bool\) \{`, "if !a.audible(t) {"},
 		{`func \(p \*Player\) syncMix\(play bool\) \{`, "p.place(a, pos, play)"},
 		{`func \(p \*Player\) SeekTo\(t float64\) \{`, "p.place(a, t, p.playing)"},
-		{`func \(a \*auxAudio\) cue\(t float64, play bool, rate float64\) \{`, "if !a.audible(t) {"},
+		{`func \(a \*auxAudio\) cue\(t float64, play bool, rate float64, stop float64\) \{`, "if !a.audible(t) {"},
 	} {
 		if b := funcBody(t, "player.go", tc.head); !strings.Contains(b, tc.want) {
 			t.Errorf("%s no longer contains %q — a silenced lane can be started from it",
@@ -72,8 +72,10 @@ func TestOnlyOnePathStartsARecording(t *testing.T) {
 	}
 	// and the hush landing on a running lane stops it rather than only turning
 	// it down, which is the whole of the fix
+	// -- and stops it all the way to READY, so a lane nobody hears holds no
+	// stream at the sound server and sits in no system mixer
 	if b := funcBody(t, "player.go", `func \(p \*Player\) applyMute\(\) \{`); !strings.Contains(b,
-		"a.pb.SetState(gst.StatePaused)") {
+		"a.pb.SetState(gst.StateReady)") {
 		t.Error("a lane the scene has just silenced is left running under the mute")
 	}
 }

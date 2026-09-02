@@ -345,6 +345,7 @@ func (a *App) showProject() {
 func (a *App) setProject(path string) {
 	a.projPath = path
 	a.outDir = dataDir(path)
+	a.migrateFolders()
 	a.showProject()
 	a.followOutDir()
 	// the voice belongs to the project, not to the session: drop the cached id,
@@ -394,6 +395,33 @@ func (a *App) saveProjectNow() {
 	// to keep in step with anything.
 	if err := a.writeProject(a.projPath, b); err != nil {
 		a.logf("save project: %v", err)
+	}
+}
+
+// migrateFolders moves a project's data out of the numbered folders it was
+// written into before the folders were named for their steps -- step1/ to
+// step6/ -- into inputs/, understand/, cut/, narrate/, produce/ and publish/.
+// Once, on the open that finds them: a folder already under its new name is
+// left alone, so a project opened by a newer build and then by this one
+// cannot have its work moved over itself. Logged, because a rename of
+// somebody's finished work is not a thing to do silently.
+func (a *App) migrateFolders() {
+	if a.outDir == "" {
+		return
+	}
+	for _, m := range [][2]string{
+		{"step1", "inputs"}, {"step2", "understand"}, {"step3", "cut"},
+		{"step4", "narrate"}, {"step5", "produce"}, {"step6", "publish"},
+	} {
+		from, to := filepath.Join(a.outDir, m[0]), filepath.Join(a.outDir, m[1])
+		if !exists(from) || exists(to) {
+			continue
+		}
+		if err := os.Rename(from, to); err != nil {
+			a.logf("!!! could not move %s/ to %s/: %v -- the files are still under the old name", m[0], m[1], err)
+			continue
+		}
+		a.logf(">>> moved %s/ to %s/ -- the folders are named for their steps now", m[0], m[1])
 	}
 }
 

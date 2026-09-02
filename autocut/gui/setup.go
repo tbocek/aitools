@@ -32,6 +32,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -93,6 +94,11 @@ type appConf struct {
 	// then. No default: inventing one would break every machine but this one,
 	// which is the fault the whole config file grew out of.
 	FFmpeg string
+
+	// The firefox the model searches the web through (websearch.go). Blank
+	// means the one on PATH; "off" means the model is offered no search and
+	// writes only what the material says.
+	Firefox string
 }
 
 // ffSet is the settings box, shared with the runners. The pipeline shells out
@@ -266,6 +272,8 @@ func (a *App) readGlobal() globalConf {
 			c.SepModel = v
 		case "FFMPEG":
 			c.FFmpeg = v
+		case "FIREFOX":
+			c.Firefox = v
 		case "AUDIOCPP_TTS_MODEL":
 			c.TTSModel = v
 			// AUDIOCPP_LANGUAGE was here, and is now the project's (Project.Language).
@@ -381,6 +389,11 @@ AUDIOCPP_SEP_MODEL=%q
 # taken from the same folder as whatever is named here.
 FFMPEG=%q
 
+# The firefox the model looks facts up through, headless, when a caption or a
+# line needs a detail the footage does not show (web_search); empty means the
+# one on PATH, "off" means no search is offered at all.
+FIREFOX=%q
+
 # stable-diffusion.cpp's sd-server -- it draws the thumbnail on the Produce
 # step; empty means 127.0.0.1:%d. There is no model key: the server serves the
 # one model it was started with (SD_ARGS in cpp/run.sh), and nothing autocut
@@ -389,7 +402,7 @@ SD_SERVER=%q
 SD_API_KEY=%q
 `, c.Server, c.Model, c.Key, ttsPort, c.TTS, c.TTSKey,
 		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel, c.SepModel, c.FFmpeg,
-		sdPort, c.SD, c.SDKey)
+		c.Firefox, sdPort, c.SD, c.SDKey)
 	body += rememberedBody(g)
 	return os.WriteFile(p, []byte(body), 0o600)
 }
@@ -687,6 +700,53 @@ func ffMissing(bin, listFlag string, want []string) []string {
 		}
 	}
 	return missing
+}
+
+// firefoxVersion is the first line of --version from a firefox, or why it
+// will not run. Split from testFirefox so it can be checked against a fake.
+func firefoxVersion(bin string) (string, error) {
+	out, err := exec.Command(bin, "--version").Output()
+	if err != nil {
+		return "", fmt.Errorf("%s will not run: %w", bin, err)
+	}
+	ver := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	if ver == "" {
+		return "", fmt.Errorf("%s said nothing to --version", bin)
+	}
+	return ver, nil
+}
+
+// testFirefox is the firefox row's Test, the shape of testFFmpeg's: which
+// binary the box resolves to, that it runs, and then the thing the pipeline
+// actually does with it -- a headless start, the debugging port, one search
+// -- because a firefox that prints its version and then cannot be driven is
+// the failure the version check cannot see. "off" is not a failure: it is
+// the box saying the model gets no search, and the badge says so back.
+func (a *App) testFirefox(box string) (string, error) {
+	box = strings.TrimSpace(box)
+	if strings.EqualFold(box, firefoxOff) {
+		return "off -- the model is offered no web search, and writes only what the material says", nil
+	}
+	bin, err := firefoxBin(box)
+	if err != nil {
+		if box != "" {
+			return "", fmt.Errorf("%w -- leave the box empty to use PATH, or off for no search", err)
+		}
+		return "", fmt.Errorf("%w (Arch: pacman -S firefox)", err)
+	}
+	ver, err := firefoxVersion(bin)
+	if err != nil {
+		return "", err
+	}
+	where := bin
+	if box == "" {
+		where += " (off PATH)" // which one PATH gave is the thing worth seeing
+	}
+	hits, err := a.webSearch(context.Background(), bin, "duckduckgo")
+	if err != nil {
+		return "", fmt.Errorf("%s at %s runs, but could not be driven headless: %w", ver, where, err)
+	}
+	return fmt.Sprintf("%s\nat %s, drove a headless search: %d result(s)", ver, where, len(hits)), nil
 }
 
 // testFFmpeg checks the build named by the settings box -- or, with the box
@@ -1007,6 +1067,29 @@ func (a *App) setupDialog() {
 	diarModel := entry(c.DiarModel, defDiarModel, "Id of the diarization model — the one that tells speakers apart")
 	sepModel := entry(c.SepModel, defSepModel,
 		"Id of the separation model — the one that lifts the voice off a recording")
+
+	// the other local binary: the browser the model looks facts up through.
+	// Empty is the one on PATH, "off" is no search at all -- and the
+	// placeholder says which of the two an empty box means on this machine
+	fxPh := "empty = off PATH, where none was found; off = no web search"
+	if p, err := firefoxBin(""); err == nil {
+		fxPh = "empty = " + p + "; off = no web search"
+	}
+	fx := entry(c.Firefox, fxPh, "Path of the firefox the model searches the web through, headless, "+
+		"when a caption or a line needs a fact the footage does not show. \"off\" offers the model "+
+		"no search: it then writes only what the material says.")
+	testFxBtn := gtk.NewButtonWithLabel("Test")
+	testFxBtn.SetTooltipText("Start that firefox headless and run one search through it")
+	fxBadge := newTestBadge()
+	hook(testFxBtn, fxBadge, "firefox", func() (string, func() (string, error)) {
+		box := strings.TrimSpace(fx.Text())
+		where := "the firefox on PATH"
+		if box != "" {
+			where = box
+		}
+		return "checking " + where + ", then searching through it headless …",
+			func() (string, error) { return a.testFirefox(box) }
+	})
 	testTTSMBtn := gtk.NewButtonWithLabel("Test")
 	testTTSMBtn.SetTooltipText("Check that the audio.cpp server serves this voice-cloning model")
 	ttsmBadge := newTestBadge()
@@ -1082,6 +1165,7 @@ func (a *App) setupDialog() {
 			SD:        strings.TrimRight(strings.TrimSpace(sd.Text()), "/"),
 			SDKey:     sdKey.Text(),
 			FFmpeg:    strings.TrimSpace(ff.Text()),
+			Firefox:   strings.TrimSpace(fx.Text()),
 		}
 		if err := a.writeConf(cc); err != nil {
 			logExp.SetExpanded(true)
@@ -1182,8 +1266,8 @@ func (a *App) setupDialog() {
 
 	// the one local tool here: no API, a binary. Which ffmpeg answers, and what
 	// it was built with, decides whether the render works at all
-	grid.Attach(head("Cutting", "ffmpeg, which every step shells out to. Not a server: a "+
-		"local binary.\n\nLeave the box empty and it comes off PATH like any other tool, "+
+	grid.Attach(head("Cutting", "ffmpeg, which every step shells out to, and the firefox the "+
+		"model searches the web through. Not servers: local binaries.\n\nLeave the ffmpeg box empty and it comes off PATH like any other tool, "+
 		"which is what almost every machine wants. Give a path -- /usr/bin/ffmpeg, or a "+
 		"build of your own -- and that one is used instead, with ffprobe taken from the "+
 		"same folder; both are needed, and a mismatched pair is its own kind of bug.\n\n"+
@@ -1264,6 +1348,12 @@ func (a *App) setupDialog() {
 	// into space the dialog adds, instead of shoving the buttons off the bottom
 	// of the screen while a failure is being read
 	grid.Attach(logExp, 0, 19, 4, 1)
+	// under ffmpeg, once every row below is placed: InsertRow moves them down
+	grid.InsertRow(11)
+	grid.Attach(lbl("firefox:"), 0, 11, 1, 1)
+	grid.Attach(fx, 1, 11, 1, 1)
+	grid.Attach(fxBadge.stack, 2, 11, 1, 1)
+	grid.Attach(testFxBtn, 3, 11, 1, 1)
 
 	win.SetChild(grid)
 	win.SetVisible(true)

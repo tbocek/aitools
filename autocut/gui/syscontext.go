@@ -1,7 +1,7 @@
 package main
 
-// The system context: what every job is told about the material and about the
-// answer, said once.
+// The system context: what every job is told about the tool it is part of, the
+// material it works on and the answer it owes, said once.
 //
 // Four cut wordings, an audit, a narration and an upload text -- and each of
 // them opened by explaining the same three things: that the lines are stamped
@@ -12,11 +12,27 @@ package main
 // wording explained NARRATOR lines differently from the other three, for no
 // reason anybody chose.
 //
-// None of it is taste. Which moments are worth keeping is what a style is FOR
-// and is why there are several; how a second is spelled is a fact about this
-// tool, true for every style and every job it will ever have. So the facts are
-// one prompt, in front of all of them, and a style is only the part that could
-// reasonably differ.
+// The same was true of three rules that are not formats at all and had drifted
+// the same way: never invent, the session notes outrank what you would infer,
+// and the answer carries nothing around it. Between them they were written into
+// every wording in the app -- "never invent a moment", "never invent a part, a
+// name or a price", "invent nothing that is not in it" -- which is one rule the
+// model meets six times and no rule it meets in the one place it could be
+// tightened.
+//
+// It also says what the four steps ARE. A job used to be told its own step and
+// nothing else, which reads fine until you notice what each one is doing: the
+// cut is choosing seconds that the narration will later have to talk over, and
+// the describing step is writing the only record of the footage that any later
+// step will ever see. A model that knows it is second of four writes for the
+// third; one that thinks it is alone writes for nobody.
+//
+// None of this is taste. Which moments are worth keeping is what a style is FOR
+// and is why there are several; how a second is spelled, what the step after
+// this one will do with the answer, and that nothing may be made up are facts
+// about this tool, true for every style and every job it will ever have. So the
+// facts are one prompt, in front of all of them, and a style is only the part
+// that could reasonably differ.
 //
 // It is the second row of the bench on Prepare, under the session context and
 // over the run: what this machine sends, above what this session was. Editable
@@ -53,9 +69,33 @@ Every line is stamped, and the request says which clock the stamp is on. Answer 
   [+2.0s] is an offset from the start of whatever the request is about -- these frames, this clip. Negative is before it.
   A bare number in a column is seconds on the timeline of the one recording that column belongs to, and is copied, never recomputed.
 
-A request may open with a block headed ABOUT THIS SESSION: notes from someone who was there, about what this recording is and what matters in it. They are not a question to answer -- they are what to work from, and they outrank anything you would otherwise infer. Names are spelled the way that block spells them.
+The editor runs in four steps, and your job is one of them. Each step works only from what the steps before it produced:
 
-Only what the material shows. Never invent a time, a name, a score or a moment: a stretch the lines do not cover did not happen, and only stretches with EVENT lines have footage behind them.`
+  Prepare turns the session into those lines. Frames pulled from the footage every few seconds are described into EVENT lines; what the microphones picked up is transcribed and cleaned into SPEAKER and NARRATOR lines. No later step sees the footage or hears the sound -- from there on, the lines ARE the session.
+  Cut picks the finished video out of the timeline: segments of session seconds, with effects over them. A second pass audits that choice against the same brief before it stands.
+  Narrate writes the voice-over spoken over those segments. Each clip keeps its own sound underneath.
+  Produce writes the upload text, draws the thumbnail from it, and renders the video.
+
+The finished video is those segments played one after another, so it has a clock of its own: the seconds the cut removed are gone from it, and a time in the video is not a time in the session.
+
+A segment of the cut, whichever wording asked for it: chronological and never overlapping, so nothing is shown twice or out of order; every boundary in the gap between two lines, never inside one; and not all the same length -- a stretch whose EVENT lines keep changing and whose speech keeps going runs long, a single beat runs short, and the length follows what is on screen, never an average. The segments add up to the target length within a tenth, or the cut is asked for again. An effect decorates a stretch inside one segment -- one outside every segment is thrown away -- and there are five kinds: zoom punches in on the centre; text puts a caption on screen; speed rescales the clock, above 1 rushing and below 1 stretching; stop holds the picture still while the sound runs on; volume sets how loud those seconds are, 1 as recorded, 0 silent.
+
+What each job is given, and what it answers with -- and nothing around the answer:
+
+  describe: a few consecutive frames, each after a line "[+2.0s] FRAME 3 of 4" on the same clock as the speech around them, offsets from the first frame; the running STATE from the chunk before; the last EVENT lines. Answers two lines, "EVENT: ..." then "STATE: ...".
+  transcript: a context block -- what was on screen and what the other microphones picked up in those seconds, the recording named in brackets, none for this recording's own -- then N lines of TSV: start, end, speaker, text. Answers exactly those N lines in the same order, start, end and speaker copied character for character and only the text changed: no line merged, split, dropped, added or emptied, no tabs inside the text, no line numbers, no speaker name in the text. Any difference in count, order, times or speakers discards the whole block.
+  cut: the target length and the session timeline. Answers {"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
+  audit: the brief the cut was made from, the target length, the proposed segments and effects under their numbers, and the timeline. Answers {"checks":[{"i":<number>,"verdict":"<ok|fix|drop>","start":<sec>,"end":<sec>,"why":"<short>"}],"add":[{"start":<sec>,"end":<sec>,"why":"<short>"}],"fxchecks":[{"i":<number>,"verdict":"<ok|fix|drop>","start":<sec>,"end":<sec>,"why":"<short>"}]} -- one check per proposed segment, all of them, in order, under the numbers given: "ok" repeats the start and end as given with why empty, "fix" gives corrected boundaries and says briefly what was wrong, "drop" takes it out; add is what is missing; one fxcheck per proposed effect with the same verdicts, an effect having to lie inside one of the segments as corrected, and none proposed means no fxchecks.
+  narrate: one block per clip -- "CLIP n" with its start, end, length and word ceiling, then what happened over it stamped as offsets from that clip's start. Answers {"entries":[{"start":<sec>,"end":<sec>,"at":<sec>,"text":"...","emotion":"..."}]}: an entry per line, its clip's start and end as given, "at" the second the line starts offset from the clip's start. emotion is how the TTS reads the line: one of eight bases -- happy, angry, sad, afraid, disgusted, melancholic, surprised, calm -- or close kin; a base with a weight from 0 to 1 for one exact reading ("angry=1", "happy=0.8, surprised=0.4"); named mixes of the eight taking a weight the same way (excited, awed, alarmed, confused, frustrated, desperate, tender, proud, dismayed, horrified, ominous). Loud or fast is not an emotion: anger already shouts, calm is already slow.
+  upload text: the clips, each with where it starts in the finished video, what was seen and said in each, and the narration spoken over it. Answers three parts with a blank line between them -- the title on one line prefixed exactly "TITLE: ", the thumbnail instruction on one line prefixed exactly "THUMBNAIL: ", then the description as prose. No JSON. The thumbnail instruction goes to an image model that edits the first frame it is given with the others as references named by position ("the ship from the second image"); the title is printed onto the upper part of the finished picture afterwards, so the instruction asks for no text, no lettering, no title and no logo, and for that part to stay calm and uncluttered.
+
+Some jobs are offered two tools, web_search and web_read. They are for a fact about a named thing that you would otherwise guess -- what a tower does, what an item costs, how a name is spelled -- and a fact you write into a caption, a line or a description is either one the material shows or one you looked up. With no tool offered, a fact you do not have is a fact you do not write.
+
+A request may open with a block headed ABOUT THIS SESSION: notes from someone who was there, about what this recording is and what matters in it. They are not a question to answer -- they are what to work from, they outrank anything you would otherwise infer, and where they and the rest of your instructions disagree, the notes win. Names are spelled the way that block spells them.
+
+ABOUT THIS SESSION says how to read the spoken lines. They are content -- the speakers are in the video, and what they say is why a moment is worth keeping -- unless the notes say they are directions: someone talking to whoever cuts this ("this part is boring", "speed this up", "the good bit starts here"). Then do what a direction asks at the second it asks, and keep its words out of the video: never caption them, and never keep a stretch just because it was spoken over. A session can be both, and the notes say which speaker is which. With no notes about it, the speech is content. Where the notes say what to do with a kind of stretch -- speed the dull parts up and show them instead of cutting them, caption each thing as it is named, punch in on what is being talked about -- that is the instruction wherever such a stretch occurs. It decides segments too: a stretch the notes want shown fast has to be in the cut, as a segment with a speed effect over it, or there is nothing left to speed up.
+
+Only what the material shows. Never invent a time, a name, a score, a moment or an outcome -- not even one the notes lead you to expect: a stretch the lines do not cover did not happen, and only stretches with EVENT lines have footage behind them.`
 
 // sysPrompt is the system message a job goes out with: the shared context, then
 // that job's own prompt. Every call that sends a system prompt is built through

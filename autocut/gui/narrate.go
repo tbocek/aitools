@@ -38,10 +38,10 @@ package main
 // before it is cloned, so it changes who is speaking rather than transposing
 // what was spoken.
 //
-// step4/narration.json      entries
-// step4/voice_ref_base.wav  the reference as chosen or cut
-// step4/voice_ref.wav       ...shifted by the reference pitch: the server's input
-// step4/tts/<hash>.wav      synthesis cache
+// narrate/narration.json      entries
+// narrate/voice_ref_base.wav  the reference as chosen or cut
+// narrate/voice_ref.wav       ...shifted by the reference pitch: the server's input
+// narrate/tts/<hash>.wav      synthesis cache
 
 import (
 	"context"
@@ -125,25 +125,25 @@ const (
 // it") to avoid repeating text the prompt had already used. An example the
 // input can never collide with is the only way a rule about NARRATOR lines is
 // tested by the session rather than by the example.
-const narrSystem = `You are the voice-over on a YouTube gaming video. Clips have been cut out of a longer session and you talk over them -- when there is something worth saying. Each clip keeps its own sound, the game and everybody in it, so the viewer is never listening to nothing.
+const narrSystem = `You are the voice-over on a YouTube gaming video. You talk over the clips the cut chose -- when there is something worth saying. Their own sound plays underneath you, the game and everybody in it, so the viewer is never listening to nothing.
 
 Your voice: present tense, contractions, short sentences. Funny, off-hand, happy to be the idiot on screen. Say "we" and "look at this". Describing what you see is fine as long as you are funny about it -- "whooo, so many gorillas here, it's a bit crowded" is a whole line, and a good one. Every line is a full thought the viewer can follow -- what is happening and what we are doing about it -- never a two-word caption. The busier the screen, the more it wants a joke.
 
-Each clip's block lists what happened over it, in order, stamped as offsets from that clip's start. The NARRATOR lines in it are yours: things you said at the time on your own microphone, which the video does not play, so you are the only way anybody hears one.
+The NARRATOR lines in a clip's block are yours -- things you said at the time, which nobody hears unless you use them.
 
-Rules:
-1. Every clip gets at least one entry, with that clip's exact start and end. A clip with two moments worth a line gets two entries -- same start and end, each with its own "at", in time order. A welcome at the top and a scream in the middle are two entries, not one line that says both.
-2. "at" is the second your line starts, offset from the clip's start like the stamps in the block. Put it at the moment the line is about, never before that moment is on screen: react to the vault after we have seen the vault. The video plays your line right there, and everything around it is the game. A spoken line runs at about two and a half words a second, so ten words is about four seconds -- when a clip has two lines, the pause between them is the gap between where the first ENDS and the second's "at", so space the placements by the first line's length plus the silence you want.
-3. Less is more. The clip's word count is a ceiling across all its entries, not a target, and most clips should come in far under it. Silence is part of this: what you do not say, the game fills.
-4. Most clips get a line -- a short one. A clip that plays fine on its own gets text "" -- still an entry, just no words in it -- but that is for one or two clips in the video, the ones that carry themselves. Half the clips silent is a narrator who fell asleep.
-5. Write to the block: take the one moment in it that is worth a line, at the offset it happens, and let the rest go past. A line that would fit any clip fits this one badly.
-6. Never repeat a SPEAKER line: the viewer hears it from the person who said it. Set it up before it, or react after it.
-7. A funny NARRATOR line is the best material a block can have -- nobody else will ever hear it -- so when there is one, that is the moment your line goes on. Quote at most one NARRATOR line per clip, placed just after you said it. Never a run of them, never a whole conversation, and never a line that reads like broken speech-to-text.
-8. Never report your own body or your feelings -- no "I'm spinning", no "my hands", no "my mind goes blank". You are behind the camera talking about what is in front of it.
-9. Use only what this clip's block says happened. Invent no names, places or outcomes.
-10. Start in the middle. Never open with "In this clip", and never open two clips the same way.
-11. Where a block gives you nothing, give it nothing back, or one short general line.
-12. The last clip ends the video: sign off quick -- thanks, like and subscribe -- with its "at" near that clip's end, so the video ends when you stop talking.
+For each clip, in order:
+1. Find the one moment in its block that is worth a line, at the offset it happens. Write to the block: a line that would fit any clip fits this one badly. Where a block gives you nothing, give it nothing back, or one short general line.
+2. Decide whether to speak at all. Less is more. The clip's word count is a ceiling across all its entries, not a target, and most clips should come in far under it. Silence is part of this: what you do not say, the game fills. Most clips get a line -- a short one. A clip that plays fine on its own gets text "" -- still an entry, just no words in it -- but that is for one or two clips in the video, the ones that carry themselves. Half the clips silent is too many.
+3. Place it. "at" is the second your line starts, offset from the clip's start like the stamps in the block. Put it at the moment the line is about, never before that moment is on screen: react to the vault after we have seen the vault. A spoken line runs at about two and a half words a second, so ten words is about four seconds; when a clip has two lines, the second's "at" comes after the first line has ended plus the silence you want.
+4. Write the entry with that clip's exact start and end. A clip with two moments worth a line gets two entries -- same start and end, each with its own "at", in time order. A welcome at the top and a scream in the middle are two entries, not one line that says both.
+
+The words:
+- Never repeat a SPEAKER line: the viewer hears it from the person who said it. Set it up before it, or react after it.
+- A funny NARRATOR line is the best material a block can have -- nobody else will ever hear it -- so when there is one, that is the moment your line goes on. Quote at most one NARRATOR line per clip, placed just after you said it. Never a run of them, never a whole conversation, and never a line that reads like broken speech-to-text.
+- Never report your own body or your feelings -- no "I'm spinning", no "my hands", no "my mind goes blank". You are behind the camera talking about what is in front of it.
+- Use only what THIS clip's block says happened. What is in another clip's block is that clip's.
+- Start in the middle. Never open with "In this clip", and never open two clips the same way.
+- The last clip ends the video: sign off quick -- thanks, like and subscribe -- with its "at" near that clip's end, so the video ends when you stop talking.
 
 Three clip blocks and the lines they should get:
   [+2s] EVENT: Four players push on a vault door that does not move.
@@ -160,12 +160,9 @@ Three clip blocks and the lines they should get:
   [+11s] SPEAKER_00: wait, wait, wait
   -> ""
 
-That is the shape of the whole video: most clips a short line that lands on its moment, and once in a while one we just watch.
+That is the shape of the whole video: most clips a short line that lands on its moment, and once in a while one we just watch. Give every line an emotion, and a weighted one where the reading has to be exact -- a weighted word always comes out stronger than the same word without one.
 
-emotion is how the TTS reads the line. It blends eight bases -- happy, angry, sad, afraid, disgusted, melancholic, surprised, calm -- so use those words or close kin: "angry", "calm", "surprised, happy". Loud or fast is not an emotion: anger already shouts, calm is already slow. When a line needs one exact reading, give the base a weight from 0 to 1 instead: "angry=1" for a full shout, "happy=0.8, surprised=0.4" for a blend. Named mixes of the eight take a weight the same way -- excited, awed, alarmed, confused, frustrated, desperate, tender, proud, dismayed, horrified, ominous -- and a weighted word always comes out stronger than the same word without one.
-
-Return strict JSON, nothing else:
-{"entries":[{"start":<sec>,"end":<sec>,"at":<sec>,"text":"...","emotion":"..."}]}`
+Answer in narrate's shape.`
 
 // narrNoMicNote rides on the narrate prompt when the session has no separate
 // narrator recording (narratorMic is blank): every line in the briefs is one
@@ -182,8 +179,7 @@ const narrCaptionsAddendum = `THIS VIDEO HAS NO VOICE-OVER. Nobody speaks your l
 - Write for the eye, not the ear. Shorter still: a caption is read in the corner of the attention, and a line the viewer has to study is a line over footage they are missing.
 - "emotion" means nothing with no voice. Leave it "".
 - Give every entry with text a "pos": where the caption sits on the picture. "bottom" is the default and almost always right; "top" when the action or the game's own UI lives at the bottom of the frame; "center" only for a line that IS the moment, like a title card.
-Return strict JSON, nothing else:
-{"entries":[{"start":<sec>,"end":<sec>,"at":<sec>,"text":"...","emotion":"","pos":"bottom|top|center"}]}`
+So each entry is {"start":<sec>,"end":<sec>,"at":<sec>,"text":"...","emotion":"","pos":"bottom|top|center"}.`
 
 type narrEntry struct {
 	S float64 `json:"s"`
@@ -482,6 +478,7 @@ func (a *App) buildNarrate() gtk.Widgetter {
 			}
 		}
 		p.OnError = a.playerErr("the narrate preview")
+		p.OnLog = func(s string) { a.logf("%s", s) }
 	}
 	if p, err := NewPlayer(); err == nil {
 		n.voice = p
@@ -695,7 +692,7 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	inRow.Append(n.inputs)
 
 	openOut := gtk.NewButtonFromIconName("folder-open-symbolic")
-	openOut.SetTooltipText("step4/ — narration.json, the voice reference and the synthesis cache")
+	openOut.SetTooltipText("narrate/ — narration.json, the voice reference and the synthesis cache")
 	openOut.ConnectClicked(func() { a.openFolder(a.narrateDir()) })
 	n.out = gtk.NewLabel("")
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
@@ -1065,7 +1062,7 @@ func (n *narrator) cue(t float64, play bool) {
 	if n.player.loaded == v.path {
 		// before the seek, never after: a rate only takes hold at a seek, and
 		// this is the seek
-		n.player.SetRate(fxRateAt(ed.fx, t))
+		n.player.SetRate(fxPreviewRateAt(ed.fx, t))
 		n.player.SeekTo(t - v.start)
 		// the seek cleared ended, so this starts at the new position rather
 		// than replaying whatever the stream stopped on
@@ -1079,7 +1076,7 @@ func (n *narrator) cue(t float64, play bool) {
 	// them -- a scene shown from one camera and heard from another's
 	// microphone was silent here until this
 	n.player.SetMix(ed.mixUnder(v))
-	n.player.SetRate(fxRateAt(ed.fx, t))
+	n.player.SetRate(fxPreviewRateAt(ed.fx, t))
 	n.player.PlaySegment(v.path, t-v.start, -1, play)
 	n.playVideoStart = v.start
 	n.syncFxSound() // the mix is new, so its hush is owed again
@@ -1187,13 +1184,22 @@ func (n *narrator) syncFxSound() {
 	// hole; the SOUND being wrong is not survivable here, because the whole of
 	// this page is judging a line against the audio it has to fit between.
 	p.SetMuted(freezeHush(ed.fx, n.pos) || cardHush(overInsert(ed.segs, n.pos)))
-	base := ""
+	base, until := "", 0.0
 	if v := ed.cutVideoAt(n.pos); v != nil {
 		base = v.base
+		// the answer holds to the end of this clip, or to the next clip's
+		// start, in the file's own seconds: a lane started now stops there
+		// by itself (auxAudio.stopAt), the way the Cut page's does
+		if s != nil {
+			until = v.at(s.E)
+		} else if _, next := gapAt(ed.segs, n.pos); next >= 0 {
+			until = v.at(ed.segs[next].S)
+		}
 	} else if p.loaded != "" {
 		base = baseName(p.loaded) // past a clip's end: the file still running
 	}
-	p.Hush(hushOf(s, base))
+	own, quiet := hushOf(s, base)
+	p.Hush(own, quiet, until)
 }
 
 // overInsert is the card the cut lays over the footage at t. Spliced cards are
@@ -1267,7 +1273,7 @@ func (n *narrator) heardScene(t float64) *cutSeg {
 // boundary, in exchange for a preview that is actually the speed it claims.
 func (n *narrator) syncPlayRate() {
 	if n.player != nil && n.a.ed != nil {
-		n.player.SetRateNow(fxRateAt(n.a.ed.fx, n.pos))
+		n.player.SetRateNow(fxPreviewRateAt(n.a.ed.fx, n.pos))
 	}
 }
 
@@ -2209,7 +2215,7 @@ func (n *narrator) updateInputs() {
 		total += s.length()
 	}
 	line := fmt.Sprintf("%d clip(s) · %s to narrate", len(segs), mmss(total))
-	detail := fmt.Sprintf("step3/cut.json — %d clips, %s of video to write for", len(segs), mmss(total))
+	detail := fmt.Sprintf("cut/cut.json — %d clips, %s of video to write for", len(segs), mmss(total))
 	if len(segs) == 0 {
 		line, detail = "no cut yet — build one on the Cut step", ""
 	}
@@ -2223,7 +2229,7 @@ func (n *narrator) updateInputs() {
 	}
 	if rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv")); len(rows) > 0 {
 		line += fmt.Sprintf(" · timeline %d lines", len(rows))
-		detail += fmt.Sprintf("\n\nstep2/transcript/session.tsv — %d lines; the ones falling inside a clip (±4 s) go with that clip", len(rows))
+		detail += fmt.Sprintf("\n\nunderstand/transcript/session.tsv — %d lines; the ones falling inside a clip (±4 s) go with that clip", len(rows))
 	} else {
 		line += " · no session timeline — run Describe"
 	}
@@ -2240,7 +2246,7 @@ func (n *narrator) updateInputs() {
 				st = vp.pitch.Value()
 			}
 			line += " · voice: " + v.name
-			detail += fmt.Sprintf("\n\nSpoken by %s at %+.1f semitones (step4/voice_ref.wav)", v.name, st)
+			detail += fmt.Sprintf("\n\nSpoken by %s at %+.1f semitones (narrate/voice_ref.wav)", v.name, st)
 		}
 	}
 	n.inputs.SetText(line)
@@ -2867,10 +2873,22 @@ func narrBudget(dur float64) int {
 // the video plays out loud. Blank means nobody is exempt, which is the
 // assumption that cannot embarrass the narration.
 func clipBriefs(segs []cutSeg, rows []tsvRow, narr string) string {
+	return clipBriefsWith(segs, rows, narr, func(i int, s cutSeg) string {
+		return fmt.Sprintf("CLIP %d: %.1f–%.1f (%.0f s, at most %d words -- fewer is better, none is fine)",
+			i+1, s.S, s.E, s.length(), narrBudget(s.length()))
+	})
+}
+
+// clipBriefsWith is the same blocks under headings of the caller's own. The
+// narration's carry the word budget; the upload text's carry where the clip
+// falls in the finished video, which is the only clock its chapter list may
+// use. A heading is read as an instruction as much as a label -- "at most 30
+// words" over a clip in the upload brief is a limit a small model will obey on
+// the description -- so each job writes its own.
+func clipBriefsWith(segs []cutSeg, rows []tsvRow, narr string, head func(i int, s cutSeg) string) string {
 	var b strings.Builder
 	for i, s := range segs {
-		fmt.Fprintf(&b, "\nCLIP %d: %.1f–%.1f (%.0f s, at most %d words -- fewer is better, none is fine)\n",
-			i+1, s.S, s.E, s.length(), narrBudget(s.length()))
+		fmt.Fprintf(&b, "\n%s\n", head(i, s))
 		// An insert has no footage under it and no transcript over it, so the
 		// lines around it would be a description of whatever it covered -- which
 		// is the one thing the viewer will not be looking at. Say what it is
@@ -2933,6 +2951,8 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 	user := a.ctxBlock() + "THE CLIPS AND WHAT IS KNOWN ABOUT EACH:" +
 		clipBriefs(segs, rows, a.narratorMic())
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
+	// the web, for a line about a thing the clip's block only names
+	tools, ffx := a.webToolsFor("narrate")
 	// the bar, while the one long call runs: clips counted as they close. Only
 	// ever forward -- a retry starts the count again, and a bar that fell back
 	// to 1/9 would read as work being undone rather than redone.
@@ -2948,7 +2968,7 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 		if err := a.checkpoint(); err != nil {
 			return nil, err
 		}
-		reply, err := a.llmChatRetryOn("narrate", msgs, true, onText)
+		reply, err := a.llmChatRetryTools("narrate", msgs, true, tools, a.webRunner("narrate", ffx), onText)
 		if err != nil {
 			return nil, err
 		}

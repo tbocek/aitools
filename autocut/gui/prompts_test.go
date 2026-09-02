@@ -340,7 +340,7 @@ func TestTheCutShipsMoreThanOneWording(t *testing.T) {
 	}
 	// the rating cut exists to cover every item and to land the ranking whole;
 	// a wording that forgot either is the bug it was written to fix
-	rating := strings.ToLower(strings.TrimSpace(ratingSystem))
+	rating := strings.ToLower(strings.TrimSpace(sysSystem) + "\n\n" + ratingSystem)
 	for _, want := range []string{"chronological", "ranking", "every item"} {
 		if !strings.Contains(rating, want) {
 			t.Errorf("the rating cut never mentions %q", want)
@@ -361,9 +361,12 @@ func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
 		t.Fatalf("the cut ships %q as its default, want the generic wording", d.styleName())
 	}
 
-	// no genre in it, and none of the three shaped wordings' vocabulary either
+	// no genre in it. The wording may READ the kind of video off the notes -- it
+	// has to, since the notes say "showcase" far more often than the Style
+	// dropdown does -- but nothing in it assumes one, and the shapes it names
+	// are named as things the notes might say, not as what the footage is
 	low := strings.ToLower(def)
-	for _, guess := range []string{"gaming", "game session", "tier list", "ranking", "short"} {
+	for _, guess := range []string{"gaming", "game session", "tier list", "youtube short"} {
 		if strings.Contains(low, guess) {
 			t.Errorf("the default cut wording says %q -- it is a shape, and the "+
 				"default is the one that has not decided on a shape yet", guess)
@@ -375,6 +378,15 @@ func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
 		if !strings.Contains(low, want) {
 			t.Errorf("the default cut wording never says %q -- with no genre to fall "+
 				"back on, reading the session first is the whole method", want)
+		}
+	}
+	// and it reads the kind of video off the notes rather than off the Style
+	// dropdown: a project whose notes open "this is a showcase of the towers"
+	// is cut as a showcase with the Style still on General
+	for _, want := range []string{"a showcase of things", "a rating or a verdict"} {
+		if !strings.Contains(low, want) {
+			t.Errorf("the default cut wording never says %q -- with the Style on General, "+
+				"the notes are the only place the kind of video is said", want)
 		}
 	}
 
@@ -406,7 +418,7 @@ func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
 		`{"segments":[{"start":<sec>,"end":<sec>}],"fx":[`, // what suggestParse reads
 		"target length", // the length the run checks
 	} {
-		if !strings.Contains(def, want) {
+		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+def, want) {
 			t.Errorf("the default cut wording never says %q -- the reply is read by the "+
 				"same code whichever wording asked for it", want)
 		}

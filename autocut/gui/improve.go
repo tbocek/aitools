@@ -64,10 +64,10 @@ Each prompt is shown under a heading of the form "=== prompt <key> (wording: <na
 
 The ABOUT THIS SESSION block was sent with every call you are being shown, so here it is evidence rather than an instruction: if what went wrong is that the notes said one thing and a prompt said another, that is the answer.
 
-Return strict JSON, nothing else:
+Return JSON:
 {"why":"<what happened>","changes":[{"prompt":"<key>","find":"<the sentence exactly as it stands>","replace":"<what it should say instead>","why":"<what this changes>"}]}
 
-- why is two or three sentences on what actually happened, pointing at the exchange that decided it and quoting the line from the reply that shows it. If the record does not show it, say so instead of guessing. Never invent a log line or a reply.
+- why is two or three sentences on what actually happened, pointing at the exchange that decided it and quoting the line from the reply that shows it. If the record does not show it, say so instead of guessing.
 - Each change is the smallest edit to one prompt that would have avoided it.
 - find is copied character for character out of the prompt as it is shown to you: one sentence or one bullet, not a paragraph and not your paraphrase. It is searched for literally, so a find that is not in the prompt is an edit that cannot be made.
 - replace is that sentence rewritten in full, in the voice of the prompt around it. An empty replace deletes the sentence.

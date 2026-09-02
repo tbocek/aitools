@@ -215,14 +215,14 @@ func TestTheLineTellsThePreviewWhatTheSceneHears(t *testing.T) {
 		t.Error("showInsert no longer says what the scene under the line hears")
 	}
 	if !strings.Contains(funcBody(t, "cut_hear.go", `func \(ed \*cutEditor\) syncHush\(\) \{`),
-		"ed.player.Hush(hushOf(s, base))") {
+		"ed.player.Hush(own, quiet, until)") {
 		t.Error("syncHush no longer hands the scene's answer to the preview")
 	}
 	// what the test's own hushed() stands in for: a player told the answer
 	// holds exactly these two fields, and both are written every time
-	if !strings.Contains(funcBody(t, "player.go", `func \(p \*Player\) Hush\(own bool, quiet \[\]string\) \{`),
-		"p.hushOwn, p.hush = own, hushSet(quiet)") {
-		t.Error("Hush no longer stores both halves of the scene's answer")
+	if !strings.Contains(funcBody(t, "player.go", `func \(p \*Player\) Hush\(own bool, quiet \[\]string, until float64\) \{`),
+		"p.hushOwn, p.hush, p.until = own, hushSet(quiet), until") {
+		t.Error("Hush no longer stores all three parts of the scene's answer")
 	}
 	// SetMuted must not go near them: it answers a different question, and a
 	// card that came and went would hand back lanes the scene never asked for
@@ -238,10 +238,10 @@ func TestTheLineTellsThePreviewWhatTheSceneHears(t *testing.T) {
 		// the footage as its own lane, every recording by name -- because one
 		// answer for all of them is the bug this fixed.
 		"if m := p.hushes(\"\", true); m != p.ownMute {",
-		"p.pb.SetObjectProperty(\"mute\", m)",
+		"setGain(p.gain, p.pb, p.vol(), m)",
 		"m := p.hushes(a.base, false)",
-		"a.pb.SetObjectProperty(\"mute\", m)",
-		"newAux(fmt.Sprintf(\"mix%d\", i), t, p.vol())",
+		"setGain(a.gain, a.pb, p.vol(), m)",
+		"newAux(fmt.Sprintf(\"mix%d\", i), t, p.vol(), p.laneErr(t.base))",
 	} {
 		if !strings.Contains(src, pin) {
 			t.Errorf("player.go lost its pin %q", pin)

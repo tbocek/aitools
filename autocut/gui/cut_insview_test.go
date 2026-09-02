@@ -363,7 +363,7 @@ func TestTheInsertPreviewIsWired(t *testing.T) {
 			// so both go through the one place that writes the property
 			"func (p *Player) SetMuted(v bool) {",
 			"p.muted = v\n\tp.applyMute()",
-			`p.pb.SetObjectProperty("mute", m)`,
+			`setGain(p.gain, p.pb, p.vol(), m)`,
 			"func (p *Player) CardSound(file string, at float64, play bool) {",
 		},
 		"cut_insview.go": {

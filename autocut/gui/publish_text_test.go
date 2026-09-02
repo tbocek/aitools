@@ -194,8 +194,8 @@ func TestThePromptComposesAndLeavesRoomForTheTitle(t *testing.T) {
 		"compose ONE picture out of the frames",
 		"printed onto the upper part of the finished picture afterwards",
 	} {
-		if !strings.Contains(youtubeSystem, want) {
-			t.Errorf("youtubeSystem no longer says %q", want)
+		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+youtubeSystem, want) {
+			t.Errorf("the upload text is never told %q", want)
 		}
 	}
 	if strings.Contains(youtubeSystem, "appended to your instruction automatically") {

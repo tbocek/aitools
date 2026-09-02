@@ -307,7 +307,7 @@ func (wf *waveform) peak(ch int, from, to float64) float64 {
 
 // ---- getting one ------------------------------------------------------------
 
-// waveCache is where the envelopes live between runs. Not under step3/, which
+// waveCache is where the envelopes live between runs. Not under cut/, which
 // is the cut's own folder and whose file count is reported to the user as what
 // this step produced: an envelope is not an output, it is a picture of an input
 // that would otherwise be decoded again on every start.

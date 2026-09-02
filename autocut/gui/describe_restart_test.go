@@ -5,7 +5,7 @@ package main
 // all -- it keeps an event log per source and skips the chunks already in it.
 // That resume is unconditional, so ⏹ then ▶ picked up mid-session exactly like
 // ⏸ then ▶ did, and there was no way to say "no, again, from the top" short of
-// deleting step2/describe by hand.
+// deleting understand/describe by hand.
 //
 // What these pin is the split: paused is parked, stopped is abandoned, and the
 // ▶ after a stop is what actually throws the half-run away -- not the ⏹, so
@@ -157,7 +157,7 @@ func TestStoppingKeepsTheWorkUntilTheNextPlay(t *testing.T) {
 	}
 }
 
-// Every folder under step2/describe/ is cleared, not just the sources selected
+// Every folder under understand/describe/ is cleared, not just the sources selected
 // now -- a log left by a recording since deselected is exactly the stale
 // half-run this is for. And a project that has never been described is already
 // at the start, so there is nothing to fail on.
@@ -165,7 +165,7 @@ func TestStartingOverIsSafeOnAnUndescribedProject(t *testing.T) {
 	a := &App{outDir: t.TempDir()}
 	a.undRestart = true
 	if err := a.undFreshStart(); err != nil {
-		t.Errorf("starting over on a project with no step2/ at all failed: %v", err)
+		t.Errorf("starting over on a project with no understand/ at all failed: %v", err)
 	}
 
 	// ...and on one where the folder exists but holds nothing yet
@@ -175,6 +175,6 @@ func TestStartingOverIsSafeOnAnUndescribedProject(t *testing.T) {
 	}
 	b.undRestart = true
 	if err := b.undFreshStart(); err != nil {
-		t.Errorf("starting over on an empty step2/describe failed: %v", err)
+		t.Errorf("starting over on an empty understand/describe failed: %v", err)
 	}
 }

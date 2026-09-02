@@ -175,7 +175,7 @@ func TestPlanVideoReadsBothFrameNamings(t *testing.T) {
 	} {
 		a := &App{outDir: t.TempDir()}
 		video := "/nowhere/cam-20260808-195900-0.mp4"
-		fdir := filepath.Join(a.outDir, "step1", "frames", baseName(video))
+		fdir := filepath.Join(a.inputsDir(), "frames", baseName(video))
 		if err := os.MkdirAll(fdir, 0o755); err != nil {
 			t.Fatal(err)
 		}

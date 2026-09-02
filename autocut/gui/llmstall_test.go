@@ -259,10 +259,11 @@ func TestTheReasoningIsCountedButIsNotTheReply(t *testing.T) {
 	}, "\n\n") + "\n\n"
 
 	var seen []string
-	reply, err := a.readChatStream(strings.NewReader(sse), func(s string) { seen = append(seen, s) }, w)
+	rep, err := a.readChatStream(strings.NewReader(sse), func(s string) { seen = append(seen, s) }, w)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
+	reply := rep.Content
 	if reply != `{"segments":[]}` {
 		t.Errorf("the reply came out %q -- the thinking is in it", reply)
 	}

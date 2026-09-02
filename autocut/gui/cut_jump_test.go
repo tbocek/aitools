@@ -146,7 +146,7 @@ func TestEveryHandOnTheLineReArmsTheLiveClock(t *testing.T) {
 	// a frame step lands in a stretch with its own clock: the rate goes on
 	// before the seek, because a rate only takes hold at one
 	i, j := strings.Index(src, "ed.reLive(ed.playhead)"), strings.Index(src, "ed.player.SeekTo(local)")
-	k := strings.Index(src, "ed.player.SetRate(fxRateAt(ed.fx, ed.playhead))")
+	k := strings.Index(src, "ed.player.SetRate(fxPreviewRateAt(ed.fx, ed.playhead))")
 	if i < 0 || j < 0 || k < 0 || !(i < k && k < j) {
 		t.Errorf("frameStep does not re-arm the clock and set the rate before its seek "+
 			"(reLive at %d, SetRate at %d, SeekTo at %d)", i, k, j)

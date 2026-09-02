@@ -1,11 +1,11 @@
 package main
 
-// Describe: every footage source's stored frames (step1/frames/<v>/) go to the
+// Describe: every footage source's stored frames (inputs/frames/<v>/) go to the
 // vision LLM in small batches together with the game-audio words heard during
 // those seconds and a little either side of them, marked as context; a rolling
 // "state of the game" plus the last events make each batch a description of
 // what is HAPPENING, not stills.
-// Output: step2/describe/<video>/events.tsv, resumable per chunk.
+// Output: understand/describe/<video>/events.tsv, resumable per chunk.
 //
 // The page is prep.go -- this half and the fixer (transcript.go) share it.
 
@@ -36,32 +36,20 @@ const recentEvents = 3
 // the box being right.
 const describeSystem = `You describe screen-recorded footage for a video editor.
 
-You get a few consecutive frames covering a few seconds, the words heard around them, the running STATE from the previous chunk, and the last few EVENT lines. You will never see these frames or any earlier ones again: those two lines are your only memory, so write them for a reader who has seen nothing.
+You will never see these frames or any earlier ones again: your two lines are your only memory, so write them for a reader who has seen nothing.
 
-The offsets are from the first of these frames, and the pictures are stamped on that same clock, so a line and a picture can be matched by their numbers:
-  [+2.0s] FRAME 3 of 4 -- the picture that follows this line was taken then
+What to write, in this order of importance.
+1. What CHANGES across the frames: movement, an action and what it causes, something arriving or gone. The frames are a span of time, not a picture. If nothing meaningful changes, say so in a few words rather than padding.
+2. How it moves: hectic (fast turning, violent or continuous motion, most of the picture different from one frame to the next), calm and steady, or in between. Say which even when nothing else happens -- the cut is chosen on pace as much as on content.
+3. On-screen text -- names, scores, counters, menus, subtitles -- read and used. Once something has a name, keep using that name, so the same thing reads the same way across the whole log. Where the session notes name a person, a place or a thing, use their name for it.
 
-Speech reaches you from more than one microphone in the room. Whoever is talking may be describing something you cannot see, remembering, or talking about nothing on screen at all.
+What the speech is for. It comes from more than one microphone, and whoever is talking may be describing something you cannot see, remembering, or talking about nothing on screen. Speech is a claim, not evidence: where speech and frames disagree, the frames win, and a line may refer to something before or after the moment it is spoken. Lines under a "context" heading are for orientation only -- never describe something that appears only there.
 
-Where the session notes name a person, a place or a thing, describe what you see in their terms: being told is exactly what they are for.
+What not to write. Nothing you were not shown or told: no genre, title, place or character assumed. No "appears to" or "seems to" -- if you cannot tell what something is, say how it looks and move on. No mention of frames, images, chunks, or yourself.
 
-Describe what you actually see. Never assume a genre, a title, a place or a character you have not been shown or told about.
-
-The frames are a span of time, not a picture. Report what CHANGES across them: movement, an action and what it causes, something arriving or gone. If nothing meaningful changes, say so plainly and briefly rather than padding.
-
-Always say how it moves. State whether the camera and the action are hectic -- fast turning, violent or continuous motion, most of the picture different from one frame to the next -- or calm and steady, or somewhere in between, and say which it is even when nothing else happens. A cut is chosen on pace as much as on content, so this belongs in every EVENT line.
-
-Speech is a claim, not evidence. Where speech and frames disagree, the frames win. A line may refer to something before or after the moment it is spoken, so never assume it describes the frame it lands on.
-
-Sections marked "context" are for orientation only -- never describe something that appears only there.
-
-Read on-screen text -- names, scores, counters, menus, subtitles -- and use it. Once something has a name, keep using that name instead of "the player" or "the menu", so the same thing reads the same way across the whole log.
-
-If you cannot tell what something is, describe how it looks and move on. Do not guess, do not hedge with "appears to" or "seems to", and do not mention frames, images, chunks, or yourself.
-
-Reply with exactly two lines, plain text, no markdown, nothing else:
-EVENT: what happens in these seconds, and how hectic or calm it is -- present tense, concrete, specific, max 35 words. Do not restate the STATE.
-STATE: the running state after these seconds, max 50 words: where this is, what is being done, who else is present, the ongoing goal. Carry forward what is still true, drop what has stopped being true, and keep it readable on its own.`
+The two lines:
+EVENT: what happens in these seconds and how hectic or calm it is -- present tense, concrete, specific, at most 35 words. Do not restate the STATE.
+STATE: the running state after these seconds, at most 50 words: where this is, what is being done, who else is present, the ongoing goal. Carry forward what is still true, drop what has stopped being true, keep it readable on its own.`
 
 type tsvRow struct {
 	s, e float64
@@ -272,7 +260,7 @@ func loadTSVRows(path string) []tsvRow {
 type videoPlan struct {
 	base     string
 	video    string // absolute path
-	dir      string // step2/describe/<base>
+	dir      string // understand/describe/<base>
 	frames   []string
 	interval float64
 	scale    string
@@ -360,7 +348,7 @@ func (a *App) commentary(video string, audios []string) []speechSrc {
 	return out
 }
 
-// step2 describes every footage source. span is how much of the progress bar
+// The describer describes every footage source. span is how much of the progress bar
 // this job owns -- all of it when Describe runs on its own, half when the
 // fixer runs after it on the same page.
 func (a *App) describeAll(videos, audios []string, span float64) error {
@@ -402,10 +390,10 @@ func (a *App) describeAll(videos, audios []string, span float64) error {
 // What it does NOT touch is .llmframes beside them. Those are scaled pixels,
 // not results -- keeping them means starting over costs the vision model again
 // but not the minutes of ffmpeg that scaling an hour of frames takes. Nor does
-// it touch step2/transcript: the fixer never resumes, so every run of it
+// it touch understand/transcript: the fixer never resumes, so every run of it
 // already starts from the first block.
 //
-// Every folder under step2/describe/ is cleared, not just the sources selected
+// Every folder under understand/describe/ is cleared, not just the sources selected
 // now: "start from the start" is about the step, and a log left behind by a
 // recording that has since been deselected is exactly the stale half-run this
 // is here to get rid of.
@@ -448,7 +436,7 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 	// this video's own audio first, then everyone else's microphone
 	speech := append([]speechSrc{{
 		label: p.base,
-		rows:  loadTSVRows(filepath.Join(a.outDir, "step1", p.base, "transcript.tsv")),
+		rows:  loadTSVRows(filepath.Join(a.inputsDir(), p.base, "transcript.tsv")),
 	}}, comm...)
 	narr := a.narratorMic()
 	evPath := filepath.Join(p.dir, "events.tsv")

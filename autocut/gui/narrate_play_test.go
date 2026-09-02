@@ -423,7 +423,7 @@ func TestARowRebuildWaitsForTheEventToFinish(t *testing.T) {
 	}
 }
 
-// TestARescanReadsTheNarrationBack: delete step4/ and the page went on showing
+// TestARescanReadsTheNarrationBack: delete narrate/ and the page went on showing
 // the narration it had in memory, with an Outputs line counting files that were
 // no longer there. ⟳ is the button whose whole job is "the folder is the
 // answer" -- and this was the one step it skipped.
@@ -442,10 +442,10 @@ func TestARescanReadsTheNarrationBack(t *testing.T) {
 	}
 	n.load()
 	if len(n.entries) != 0 {
-		t.Errorf("step4/ is gone and the page still holds %d line(s)", len(n.entries))
+		t.Errorf("narrate/ is gone and the page still holds %d line(s)", len(n.entries))
 	}
 	if got := summarizeOutputs(a.narrateDir()); got != "nothing yet" {
-		t.Errorf("a deleted step4/ still summarizes as %q", got)
+		t.Errorf("a deleted narrate/ still summarizes as %q", got)
 	}
 
 	// the wiring that gets that re-read to happen at all

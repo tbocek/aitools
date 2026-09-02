@@ -659,11 +659,11 @@ func TestThePreviewClockIsWired(t *testing.T) {
 	for _, want := range []string{
 		// the master, the deferred segment and every separate recording
 		"p.pb.Seek(p.rate, gst.FormatTime",
-		"a.pb.Seek(p.rate, gst.FormatTime",
 		"a.pb.Seek(a.rate, gst.FormatTime",
-		// pitch held, the same trade atempo makes in the render
-		`gst.ElementFactoryMake("scaletempo", "tempo")`,
-		`pb.SetObjectProperty("audio-filter", tempo)`,
+		// pitch held, the same trade atempo makes in the render -- on every
+		// pipeline, through the one audio path they share (audioFilter)
+		`gst.ElementFactoryMake("scaletempo", name+"tempo")`,
+		`pb.SetObjectProperty("audio-filter", filter)`,
 		// and ▶ notices a rate chosen while paused
 		"if math.Abs(p.rate-p.seekRate) > 1e-6 {",
 	} {
@@ -677,9 +677,9 @@ func TestThePreviewClockIsWired(t *testing.T) {
 	}
 	src = string(b)
 	for _, want := range []string{
-		"ed.player.SetRate(fxRateAt(ed.fx, t))",              // set before the seek that carries it
-		"ed.syncPlayRate()",                                  // and again as the line runs
-		"ed.player.SetRateNow(fxRateAt(ed.fx, ed.playhead))", // ...without a flush per boundary
+		"ed.player.SetRate(fxPreviewRateAt(ed.fx, t))",              // set before the seek that carries it
+		"ed.syncPlayRate()",                                         // and again as the line runs
+		"ed.player.SetRateNow(fxPreviewRateAt(ed.fx, ed.playhead))", // ...without a flush per boundary
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the cut page no longer contains %q", want)
@@ -687,45 +687,68 @@ func TestThePreviewClockIsWired(t *testing.T) {
 	}
 }
 
-// A speed boundary crossed while the preview runs used to cost a flushing
-// seek-in-place -- flush, preroll, decode back to the frame already on screen
-// -- and a ramp crosses one at every stair, so slowing down stuttered all the
-// way down. The player now asks the running pipeline for an instant rate
-// change and keeps the old seek only as the fallback for a pipeline that
-// refuses. The pipelines cannot run headless, so the shape is the fact.
-func TestASpeedEdgeCrossedMidPlayDoesNotFlushThePipeline(t *testing.T) {
-	body := funcBody(t, "player.go", `func \(p \*Player\) SetRateNow\(r float64\) \{`)
-	for _, want := range []string{
-		"if !p.SetRate(r) {", // a rate that did not change still costs nothing
-		"if !p.playing {",    // parked: the seek that starts the stream carries it
-		"if p.instantRate() {",
-		"p.SeekTo(pos)", // the refusal fallback: the old seek-in-place
-	} {
+// A speed boundary crossed while the preview runs is a flushing seek to where
+// the stream already is, and never GStreamer's instant rate change. The
+// instant seek was tried first for a while, to spare the stumble -- and on this
+// stack (playbin3, scaletempo, gtk4paintablesink) gst_element_seek with the
+// INSTANT_RATE_CHANGE flag never returned: the GTK thread sat inside it half a
+// second into every ×4 until the shell offered to kill the window, which the
+// hang watchdog's dump showed frame by frame. The stumble is cheap; this pins
+// that nothing brings the instant path back.
+func TestASpeedEdgeCrossedMidPlayNeverUsesTheInstantRateSeek(t *testing.T) {
+	src := readSrc(t, "player.go")
+	if strings.Contains(src, "SeekFlagInstantRateChange") {
+		t.Error("player.go seeks with INSTANT_RATE_CHANGE again, which hangs the GTK thread on this stack")
+	}
+	body := funcBody(t, "player.go", `func \(p \*Player\) SetRateNow\(`)
+	for _, want := range []string{"if !p.playing {", "p.SeekTo(pos)", "time.Since(p.rateSeekAt) < rateSeekGap"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("SetRateNow no longer contains %q", want)
 		}
 	}
-
-	body = funcBody(t, "player.go", `func \(p \*Player\) instantRate\(\) bool \{`)
-	// the master's ask: instant, and carrying no position to flush to
-	if !strings.Contains(body,
-		"if !p.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagInstantRateChange,\n\t\tgst.SeekTypeNone, 0, gst.SeekTypeNone, 0) {") {
-		t.Error("the master's rate change is no longer an instant, position-free seek")
+	// and both pages' boundary crossings go through it
+	if !strings.Contains(readSrc(t, "narrate.go"), "n.player.SetRateNow(fxPreviewRateAt(n.a.ed.fx, n.pos))") {
+		t.Error("the Narrate preview's speed boundaries no longer go through SetRateNow")
 	}
-	for _, want := range []string{
-		"p.seekRate = p.rate",       // Rate() answers with the clock actually running
-		"for _, a := range p.mix {", // the lanes ride the same clock or drift audibly
-		"a.rate = p.rate",
-		"gst.SeekFlagFlush|gst.SeekFlagAccurate", // a lane that refuses stutters alone
+}
+
+// The preview runs a speed effect at its rate from its first second to its
+// last: no stairs. The stairs are the render's (fxRateAt), and following them
+// in the preview was a flushing seek per tick through every ramp, which is
+// how the window stopped answering on the way into a ×4.
+func TestThePreviewRunsASpeedFlatAndNotByItsStairs(t *testing.T) {
+	fx := []cutFx{{Kind: "speed", T: 100, Dur: 20, Rate: 4, Trans: 2, Tout: 2}}
+	for _, c := range []struct{ t, want float64 }{
+		{99.9, 1}, {100, 4}, {100.5, 4}, {110, 4}, {119, 4}, {120, 1},
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("instantRate no longer contains %q", want)
+		if got := fxPreviewRateAt(fx, c.t); got != c.want {
+			t.Errorf("preview rate at %g = %g, want %g", c.t, got, c.want)
 		}
 	}
-
-	// and both pages' boundary crossings go through it
-	if !strings.Contains(readSrc(t, "narrate.go"),
-		"n.player.SetRateNow(fxRateAt(n.a.ed.fx, n.pos))") {
-		t.Error("the Narrate preview's speed boundaries no longer use the instant path")
+	// ...which the render's own reading confirms is a different answer: at
+	// the foot of a 2 s ramp to ×4 its stair is not ×4
+	if fxRateAt(fx, 100.5) == 4 {
+		t.Error("the render has no stair at the foot of the ramp, so the test above proves nothing")
+	}
+	// a stop is footage running on under a still, here as there
+	if got := fxPreviewRateAt([]cutFx{{Kind: "speed", T: 5, Dur: 3, Rate: 0}}, 6); got != 1 {
+		t.Errorf("under a stop the preview rate is %g, want 1", got)
+	}
+	// every preview asks this one, and the render never does
+	for _, f := range []string{"cut.go", "narrate.go"} {
+		if strings.Contains(readSrc(t, f), "fxRateAt(") {
+			t.Errorf("%s still follows the render's stairs in the preview", f)
+		}
+	}
+	for _, f := range []string{"produce_fx.go", "produce.go"} {
+		if strings.Contains(readSrc(t, f), "fxPreviewRateAt(") {
+			t.Errorf("%s renders at the preview's flat rate", f)
+		}
+	}
+	// and the fallback seek is held to a gap, so a rate that changes every
+	// tick can never again be a seek every tick
+	body := funcBody(t, "player.go", `func \(p \*Player\) SetRateNow\(`)
+	if !strings.Contains(body, "time.Since(p.rateSeekAt) < rateSeekGap") || !strings.Contains(body, "p.rate = was") {
+		t.Errorf("SetRateNow no longer holds its flushing seeks to rateSeekGap:\n%s", body)
 	}
 }

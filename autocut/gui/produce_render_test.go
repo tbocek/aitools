@@ -9,7 +9,7 @@ package main
 //
 // It reads the live session -- the recordings, the cut, the narration -- and
 // writes into a temporary folder. It used to write into the live session too,
-// which is where the step5/ folder came from in an output nobody had produced:
+// which is where the produce/ folder came from in an output nobody had produced:
 // every `go test ./...` rendered a smoke.mp4 into the user's own out/test/step5
 // and wiped its clips. Read from the session, write to the temp dir; renderApp
 // below is the one place that split is made.
@@ -79,7 +79,7 @@ func TestPublishRender(t *testing.T) {
 	}
 	// read the session, write nowhere near it; the narration this cut already
 	// has is spoken, so the synthesis cache comes along read-only
-	redirectOutput(t, a, "step1", "step4")
+	redirectOutput(t, a, "inputs", "narrate")
 	st := prodSettings{
 		Container: "mp4", Codec: "h264", CRF: 24, Preset: "ultrafast",
 		Height: 480, FPS: 30, AudioKbps: 128, GameVol: 0.22, Subs: "sidecar",
@@ -118,7 +118,7 @@ func TestPublishNarrated(t *testing.T) {
 	// before the tone below: ttsWav is under outDir too, and a stand-in line in
 	// the session's own synthesis cache is a wrong voice waiting to be played.
 	// Hence no step4 here -- this test brings its own.
-	redirectOutput(t, a, "step1")
+	redirectOutput(t, a, "inputs")
 	// a line far longer than its slot: forces both the grow and the speed-up
 	entries := []narrEntry{{
 		S: segs[0].S, E: segs[0].E, Emotion: "excited",

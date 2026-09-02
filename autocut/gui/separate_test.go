@@ -102,11 +102,11 @@ func TestASplitRowBecomesTwoRowsThatKeepItsRoles(t *testing.T) {
 		{path: "/s/mic.flac", narrator: 1},
 	}
 	got := sepApply(items, []sepResult{
-		{src: "/s/cap.mkv", rest: "/o/cap.novoice.mkv", voice: "/o/cap.voice.wav"}})
+		{src: "/s/cap.mkv", rest: "/o/cap.split-novoice.mkv", voice: "/o/cap.split-voice.wav"}})
 	want := []sourceItem{
 		{path: "/s/cam2.mkv", footage: true},
-		{path: "/o/cap.novoice.mkv", footage: true},
-		{path: "/o/cap.voice.wav", narrator: 2},
+		{path: "/o/cap.split-novoice.mkv", footage: true},
+		{path: "/o/cap.split-voice.wav", narrator: 2},
 		{path: "/s/mic.flac", narrator: 1},
 	}
 	if len(got) != len(want) {
@@ -270,20 +270,20 @@ func TestTheRunReadsTheWishesOffItsOwnSnapshot(t *testing.T) {
 		t.Fatalf("the run sees %v to split, want [/s/cap.mkv]", got)
 	}
 	a.snapItems(sepApply(a.snappedItems(), []sepResult{
-		{src: "/s/cap.mkv", rest: "/o/cap.novoice.mkv", voice: "/o/cap.voice.wav"}}))
+		{src: "/s/cap.mkv", rest: "/o/cap.split-novoice.mkv", voice: "/o/cap.split-voice.wav"}}))
 
 	if got := a.sepWanted(); len(got) != 0 {
 		t.Errorf("the wish survived being granted: %v", got)
 	}
 	vids, auds := a.snappedSources()
-	if len(vids) != 1 || vids[0] != "/o/cap.novoice.mkv" {
+	if len(vids) != 1 || vids[0] != "/o/cap.split-novoice.mkv" {
 		t.Errorf("the frames would be taken from %v, want the voiceless half", vids)
 	}
-	if len(auds) != 2 || auds[0] != "/o/cap.voice.wav" {
+	if len(auds) != 2 || auds[0] != "/o/cap.split-voice.wav" {
 		t.Errorf("the transcript would be of %v, want the voice among them", auds)
 	}
 	// the voice is who that recording was, so Narrate's slot 2 has to follow it
-	if got := a.narratorPath(2); got != "/o/cap.voice.wav" {
+	if got := a.narratorPath(2); got != "/o/cap.split-voice.wav" {
 		t.Errorf("narrator 2 is now %q, want the voice that was split off", got)
 	}
 }
@@ -851,5 +851,72 @@ func TestGrantingTheWishesRewritesWhatTheRestOfTheRunSees(t *testing.T) {
 	// nothing was asked of the server for the row that never asked
 	if len(calls.names) != 1 || !strings.HasPrefix(calls.names[0], "mix") {
 		t.Errorf("the files that went up were %v, want the one flagged mixdown", calls.names)
+	}
+}
+
+// A half of a split is told apart by its name -- the only thing a stem carries
+// -- and a row that is one offers no scissors: the wish would be to split the
+// voice off a voice. The old spellings still count, for a project split before
+// the names changed.
+func TestAHalfOfASplitOffersNoScissors(t *testing.T) {
+	for _, c := range []struct {
+		path string
+		want bool
+	}{
+		{"/o/stems/cap.split-novoice.mkv", true},
+		{"/o/stems/cap.split-voice.wav", true},
+		{"/o/stems/cap.novoice.mkv", true},
+		{"/o/stems/cap.voice.wav", true},
+		{"/rec/cap.mkv", false},
+		{"/rec/my-voice-memo.wav", false},
+		{"/rec/voice.wav", false},
+	} {
+		if got := splitProduct(c.path); got != c.want {
+			t.Errorf("splitProduct(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+	if !strings.Contains(readSrc(t, "sources.go"), "sep.SetVisible(!splitProduct(it.path))") {
+		t.Error("the scissors are offered on a row that is already a half of a split")
+	}
+	// and the halves are named so: split-novoice keeps the picture and the
+	// room, split-voice is the voice alone
+	rest, voice := sepNames("/out/stems", "/rec/Kooha-2026-08-30-17-10-36.mp4")
+	if filepath.Base(rest) != "Kooha-2026-08-30-17-10-36.split-novoice.mkv" || filepath.Base(voice) != "Kooha-2026-08-30-17-10-36.split-voice.wav" {
+		t.Errorf("the halves are %s and %s", filepath.Base(rest), filepath.Base(voice))
+	}
+}
+
+// The split says how the sound fell between its halves, because a rest that is
+// a residue is otherwise found by ear: a recording the model heard as voice
+// throughout leaves the half named for the room with next to nothing, and a
+// day later that is "the footage is silent". Measured on real tones through
+// ffmpeg, like the render tests.
+func TestASplitSaysWhenTheRestIsAResidue(t *testing.T) {
+	if _, err := exec.LookPath(ffTool("ffmpeg")); err != nil {
+		t.Skip("no ffmpeg")
+	}
+	dir := t.TempDir()
+	tone := func(name string, gain float64) string {
+		p := filepath.Join(dir, name)
+		if err := exec.Command(ffTool("ffmpeg"), "-v", "error", "-y", "-f", "lavfi", "-i",
+			fmt.Sprintf("sine=frequency=440:duration=1,volume=%g", gain), "-c:a", "pcm_s16le", p).Run(); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	mix, rest := tone("mix.wav", 1), tone("rest.wav", 0.1) // 20 dB under
+	// lavfi's sine is a quiet tone; what matters below is the difference
+	if got := sepMeanDB(sepLoudness(mix)); got > -2 || got < -40 {
+		t.Errorf("the mix measured %g dB", got)
+	}
+	note := sepLopsided(mix, rest)
+	if !strings.Contains(note, "under the mix") || !strings.Contains(note, "20 dB") {
+		t.Errorf("a rest 20 dB under the mix drew the note %q", note)
+	}
+	if note := sepLopsided(mix, tone("even.wav", 0.7)); note != "" {
+		t.Errorf("a rest 3 dB under the mix drew a note: %q", note)
+	}
+	if sepLoudness(filepath.Join(dir, "none.wav")) != "" {
+		t.Error("a file that is not there had a loudness")
 	}
 }

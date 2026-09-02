@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -102,8 +103,91 @@ func TestTheCutWordingsDoNotRepeatTheSystemContext(t *testing.T) {
 	if !strings.Contains(shortsSystem, "20 to 30 seconds") {
 		t.Error("the Shorts wording lost the length that makes it Shorts")
 	}
-	if !strings.Contains(genericSystem, `{"segments":`) {
-		t.Error("the default wording lost the reply shape its own parser reads")
+	if !strings.Contains(sysSystem, `{"segments":`) {
+		t.Error("the system context lost the cut's reply shape, which the wordings no longer spell")
+	}
+}
+
+// shippedPrompts is every wording the binary ships, the system context aside:
+// what a job is sent behind that context, and therefore what must not say
+// again what the context already said.
+func shippedPrompts() []struct{ name, text string } {
+	return []struct{ name, text string }{
+		{"describe", describeSystem},
+		{"fix", fixSystem},
+		{"cut (general)", genericSystem},
+		{"cut (highlights)", suggestSystem},
+		{"cut (rating)", ratingSystem},
+		{"cut (showcase)", showcaseSystem},
+		{"cut (shorts)", shortsSystem},
+		{"cut (shared effects)", fxRules},
+		{"cut (shared reply)", cutReply},
+		{"audit", auditSystem},
+		{"narrate", narrSystem},
+		{"youtube", youtubeSystem},
+		{"improve", improveSystem},
+	}
+}
+
+// No wording says a shared rule again. The formats were the easy half and are
+// already guarded above; these are the three that had spread furthest, and they
+// are the ones that rot quietest -- a format written twice announces itself the
+// moment a model answers on the wrong clock, while "never invent" written seven
+// times is invisible until the seven have drifted apart, which they had: "never
+// invent a moment", "never invent a part, a name or a price", "invent nothing
+// that is not in it", "Invent no names, places or outcomes". One rule the model
+// met six times, and six places to edit to tighten it once.
+func TestNoWordingRepeatsASharedRule(t *testing.T) {
+	// how the answer is read: the context's first paragraph
+	machineRead := []string{"strict JSON, nothing else", "no markdown", "no code fence", "no code fences"}
+	// what may be made up: the context's last
+	invented := regexp.MustCompile(`(?i)never invent|invent no|invent nothing`)
+
+	for _, p := range shippedPrompts() {
+		for _, gone := range machineRead {
+			if strings.Contains(p.text, gone) {
+				t.Errorf("the %s wording says %q itself -- the system context tells every "+
+					"job the answer is machine-read already", p.name, gone)
+			}
+		}
+		if m := invented.FindString(p.text); m != "" {
+			t.Errorf("the %s wording says %q -- not inventing is the system context's "+
+				"last paragraph, and it is the rule that must have exactly one home", p.name, m)
+		}
+	}
+	// ...and the context does still say all three, or the above passes because
+	// nothing anywhere says them
+	for _, want := range []string{"no markdown", "no code fence", "strict JSON", "Never invent",
+		"they outrank anything you would otherwise infer"} {
+		if !strings.Contains(sysSystem, want) {
+			t.Errorf("the system context never says %q, and the wordings were emptied of it "+
+				"on the promise that it does", want)
+		}
+	}
+}
+
+// The context says what the four steps ARE, not just what this one is. A job
+// that knows it is second of four writes for the third: the describing step is
+// writing the only record of the footage the cut will ever see, and the cut is
+// choosing seconds the narration will have to talk over. A job that thinks it
+// is alone writes for nobody.
+func TestTheSystemContextNamesTheWholePipeline(t *testing.T) {
+	for _, s := range steps {
+		if !strings.Contains(sysSystem, s.label) {
+			t.Errorf("the system context never names the %s step, so a job in it is not "+
+				"told what becomes of its answer", s.label)
+		}
+	}
+	// the mechanisms every step shares, said here so no wording has to: the two
+	// clocks a finished video has, and what the five effect kinds do
+	if !strings.Contains(sysSystem, "a time in the video is not a time in the session") {
+		t.Error("the system context no longer distinguishes the cut's clock from the session's")
+	}
+	for _, kind := range []string{"zoom", "text", "speed", "stop", "volume"} {
+		if !strings.Contains(sysSystem, kind) {
+			t.Errorf("the system context does not say what a %q effect is, so the cut "+
+				"wordings and the audit each have to", kind)
+		}
 	}
 }
 

@@ -143,13 +143,32 @@ func TestTheBadgeAndTheSceneKillCannotBePressedForEachOther(t *testing.T) {
 	}
 }
 
-func TestNothingInHandMeansNoBadgesAnywhere(t *testing.T) {
+// With nothing in hand the badges are the scene under the LINE's -- the one
+// the preview is hushing (syncHush), so the badge is the thing you hear -- and
+// with the line in no scene at all there are none. An insert wears none
+// either way: its sound is its own.
+func TestNothingInHandMeansTheLinesSceneWearsTheBadges(t *testing.T) {
 	ed := hearEd(t)
+	held := ed.hearBadgesAud()
+	ed.segOn = false
+	ed.playhead = (ed.segs[0].S + ed.segs[0].E) / 2
+	if got := ed.hearBadgesAud(); len(got) != len(held) || got[0].on != held[0].on || got[0].cx != held[0].cx {
+		t.Errorf("with the line in the scene and nothing held the badges are %+v, want the scene's own %+v", got, held)
+	}
+	lane := held[0].base
+	ed.segs[0].Quiet = []string{lane}
+	if got := ed.hearBadgesAud(); len(got) == 0 || got[0].on {
+		t.Errorf("a lane the line's scene silences is drawn on: %+v", got)
+	}
+	ed.toggleHear(lane) // the badge press acts on that scene too
+	if len(ed.segs[0].Quiet) != 0 {
+		t.Errorf("pressing the badge with nothing held did not change the line's scene: %v", ed.segs[0].Quiet)
+	}
 	for _, c := range []struct {
 		what string
 		set  func()
 	}{
-		{"no scene held", func() { ed.segOn = false }},
+		{"nothing held and the line in no scene", func() { ed.segOn = false; ed.playhead = ed.segs[0].S - 1 }},
 		{"an insert held", func() { ed.segs[0].Ins = "sting.mp4" }},
 	} {
 		ed = hearEd(t)

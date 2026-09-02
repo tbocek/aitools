@@ -361,7 +361,7 @@ func TestThePublishPromptMatchesHowTheAnswerIsUsed(t *testing.T) {
 		"Four to sev", // a title short enough to be lettered across a thumbnail
 		"No JSON",     // which models volunteer even when asked for prose
 	} {
-		if !strings.Contains(youtubeSystem, want) {
+		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+youtubeSystem, want) {
 			t.Errorf("the upload-text prompt no longer says %q", want)
 		}
 	}
@@ -371,7 +371,7 @@ func TestThePublishPromptMatchesHowTheAnswerIsUsed(t *testing.T) {
 	// The thumbnail line must not ask for lettering. The title is printed onto
 	// the picture after the draw, so a model that asks for it in the picture
 	// as well puts a second copy underneath the print.
-	low := strings.ToLower(youtubeSystem)
+	low := strings.ToLower(strings.TrimSpace(sysSystem) + "\n\n" + youtubeSystem) // the thumbnail's mechanics are the context's
 	if !strings.Contains(low, "no text") && !strings.Contains(low, "no lettering") {
 		t.Error("the upload-text prompt does not tell the model to keep words out of the " +
 			"thumbnail instruction -- the title is added to it afterwards")

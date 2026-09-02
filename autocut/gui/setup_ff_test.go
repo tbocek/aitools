@@ -154,11 +154,49 @@ func TestEverySettingsSectionSaysWhichAPIItExpects(t *testing.T) {
 		}
 	}
 	// and Cutting says what ffmpeg is: not a server, and empty means PATH
-	if !strings.Contains(s, "Not a server: a ") {
+	if !strings.Contains(s, "Not servers: local binaries") {
 		t.Error("the ffmpeg section no longer says it is a local binary, not an endpoint")
 	}
 	// the standing paragraph above the model rows is gone
 	if strings.Contains(s, `foot.AddCSSClass("dim-label")`) {
 		t.Error("the settings page still prints a paragraph above the model rows")
+	}
+}
+
+// The firefox row's Test is testFFmpeg's shape: the box resolves to a binary,
+// the binary runs and says its version, and "off" is an answer rather than a
+// fault. The headless search itself is the web's business and is not run
+// here; what is pinned is that the Test goes through it, since a firefox
+// that prints a version and cannot be driven is the one failure the version
+// cannot show.
+func TestTheFirefoxTestIsTheFFmpegTestsShape(t *testing.T) {
+	a := &App{}
+	if got, err := a.testFirefox(" OFF "); err != nil || !strings.Contains(got, "no web search") {
+		t.Errorf("off answered %q, %v -- want a plain answer, not a fault", got, err)
+	}
+	if _, err := a.testFirefox("/no/such/firefox"); err == nil || !strings.Contains(err.Error(), "leave the box empty") {
+		t.Errorf("a path that is not there answered %v, want the hint to use PATH", err)
+	}
+	// a fake that speaks --version
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "firefox")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho 'Mozilla Firefox 999.0'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if ver, err := firefoxVersion(fake); err != nil || ver != "Mozilla Firefox 999.0" {
+		t.Errorf("version = %q, %v", ver, err)
+	}
+	if _, err := firefoxVersion(filepath.Join(dir, "none")); err == nil {
+		t.Error("a binary that is not there had a version")
+	}
+	// and the row goes through it, after the version, before the search
+	src := readSrc(t, "setup.go")
+	if !strings.Contains(src, `hook(testFxBtn, fxBadge, "firefox"`) || !strings.Contains(src, "return a.testFirefox(box)") {
+		t.Error("the firefox row's Test does not run testFirefox")
+	}
+	body := funcBody(t, "setup.go", `func \(a \*App\) testFirefox\(`)
+	i, j := strings.Index(body, "firefoxVersion(bin)"), strings.Index(body, `a.webSearch(context.Background(), bin, "duckduckgo")`)
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("testFirefox does not check the version and then drive a search:\n%s", body)
 	}
 }

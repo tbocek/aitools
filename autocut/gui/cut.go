@@ -17,7 +17,7 @@ package main
 // narrow hatched band, not proportionally -- a 30 minute break should not be
 // 30 minutes of scrollbar.
 //
-// step3/cut.json {"segs":[{"s":..,"e":..}]}   session-time seconds, sorted
+// cut/cut.json {"segs":[{"s":..,"e":..}]}   session-time seconds, sorted
 
 import (
 	"context"
@@ -95,10 +95,16 @@ const (
 
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 //
-// Every suggest-pipeline prompt -- the four cut styles and the audit that reads
-// their answer back -- is written for a small local model: one narrow job each,
-// every rule load-bearing, no rule explained twice. An 8B model follows a page;
-// it drowns in three.
+// Every suggest-pipeline prompt -- the five cut styles and the audit that reads
+// their answer back -- is written for a local model of Qwen-27B's class: one
+// narrow job each, every rule load-bearing, no rule explained twice, and the
+// job given as a numbered procedure rather than as taste. "Keep what matters"
+// is a judgement such a model makes badly and differently every run; "list
+// what the notes name, find where each happens, divide the target by the
+// count" is arithmetic it does the same way every time. So each wording is a
+// procedure: derive the subject from the notes, enumerate, budget, place --
+// and the rules every style shares (boundaries, length, the reply) are one
+// tail (cutReply) rather than five copies.
 //
 // genericSystem is the one shipped as the default, and the only one that does
 // not assume what it is looking at. The other three are shapes: a gaming
@@ -110,61 +116,34 @@ const (
 // know you have one.
 const genericSystem = `You choose the moments a video is cut from. The recording is a session of something happening -- a game, a build, a lesson, a conversation, a drive -- and nobody has told you which. Read it first, then cut what is worth watching.
 
-Return strict JSON, nothing else:
-{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
+Work in this order.
 
-Rules.
+1. Say what this session is, in one line. The ABOUT THIS SESSION notes usually say it in their first sentence; with no notes, work it out from the timeline -- what the speakers say they are doing in the first minutes, and what the EVENT lines keep showing. Cut for THAT, not for what a session like it usually contains.
 
-- 6 to 20 segments, chronological, never overlapping. 8 to 45 seconds each, longer when a moment needs its whole build-up and payoff.
-- The total must land within about a tenth of the target length, or you are asked again.
+2. List what the notes name: every thing, moment, person or part. Each one gets a segment where it happens on the timeline. Find the place by the speech and the EVENT lines around it, and take the whole beat -- the setup, the thing itself, and what came of it, even when they are minutes apart. These come first and are never dropped for length.
 
-What this session is.
+3. Fill the rest of the target length by the kind of video this is:
+- a showcase of things (a model, a unit, a build, a piece of kit): every thing named, each seen whole, seen close, seen working, and judged -- and never a stretch where the thing is off screen.
+- a rating or a verdict: every item once where it is played or tried, then the verdict whole at the end.
+- a lesson, a build or a walkthrough: each step once, the result, and what went wrong.
+- a session played or watched for its own sake: the peaks -- the thing working, the thing failing, the point being made, the answer to a question asked earlier -- and what people responded to, since a laugh, a groan or someone confidently wrong outranks a competent stretch nobody said anything about. Split the session into four equal quarters and take something from each.
+- anything else: what would be missed if it were gone.
 
-- With no notes, work it out from the timeline: what the speakers say they are doing in the first minutes, and what the EVENT lines keep showing. Cut for THAT, not for what a session like it usually contains.
-- Everything the notes name becomes a segment. Find where it happens from the speech and the EVENT lines around it, and take the WHOLE beat -- the setup, the thing itself, and what came of it, even when they are minutes apart.
-- Never invent a moment the timeline does not show, even one the notes expect.
+4. Shape the whole. The first segment establishes what this is: wherever the speakers say what they are doing or what they are after. Set busy stretches (EVENT says hectic) against calm ones. Finish on something that reads as an ending -- the result, the verdict, the last word.
 
-What goes in.
-
-- The first segment establishes what this is: wherever the speakers say what they are doing or what they are after.
-- Then the moments that would be missed if they were gone: the thing working, the thing failing, the point being made, the reaction to it, the answer to a question asked earlier.
-- Keep what people responded to. A laugh, a groan, someone confidently wrong is worth more than a competent stretch nobody said anything about.
-- Vary the pace: set busy stretches against quiet ones. All peaks is as tiring as none.
-- Spread the picks over the whole session, and finish on something that reads as an ending -- the result, the verdict, the last word.
-
-Where to cut.
-
-- Never cut into a sentence: start a beat before the first word you want, end after the reaction to it.
-- End on the payoff, never just before it. Ending a beat before the thing everyone was waiting for is the worst cut you can make.
-- A moment that only makes sense because of something earlier needs that earlier thing in the cut as well, or neither of them belongs in it.` + cutSpeech + fxRules
+Each segment starts a beat before the first word you want and ends after the reaction to it: 8 to 45 seconds, longer when a moment needs its whole build-up and payoff. How many: about one segment per 20 seconds of target length, never fewer than two.` + fxRules + cutReply
 
 const suggestSystem = `You choose the moments for a highlight video of a gaming session, cut for YouTube. Someone who was not there should enjoy it from start to finish.
 
-Return strict JSON, nothing else:
-{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
+Work in this order.
 
-Rules.
+1. List what the ABOUT THIS SESSION notes name: every moment, person or thing. Each gets a segment where it happens -- find the place by the speech and the EVENT lines around it, and take the whole beat: setup, the thing itself, and the reaction after it, even when they are minutes apart. Cutting at the first mention hands the viewer a setup with no payoff. These come first and are never dropped for length.
 
-- 6 to 20 segments, chronological, never overlapping. 8 to 45 seconds each, longer when a moment needs its whole build-up and payoff.
-- The total must land within about a tenth of the target length, or you are asked again.
+2. List the peaks, from the timeline: an EVENT line that says hectic, a win, a disaster, a near miss, a reveal, a callback to something set up earlier -- and every line people reacted to: a laugh, a scream, swearing, someone confidently wrong. A joke beats a technically impressive moment nobody reacted to.
 
-The session notes.
+3. Pick from that list until the target length is spent, in this order: the first segment, wherever the speakers say what they are doing or what they are after; then the peaks with the loudest reaction; then enough calm stretches to set the loud ones against, because all peaks is as tiring as none. Split the session into four equal quarters and take at least one segment from each. The last segment is something that feels like an ending.
 
-- Everything the notes name becomes a segment. Find where it happens from the speech and EVENT lines around it, and take the WHOLE beat -- setup, the thing itself, and the reaction after it, even when they are minutes apart. Cutting at the first mention hands the viewer a setup with no payoff.
-- Never invent a moment the timeline does not show, even one the notes expect.
-
-What goes in.
-
-- The first segment establishes what the session is: wherever the speakers say what they are doing or what they are after.
-- Vary the pace: set loud stretches against quiet ones. All peaks is as tiring as none.
-- Keep the funny lines. A joke, a scream, someone confidently wrong beats a technically impressive moment nobody reacted to.
-- Take the action peaks: wins, disasters, near misses, reveals, and callbacks to something set up earlier.
-- Spread the picks over the whole session, and finish on something that feels like an ending.
-
-Where to cut.
-
-- Never cut into a sentence: start a beat before the first word you want, end after the reaction to it.
-- Give a joke its setup, and end on the payoff, never just before it. Ending a beat before the thing everyone was waiting for is the worst cut you can make.` + cutSpeech + fxRules
+Each segment starts a beat before the first word you want and ends after the reaction to it: 8 to 45 seconds, longer when a moment needs its whole build-up and payoff, and a joke gets its setup. How many: about one segment per 20 seconds of target length, never fewer than two.` + fxRules + cutReply
 
 // ratingSystem is the cut for a session whose shape is a verdict: a group plays
 // several things and ranks them. suggestSystem cuts for the best moments, which
@@ -185,34 +164,19 @@ Where to cut.
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 const ratingSystem = `You cut a rating video: a session where people play, watch or try several things and end by ranking them. The viewer should finish knowing what was rated, what each one was like, and where each landed.
 
-Return strict JSON, nothing else:
-{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
+Work in this order.
 
-Rules.
+1. List the items. If the ABOUT THIS SESSION notes name them or the scoring, that is the list. Otherwise take it from the speech and the EVENT lines: the maps, levels, weapons, songs -- whatever this session scores. Write every item down with the seconds where it is played or tried.
 
-- Chronological, never overlapping. Segments play in timeline order, so you cannot gather the items into a montage: cover each one where it happens.
-- 8 to 45 seconds each; a verdict or a reveal runs as long as it needs.
-- The total must land within about a tenth of the target length, or you are asked again.
+2. Find the ranking. It is almost always near the end: the tier list, the countdown, the "so the winner is". Note where it starts and where the top item is named.
 
-First, work out what is being rated.
+3. Reserve the verdict first. The ranking goes in WHOLE, as several consecutive segments if it runs long, ending on the segment where the top item is named. A ranking that stops at third place makes the video pointless. Subtract its length from the target length; what is left is for the rest.
 
-- List the items from the speech and the EVENT lines: the maps, levels, weapons, songs -- whatever this session scores.
-- If the notes name the items or the scoring, that is the list.
-- Find the ranking. It is almost always near the end: the tier list, the countdown, the "so the winner is".
+4. Divide what is left across every item, once each, in the order they come up: the stretch that shows what it is like, plus the reaction or the score said out loud. One good segment per item beats three from the best item. An item with no segment is named in the ranking without ever having been seen, so when length is tight every item gets something short rather than some of them something generous.
 
-The shape, in this order.
+5. Spend what is still left, in this order: what this is, where the speakers say what they are doing and how the scoring works; the line-up, where the session shows the items before playing them -- a menu, a list, the names read out; then the items the group argued about or changed their mind on, and funny lines that land on items already covered.
 
-- 1. What this is: where the speakers say what they are doing and how the scoring works.
-- 2. The line-up: where the session shows the items before playing them -- a menu, a list, the names read out.
-- 3. Every item, once each, in the order they come up: the stretch that shows what it is like, plus the reaction or the score said out loud. One good segment per item beats three from the best item.
-- 4. The verdict: take the ranking WHOLE, as several consecutive segments if it runs long. A ranking that stops at third place makes the video pointless. The final segment is where the top item is named.
-
-Priorities.
-
-- Coverage beats highlights. An item with no segment is a hole the ending falls through: when length is tight, give every item something short rather than some of them something generous.
-- Spare length goes to the items the group argued about or changed their mind on, and to funny lines that land on items you cover anyway.
-- End a segment on the judgement -- someone saying what they think -- not the moment the action stops.
-- Never cut into a sentence, and never invent a moment, a name or a score. If the timeline does not show where an item was rated, take the nearest stretch where it is discussed.` + cutSpeech + fxRules
+You cannot gather the items into a montage: cover each one where it happens on the timeline. 8 to 45 seconds each; a verdict or a reveal runs as long as it needs. End a segment on the judgement -- someone saying what they think -- not the moment the action stops. If the timeline does not show where an item was rated, take the nearest stretch where it is discussed.` + fxRules + cutReply
 
 // showcaseSystem is the cut for a session whose subject is a THING rather than
 // a stretch of time: an unboxing, a paint job, a new unit, a printed model, a
@@ -232,38 +196,26 @@ Priorities.
 // wording exists to prevent.
 //
 // One paragraph or bullet per line, unwrapped: see describeSystem.
-const showcaseSystem = `You cut a showcase: a session where someone shows a thing -- a model, a figure, a unit, a machine, a build, a piece of kit -- to a viewer who wants to see it. They should finish knowing what it is, what it looks like up close, and what it does.
+const showcaseSystem = `You cut a showcase: a session where someone shows a thing -- a model, a figure, a unit, a tower, a machine, a build, a piece of kit -- to a viewer who wants to see it. They should finish knowing what it is, what it looks like up close, and what it does.
 
-Return strict JSON, nothing else:
-{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
+Work in this order.
 
-Rules.
+1. Name the subject. The ABOUT THIS SESSION notes say what is being shown -- take their word for it, spelled their way. With no notes, take it from the speech and the EVENT lines: what is on the table, in the hand, on the screen.
 
-- Chronological, never overlapping. You cannot go back to a thing the session has moved past: take it where it is.
-- 8 to 45 seconds each. A slow look over the object runs as long as the camera takes -- cutting a pan in half wastes the one shot that shows the whole thing.
-- The total must land within about a tenth of the target length, or you are asked again.
+2. Count the things. A showcase of towers is one entry per tower; a showcase of one figure is one entry. Find them where the speech or an EVENT line names one, and write each down with the second it first enters and the second the session leaves it -- everything about it is between those two, and nothing outside them belongs to it. Several things is the same job repeated, and going long on the first leaves the last with nothing.
 
-First, work out what is being shown.
+3. Budget: divide the target length by the number of things. That is each one's share before you look at any of them. A thing the notes call out may take more; the extra comes out of the others and the total does not move.
 
-- Name the subject from the speech and the EVENT lines: what is on the table, in the hand, on the screen. If the notes name it, that is the subject.
-- Count the things. One object, or several? Several is the same job repeated -- divide the target length by how many there are, and that is each one's share before you look at any of them. Going long on the first leaves the last with nothing.
-- Find where each thing enters and where the session leaves it. Everything about it is between those two, and nothing outside them belongs to it.
+4. For each thing, in the order they come up, spend its share on these, in this order:
+- What it is: where it is first named or first properly in frame. One segment, and the viewer knows what they are looking at.
+- The whole of it: the pass where the camera holds on it or goes around it, so its size, shape and finish are seen once. Every showcase needs this segment and it is the one most often missing. A slow pan runs as long as the camera takes: cutting it in half wastes the one shot that shows the whole thing.
+- The details: the close views, the parts the speaker points out, the things they say are good or wrong. This is where most of the share goes: a close view with the explanation over it is the best segment this video has.
+- It doing what it is for: assembled, switched on, placed, played, driven, fired, worn, put next to something for scale.
+- The verdict on it: what the speaker makes of it, what it cost, whether they would have another. End the thing here.
 
-The shape, for each thing, in this order.
+5. Check every segment against the EVENT lines: the thing must be on screen. A stretch where it is out of frame is not a showcase segment however good the line over it is. Then drop repeats: two segments of the same view of the same part is one segment -- every segment shows something the viewer has not seen yet. Skip the box, the packaging and the setting-up unless something in it is worth seeing.
 
-- 1. What it is: where it is first named or first properly in frame. One segment, and the viewer knows what they are looking at.
-- 2. The whole of it: the pass where the camera holds on it or goes around it, so its size, its shape and its finish are seen once. Every showcase needs this segment and it is the one most often missing.
-- 3. The details: the close views, the parts the speaker points out, the things they say are good or wrong. This is where the length goes. A close view with the explanation over it is the best segment this video has.
-- 4. It doing what it is for: assembled, switched on, played, driven, fired, worn, put next to something for scale.
-- 5. The verdict on it: what the speaker makes of it, what it cost, whether they would have another. End the thing here.
-
-Priorities.
-
-- The thing must be on screen. A stretch where it is out of frame is not a showcase segment however good the line over it is -- the EVENT lines say what was on screen, so use them.
-- Picture and words together beat either alone. A close view nobody explains is wallpaper; an explanation over something else is a podcast.
-- Skip the box, the packaging and the setting-up unless something in it is worth seeing.
-- Repetition is the enemy: two segments of the same view of the same part is one segment. Every segment shows something the viewer has not seen yet.
-- Never cut into a sentence, and never invent a part, a name or a price.` + cutSpeech + fxRules
+8 to 45 seconds each; a pan as long as it takes.` + fxRules + cutReply
 
 // shortsStyleName is how the Shorts wording is picked and stored; the style
 // clamp in suggestClicked reads the same name, so the two cannot drift apart.
@@ -336,34 +288,24 @@ func (a *App) styleTarget(key, name string) {
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 const shortsSystem = `You cut a YouTube Short from a gaming session: one vertical clip of 20 to 30 seconds, watched on a phone mid-scroll. The first two seconds have to already be the good part, or the viewer is gone.
 
-Return strict JSON, nothing else:
-{"segments":[{"start":<sec>,"end":<sec>}],"fx":[{"kind":"zoom","start":<sec>,"end":<sec>},{"kind":"text","start":<sec>,"end":<sec>,"text":"<words>"},{"kind":"speed","start":<sec>,"end":<sec>,"rate":<number>},{"kind":"stop","start":<sec>,"end":<sec>},{"kind":"volume","start":<sec>,"end":<sec>,"gain":<number>}]}
+Work in this order. Budget the seconds before you touch the timeline.
 
-The plan. Budget the seconds before you touch the timeline.
+1. The ABOUT THIS SESSION notes say what this Short is about. Count the parts they call important -- those are the beats, told in order. Find where each one happens on the timeline. If the notes name nothing, there is one beat and it takes the whole budget: the single best moment of the session -- the loudest reaction, the biggest surprise, the funniest line.
 
-- The notes say what this Short is about. Count the parts they call important -- those are the beats of this Short, told in order. Find where each one happens on the timeline.
-- Divide the target length by the number of beats: that is each beat's opening share. The notes decide how many there are -- one part, three, five -- and the arithmetic is the same at every count: five beats against a 25-second target open at 5 seconds each, a single beat opens with all 25.
-- Now trade seconds between beats, keeping the same total. A beat that is only setup or a lull gets squeezed to what it needs to be understood -- 5 seconds is often plenty -- and every second it gives up goes to a beat that earns it, usually the opener or the payoff. A beat that carries the clip may take more than one segment; a dull one never gets more time to breathe. How the seconds fall across the named parts is your judgement -- the notes say what matters, you decide what each part is worth.
-- The beats are one story told in parts, not a compilation: each segment is there because the notes asked for it. A good moment outside the named parts belongs to a different Short -- leave it.
-- Before you answer, add up end minus start across your segments. If the sum is more than a second or two off the target, trim inside segments until it lands -- never by dropping a named beat.
-- If the notes name nothing, there is one beat and it takes the whole budget: the single best moment of the session -- the loudest reaction, the biggest surprise, the funniest line.
+2. Divide the target length by the number of beats: that is each beat's opening share. The notes decide how many there are -- one part, three, five -- and the arithmetic is the same at every count: five beats against a 25-second target open at 5 seconds each; a single beat opens with all 25.
 
-Rules.
+3. Now trade seconds between beats, keeping the same total. A beat that is only setup or a lull gets squeezed to what it takes to be understood -- 5 seconds is often plenty -- and every second it gives up goes to the beat that earns it, usually the opener or the payoff. A beat that carries the clip may take more than one segment; a dull one never gets more time.
 
-- As many segments as the beats need and no more -- usually one per beat. Chronological, never overlapping.
-- The total must land within about a tenth of the target length, or you are asked again.
-- Open mid-action: no introduction, the hook IS the clip. A caption added in a later pass can carry the one fact a viewer needs.
-- Never cut into a sentence, but cut HARD: start on the last line of setup that still makes the payoff land, and end on the reaction's peak, not its tail. The last second decides the rewatch.
+4. Place each beat's segment. Open mid-action, no introduction: the hook IS the clip. Cut HARD: start on the last line of setup that still makes the payoff land, and end on the reaction's peak, not its tail. The last second decides the rewatch.
 
-Effects.
+5. Land the length by trimming inside segments, never by dropping a named beat.
 
-- fx decorates the cut. Every effect lies inside one of your segments; one outside them is thrown away.
+The beats are one story told in parts, not a compilation: each segment is there because the notes asked for it. A good moment outside the named parts belongs to a different Short -- leave it. As many segments as the beats need and no more, usually one per beat.
+
+Effects, for a phone.
+
 - Two or three across the whole Short is plenty; an empty list is fine for a clip that carries itself.
-- zoom is a centre punch-in: put the eye on the thing that matters at the moment it matters. Two to four seconds.
-- text is a caption on screen: phones are watched with the sound off, so caption the key line or the punchline. Under about eight words.
-- speed rescales the clock: rate 0.5 for the one impact worth savouring, 2 or more to rush a stretch the viewer does not need.
-- stop holds the picture still while the sound runs on, for a second on the face or the score. At most one, on the beat the clip is about.
-- volume is how loud those seconds are -- 1 is as recorded, 0.5 half, 2 twice, 10 the most, 0 silent -- for a line recorded too quiet to hear on a phone in public.` + cutSpeech
+- A zoom of two to four seconds onto the thing that matters at the moment it matters. A caption under about eight words on the key line or the punchline -- a Short is watched with the sound off, so this is often the only way the words land. speed 0.5 for the one impact worth savouring, 2 or more to rush a stretch the viewer does not need. At most one stop, a second on the face or the score, on the beat the clip is about. volume for a line recorded too quiet to hear on a phone in public.` + cutReply
 
 // fxRules is the effects half of a cut prompt, shared by the three styles that
 // cut for a screen rather than for a phone. Shorts keeps its own wording: two
@@ -372,9 +314,8 @@ Effects.
 // on, and one paragraph trying to cover both would say neither well.
 //
 // It is appended rather than written out three times because it is the same
-// instruction three times. The reply shape is not in here, though -- the fx
-// array sits inside the JSON line each style spells out where its own rules
-// begin, and that line has to read as one object.
+// instruction three times. The reply shape is not in here either: it is in
+// cutReply, which every wording ends on, Shorts included.
 //
 // The notes come first in it on purpose. What to do with a dull stretch is
 // exactly what the editor writes down -- "the boring parts you can speed up
@@ -384,42 +325,30 @@ Effects.
 // has already chosen cannot act on it; told both at once, it can.
 //
 // One paragraph or bullet per line, unwrapped: see describeSystem.
-// cutSpeech is how to read the spoken lines, and it is the same paragraph for
-// every style -- Shorts included, which is why it is not part of fxRules.
-//
-// The session decides it and only the editor knows which session this is: on
-// most recordings the speech is the video, and on some the person recording is
-// telling whoever cuts it what to do -- "this bit is boring", "speed this up
-// from here". The same sentence read the wrong way is the worst answer this
-// app can give, because it is a confident one: a direction kept as content
-// puts the editor's asides in the video, and content read as directions
-// throws the video away. So the prompt does not guess. It reads the notes,
-// and with no notes it takes the speech as content, which is what a recording
-// is unless someone says otherwise.
-//
-// One paragraph or bullet per line, unwrapped: see describeSystem.
-const cutSpeech = `
-
-What the speech is.
-
-- ABOUT THIS SESSION says how to read the spoken lines. They are content -- the speakers are in the video, what they say is why a moment is worth keeping, and a caption may quote them -- unless the notes say they are directions.
-- Directions are someone talking to whoever cuts this: "this part is boring", "speed this up", "the good bit starts here". Where the notes say the speech is directions, do what it asks at the second it asks -- and keep the words out of the video: never caption them, and never keep a stretch just because it was spoken over.
-- A session can be both, and the notes say which speaker is which. Follow the one and cut for the other.
-- With no notes about it, the speech is content.`
-
 const fxRules = `
 
 Effects.
 
-- fx decorates the cut: a punch-in, a change of pace, a caption. Every effect lies inside one of your segments -- one outside them is thrown away.
-- The session notes outrank everything below. If ABOUT THIS SESSION says what to do with a kind of stretch -- speed the dull parts up and show them instead of cutting them, caption each thing as it is named, punch in on what is being talked about -- that is the instruction, and follow it wherever the stretch it describes occurs. It decides segments too: a stretch the notes want shown fast has to BE in the cut, as a segment with a speed effect over it, or there is nothing left to speed up.
-- Otherwise: few and deliberate, three or four across five minutes of finished video, each with a reason you could say out loud. An effect on every segment is a video that fidgets, and a cut with none at all is one nobody finished.
+- Few and deliberate: three or four across five minutes of finished video, each with a reason you could say out loud. Not one on every segment, and not none.
 - Pick the kind by what the moment needs, not by variety. Something important on screen and easy to miss -> zoom onto it. A viewer who would not know what is happening -> text saying it. A stretch that must be shown but not watched -> speed. The one beat worth landing on -> stop. Sound that does not sit right against the rest -> volume.
-- zoom is a centre punch-in: put the eye on the thing that matters at the moment it matters -- the score, the face, the mistake -- while the speech is about it. Two to four seconds.
-- text is a caption on screen: the name of a thing as it is first shown, the number someone just said, what is going on when the footage does not say it out loud. Under about eight words, over the seconds it belongs to. A zoom onto something worth pointing at is often worth a caption naming it.
-- speed rescales the clock. Above 1 rushes a stretch that has to be shown but not watched -- the walk back, the loading screen, the setup being built: 2 over a few seconds of it, 4 to 8 over a minute of it. 0.5 stretches the one impact worth savouring, and once in a video is enough.
-- stop holds the picture still while the sound runs on: a second or two on the face, the score, the moment it went wrong. One per video, on the beat everything else was leading to.
-- volume is how loud those seconds are -- 1 is as recorded, 0.5 half, 2 twice, 10 the most, 0 silent. For a stretch that was recorded too quiet to hear or loud enough to hurt, for ducking a noisy background under a line that matters, and for muting seconds the session says are not to be heard. Not a fade: the cut does its own.`
+- A zoom runs two to four seconds, onto the score, the face, the mistake, while the speech is about it. A caption is under about eight words -- the name of a thing as it is first shown, the number someone just said, what the footage does not say out loud -- and says something true, from the material or from a search. speed 2 rushes a few seconds of the walk back or the loading screen, 4 to 8 a whole minute of it; 0.5 savours one impact, once in a video. One stop per video, on the beat everything else was leading to. volume for a stretch recorded too quiet or too loud, for ducking a background under a line that matters, and for muting seconds the session says are not to be heard.`
+
+// cutReply is the end of every cut wording, Shorts included: where a segment
+// may start and end, the length arithmetic, the reply, and the check to run
+// before answering. Last on purpose -- it is the part a model acts on with the
+// answer in its hands, and the part that was written out five times before,
+// which is how the five came to disagree about the tolerance. The shape of
+// the reply is here and nowhere else: suggestParse reads one shape whichever
+// wording asked, so one wording is where it is spelled.
+//
+// The tolerance it asks for is tighter than the one the run accepts
+// (suggestWindow): a model aimed at a tenth lands inside a half, and one aimed
+// at a half does not.
+const cutReply = `
+
+Where a segment ends: on the payoff, never just before it. A moment that only makes sense because of something earlier needs that earlier thing in the cut too, or neither. Too long: shorten the weakest segments. Too short: extend to the payoff first, then add the next moment on your list.
+
+Answer in the cut's shape. Before you answer, add up end minus start across your segments and check: the sum is within a tenth of the target length; every segment has an EVENT line inside it; every start is later than the end before it; every effect lies inside one of your segments; everything the notes name is in.`
 
 // cutSeg is one piece of the finished video. Normally it is a stretch of the
 // session: S and E are session seconds and the footage under them is what plays.
@@ -753,7 +682,7 @@ type cutEditor struct {
 
 	target *gtk.Entry
 	inputs *gtk.Label // what this page reads, and what Suggest is sent
-	out    *gtk.Label // what step3/ holds, the same line every other page shows
+	out    *gtk.Label // what cut/ holds, the same line every other page shows
 
 	// the form column beside the video (cut_form.go): its heading, the words
 	// it shows when it is empty, the form in it and who to tell when that form
@@ -876,7 +805,7 @@ type cutEditor struct {
 // three functions before something outside them needed it too.
 func mmss(t float64) string { return fmt.Sprintf("%d:%02d", int(t)/60, int(t)%60) }
 
-func (a *App) cutDir() string  { return filepath.Join(a.outDir, "step3") }
+func (a *App) cutDir() string  { return filepath.Join(a.outDir, "cut") }
 func (a *App) cutPath() string { return filepath.Join(a.cutDir(), "cut.json") }
 
 // cutFile is cut.json, whole. There used to be an anonymous struct at every
@@ -1021,7 +950,7 @@ func (ed *cutEditor) reload() error {
 			rows = loadSeg4(filepath.Join(a.transcriptDir(), base, "commentary.fixed.tsv"))
 		}
 		if rows == nil {
-			rows = loadSeg4(filepath.Join(a.outDir, "step1", base, "transcript.tsv"))
+			rows = loadSeg4(filepath.Join(a.inputsDir(), base, "transcript.tsv"))
 		}
 		for _, r := range rows {
 			speech = append(speech, [2]float64{s.start - zero + r.s, s.start - zero + r.e})
@@ -1541,7 +1470,7 @@ func (ed *cutEditor) setPlayhead(t float64) {
 		wasPlaying := ed.player.playing
 		// before the seek, never after: a rate only takes hold at a seek, and
 		// this is the seek. Setting it afterwards would need a second one.
-		ed.player.SetRate(fxRateAt(ed.fx, t))
+		ed.player.SetRate(fxPreviewRateAt(ed.fx, t))
 		same := ed.playVideo == v
 		if !same {
 			ed.playVideo = v
@@ -1577,17 +1506,32 @@ func (ed *cutEditor) setPlayhead(t float64) {
 // a frame apart, which sounds like a broken speaker rather than like a mistake.
 // A recording that was not running while this video was is left out too -- it
 // has nothing to contribute to any second of it.
+//
+// A further track of the capture itself IS in it. It shares the footage's
+// path, and the preview used to leave it out for that -- the same file is
+// already playing -- which left the one place a second microphone usually
+// lives (OBS records the mic as track 2) with a lit badge, a drawn waveform
+// and no sound at all, however the hush was set. It is a lane like any other:
+// its own pipeline, on the same file, told which track to decode (mixTrack.
+// track). The master track is still not here, for the reason above.
+//
+// delta is the whole difference between the two clocks, off included: the
+// master's file second is t - v.start + v.off (tlVideo.at), the lane's is t -
+// au.start + au.off, so the lane's is the master's plus this. A cut lane opens
+// partway into its file (cut_lane.go), and a delta that forgot its off seeked
+// the lane a whole window early -- past nothing, into silence.
 func (ed *cutEditor) mixUnder(v *tlVideo) []mixTrack {
 	var out []mixTrack
 	for _, au := range ed.auds {
-		if au.master || au.path == v.path {
+		if au.master || (au.path == v.path && au.track == 0) {
 			continue
 		}
 		if au.start+au.dur <= v.start || au.start >= v.start+v.dur {
 			continue
 		}
 		out = append(out, mixTrack{base: au.base, path: au.path,
-			delta: v.start - au.start, dur: au.dur})
+			delta: (v.start - v.off) - (au.start - au.off),
+			lo:    au.off, hi: au.off + au.dur, track: au.track})
 	}
 	return out
 }
@@ -1706,7 +1650,7 @@ func (ed *cutEditor) frameStep(n int) {
 	ed.reLive(ed.playhead) // a hand on the line: the live clock comes with it
 	// the rate before the seek, never after -- it only takes hold at one, and
 	// this is the seek. The same bargain setPlayhead makes.
-	ed.player.SetRate(fxRateAt(ed.fx, ed.playhead))
+	ed.player.SetRate(fxPreviewRateAt(ed.fx, ed.playhead))
 	ed.player.SeekTo(local)
 	ed.showTime()
 	ed.revealPlayhead() // a step must never move the line somewhere you cannot see
@@ -1819,7 +1763,7 @@ func (ed *cutEditor) syncPlayGain() {
 
 func (ed *cutEditor) syncPlayRate() {
 	if ed.player != nil {
-		ed.player.SetRateNow(fxRateAt(ed.fx, ed.playhead))
+		ed.player.SetRateNow(fxPreviewRateAt(ed.fx, ed.playhead))
 	}
 }
 
@@ -1883,7 +1827,7 @@ func (ed *cutEditor) followPlayback() bool {
 	}
 	if pos, ok := ed.player.Position(); ok {
 		was := ed.playhead
-		ed.playhead = ed.playVideo.start + pos
+		ed.playhead = ed.playVideo.sessionAt(pos)   // off included: a cut lane's window starts partway in
 		ed.posT, ed.posAt = ed.playhead, time.Now() // the camera's clock; see livePlayhead
 		ed.syncFxHold()                             // ▶ walks the line off whatever was picked up
 		ed.showTime()
@@ -2341,7 +2285,7 @@ const sndMinLn = 0.05
 // A sound insert is stored as a segment like any other, which means it takes
 // its seconds from the footage segment it lands in: the clip is split and the
 // insert holds the middle, while the render re-derives those very frames for
-// it (step5, case s.audioIns()). Over footage the cut keeps, that is invisible
+// it (produce.go, case s.audioIns()). Over footage the cut keeps, that is invisible
 // -- the same picture, differently sourced -- and that is what makes it legal.
 // Over footage the cut DROPS it is not: a segment there is seconds put back in
 // the video, picture and all, and "lay a sound over this" is not permission to
@@ -2455,7 +2399,7 @@ func (s cutSeg) audioIns() bool {
 //
 // keepsSoundUnder: the cut was NOT opened for it, so the footage it covers is
 // still there being heard. Only the picture is replaced, and the render takes
-// the sound from the recording instead of from the file (step5, the isInsert
+// the sound from the recording instead of from the file (produce.go, the isInsert
 // case, which puts it in prodClip.snd exactly where an audio insert's file
 // would go).
 //
@@ -3743,7 +3687,7 @@ func (ed *cutEditor) updateInputs() {
 		line += fmt.Sprintf(" · timeline %d lines (%d spoken, %d on screen) → all of it goes to Suggest",
 			speech+events, speech, events)
 		// the same string the request will carry, so the size is the real one
-		detail += fmt.Sprintf("\n\nstep2/transcript/session.txt — %d kB, sent whole with the cut prompt",
+		detail += fmt.Sprintf("\n\nunderstand/transcript/session.txt — %d kB, sent whole with the cut prompt",
 			(len(sessionText(rows, ed.a.narratorMic()))+512)/1024)
 	}
 	// the context box on Describe rides along with every request this page
@@ -4434,6 +4378,7 @@ func (a *App) buildCut() gtk.Widgetter {
 		ed.player = p // the preview above the tracks; independent of Review's
 		p.OnState = a.updateRunControls
 		p.OnError = a.playerErr("the cut preview")
+		p.OnLog = func(s string) { a.logf("%s", s) }
 		glib.TimeoutAdd(playTick, ed.followPlayback)
 	} else {
 		a.logf("cut preview player: %v", err)
@@ -5347,7 +5292,7 @@ func (a *App) buildCut() gtk.Widgetter {
 	// main.go) rather than the page: every step answers this same question,
 	// so it is asked in one place.
 	openOut := gtk.NewButtonFromIconName("folder-open-symbolic")
-	openOut.SetTooltipText("step3/ — the cut, as cut.json")
+	openOut.SetTooltipText("cut/ — the cut, as cut.json")
 	openOut.ConnectClicked(func() { a.openFolder(a.cutDir()) })
 	ed.out = gtk.NewLabel("")
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
@@ -5451,10 +5396,23 @@ func (a *App) buildCut() gtk.Widgetter {
 	pane.SetEndChild(bottom)
 	pane.SetPosition(380)
 	pane.SetVExpand(true)
+	// the tracks are never squeezed away. A paned shrinks both children below
+	// their minimum by default, and with the log open on a short window the
+	// 380 px above left the bottom half a few pixels of thumbnail at the edge
+	// of the screen -- which reads as "the timeline is gone", not as "the
+	// timeline is small". The picture above has a floor of its own (160 px)
+	// and gives way first.
+	pane.SetShrinkEndChild(false)
+	pane.SetResizeStartChild(true)
+	pane.SetResizeEndChild(false)
 
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
 	page.Append(inRow)
 	page.Append(pane)
+	// and the empty timeline is laid out from the start: the ruler, the scope
+	// and an empty row are a page with no cut yet, which is a real state, and
+	// the band has no height until relayout gives it one (see clearTracks)
+	ed.relayout()
 	return page
 }
 
@@ -5583,10 +5541,15 @@ func (a *App) refreshCut() {
 // under the page: without it, opening another project whose folder holds no
 // session of its own leaves the previous one's recordings drawn on the tracks,
 // which is the most convincing wrong thing this page can show.
+//
+// It lays the empty timeline out too, rather than returning early when there
+// is nothing to clear. The band has no height of its own -- fitSrc gives it
+// one, and only relayout calls fitSrc -- so an editor that was never laid out
+// is a page with no tracks on it at all, not a page with empty tracks. That
+// was what a project with frames but no cut showed: the ruler, the scope and
+// the empty row are what "no cut yet" looks like, and they need the relayout
+// as much as a full cut does.
 func (ed *cutEditor) clearTracks() {
-	if len(ed.vids) == 0 && len(ed.segs) == 0 {
-		return
-	}
 	ed.vids, ed.segs, ed.undo, ed.redo, ed.base = nil, nil, nil, nil, cutState{}
 	ed.fx, ed.fxOn, ed.fxArm = nil, false, ""
 	ed.setAspect("")

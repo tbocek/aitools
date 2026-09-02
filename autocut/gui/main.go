@@ -16,8 +16,8 @@ package main
 // numbers were the names -- the pages and the files are called what they do
 // now, and the folders are not, because renaming them would orphan every
 // project already on disk. Describing runs two jobs and splits its folder
-// between them by name, since a number would say nothing: step2/describe/ =
-// the event logs, step2/transcript/ = the fixed transcripts, the subtitles and
+// between them by name, since a number would say nothing: understand/describe/ =
+// the event logs, understand/transcript/ = the fixed transcripts, the subtitles and
 // the session timeline.
 //
 //   cd autocut && ./gui/autocut-gui
@@ -343,7 +343,7 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"Lines that have not been synthesized yet are spoken first.\n\nThe " +
 			"model is not asked for the text again after the first run, however " +
 			"much you edit the boxes: rewording the edit instruction or swapping " +
-			"the images costs GPU time and no thinking. Deleting the step6 folder " +
+			"the images costs GPU time and no thinking. Deleting the publish folder " +
 			"is what starts the text over; Suggest again, beside the title, " +
 			"rewrites it without redrawing or rendering.\n\nThe thumbnail is " +
 			"usually an edit of one of your own frames, which is what keeps it " +
@@ -543,13 +543,13 @@ type App struct {
 	pub  *publisher
 
 	// The Narrate page's voice picker, and the choice it holds. The id is
-	// cached from step4/voice.txt and guarded: since the narrator's name became
+	// cached from narrate/voice.txt and guarded: since the narrator's name became
 	// part of every step's input (tlLabel), it is read by the describe and
 	// transcript workers as well as by the GUI thread.
 	voicePick *voicePicker
 	voiceMu   sync.Mutex
 	voiceSel  string
-	pitchSel  float64 // semitones the reference is shifted by, from step4/pitch.txt
+	pitchSel  float64 // semitones the reference is shifted by, from narrate/pitch.txt
 	pitchRead bool    // ...and whether that file has been read yet (0 is a real value)
 	// the hand-picked voice-clone takes, by recording (narrate_take.go), under
 	// the same lock and for the same reason: they are part of the cache key, so
@@ -843,16 +843,17 @@ func (f *freqPick) parse() {
 	f.set(nearestStop(v))
 }
 
-// Where each step writes. The folders keep their stepN names although the tabs
-// no longer do: renaming them would orphan every project already on disk, and a
-// folder name is not a label anyone reads twice. Prepare owns the first
-// two -- step1/ for the transcripts and frames, step2/ for what the models made
-// of them -- and inside step2/ the two jobs get a folder each, because the
-// describer resumes per chunk and the fixer does not.
-func (a *App) inputsDir() string     { return filepath.Join(a.outDir, "step1") }
-func (a *App) narrateDir() string    { return filepath.Join(a.outDir, "step4") }
-func (a *App) produceDir() string    { return filepath.Join(a.outDir, "step5") }
-func (a *App) understandDir() string { return filepath.Join(a.outDir, "step2") }
+// Where each step writes. The folders are named for their steps, as the tabs
+// and the code are; they were step1/ to step6/ once, and a project written
+// then is moved to these names the first time it is opened (migrateFolders).
+// Prepare owns the first two -- inputs/ for the transcripts and frames,
+// understand/ for what the models made of them -- and inside understand/ the
+// two jobs get a folder each, because the describer resumes per chunk and the
+// fixer does not.
+func (a *App) inputsDir() string     { return filepath.Join(a.outDir, "inputs") }
+func (a *App) narrateDir() string    { return filepath.Join(a.outDir, "narrate") }
+func (a *App) produceDir() string    { return filepath.Join(a.outDir, "produce") }
+func (a *App) understandDir() string { return filepath.Join(a.outDir, "understand") }
 func (a *App) describeDir() string   { return filepath.Join(a.understandDir(), "describe") }
 func (a *App) transcriptDir() string { return filepath.Join(a.understandDir(), "transcript") }
 
@@ -915,7 +916,10 @@ func main() {
 	// second one -- which is why open loads into the window that exists instead
 	// of building another.
 	app := gtk.NewApplication(appID, gio.ApplicationHandlesOpen)
-	app.ConnectActivate(func() { a.build(app) })
+	app.ConnectActivate(func() {
+		a.build(app)
+		a.startHangWatch() // a stuck main loop writes its own stacks (hangwatch.go)
+	})
 	app.ConnectOpen(func(files []gio.Filer, _ string) {
 		var path string
 		if len(files) > 0 {
@@ -936,13 +940,13 @@ func main() {
 
 // ---- state -----------------------------------------------------------------
 
-// loadMeta reads step1/meta.env: the primary video and recording of the last
+// loadMeta reads inputs/meta.env: the primary video and recording of the last
 // run, and the frame settings it ran with. Its existence is also the marker
 // that Prepare has run at all -- either of the two files may be missing from a
 // legitimate session, so the keys are not that marker.
 func (a *App) loadMeta() map[string]string {
 	m := map[string]string{}
-	b, err := os.ReadFile(filepath.Join(a.outDir, "step1", "meta.env"))
+	b, err := os.ReadFile(filepath.Join(a.outDir, "inputs", "meta.env"))
 	if err != nil {
 		return m
 	}
@@ -1434,7 +1438,7 @@ func (a *App) rescanAll() {
 }
 
 // updateNarrateInfo re-reads the narration from disk. It was the one step a
-// rescan skipped: delete step4/ and the page went on showing the narration it
+// rescan skipped: delete narrate/ and the page went on showing the narration it
 // had in memory and an Outputs line counting files that were no longer there.
 // Nothing is lost by re-reading -- every edit on that page is written as it is
 // typed -- and after a rescan the folder is the answer, including when the

@@ -12,7 +12,7 @@ import (
 // with its tail cut off and playback failed with "No such file".
 func TestAFileNamedWithPunctuationStillReachesThePlayer(t *testing.T) {
 	// the exact shape that failed: voice, pitch, hand-picked takes, hash
-	const sample = "/mnt/rec/tom.json.autocut.data/step4/samples/own@-0.5#3a1f2b_9c2b1e4d5f60.wav"
+	const sample = "/mnt/rec/tom.json.autocut.data/narrate/samples/own@-0.5#3a1f2b_9c2b1e4d5f60.wav"
 	uri := fileURI(sample)
 	if !strings.HasPrefix(uri, "file:///mnt/") {
 		t.Fatalf("uri does not start at the root: %q", uri)

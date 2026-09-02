@@ -71,10 +71,14 @@ func TestAVolumeChangeNeedsAGainSomebodyMeant(t *testing.T) {
 	if m := got[2]; m.T != 60 || m.Gain != 0 {
 		t.Errorf("the silenced stretch came out %+v, want the 60 s one muted", m)
 	}
-	// and the wording offers the number, since the parser now obeys it
+	// and the model is offered the number, since the parser now obeys it. The
+	// scale is a fact about the effect rather than a judgement about when to
+	// use one, so it is said once in the system context every cut goes out
+	// behind (syscontext.go) -- what is checked is therefore what is SENT, not
+	// the wording on its own
 	for _, p := range []string{shortsSystem, fxRules} {
-		if !strings.Contains(p, "0 silent") {
-			t.Error("the volume wording never says which number means silence")
+		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+p, "0 silent") {
+			t.Error("nothing the cut is sent says which number means silence")
 		}
 	}
 }
@@ -120,13 +124,13 @@ func TestTheOverlayStaysAThingAHandPlaces(t *testing.T) {
 // parses to nothing spends the model's attention on an answer that is thrown
 // away; a parser accepting one nobody asks for is code no reply reaches.
 func TestTheWordingAndTheParserNameTheSameEffects(t *testing.T) {
-	a := &App{root: t.TempDir()}
 	kinds := []string{"zoom", "text", "speed", "stop", "volume"}
-	for _, s := range a.promptStyleList("cut") {
-		for _, k := range kinds {
-			if !strings.Contains(s.Text, `"kind":"`+k+`"`) {
-				t.Errorf("cut style %q never offers %q", s.Name, k)
-			}
+	// the reply shape is one shape, spelled once in the system context every
+	// cut wording is sent behind (syscontext.go) -- so it is the context that
+	// has to offer every kind, not each wording
+	for _, k := range kinds {
+		if !strings.Contains(sysSystem, `"kind":"`+k+`"`) {
+			t.Errorf("the system context's cut shape never offers %q", k)
 		}
 	}
 	src := funcBody(t, "cut_suggest.go", `func fxFromReply\(`)
@@ -159,28 +163,29 @@ func TestTheWordingSaysWhichEffectAMomentNeeds(t *testing.T) {
 // session decides which, and only the editor knows which session this is. Read
 // the wrong way it is the worst answer the app can give -- an aside to the
 // editor captioned into the video, or the video thrown away as asides -- so
-// the wording reads the notes rather than guessing, and defaults to content.
+// the rule reads the notes rather than guessing, and defaults to content. It
+// is a rule about the notes, so it is the system context's: every cut wording
+// is sent behind it, Shorts included, and none of them says it again.
 func TestTheNotesSayWhetherTheSpeechIsTheVideoOrInstructionsAboutIt(t *testing.T) {
 	for _, want := range []string{
 		"ABOUT THIS SESSION says how to read the spoken lines",
 		"unless the notes say they are directions",
 		"never caption them",
 		"With no notes about it, the speech is content.",
+		"It decides segments too",
 	} {
-		if !strings.Contains(cutSpeech, want) {
-			t.Errorf("the shared speech wording no longer says %q", want)
+		if !strings.Contains(sysSystem, want) {
+			t.Errorf("the system context no longer says %q", want)
 		}
 	}
-	// ...and it reaches every style, Shorts included: which one is picked says
-	// what the video is for, not how the recording was made
 	a := &App{root: t.TempDir()}
 	list := a.promptStyleList("cut")
 	if len(list) < 4 {
 		t.Fatalf("the cut offers %d wordings, want the four styles", len(list))
 	}
 	for _, s := range list {
-		if !strings.Contains(s.Text, strings.TrimSpace(cutSpeech)) {
-			t.Errorf("cut style %q does not say how to read the spoken lines", s.Name)
+		if strings.Contains(s.Text, "the speech is content") {
+			t.Errorf("cut style %q says how to read the spoken lines itself; the system context does", s.Name)
 		}
 	}
 }

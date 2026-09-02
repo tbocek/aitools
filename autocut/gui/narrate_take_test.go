@@ -82,7 +82,7 @@ func TestTheTakesBelongToTheRecordingAndSurviveARestart(t *testing.T) {
 	if err := a.setTakesFor("tom", []voiceTake{{12, 20}, {40, 46}}); err != nil {
 		t.Fatal(err)
 	}
-	if !exists(filepath.Join(dir, "step4", "takes.json")) {
+	if !exists(filepath.Join(dir, "narrate", "takes.json")) {
 		t.Fatal("nothing was written")
 	}
 	// a fresh App, which is what a restart is
@@ -150,7 +150,7 @@ func TestClearingThePicksLeavesTheRecordingUnnamed(t *testing.T) {
 	if err := a.setTakesFor("tom", nil); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "step4", "takes.json"))
+	b, err := os.ReadFile(filepath.Join(dir, "narrate", "takes.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestAHandPickedReferenceIsTakenWholeAndNeedsNoPrepare(t *testing.T) {
 	if err := a.setTakesFor("tom", ts); err != nil {
 		t.Fatal(err)
 	}
-	// no step1/ anywhere: there is no diarization to fall back on, so a
+	// no inputs/ anywhere: there is no diarization to fall back on, so a
 	// reference at all is the claim
 	if err := a.ensureVoiceBase(); err != nil {
 		t.Fatalf("no reference from hand-picked takes: %v", err)
@@ -301,7 +301,7 @@ func TestPlayingTheTakesWalksThemAndLetsGoWhenTheSampleTakesOver(t *testing.T) {
 		t.Errorf("the last take ending gave %d, wanted a stop", got)
 	}
 	// the sample is in the player now, still playing: the walk is over anyway
-	if got := takeNext("/step4/samples/x.wav", src, false, 1, 3); got != -1 {
+	if got := takeNext("/narrate/samples/x.wav", src, false, 1, 3); got != -1 {
 		t.Errorf("the walk held on to a player showing something else: %d", got)
 	}
 }

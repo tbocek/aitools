@@ -152,7 +152,7 @@ func TestASRWithoutWordsIsSilence(t *testing.T) {
 // transcript after it.
 func TestSilenceMergesToAnEmptyTranscript(t *testing.T) {
 	a, _ := fakeAudio(t, asrModels, answer(""))
-	out := filepath.Join(a.outDir, "step1", "clip")
+	out := filepath.Join(a.inputsDir(), "clip")
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestTheServersAnswersAreTheFilesPrepareKeeps(t *testing.T) {
 	a, _ := fakeAudio(t, asrModels, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(asrAnswer)) // this one only ever gets the ASR job
 	})
-	out := filepath.Join(a.outDir, "step1", "clip")
+	out := filepath.Join(a.inputsDir(), "clip")
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +620,7 @@ func TestAServerThatRefusesUploadsSaysWhatToDoInstead(t *testing.T) {
 	if err := a.writeConf(appConf{TTS: srv.URL, ASRModel: "nemotron-asr"}); err != nil {
 		t.Fatal(err)
 	}
-	wav := srcWav(t, filepath.Join(a.outDir, "step1", "clip"), "voice16k.wav")
+	wav := srcWav(t, filepath.Join(a.inputsDir(), "clip"), "voice16k.wav")
 	_, _, err := a.asrJSON(wav)
 	if err == nil {
 		t.Fatal("a refused upload passed as a transcript")

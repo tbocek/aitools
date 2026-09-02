@@ -208,9 +208,9 @@ func TestCutOpensOnFramesSoASilentCaptureNeedNotBeDescribed(t *testing.T) {
 // merged into one page. So the code is called Cut, Narrate, Produce and Publish
 // now, wherever it can be.
 //
-// The folders on disk are NOT, and must not be: step1/ through step6/ are what
-// every project already rendered has inside it, and a rename here is a rename
-// of somebody's finished work into a folder the app no longer looks in.
+// The folders on disk are too, since migrateFolders: a project written under
+// step1/ to step6/ is moved to the named folders on the open that finds it,
+// which is what makes the rename safe for somebody's finished work.
 func TestThePagesAreNamedForWhatTheyDoAndTheFoldersForWhatTheyWere(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -250,24 +250,74 @@ func TestThePagesAreNamedForWhatTheyDoAndTheFoldersForWhatTheyWere(t *testing.T)
 		}
 	}
 
-	// the exception, and the reason it is one: the folders keep their numbers,
-	// and this is the list of them
+	// the folders, named for their steps, each reached through its one helper
 	src := readSrc(t, "main.go")
 	for _, want := range []string{
-		`func (a *App) inputsDir() string     { return filepath.Join(a.outDir, "step1") }`,
-		`func (a *App) understandDir() string { return filepath.Join(a.outDir, "step2") }`,
-		`func (a *App) narrateDir() string    { return filepath.Join(a.outDir, "step4") }`,
-		`func (a *App) produceDir() string    { return filepath.Join(a.outDir, "step5") }`,
+		`func (a *App) inputsDir() string     { return filepath.Join(a.outDir, "inputs") }`,
+		`func (a *App) understandDir() string { return filepath.Join(a.outDir, "understand") }`,
+		`func (a *App) narrateDir() string    { return filepath.Join(a.outDir, "narrate") }`,
+		`func (a *App) produceDir() string    { return filepath.Join(a.outDir, "produce") }`,
 	} {
 		if !strings.Contains(src, want) {
-			t.Errorf("a folder was renamed with the pages -- missing %s\n"+
-				"every project already on disk keeps its files under the old name", want)
+			t.Errorf("a folder helper changed -- missing %s", want)
 		}
 	}
-	if !strings.Contains(readSrc(t, "cut.go"), `filepath.Join(a.outDir, "step3")`) {
-		t.Error("the cut folder was renamed with the page")
+	if !strings.Contains(readSrc(t, "cut.go"), `filepath.Join(a.outDir, "cut")`) {
+		t.Error("the cut folder is no longer cut/")
 	}
-	if !strings.Contains(readSrc(t, "publish.go"), `filepath.Join(a.outDir, "step6")`) {
-		t.Error("the publish folder was renamed with the page")
+	if !strings.Contains(readSrc(t, "publish.go"), `filepath.Join(a.outDir, "publish")`) {
+		t.Error("the publish folder is no longer publish/")
+	}
+	// ...and nothing spells a folder out beside its helper: a literal is a path
+	// the next rename misses
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") || f == "main.go" || f == "cut.go" || f == "publish.go" || f == "project.go" {
+			continue
+		}
+		for _, lit := range []string{`"inputs"`, `"understand"`, `"narrate"`, `"produce"`, `"publish"`} {
+			if strings.Contains(readSrc(t, f), "filepath.Join(a.outDir, "+lit) {
+				t.Errorf("%s joins a.outDir with %s itself instead of through the helper", f, lit)
+			}
+		}
+	}
+}
+
+// A project written under the numbered folders is moved to the named ones on
+// open -- once, and never over a folder that already has the new name.
+func TestANumberedProjectIsMovedToTheNamedFolders(t *testing.T) {
+	a := &App{outDir: t.TempDir()}
+	for _, old := range []string{"step1", "step3", "step6"} {
+		if err := os.MkdirAll(filepath.Join(a.outDir, old), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(a.outDir, old, "x"), []byte(old), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a folder already under its new name stays what it is
+	if err := os.MkdirAll(filepath.Join(a.outDir, "publish"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a.migrateFolders()
+	for _, c := range []struct{ dir, want string }{{"inputs", "step1"}, {"cut", "step3"}} {
+		b, err := os.ReadFile(filepath.Join(a.outDir, c.dir, "x"))
+		if err != nil || string(b) != c.want {
+			t.Errorf("%s/x = %q, %v -- want the file moved from %s/", c.dir, b, err, c.want)
+		}
+	}
+	for _, old := range []string{"step1", "step3"} {
+		if _, err := os.Stat(filepath.Join(a.outDir, old)); !os.IsNotExist(err) {
+			t.Errorf("%s/ is still there after the move", old)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(a.outDir, "step6", "x")); err != nil {
+		t.Errorf("step6/ was moved over an existing publish/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(a.outDir, "narrate")); !os.IsNotExist(err) {
+		t.Error("a folder that never existed under the old name was created")
+	}
+	a.migrateFolders() // a second open changes nothing
+	if b, _ := os.ReadFile(filepath.Join(a.outDir, "inputs", "x")); string(b) != "step1" {
+		t.Error("the second migration disturbed the first")
 	}
 }

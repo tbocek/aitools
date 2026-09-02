@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	coreglib "github.com/diamondburned/gotk4/pkg/core/glib"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
@@ -39,7 +40,19 @@ type Player struct {
 	// playing silently, and the transport button sat there claiming ⏸. Also on
 	// the GTK thread -- the bus watch dispatches there.
 	OnError func(string)
-
+	// OnLog is the app's log, for what the mix does: which lanes it built under
+	// which file, and a lane whose pipeline failed. Optional, like OnError.
+	OnLog func(string)
+	// our volume element inside pb's audio path (audioFilter): the app's gain
+	// and mute live here, never on the server's stream volume
+	gain gst.Element
+	// until is when the scene's hush answer expires: the master-file second
+	// the scene under the line ends at (Hush); 0 for never
+	until float64
+	// whether the last applyVol wrote a gain of nought, so it is said once
+	volZero bool
+	// when the last flushing seek-for-a-rate went out (SetRateNow)
+	rateSeekAt time.Time
 	// the sink's own paintable, kept so that a picture put over the video (an
 	// insert; see ShowStill) can be taken away again
 	video   gdk.Paintabler
@@ -118,15 +131,11 @@ func NewPlayer() (*Player, error) {
 	pic.SetPaintable(paintable)
 	pic.SetContentFit(gtk.ContentFitContain)
 
-	// scaletempo is what makes a rate other than 1 listenable: without it a
-	// stream at half speed drops an octave. It is the same trade atempo makes
-	// in the render (produce_fx.go), so the preview and the finished video sound
-	// like each other. Missing plugin is a worse preview, not a dead one.
-	if tempo := gst.ElementFactoryMake("scaletempo", "tempo"); tempo != nil {
-		pb.SetObjectProperty("audio-filter", tempo)
-	}
+	filter, gain := audioFilter("main")
+	pb.SetObjectProperty("audio-filter", filter)
+	resetStreamVolume(pb)
 
-	p := &Player{pb: pb, Picture: pic, video: paintable, pendStart: -1, pendStop: -1,
+	p := &Player{pb: pb, gain: gain, Picture: pic, video: paintable, pendStart: -1, pendStop: -1,
 		rate: 1, seekRate: 1, fxGain: 1}
 	// born at the volume the sliders say, like every pipeline in the app --
 	// and on the roll it visits when one of them moves
@@ -178,6 +187,73 @@ func NewPlayer() (*Player, error) {
 	return p, nil
 }
 
+// audioFilter is the audio path every pipeline here plays through: scaletempo,
+// then a volume element of our own. It returns the bin for playbin's
+// audio-filter and the volume element, which is where the app's gain and mute
+// go from now on.
+//
+// They used to go on playbin's own volume and mute properties, and those are
+// not a gain inside the pipeline: with a pulse or pipewire sink they are the
+// sound server's per-stream volume, and the server REMEMBERS a stream volume
+// per application. So the first time the app wrote a 0 -- a stop with its
+// sound taken out, a volume effect at nought, a hushed lane -- the server
+// stored 0 for "autocut-gui", and restored 0 to every stream the app opened
+// after that, across restarts, until somebody dragged the sliders up in the
+// system mixer. Both autocut streams sat at 0 there, and the app was at a
+// loss to say why, because nothing in it was at 0 any more. A volume element
+// inside the pipeline is heard the same and remembered by nobody.
+//
+// scaletempo is what makes a rate other than 1 listenable: without it a
+// stream at half speed drops an octave. It is the same trade atempo makes in
+// the render (produce_fx.go), so the preview and the finished video sound
+// like each other. A missing plugin is a worse preview, not a dead one: the
+// bin is built from whatever of the two exists.
+func audioFilter(name string) (filter, gain gst.Element) {
+	gain = gst.ElementFactoryMake("volume", name+"gain")
+	tempo := gst.ElementFactoryMake("scaletempo", name+"tempo")
+	bin, ok := gst.NewBin(name + "afilter").(gst.Bin)
+	if !ok || gain == nil {
+		return tempo, nil
+	}
+	var first, last gst.Element
+	if tempo != nil {
+		bin.Add(tempo)
+		bin.Add(gain)
+		tempo.Link(gain)
+		first, last = tempo, gain
+	} else {
+		bin.Add(gain)
+		first, last = gain, gain
+	}
+	sink := gst.NewGhostPad("sink", first.GetStaticPad("sink"))
+	src := gst.NewGhostPad("src", last.GetStaticPad("src"))
+	sink.SetActive(true)
+	src.SetActive(true)
+	bin.AddPad(sink)
+	bin.AddPad(src)
+	return bin, gain
+}
+
+// resetStreamVolume is the one write to playbin's own volume and mute, made
+// once when the pipeline is built: full and unmuted, which the sound server
+// stores in place of whatever it had remembered for this app (audioFilter).
+func resetStreamVolume(pb gst.Element) {
+	pb.SetObjectProperty("volume", 1.0)
+	pb.SetObjectProperty("mute", false)
+}
+
+// setGain writes a gain, or a mute, onto our own volume element -- or, on a
+// machine with no volume plugin, onto playbin's, which is the old behaviour
+// and the old fault, kept over silence.
+func setGain(gain, pb gst.Element, vol float64, mute bool) {
+	el := gain
+	if el == nil {
+		el = pb
+	}
+	el.SetObjectProperty("volume", vol)
+	el.SetObjectProperty("mute", mute)
+}
+
 // fileURI is how a path is handed to playbin, and it is not "file://"+path --
 // which is what this was, and what a file could be lost behind. A path is
 // bytes; a uri is text with punctuation, and the two disagree about '#'.
@@ -224,7 +300,7 @@ func (p *Player) PlaySegment(file string, start, stop float64, play bool) {
 	p.pb.SetState(gst.StatePaused)
 	p.setPlaying(false)
 	for _, a := range p.mix {
-		a.cue(start, play, p.rate)
+		a.cue(start, play, p.rate, p.stopFor(a))
 	}
 }
 
@@ -277,10 +353,16 @@ func (p *Player) ShowVideo() {
 // clock, so they stay together for as long as anyone watches a preview; this is
 // a monitor mix, and the render still does its own arithmetic (clipMixes).
 type auxAudio struct {
-	pb gst.Element
+	pb   gst.Element
+	gain gst.Element // our volume element inside pb's audio path (audioFilter)
 	// the lane's name, which is how a scene names the lanes it does not hear
 	// (cutSeg.Quiet). Empty for a card's own sound, which no scene silences.
 	base string
+	// the file's seconds this lane covers: a recording is its whole file, a
+	// cut lane is a window into one (tlAudio.off), and a further track of the
+	// capture is the capture's own span. A seek outside [lo, hi] is silence,
+	// not the wrong minute played quietly under the picture.
+	lo, hi float64
 	// the scene under the playhead does not hear this lane. Not merely
 	// turned down: a hushed lane is never cued, never seeked and never set
 	// to PLAYING (audible), so there is no sample of it to be heard early.
@@ -289,9 +371,19 @@ type auxAudio struct {
 	// what to add to a time in the master's file to get the same instant in
 	// this one: (master's session start) - (this recording's session start).
 	delta float64
-	dur   float64 // so a seek past its end is simply not played
-	pend  int64   // nanoseconds; < 0 = nothing pending
+	pend  int64 // nanoseconds; < 0 = nothing pending
 	play  bool
+	// live is a pipeline that has prerolled and not been sent below PAUSED
+	// since: one that can be seeked in place. A lane in READY or NULL has to
+	// preroll first and seek when that lands (cue, landed).
+	live bool
+	// stopAt is the second of this file the running seek stops at -- the end
+	// of the scene under the line, in this lane's clock (Player.until) -- or
+	// 0 for no stop. The stop is GStreamer's, sample-accurate, which is what
+	// a timer-driven hush could never be: the lane fell silent up to a tick
+	// after the boundary, and a tick is a tenth of a second of the next
+	// scene's sound.
+	stopAt float64
 	// the master's rate, copied here at every seek: this pipeline's deferred
 	// seek fires from a bus callback that has no player to ask
 	rate float64
@@ -303,7 +395,14 @@ type mixTrack struct {
 	base  string
 	path  string
 	delta float64
-	dur   float64
+	// the window of the file this lane is: the seconds of it between lo and
+	// hi are what session time maps onto (tlAudio.off, tlAudio.dur)
+	lo, hi float64
+	// which audio stream of the file, a:N. Above nought this lane is a further
+	// track of a multi-track capture, sharing its path with the footage that
+	// is already playing -- and is the one kind of lane the preview used to
+	// leave out entirely, which is what a badge lit green over silence was.
+	track int
 }
 
 // SetMix replaces the recordings heard under whatever this player shows. The
@@ -315,25 +414,57 @@ func (p *Player) SetMix(tracks []mixTrack) {
 		a.pb.SetState(gst.StateNull)
 	}
 	p.mix = nil
+	var names []string
 	for i, t := range tracks {
-		a := newAux(fmt.Sprintf("mix%d", i), t, p.vol())
+		a := newAux(fmt.Sprintf("mix%d", i), t, p.vol(), p.laneErr(t.base))
 		if a == nil {
-			return
+			// one lane GStreamer would not build is one lane, not the rest of
+			// the mix and not the hush below it
+			p.say("!!! preview: could not build a pipeline for " + t.base)
+			continue
 		}
 		p.mix = append(p.mix, a)
+		names = append(names, t.base)
+		p.say(fmt.Sprintf(">>> preview: lane %s is file seconds %.1f-%.1f, master second + %.1f, track %d",
+			t.base, t.lo, t.hi, t.delta, t.track))
+	}
+	// said once per file, because a lane that is missing from this line is
+	// the answer to "why can I not hear it" and there is no other way to see
+	// which recordings the preview is mixing
+	if len(names) > 0 {
+		p.say(">>> preview: mixing " + strings.Join(names, ", ") + " under the footage")
 	}
 	// after the loop, so a lane the scene already silences is born silent
 	// rather than saying its first ten milliseconds out loud
 	p.applyMute()
 }
 
+// say puts a line in the app's log, when there is one to put it in. The
+// player is built before the window is, so the hook is optional.
+func (p *Player) say(s string) {
+	if p.OnLog != nil {
+		p.OnLog(s)
+	}
+}
+
+// laneErr is what a mix lane's pipeline does with an error: name the lane and
+// say it. A lane whose file will not decode, or whose sink cannot open the
+// device a second time, used to fail without a word -- indistinguishable, on
+// the page, from a lane that was playing.
+func (p *Player) laneErr(base string) func(string) {
+	return func(m string) { p.say("!!! preview: " + base + " will not play — " + m) }
+}
+
 // newAux builds one audio-only pipeline for a file and the bus watch that does
 // its seeking. nil when GStreamer will not give us a playbin, which is the one
 // failure a caller can do nothing about.
-func newAux(name string, t mixTrack, vol float64) *auxAudio {
-	// playbin3 with no video sink of its own would put up a window; a fake
-	// one is how "audio only" is spelled without touching flags
-	pb := gst.ElementFactoryMake("playbin3", name)
+func newAux(name string, t mixTrack, vol float64, onErr func(string)) *auxAudio {
+	// playbin, not playbin3: a lane may be the second track of the capture,
+	// and playbin's current-audio is the one property that picks a track by
+	// number. playbin3 selects streams by id, which is a query and a callback
+	// for what is one integer here. With no video sink of its own it would put
+	// up a window; a fake one is how "audio only" is spelled without flags.
+	pb := gst.ElementFactoryMake("playbin", name)
 	if pb == nil {
 		return nil
 	}
@@ -341,27 +472,52 @@ func newAux(name string, t mixTrack, vol float64) *auxAudio {
 		pb.SetObjectProperty("video-sink", fake)
 	}
 	pb.SetObjectProperty("uri", fileURI(t.path))
+	if t.track > 0 {
+		pb.SetObjectProperty("current-audio", t.track)
+	}
+	filter, gain := audioFilter(name)
+	pb.SetObjectProperty("audio-filter", filter)
+	resetStreamVolume(pb)
+	a := &auxAudio{pb: pb, gain: gain, base: t.base, delta: t.delta, lo: t.lo, hi: t.hi, pend: -1, rate: 1}
 	// born at the loudness its player is already running at, which is the
 	// slider and any volume effect under the playhead together (Player.vol)
-	pb.SetObjectProperty("volume", vol)
-	a := &auxAudio{pb: pb, base: t.base, delta: t.delta, dur: t.dur, pend: -1, rate: 1}
+	setGain(a.gain, pb, vol, false)
 	bus := pb.GetBus()
 	bus.AddSignalWatch()
 	bus.ConnectMessage(func(_ gst.Bus, msg *gst.Message) {
-		if msg.Type() != gst.MessageAsyncDone || a.pend < 0 {
-			return
-		}
-		at := a.pend
-		a.pend = -1
-		a.pb.Seek(a.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
-			gst.SeekTypeSet, at, gst.SeekTypeNone, 0)
-		// the hush may have landed while this preroll was in flight, and
-		// this callback is the one thing that would start the lane after it
-		if a.play && !a.mute {
-			a.pb.SetState(gst.StatePlaying)
+		switch msg.Type() {
+		case gst.MessageError:
+			e, _ := msg.ParseError()
+			a.pend = -1
+			if onErr != nil {
+				onErr(fmt.Sprint(e))
+			}
+		case gst.MessageAsyncDone:
+			a.landed()
 		}
 	})
 	return a
+}
+
+// landed is the deferred seek: the preroll a cue asked for has finished, so
+// the lane can be put at its second and, if the transport is running and the
+// scene hears it, let go. From the bus after an AsyncDone, and from cue itself
+// when the state change was not asynchronous at all -- a pipeline already in
+// PAUSED answers a request for PAUSED at once and posts no AsyncDone, and a
+// cue that waited for one there waited forever, with the lane standing silent
+// at its old second under a picture that had moved on.
+func (a *auxAudio) landed() {
+	if a.pend < 0 {
+		return
+	}
+	at := a.pend
+	a.pend, a.live = -1, true
+	a.seekTo(float64(at) / 1e9)
+	// the hush may have landed while this preroll was in flight, and
+	// this callback is the one thing that would start the lane after it
+	if a.play && !a.mute {
+		a.pb.SetState(gst.StatePlaying)
+	}
 }
 
 // The preview's loudness, one number for the whole app. Package state rather
@@ -472,12 +628,20 @@ func (p *Player) vol() float64 {
 // travel still lands inside what the property will take.
 func (p *Player) applyVol() {
 	v := p.vol()
-	p.pb.SetObjectProperty("volume", v)
+	if (v == 0) != p.volZero {
+		p.volZero = v == 0
+		if p.volZero {
+			p.say(fmt.Sprintf(">>> preview: silent -- the slider is at %.2f and the volume effect under the line at %.2f", previewVol, p.fxGain))
+		} else {
+			p.say(">>> preview: sound is back")
+		}
+	}
+	setGain(p.gain, p.pb, v, p.ownMute)
 	for _, a := range p.mix {
-		a.pb.SetObjectProperty("volume", v)
+		setGain(a.gain, a.pb, v, a.mute)
 	}
 	if p.card != nil {
-		p.card.pb.SetObjectProperty("volume", v)
+		setGain(p.card.gain, p.card.pb, v, false)
 	}
 }
 
@@ -507,9 +671,24 @@ func (p *Player) SetMuted(v bool) {
 // Without this the badge was a control over the render alone: the lane went
 // grey, the wash went grey, and the preview went on playing it, so the one
 // place the choice could be checked by ear disagreed with the finished video.
-func (p *Player) Hush(own bool, quiet []string) {
-	p.hushOwn, p.hush = own, hushSet(quiet)
+//
+// until is when this answer expires: the master-file second at which the
+// scene under the line ends, or the next scene begins -- 0 for never. A lane
+// started under this answer is seeked with a stop there (stopFor), so it
+// falls silent exactly at the boundary rather than a tick after it; the
+// tick then places it again under the next scene's answer (applyMute).
+func (p *Player) Hush(own bool, quiet []string, until float64) {
+	p.hushOwn, p.hush, p.until = own, hushSet(quiet), until
 	p.applyMute()
+}
+
+// stopFor is where a lane's running seek stops, in the lane's own clock, or
+// 0 for no stop.
+func (p *Player) stopFor(a *auxAudio) float64 {
+	if p.until <= 0 {
+		return 0
+	}
+	return p.until + a.delta
 }
 
 // hushSet turns the scene's list into what the pipelines are checked against.
@@ -556,23 +735,61 @@ func (p *Player) hushes(base string, own bool) bool {
 func (p *Player) applyMute() {
 	if m := p.hushes("", true); m != p.ownMute {
 		p.ownMute = m
-		p.pb.SetObjectProperty("mute", m)
+		setGain(p.gain, p.pb, p.vol(), m)
+		switch {
+		case !m:
+			p.say(">>> preview: the footage's own sound is heard again")
+		case p.muted:
+			p.say(">>> preview: the footage's own sound is muted -- a card or a stop stands over the picture")
+		default:
+			p.say(">>> preview: the footage's own sound is muted -- the scene under the line does not hear it")
+		}
+	}
+	// the master's second, asked once and only when a lane needs it -- a
+	// player with no pipeline (a test's) is never asked
+	pos, havePos, asked := 0.0, false, false
+	where := func() (float64, bool) {
+		if !asked {
+			asked = true
+			if p.pb != nil {
+				pos, havePos = p.Position()
+			}
+		}
+		return pos, havePos
 	}
 	for _, a := range p.mix {
 		m := p.hushes(a.base, false)
 		if m == a.mute {
+			// a lane whose running seek has reached its stop is standing
+			// silent at the boundary it was told about; if the scene now
+			// under the line still hears it, it is placed again, with the
+			// next stop
+			if !m && a.live && a.stopAt > 0 {
+				if pos, ok := where(); ok && pos+a.delta >= a.stopAt-0.05 {
+					p.place(a, pos, p.playing)
+				}
+			}
 			continue
 		}
 		a.mute = m
-		a.pb.SetObjectProperty("mute", m)
+		setGain(a.gain, a.pb, p.vol(), m)
 		if m {
-			a.pend = -1
-			a.pb.SetState(gst.StatePaused)
+			p.say(">>> preview: " + a.base + " silent -- the scene under the line does not hear it")
+		} else {
+			p.say(">>> preview: " + a.base + " heard again")
+		}
+		if m {
+			// READY, not PAUSED: a paused lane still holds a stream at the
+			// sound server, corked, and sits in the system mixer as a second
+			// "autocut-gui" at whatever level -- which is a thing to wonder
+			// about. A lane nobody hears has no stream.
+			a.pend, a.live = -1, false
+			a.pb.SetState(gst.StateReady)
 			continue
 		}
 		// heard again: it has been sitting still wherever it was stopped, so
 		// it is put back on the master's clock before it is let go
-		if pos, ok := p.Position(); ok {
+		if pos, ok := where(); ok {
 			p.place(a, pos, p.playing)
 		}
 	}
@@ -592,7 +809,7 @@ func (p *Player) CardSound(file string, at float64, play bool) {
 		if file == "" {
 			return
 		}
-		a := newAux("cardsound", mixTrack{path: file}, p.vol())
+		a := newAux("cardsound", mixTrack{path: file}, p.vol(), p.laneErr("the card's sound"))
 		if a == nil {
 			return
 		}
@@ -601,7 +818,7 @@ func (p *Player) CardSound(file string, at float64, play bool) {
 	if p.card == nil {
 		return
 	}
-	p.card.cue(at, play, p.rate)
+	p.card.cue(at, play, p.rate, 0)
 }
 
 // dropCard tears the insert's audio pipeline down. Not merely paused: the next
@@ -617,17 +834,52 @@ func (p *Player) dropCard() {
 // lets it run. A time this recording was not running at is silence, and silence
 // is a pipeline left in PAUSED rather than one seeked to its own edge, which
 // would play the wrong minute quietly under the picture.
-func (a *auxAudio) cue(t float64, play bool, rate float64) {
+//
+// stop is the second of this file to stop at, or 0 (Player.stopFor).
+//
+// A lane that is live -- prerolled, in PAUSED or PLAYING -- is seeked in
+// place and set going: no state change on the way, because a PLAYING lane
+// asked for PAUSED answers asynchronously and needs a fresh buffer to
+// preroll on before it says so, and the seek that waited for that came late
+// or not at all -- scene 3 played silent until a badge was pressed twice. A
+// lane below PAUSED has no choice: it prerolls, and seeks when that lands.
+func (a *auxAudio) cue(t float64, play bool, rate float64, stop float64) {
 	at := t + a.delta
 	a.rate = rate // the deferred seek fires with no player in reach
 	if !a.audible(t) {
+		a.pend, a.live = -1, false
+		a.pb.SetState(gst.StateReady)
+		return
+	}
+	a.play, a.stopAt = play, stop
+	if a.live {
 		a.pend = -1
-		a.pb.SetState(gst.StatePaused)
+		a.seekTo(at)
+		if play {
+			a.pb.SetState(gst.StatePlaying)
+		} else {
+			a.pb.SetState(gst.StatePaused)
+		}
 		return
 	}
 	a.pend = int64(at * 1e9)
-	a.play = play
-	a.pb.SetState(gst.StatePaused)
+	// a synchronous answer is a pipeline that was already there: no bus
+	// message is coming, so the seek is made now (see landed)
+	if a.pb.SetState(gst.StatePaused) == gst.StateChangeSuccess {
+		a.landed()
+	}
+}
+
+// seekTo is the lane's flushing seek to its own second, with the stop the
+// scene asked for when there is one ahead of it.
+func (a *auxAudio) seekTo(at float64) {
+	if a.stopAt > at {
+		a.pb.Seek(a.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
+			gst.SeekTypeSet, int64(at*1e9), gst.SeekTypeSet, int64(a.stopAt*1e9))
+		return
+	}
+	a.pb.Seek(a.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
+		gst.SeekTypeSet, int64(at*1e9), gst.SeekTypeNone, 0)
 }
 
 // running says whether this one has something to play at the master's time t,
@@ -635,7 +887,7 @@ func (a *auxAudio) cue(t float64, play bool, rate float64) {
 // stopped when this second happened.
 func (a *auxAudio) running(t float64) bool {
 	at := t + a.delta
-	return at >= 0 && (a.dur <= 0 || at <= a.dur)
+	return at >= a.lo && (a.hi <= a.lo || at <= a.hi)
 }
 
 // audible is whether this lane is to be running at all: it has something at
@@ -724,20 +976,25 @@ func (p *Player) syncMix(play bool) {
 // place that has to know a lane with nothing to play here and a lane the scene
 // does not hear are the same thing to it (audible): both are a pipeline left
 // standing in PAUSED.
+//
+// It goes through cue rather than seeking outright: a lane that was hushed
+// is in READY with no stream (applyMute), and a seek on that is a no-op
+// followed by a start from the file's first second. cue prerolls first and
+// seeks when the preroll lands -- at once, for a lane that was already there.
 func (p *Player) place(a *auxAudio, t float64, play bool) {
 	if !a.audible(t) {
-		a.pend = -1
-		a.pb.SetState(gst.StatePaused)
+		a.pend, a.live = -1, false
+		a.pb.SetState(gst.StateReady)
+		if !a.mute {
+			p.say(fmt.Sprintf(">>> preview: %s has nothing at the master's second %.1f (its file second %.1f is outside %.1f-%.1f)",
+				a.base, t, t+a.delta, a.lo, a.hi))
+		}
 		return
 	}
-	a.pend, a.rate = -1, p.rate
-	a.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
-		gst.SeekTypeSet, int64((t+a.delta)*1e9), gst.SeekTypeNone, 0)
 	if play {
-		a.pb.SetState(gst.StatePlaying)
-	} else {
-		a.pb.SetState(gst.StatePaused)
+		p.say(fmt.Sprintf(">>> preview: %s playing from its second %.1f", a.base, t+a.delta))
 	}
+	a.cue(t, play, p.rate, p.stopFor(a))
 }
 
 // Stop tears the stream down and forgets the file, so the next ▶ is a fresh
@@ -745,7 +1002,7 @@ func (p *Player) place(a *auxAudio, t float64, play bool) {
 func (p *Player) Stop() {
 	p.pb.SetState(gst.StateReady)
 	for _, a := range p.mix {
-		a.pend = -1
+		a.pend, a.live = -1, false
 		a.pb.SetState(gst.StateReady)
 	}
 	p.loaded = ""
@@ -815,56 +1072,43 @@ func (p *Player) SetRate(r float64) bool {
 	return true
 }
 
-// SetRateNow is SetRate for a rate change with no seek on the way to carry it:
-// a speed effect's edge crossing under a running preview. A rate only takes
-// hold at a seek, and the seek-in-place this used to mean -- flush, preroll,
-// decode back up to the frame we were already on -- is a visible stumble, and
-// a speed ramp crosses an edge at every stair, so it stumbled all the way
-// down. GStreamer has a seek built for exactly this: INSTANT_RATE_CHANGE, no
-// flush, no position, the multiplier simply handed downstream. Support for it
-// varies by element, but the call says whether it was taken, so trying costs
-// nothing: the old seek-in-place stays as the fallback, and a preview that
-// stutters at an edge still beats one that silently keeps the old speed.
+// SetRateNow is SetRate for a rate change under a running preview: a speed
+// effect's edge crossing under the line. A rate only takes hold at a seek, so
+// this is a flushing seek to where the stream already is, with the new rate
+// on it -- a small stumble at each edge of an effect.
+//
+// It used to try GStreamer's INSTANT_RATE_CHANGE first, a seek that hands the
+// multiplier downstream with no flush and no stumble. On this stack --
+// playbin3, scaletempo, gtk4paintablesink -- that seek does not return:
+// gst_element_seek with flags 0x400 sat on the GTK thread until the shell
+// offered to kill the window, half a second into every ×4 (hangwatch.go
+// caught it). The stumble is the price of a preview that keeps answering.
+//
+// Held to one seek per rateSeekGap. The preview runs an effect flat
+// (fxPreviewRateAt), so the rate changes twice per effect; the gap is for
+// whatever else asks in a hurry, and inside it the rate is put back so the
+// next tick asks again rather than believing the change was made.
 func (p *Player) SetRateNow(r float64) {
+	was := p.rate
 	if !p.SetRate(r) {
 		return
 	}
 	if !p.playing {
 		return // parked: whatever seek starts the stream again carries it
 	}
-	if p.instantRate() {
+	if time.Since(p.rateSeekAt) < rateSeekGap {
+		p.rate = was
 		return
 	}
+	p.rateSeekAt = time.Now()
 	if pos, ok := p.Position(); ok {
 		p.SeekTo(pos)
 	}
 }
 
-// instantRate hands the stored rate to the running pipelines without moving
-// them, and reports whether the master took it. The mix lanes have to ride the
-// same clock or they drift audibly, so a lane that refuses the instant change
-// gets the old flushing seek-in-place all by itself -- one lane stuttering at
-// an effect's edge, not the picture.
-func (p *Player) instantRate() bool {
-	if !p.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagInstantRateChange,
-		gst.SeekTypeNone, 0, gst.SeekTypeNone, 0) {
-		return false
-	}
-	p.seekRate = p.rate
-	for _, a := range p.mix {
-		if a.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagInstantRateChange,
-			gst.SeekTypeNone, 0, gst.SeekTypeNone, 0) {
-			a.rate = p.rate
-			continue
-		}
-		if pos, ok := p.Position(); ok && a.running(pos) {
-			a.pend, a.rate = -1, p.rate
-			a.pb.Seek(p.rate, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagAccurate,
-				gst.SeekTypeSet, int64((pos+a.delta)*1e9), gst.SeekTypeNone, 0)
-		}
-	}
-	return true
-}
+// rateSeekGap is the least time between two flushing seeks made only to
+// change the rate under a running preview.
+const rateSeekGap = 250 * time.Millisecond
 
 // Position reports the current playback position in seconds.
 func (p *Player) Position() (float64, bool) {

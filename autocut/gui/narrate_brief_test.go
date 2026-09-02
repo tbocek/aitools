@@ -20,8 +20,8 @@ import (
 )
 
 // Both shapes this app writes, read by the one function. Four columns is a
-// single recording (step1/<base>/transcript.tsv), five is the merged session
-// timeline with the recording's name in between (step2/transcript/session.tsv).
+// single recording (inputs/<base>/transcript.tsv), five is the merged session
+// timeline with the recording's name in between (understand/transcript/session.tsv).
 func TestLoadTSVRowsReadsBothTimelineShapes(t *testing.T) {
 	dir := t.TempDir()
 	four := filepath.Join(dir, "transcript.tsv")
@@ -284,8 +284,10 @@ func TestOneBoxCarriesEmotionAndWords(t *testing.T) {
 func TestTheEmotionBasisIsTaught(t *testing.T) {
 	for _, base := range []string{"happy", "angry", "sad", "afraid",
 		"disgusted", "melancholic", "surprised", "calm"} {
-		if !strings.Contains(narrSystem, base) {
-			t.Errorf("the prompt no longer names the base emotion %q", base)
+		// taught in the system context, under narrate's answer, as the TTS's
+		// own vocabulary rather than the wording's taste
+		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+narrSystem, base) {
+			t.Errorf("the model is never told the base emotion %q", base)
 		}
 		found := false
 		for _, s := range steps {
@@ -518,7 +520,7 @@ func TestTheLineLandsWhereTheWriterPutIt(t *testing.T) {
 		"like and subscribe",   // the sign-off exists
 		"near that clip's end", // ...and sits at the end, not the head, of the last clip
 	} {
-		if !strings.Contains(narrSystem, want) {
+		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+narrSystem, want) {
 			t.Errorf("the prompt no longer says %q", want)
 		}
 	}

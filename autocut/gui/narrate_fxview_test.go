@@ -68,7 +68,7 @@ func TestTheNarratePreviewIsMixedLikeTheRender(t *testing.T) {
 		"p.SetMuted(freezeHush(ed.fx, n.pos)", // a stop that silences
 		"ed.cutVideoAt(n.pos)",                // asked about the scene's camera, not the watched row
 		"s := n.heardScene(n.pos)",            // ...and about the scene whose sound is sounding
-		"p.Hush(hushOf(s, base))",             // a lane that scene silences
+		"p.Hush(own, quiet, until)",           // a lane that scene silences
 		"cardHush(overInsert(",                // and a card that has taken these seconds' sound
 	} {
 		if !strings.Contains(sound, want) {
@@ -90,7 +90,7 @@ func TestTheNarratePreviewIsMixedLikeTheRender(t *testing.T) {
 	// at the speed the render will use, on BOTH of cue's paths -- a rate only
 	// takes hold at a seek, and cue has two of them (a seek inside the file
 	// already loaded, and a fresh PlaySegment)
-	if n := strings.Count(src, "SetRate(fxRateAt(ed.fx, t))"); n < 2 {
+	if n := strings.Count(src, "SetRate(fxPreviewRateAt(ed.fx, t))"); n < 2 {
 		t.Errorf("only %d of cue's two seek paths sets the speed", n)
 	}
 	// the old answer is gone: videoAt here is the Cut page leaking into this one

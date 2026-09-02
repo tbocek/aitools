@@ -21,7 +21,7 @@ package main
 // The transcript is not required. Every scoring rule below reads zero words
 // when there is none, the density test then admits nothing, and the fallback
 // is the ranking this had before -- longest first, which is what a project
-// with no step1 transcript still deserves.
+// with no inputs/ transcript still deserves.
 
 import (
 	"sort"

@@ -48,7 +48,8 @@ func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
 	// and the other three share fxRules, but the reply shape is one shape --
 	// suggestParse reads it without knowing which wording asked.
 	for _, s := range a.promptStyleList("cut") {
-		if !strings.Contains(s.Text, `"fx":[`) {
+		sent := strings.TrimSpace(sysSystem) + "\n\n" + s.Text
+		if !strings.Contains(sent, `"fx":[`) {
 			t.Errorf("cut style %q no longer asks for effects in its reply", s.Name)
 			continue
 		}
@@ -56,7 +57,7 @@ func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
 			`"kind":"zoom"`, `"kind":"speed"`, `"kind":"text"`,
 			"inside one of your segments",
 		} {
-			if !strings.Contains(s.Text, want) {
+			if !strings.Contains(sent, want) {
 				t.Errorf("the %q prompt does not say %q", s.Name, want)
 			}
 		}
@@ -73,19 +74,21 @@ func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
 	}
 	// what the user wrote about the session directs the effects too, not just
 	// the choosing: "speed the boring parts up and show them" is an
-	// instruction about which seconds are cut as much as about the decoration
+	// instruction about which seconds are cut as much as about the decoration.
+	// A rule about the notes, so the system context's (every cut is sent
+	// behind it), and not the effects wording's
 	for _, want := range []string{
-		"ABOUT THIS SESSION",
+		"caption each thing as it is named",
 		"It decides segments too",
 	} {
-		if !strings.Contains(fxRules, want) {
-			t.Errorf("the shared effects wording does not say %q, so the session notes "+
+		if !strings.Contains(sysSystem, want) {
+			t.Errorf("the system context does not say %q, so the session notes "+
 				"cannot ask for a dull stretch to be kept at speed", want)
 		}
 	}
 	// ...and the audit is told to read them back: one fxcheck per effect,
 	// held inside the segments as corrected
-	audP := a.prompt("audit")
+	audP := a.sysPrompt("audit")
 	for _, want := range []string{`"fxchecks":[`, "inside one of the segments"} {
 		if !strings.Contains(audP, want) {
 			t.Errorf("the audit prompt does not say %q", want)

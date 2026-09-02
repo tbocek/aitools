@@ -184,33 +184,25 @@ func (a *App) suggestClicked() {
 // about what mattered in a session reach the audit anyway. What is worth
 // editing here is how suspicious the audit is -- how readily it drops, how far
 // it will extend an end.
-const auditSystem = `You are checking a proposed highlight cut against the brief it was made from, before anyone watches it. You did not choose these moments; your job is to find where they are wrong.
+const auditSystem = `You are checking a proposed cut against the brief it was made from, before anyone watches it. You did not choose these moments; your job is to find where they are wrong.
 
-You get the brief, the target length, the session timeline and the proposed segments.
+Answer in the audit's shape. drop is for a stretch where nothing happens or that repeats another segment, and sparingly; add is where most of your value is. An effect follows the segment you moved it with, and goes with a segment you dropped.
 
-Return strict JSON, nothing else:
-{"checks":[{"i":<number>,"verdict":"ok","start":<sec>,"end":<sec>,"why":"<short>"}],"add":[{"start":<sec>,"end":<sec>,"why":"<short>"}],"fxchecks":[{"i":<number>,"verdict":"ok","start":<sec>,"end":<sec>,"why":"<short>"}]}
+For each segment, ask in this order.
 
-- One check per proposed segment, all of them, in order, under the numbers you were given.
-- "ok" leaves it exactly as it is: repeat the start and end you were given, leave why empty.
-- "fix" keeps the moment and corrects its boundaries: give the new start and end, and say briefly what was wrong.
-- "drop" takes it out. Use it sparingly, for a stretch where nothing happens or that repeats another segment.
-- add is what is missing. This is where most of your value is.
-- The proposal may also list effects -- punch-ins, captions, speed changes, held frames, volume changes -- decorating the cut. One fxcheck per effect, same verdicts: an effect must lie inside one of the segments as you corrected them. Fix one that should follow a segment you moved; drop one whose segment you dropped or that no segment contains. No effects proposed means no fxchecks.
+1. Does it run to its payoff? Read the timeline past its end: if the thing it is about is still being argued, opened or decided, or gets its reaction after the end, extend past the last line that belongs to the moment. This is the commonest fault.
+2. Does it start early enough to make sense on its own? Move the start back to where the setup begins.
+3. Is either boundary in the middle of a sentence? Move it into the gap between two lines.
+4. Is the thing it is about on screen -- does an EVENT line inside it show it?
 
-What to check, hardest first.
+Then for the whole cut.
 
-- Every moment the brief's ABOUT THIS SESSION notes name must be in the cut. Add it if missing; fix a segment that stops short of it.
-- Does each segment run to its payoff? Read the timeline past its end: if the thing it is about is still being argued, opened or decided, or gets its reaction after the end, extend past the last line that belongs to the moment. This is the commonest fault.
-- Does each segment start early enough to make sense on its own? Move the start back to where the setup begins.
-- Move any boundary out of the middle of a sentence, into the gap between two lines.
-- The first segment must establish what the session is.
+5. Every moment the ABOUT THIS SESSION notes name must be in the cut. Add it if missing; fix a segment that stops short of it.
+6. The first segment must establish what the session is.
+7. After your corrections the segments must still be in order and must not overlap. If extending one runs into the next, extend it and drop the next, saying so.
+8. Keep the total near the target: pay for additions by dropping the weakest segments.
 
-Hard rules.
-
-- After your corrections the segments must still be in order and must not overlap. If extending one runs into the next, extend it and drop the next, saying so.
-- Keep the total near the target: pay for additions by dropping the weakest segments.
-- When a segment is right, say ok. A change for its own sake is worse than no check at all.`
+When a segment is right, say ok. A change for its own sake is worse than no check at all.`
 
 // auditCut is the second read of a suggestion, against the brief that produced
 // it. The first call chooses moments from thousands of timeline lines at once;
@@ -604,6 +596,8 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 	system := a.sysPrompt("cut")
 	user := a.ctxBlock() + fmt.Sprintf("TARGET LENGTH: %.0f seconds.\n\nSESSION TIMELINE:\n%s", target, session)
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
+	// the web, for a caption that names a thing the timeline does not explain
+	tools, ffx := a.webToolsFor("suggest")
 	// The bar, while a call that takes minutes runs: segments counted as they
 	// close, placed by where in the session they land (see jsonItemsDone).
 	// Only ever forward -- a rejected attempt starts the count again, and a bar
@@ -637,7 +631,7 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 		if err := a.checkpoint(); err != nil {
 			return nil, nil, err
 		}
-		reply, err := a.llmChatRetryOn("suggest", msgs, true, onText)
+		reply, err := a.llmChatRetryTools("suggest", msgs, true, tools, a.webRunner("suggest", ffx), onText)
 		if err != nil {
 			return nil, nil, err
 		}

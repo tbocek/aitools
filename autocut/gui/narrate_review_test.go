@@ -20,12 +20,12 @@ func TestAConcatListSurvivesAnApostropheInThePath(t *testing.T) {
 	if got, want := concatLine("/mnt/rec/plain/a.wav"), "file '/mnt/rec/plain/a.wav'\n"; got != want {
 		t.Errorf("an ordinary path should be written as it is: %q", got)
 	}
-	got := concatLine("/mnt/rec/tom's cut.autocut.data/step4/.ref0.wav")
+	got := concatLine("/mnt/rec/tom's cut.autocut.data/narrate/.ref0.wav")
 	if want := `file '/mnt/rec/tom'\'')s cut`; strings.Contains(got, want) {
 		t.Fatalf("nonsense guard tripped: %q", got)
 	}
 	// close, an escaped quote, open again -- what ffmpeg's own parser undoes
-	if want := "file '/mnt/rec/tom'\\''s cut.autocut.data/step4/.ref0.wav'\n"; got != want {
+	if want := "file '/mnt/rec/tom'\\''s cut.autocut.data/narrate/.ref0.wav'\n"; got != want {
 		t.Errorf("escaped as\n %q\nwant\n %q", got, want)
 	}
 	if strings.Count(got, "'") != 5 { // two around the path, three in the escape

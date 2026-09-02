@@ -285,15 +285,15 @@ func TestSavingUnderANewNameTakesTheWorkWithIt(t *testing.T) {
 		t.Errorf("an empty %s was moved to %s", from, to)
 	}
 
-	if err := os.MkdirAll(filepath.Join(from, "step1"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(from, "inputs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	frame := filepath.Join(from, "step1", "0001.jpg")
+	frame := filepath.Join(from, "inputs", "0001.jpg")
 	if err := os.WriteFile(frame, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	a.moveOutputs(from, to)
-	if !exists(filepath.Join(to, "step1", "0001.jpg")) {
+	if !exists(filepath.Join(to, "inputs", "0001.jpg")) {
 		t.Errorf("the work did not follow the project to %s", to)
 	}
 	if exists(from) {
@@ -418,17 +418,15 @@ func TestClosingTheWindowWritesWhatTheTickHasNotSeen(t *testing.T) {
 	}
 }
 
-// Narrate writes step4/ and nothing else, and no test writes into the live
-// session. Both halves of "there is a step5/ folder and I never opened
+// Narrate writes narrate/ and nothing else, and no test writes into the live
+// session. Both halves of "there is a produce/ folder and I never opened
 // Produce": the renumbering that made Narrate the fourth step left the old name in
 // places that read either way, and the render smoke test rendered a smoke.mp4
 // straight into the user's own out/test/step5 on every `go test ./...`,
 // clearing its clips on the way past.
 //
-// The folders kept their stepN names when the files and the pages lost theirs
-// -- renaming a folder orphans every project already on disk -- so this is
-// about the string "step5" and not about the word Produce, which is now the
-// ordinary name of a great many things.
+// The folder is produce/ now, and Produce is the ordinary name of a great many
+// things, so what is banned is the folder's helper and the literal path.
 func TestOnlyProduceWritesTheProduceFolder(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -443,10 +441,10 @@ func TestOnlyProduceWritesTheProduceFolder(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(b), "produceDir()") {
-			t.Errorf("%s names produceDir() -- a step5/ folder now appears for a user who never opened Produce", f)
+			t.Errorf("%s names produceDir() -- a produce/ folder now appears for a user who never opened Produce", f)
 		}
-		if strings.Contains(string(b), `"step5"`) {
-			t.Errorf("%s names the step5 folder literally", f)
+		if strings.Contains(string(b), `filepath.Join(a.outDir, "produce")`) {
+			t.Errorf("%s names the produce folder literally", f)
 		}
 	}
 	// ...the narration's own files are all under step4...
@@ -454,8 +452,8 @@ func TestOnlyProduceWritesTheProduceFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), "step5") {
-		t.Error("narrate.go still writes into step5 -- the narration used to go there")
+	if strings.Contains(string(b), `filepath.Join(a.outDir, "produce")`) {
+		t.Error("narrate.go still writes into produce/ -- the narration used to go there")
 	}
 	// ...and the one test that renders for real reads the session but writes
 	// into its own folder. A test that leaves files in someone's project is a

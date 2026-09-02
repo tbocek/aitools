@@ -37,8 +37,8 @@ func TestTheVolumeReachesEveryPipeline(t *testing.T) {
 		// every pipeline is born at the loudness its player already runs at:
 		// the master in NewPlayer, and every aux (a recording under the
 		// footage, an insert's own sound) at newAux's vol argument
-		"pb.SetObjectProperty(\"volume\", vol)",
-		"newAux(fmt.Sprintf(\"mix%d\", i), t, p.vol())",
+		"setGain(a.gain, pb, vol, false)",
+		"newAux(fmt.Sprintf(\"mix%d\", i), t, p.vol(), p.laneErr(t.base))",
 		"allPlayers = append(allPlayers, p)",
 		// ...and a turn of the dial visits the live ones, mixes and card
 		// included -- a slider that only reached the footage would rebalance
@@ -175,5 +175,42 @@ func TestTheVolumeEffectIsHeardInThePreview(t *testing.T) {
 		t.Errorf("syncPlayGain is called %d times, want 2: the tick, which follows a "+
 			"playing line across a band, and setPlayhead, which is every seek and "+
 			"every scrub", n)
+	}
+}
+
+// The app's gain and mute are a volume element inside the pipeline, never
+// playbin's own properties. Those are the sound server's per-stream volume
+// with a pulse or pipewire sink, and the server remembers a stream volume per
+// application: the first 0 the app ever wrote -- a stop, a nought gain, a
+// hush -- was restored to every stream it opened afterwards, across restarts,
+// and both autocut streams sat at 0 in the system mixer with nothing in the
+// app at 0 any more. So playbin's volume and mute are written exactly once
+// each, full and unmuted, when the pipeline is built (resetStreamVolume) --
+// which overwrites what the server remembered -- and in setGain's fallback
+// for a machine with no volume plugin. Nowhere else.
+func TestTheGainNeverTouchesTheServersStreamVolume(t *testing.T) {
+	src := readSrc(t, "player.go")
+	for _, prop := range []string{`SetObjectProperty("volume"`, `SetObjectProperty("mute"`} {
+		if n := strings.Count(src, prop); n != 2 {
+			t.Errorf("player.go writes %s %d times, want 2: once in resetStreamVolume and once in setGain", prop, n)
+		}
+	}
+	reset := funcBody(t, "player.go", `func resetStreamVolume\(`)
+	if !strings.Contains(reset, `"volume", 1.0`) || !strings.Contains(reset, `"mute", false`) {
+		t.Errorf("resetStreamVolume does not put the stream back to full and unmuted:\n%s", reset)
+	}
+	// every pipeline goes through it as it is built
+	for _, fn := range []string{`func NewPlayer\(`, `func newAux\(`} {
+		b := funcBody(t, "player.go", fn)
+		if !strings.Contains(b, "audioFilter(") || !strings.Contains(b, "resetStreamVolume(pb)") {
+			t.Errorf("%s does not build the shared audio path and reset the stream volume:\n%s", fn, b)
+		}
+	}
+	// and the filter is scaletempo then our volume, ghosted into one bin
+	af := funcBody(t, "player.go", `func audioFilter\(`)
+	for _, want := range []string{`ElementFactoryMake("volume"`, "tempo.Link(gain)", `NewGhostPad("sink"`, `NewGhostPad("src"`} {
+		if !strings.Contains(af, want) {
+			t.Errorf("audioFilter no longer contains %q", want)
+		}
 	}
 }

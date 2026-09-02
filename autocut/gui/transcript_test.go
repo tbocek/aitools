@@ -2,7 +2,7 @@ package main
 
 // Drives the step-3 pipeline directly, without the GUI, against the real
 // project data. Doubles as diagnosis (a crash here explains a dead button)
-// and as the actual run (its outputs are the real step2/transcript/ artifacts).
+// and as the actual run (its outputs are the real understand/transcript/ artifacts).
 //
 // It sends every ASR block to the configured LLM, so it is off by default --
 // a test suite that quietly bills a remote server is not a test suite:

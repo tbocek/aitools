@@ -414,10 +414,10 @@ func TestTestAllIsEveryTestOnce(t *testing.T) {
 			t.Errorf("setup.go does not contain %q", want)
 		}
 	}
-	// one registration per Test button: nine rows have one, and Fetch models
+	// one registration per Test button: ten rows have one, and Fetch models
 	// is not a test and must not be swept into a run against a typed-half URL
-	if got := strings.Count(src, "hook(test"); got != 9 {
-		t.Errorf("setup.go hooks %d test buttons, want 9 — if a row was added, "+
+	if got := strings.Count(src, "hook(test"); got != 10 {
+		t.Errorf("setup.go hooks %d test buttons, want 10 — if a row was added, "+
 			"check its Test joined runAll (it does if it went through hook)", got)
 	}
 	// left of the spring, Cancel and Save right of it: the sweep sits apart

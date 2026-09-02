@@ -168,8 +168,8 @@ func TestThePreviewPlaysTheRecordingsUnderTheFootage(t *testing.T) {
 	got := ed.mixUnder(&v)
 	want := []mixTrack{
 		// named, because the scene that silences a lane names it (cut_hush_test.go)
-		{base: "mic", path: "/x/mic.wav", delta: 90, dur: 300},
-		{base: "late", path: "/x/late.wav", delta: -30, dur: 100},
+		{base: "mic", path: "/x/mic.wav", delta: 90, hi: 300},
+		{base: "late", path: "/x/late.wav", delta: -30, hi: 100},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("%d recording(s) go under the footage, want %d: %+v", len(got), len(want), got)
@@ -182,8 +182,8 @@ func TestThePreviewPlaysTheRecordingsUnderTheFootage(t *testing.T) {
 
 	// and the offsets mean what they say: at the head of the footage the mic is
 	// 90 s into itself, and the one that started 30 s later is not playing yet
-	mic := &auxAudio{delta: 90, dur: 300}
-	late := &auxAudio{delta: -30, dur: 100}
+	mic := &auxAudio{delta: 90, hi: 300}
+	late := &auxAudio{delta: -30, hi: 100}
 	if !mic.running(0) || !mic.running(60) {
 		t.Error("the mic was recording throughout and the preview would not play it")
 	}
@@ -198,5 +198,50 @@ func TestThePreviewPlaysTheRecordingsUnderTheFootage(t *testing.T) {
 	// second again
 	if late.running(140) {
 		t.Error("a recording that had already stopped would still be played")
+	}
+}
+
+// The three ways a lane came to be silent while its badge was green, pinned
+// as arithmetic: a further track of the capture is in the mix and knows its
+// track; a cut lane's delta carries its window's offset; and running is asked
+// against the window, not against second nought of the file.
+func TestEveryLaneTheBadgeShowsIsInThePreviewMix(t *testing.T) {
+	v := &tlVideo{base: "cap", path: "/r/cap.mkv", start: 100, dur: 600}
+	ed := &cutEditor{auds: []tlAudio{
+		{base: "cap", path: "/r/cap.mkv", start: 100, dur: 600, master: true},
+		{base: "cap #2", path: "/r/cap.mkv", start: 100, dur: 600, track: 1},
+		{base: "mic", path: "/r/mic.wav", start: 90, dur: 700},
+		// a cut lane: a window opening 30 s into a file, put at session 400
+		{base: "lane", path: "/r/other.mkv", start: 400, off: 30, dur: 60},
+	}}
+	got := ed.mixUnder(v)
+	want := map[string]mixTrack{
+		"cap #2": {base: "cap #2", path: "/r/cap.mkv", delta: 0, lo: 0, hi: 600, track: 1},
+		"mic":    {base: "mic", path: "/r/mic.wav", delta: 10, lo: 0, hi: 700},
+		"lane":   {base: "lane", path: "/r/other.mkv", delta: 100 - 400 + 30, lo: 30, hi: 90},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("the mix is %+v, want the second track, the mic and the cut lane", got)
+	}
+	for _, m := range got {
+		if w, ok := want[m.base]; !ok || m != w {
+			t.Errorf("lane %s came out %+v, want %+v", m.base, m, w)
+		}
+	}
+	// the master's file second 0 is session 100; the cut lane's window runs
+	// session 400-460, which is its file's 30-90
+	lane := &auxAudio{delta: want["lane"].delta, lo: 30, hi: 90}
+	for _, c := range []struct {
+		masterSec float64
+		want      bool
+	}{{299, false}, {300, true}, {330, true}, {360, true}, {361, false}} {
+		if got := lane.running(c.masterSec); got != c.want {
+			t.Errorf("at the master's second %g the cut lane running = %v, want %v", c.masterSec, got, c.want)
+		}
+	}
+	for _, m := range got {
+		if m.path == v.path && m.track == 0 {
+			t.Errorf("the master track is in the mix as %+v", m)
+		}
 	}
 }

@@ -704,6 +704,38 @@ func rampFits(d, from, to float64, n int) bool {
 	return (d/float64(n))/fast >= rampStep
 }
 
+// fxPreviewRateAt is the rate the PREVIEW runs at session second t: the speed
+// effect covering it at its own rate, ramps and all, or 1. The render follows
+// the ramp's stairs (fxRateAt); the preview does not, and this is why.
+//
+// A rate only takes hold at a seek. When the instant rate change is refused
+// -- which depends on the elements in the pipeline, and is refused on this
+// one -- the seek is a flushing, accurate one: stop the stream, seek, decode
+// from the previous keyframe up to the frame we were on, on the GTK thread.
+// On a 1080p capture that is a few hundred milliseconds. A ramp to ×4 is
+// several stairs over its first second, the tick reads the stair under the
+// line ten times a second, and every stair is a new rate -- so the main loop
+// spent every tick inside a seek, the window stopped answering, and the shell
+// offered to kill it. The picture cannot show a ramp anyway: what it showed
+// was the stutter of building one. So the preview runs the effect's rate from
+// its first second to its last -- one seek in, one seek out -- and the ramp is
+// something the render does.
+//
+// A stop (rate 0) reads as 1 here as it does in fxRateAt: the still is an
+// overlay and the footage runs on under it. Overlapping speeds take the first,
+// where the render averages them (rateSpans): a preview that is one of the two
+// speeds is closer to the truth than one that seeks between them.
+func fxPreviewRateAt(fx []cutFx, t float64) float64 {
+	for _, f := range speedsOf(fx) {
+		if f.frozenFx() || f.Dur <= 0 || t < f.T || t >= f.T+f.Dur {
+			continue
+		}
+		r, _ := clampSpeed(f.Rate, f.Dur)
+		return r
+	}
+	return 1
+}
+
 // fxRateAt is the clock the footage at session time t runs on: what the speed
 // effects covering it ask for between them, ramps included, or 1 where none
 // does. It reads the same stretches applyFx applies, so the preview and the

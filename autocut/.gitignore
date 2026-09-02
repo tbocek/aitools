@@ -6,6 +6,12 @@ llm.conf
 gui/autocut-gui
 gui/gui
 step*/
+inputs/
+understand/
+cut/
+narrate/
+produce/
+publish/
 *.json
 test*
 cache

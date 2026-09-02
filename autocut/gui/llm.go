@@ -5,6 +5,12 @@ package main
 // (alignment, later the cut selection), "execute" with thinking disabled for
 // the high-volume mechanical calls (frame description -- measured 32 s vs 2 s
 // per request on the same prompt).
+//
+// A call may offer tools (llmChatTools): the OpenAI shape, a list of function
+// schemas in the request and tool_calls in the reply, answered with one tool
+// message per call and asked again, until the model answers with words. Every
+// round is its own recorded exchange, so the log shows what the model asked
+// the web and what the web said (websearch.go) as plainly as it shows the cut.
 
 import (
 	"bufio"
@@ -42,6 +48,31 @@ func msg(role string, content any) map[string]any {
 	return map[string]any{"role": role, "content": content}
 }
 
+// toolCall is one call the model made, in the wire's own shape, so it can be
+// echoed back in the assistant turn exactly as it arrived.
+type toolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// chatReply is what one round returns: words, or calls, or both.
+type chatReply struct {
+	Content string
+	Calls   []toolCall
+}
+
+// toolRunner answers one call by name; what it returns is what the model
+// reads as the tool's result.
+type toolRunner func(name string, args json.RawMessage) string
+
+// the most rounds of tool calls one question may take. A model that has not
+// found its words after this many has found a loop instead.
+const toolRounds = 8
+
 // llmChat posts a chat completion; thinking selects the parameter set. step
 // names the caller -- "suggest", "describe" -- and is what the recorded
 // exchange is filed and logged under (recordChatStart in llmlog.go).
@@ -67,6 +98,42 @@ func (a *App) llmChat(step string, msgs []map[string]any, thinking bool) (string
 // preview in the log, because "2 LLM calls ran" was all the log used to say
 // about the step where all the judgment happens.
 func (a *App) llmChatOn(step string, msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
+	rep, err := a.chatRound(step, msgs, thinking, nil, onText)
+	return rep.Content, err
+}
+
+// llmChatTools is llmChatOn with tools on the table. The loop is here and
+// nowhere else: a round that comes back with calls is answered -- the
+// assistant turn echoed with its calls, then one tool message per call, in
+// order -- and the question is put again with all of it in the history, until
+// a round comes back with words alone. Those words are the reply; the rounds
+// before them are in the recorded exchanges.
+func (a *App) llmChatTools(step string, msgs []map[string]any, thinking bool,
+	tools []map[string]any, run toolRunner, onText func(string)) (string, error) {
+	if len(tools) == 0 || run == nil {
+		return a.llmChatOn(step, msgs, thinking, onText)
+	}
+	msgs = append([]map[string]any(nil), msgs...)
+	for round := 0; round < toolRounds; round++ {
+		rep, err := a.chatRound(step, msgs, thinking, tools, onText)
+		if err != nil {
+			return "", err
+		}
+		if len(rep.Calls) == 0 {
+			return rep.Content, nil
+		}
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": rep.Content, "tool_calls": rep.Calls})
+		for _, c := range rep.Calls {
+			msgs = append(msgs, map[string]any{"role": "tool", "tool_call_id": c.ID,
+				"content": run(c.Function.Name, json.RawMessage(c.Function.Arguments))})
+		}
+	}
+	return "", fmt.Errorf("the model was still calling tools after %d rounds", toolRounds)
+}
+
+// chatRound is one request and its recorded exchange.
+func (a *App) chatRound(step string, msgs []map[string]any, thinking bool,
+	tools []map[string]any, onText func(string)) (chatReply, error) {
 	rec := a.recordChatStart(step, thinking, msgs)
 	// tee an existing stream through the live page; a caller with no callback
 	// stays unstreamed (wrapping nil would flip the wire request to streaming)
@@ -75,17 +142,33 @@ func (a *App) llmChatOn(step string, msgs []map[string]any, thinking bool, onTex
 		onText = func(s string) { rec.stream(s); user(s) }
 	}
 	t0 := time.Now()
-	reply, err := a.llmChatPost(step, msgs, thinking, onText)
-	rec.done(reply, time.Since(t0), err)
-	return reply, err
+	rep, err := a.llmChatPost(step, msgs, thinking, tools, onText)
+	rec.done(rep.recorded(), time.Since(t0), err)
+	return rep, err
+}
+
+// recorded is the reply as the exchange log shows it: the words, and after
+// them the calls -- a round that only called a tool is otherwise an empty
+// page in the log.
+func (r chatReply) recorded() string {
+	if len(r.Calls) == 0 {
+		return r.Content
+	}
+	var b strings.Builder
+	b.WriteString(r.Content)
+	for _, c := range r.Calls {
+		fmt.Fprintf(&b, "\n[tool call %s(%s)]", c.Function.Name, c.Function.Arguments)
+	}
+	return b.String()
 }
 
 // llmChatPost is the wire call itself: build the body, post it, read the answer.
 // step names the caller so the watch can say whose call is running (llmstall.go).
-func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
+func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool,
+	tools []map[string]any, onText func(string)) (chatReply, error) {
 	c := a.readConf()
 	if c.Server == "" || c.Model == "" {
-		return "", fmt.Errorf("no LLM configured -- use the gear button")
+		return chatReply{}, fmt.Errorf("no LLM configured -- use the gear button")
 	}
 	body := map[string]any{
 		"model":            c.Model,
@@ -106,12 +189,15 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool, onT
 			"preserve_thinking": true, "enable_thinking": false,
 		}
 	}
+	if len(tools) > 0 {
+		body["tools"] = tools
+	}
 	if onText != nil {
 		body["stream"] = true
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {
-		return "", err
+		return chatReply{}, err
 	}
 	ctx := a.runCtx
 	if ctx == nil {
@@ -128,7 +214,7 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool, onT
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		strings.TrimRight(c.Server, "/")+"/v1/chat/completions", bytes.NewReader(buf))
 	if err != nil {
-		return "", err
+		return chatReply{}, err
 	}
 	bearer(req, c.Key)
 	req.Header.Set("Content-Type", "application/json")
@@ -139,47 +225,53 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool, onT
 	resp, err := client.Do(req)
 	if err != nil {
 		if a.stopFlag.Load() {
-			return "", errStopped
+			return chatReply{}, errStopped
 		}
-		return "", w.blame(err)
+		return chatReply{}, w.blame(err)
 	}
 	defer resp.Body.Close()
 	// only if the server actually streamed: one that ignores the flag, or that
 	// answers an error as plain JSON, falls through to the decode below
 	if onText != nil && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		reply, err := a.readChatStream(w.wrap(resp.Body), onText, w)
-		return reply, w.blame(err)
+		rep, err := a.readChatStream(w.wrap(resp.Body), onText, w)
+		return rep, w.blame(err)
 	}
 	var out struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string     `json:"content"`
+				ToolCalls []toolCall `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 		Error any `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("bad response (%s): %w", resp.Status, err)
+		return chatReply{}, fmt.Errorf("bad response (%s): %w", resp.Status, err)
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("no choices (%s): %v", resp.Status, out.Error)
+		return chatReply{}, fmt.Errorf("no choices (%s): %v", resp.Status, out.Error)
 	}
-	return out.Choices[0].Message.Content, nil
+	return chatReply{Content: out.Choices[0].Message.Content, Calls: out.Choices[0].Message.ToolCalls}, nil
 }
 
 // readChatStream assembles a server-sent-event reply, handing the caller the
 // text so far as each piece lands. Read with a bufio.Reader rather than a
 // Scanner: one event carrying a long chunk is a line of any length, and a
 // Scanner would stop dead at its 64 kB limit halfway through a narration.
-func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (string, error) {
+//
+// A tool call arrives in pieces too -- its name in one delta, its arguments
+// spread over the ones after, each stamped with the call's index -- and is
+// put back together by that index.
+func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (chatReply, error) {
 	br := bufio.NewReader(r)
 	var b strings.Builder
+	var calls []toolCall
 	for {
 		line, err := br.ReadString('\n')
 		if s := strings.TrimSpace(line); strings.HasPrefix(s, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(s, "data:"))
 			if payload == "[DONE]" {
-				return b.String(), nil
+				return chatReply{Content: b.String(), Calls: calls}, nil
 			}
 			var ch struct {
 				Choices []struct {
@@ -195,29 +287,56 @@ func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (st
 						// the progress bar and the recorded page, and both are
 						// about the answer.
 						Reasoning string `json:"reasoning_content"`
+						ToolCalls []struct {
+							Index    int    `json:"index"`
+							ID       string `json:"id"`
+							Type     string `json:"type"`
+							Function struct {
+								Name      string `json:"name"`
+								Arguments string `json:"arguments"`
+							} `json:"function"`
+						} `json:"tool_calls"`
 					} `json:"delta"`
 				} `json:"choices"`
 			}
 			// a chunk that will not parse is a chunk, not the reply: keep reading
 			if json.Unmarshal([]byte(payload), &ch) == nil && len(ch.Choices) > 0 {
-				if d := ch.Choices[0].Delta.Reasoning; d != "" {
-					w.wrote(d, true)
+				d := ch.Choices[0].Delta
+				if d.Reasoning != "" {
+					w.wrote(d.Reasoning, true)
 				}
-				if d := ch.Choices[0].Delta.Content; d != "" {
-					w.wrote(d, false)
-					b.WriteString(d)
+				if d.Content != "" {
+					w.wrote(d.Content, false)
+					b.WriteString(d.Content)
 					onText(b.String())
+				}
+				for _, tc := range d.ToolCalls {
+					for len(calls) <= tc.Index {
+						calls = append(calls, toolCall{})
+					}
+					c := &calls[tc.Index]
+					if tc.ID != "" {
+						c.ID = tc.ID
+					}
+					if tc.Type != "" {
+						c.Type = tc.Type
+					}
+					if tc.Function.Name != "" {
+						c.Function.Name += tc.Function.Name
+					}
+					c.Function.Arguments += tc.Function.Arguments
+					w.wrote(tc.Function.Arguments, true)
 				}
 			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return b.String(), nil // a stream that ends without [DONE] still said what it said
+				return chatReply{Content: b.String(), Calls: calls}, nil // a stream that ends without [DONE] still said what it said
 			}
 			if a.stopFlag.Load() {
-				return "", errStopped
+				return chatReply{}, errStopped
 			}
-			return "", err // a half-written JSON reply is worth less than the error
+			return chatReply{}, err // a half-written JSON reply is worth less than the error
 		}
 	}
 }
@@ -309,10 +428,17 @@ func (a *App) llmChatRetry(step string, msgs []map[string]any, thinking bool) (s
 }
 
 func (a *App) llmChatRetryOn(step string, msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
-	reply, err := a.llmChatOn(step, msgs, thinking, onText)
+	return a.llmChatRetryTools(step, msgs, thinking, nil, nil, onText)
+}
+
+// llmChatRetryTools is the retrying call with tools on the table; with none
+// it is llmChatRetryOn exactly.
+func (a *App) llmChatRetryTools(step string, msgs []map[string]any, thinking bool,
+	tools []map[string]any, run toolRunner, onText func(string)) (string, error) {
+	reply, err := a.llmChatTools(step, msgs, thinking, tools, run, onText)
 	if err == nil || errors.Is(err, errStopped) {
 		return reply, err
 	}
 	time.Sleep(2 * time.Second)
-	return a.llmChatOn(step, msgs, thinking, onText)
+	return a.llmChatTools(step, msgs, thinking, tools, run, onText)
 }

@@ -18,7 +18,7 @@ import (
 func TestEveryRowSaysEnoughThatNoLabelHasToRepeatIt(t *testing.T) {
 	vs := []voiceOpt{
 		{id: captionsVoice, name: "No audio — captions only"},
-		{id: ownVoice, name: "Narrator 1 — Kooha-2026-08-30.voice.wav"},
+		{id: ownVoice, name: "Narrator 1 — Kooha-2026-08-30.split-voice.wav"},
 		{id: "gb_male", name: "gb_male.wav", path: "/voices/gb_male.wav"},
 	}
 	got := voiceNames(vs)

@@ -258,7 +258,7 @@ func TestTheReferenceIsTheSpeakerWhoTalkedMost(t *testing.T) {
 func TestTheReferenceIsBuiltFromTheBestFewTakesOnly(t *testing.T) {
 	src := funcBody(t, "narrate_voice.go", `func \(a \*App\) ensureVoiceBase\(`)
 	for _, pin := range []string{
-		`loadSeg4(filepath.Join(a.outDir, "step1", base, "transcript.tsv"))`,
+		`loadSeg4(filepath.Join(a.inputsDir(), base, "transcript.tsv"))`,
 		"refCuts(turns, rows)",
 		"total >= refWant || i >= refTakeMax",
 		"math.Min(d, refWant-total)",

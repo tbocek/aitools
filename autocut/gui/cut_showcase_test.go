@@ -43,7 +43,7 @@ func TestTheShowcaseWordingIsPickableAndCutsForLooking(t *testing.T) {
 		"Count the things.",         // several subjects is the same job repeated
 		"divide the target length",
 	} {
-		if !strings.Contains(showcaseSystem, want) {
+		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+showcaseSystem, want) {
 			t.Errorf("the Showcase wording never says %q", want)
 		}
 	}

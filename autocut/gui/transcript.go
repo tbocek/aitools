@@ -15,7 +15,7 @@ package main
 // through byte-identical, enforced; a block that fails validation twice keeps
 // its original lines and says so.
 //
-// step2/transcript/
+// understand/transcript/
 //   <video>/transcript.fixed.tsv + subtitles.srt   per video, video timeline
 //   <audio>/commentary.fixed.tsv                   per voice recording
 //   offsets.tsv                                    video, audio, offset seconds
@@ -43,30 +43,19 @@ const fixBlock = 25 // transcript lines per fixer request
 // One paragraph or bullet per line, unwrapped: this is read in a wrapping text
 // box, where a hard wrap at 80 columns only becomes a ragged second wrap. See
 // describeSystem.
-const fixSystem = `You clean up ASR transcript lines from a gaming session. They become subtitles, and they are the material the video edit is chosen from, so they have to stay faithful to what was actually said.
+const fixSystem = `You clean up ASR transcript lines from a recorded session. They become subtitles, and they are the material the video edit is chosen from, so they have to stay faithful to what was actually said.
 
-Each request gives you a context block, then the lines to clean as TSV: start, end, speaker, text, tab separated, headed by how many there are.
-
-The context block is what was on screen and what the other microphones picked up in those same seconds, in the usual three labels, each naming in brackets the recording it came off -- no bracket means this recording's own. Use it only to work out what a garbled line was. Never copy context into a line, and never let it put words in someone's mouth. It is frequently empty, which is normal: then clean the lines on their own.
-
-Shape of your reply. It is checked line by line against what you were given. If the count, the order, a timestamp or a speaker differs, the whole block is discarded and the original uncleaned lines are kept, so every fix in it is lost.
-
-- Return exactly the number of lines you were given, in the same order.
-- Copy start, end and speaker character for character. Change only the fourth column. The speaker labels come from automatic diarisation and are sometimes plainly wrong. That is not yours to fix.
-- Never merge, split, drop or add a line. A line stays one line even when it ends mid sentence: the next line continues it.
-- Four tab separated columns. No tabs inside the text, no line numbers, no speaker name inside the text.
-- Never leave the text empty. A line you cannot make sense of keeps its original text.
-- Output only the TSV lines. No commentary, no code fences, no header, no blank lines.
+The context is for working out what a garbled line was, and nothing else: never copy it into a line, never let it put words in someone's mouth. It is often empty, which is normal. The speaker labels come from automatic diarisation and are sometimes plainly wrong; that is not yours to fix. A line that ends mid sentence stays one line -- the next continues it -- and a line you cannot make sense of keeps its original text.
 
 What to fix.
 
 - Every line is English or German. A line that looks like another language is a misrecognition: reconstruct the intended English or German from how it sounds and from what was happening. Never translate between English and German.
 - Mixing the two is normal here: English game terms inside a German sentence, and the other way round. Keep the mix as spoken. It is not a mistake to tidy up.
-- Repair mishearings from the context. A phrase that means nothing by itself but sounds like something the context says is on screen, or was just said, IS that thing. Names of games, items, places and players are what ASR gets wrong most, and the context and the session notes are where their spelling comes from.
+- Repair mishearings from the context. A phrase that means nothing by itself but sounds like something the context says is on screen, or was just said, IS that thing. Names of games, items, places and players are what ASR gets wrong most, and the context is where their spelling comes from.
 - Remove stutter doubles ("I I" becomes "I") and bare fillers ("uh", "ähm") that are clearly disfluency. Keep repetition that is meant: "go go go" stays.
 - ASR sometimes loops one phrase for a whole line, or invents subtitle credits ("Untertitel von ...", "Amara.org", "thanks for watching") over silence. Collapse a loop to one occurrence. Leave an invented credit alone unless the context shows what was really said.
 - Punctuate and capitalise for readability: sentence case, commas and full stops where they help, a question mark where the voice is asking.
-- Keep the speaker's words, register and swearing. Do not soften, censor, condense or improve anyone's phrasing. These are subtitles, not a rewrite. Never invent content.`
+- Keep the speaker's words, register and swearing. Do not soften, censor, condense or improve anyone's phrasing. These are subtitles, not a rewrite.`
 
 type seg4 struct {
 	s, e      float64
@@ -331,8 +320,8 @@ type src struct {
 	events     []tsvRow // videos only
 }
 
-// step3 fixes every source's transcript and writes the merged session
-// timeline. span is this job's share of the progress bar; see step2.
+// The fixer fixes every source's transcript and writes the merged session
+// timeline. span is this job's share of the progress bar; see the describer.
 func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 	trDir := a.transcriptDir()
 	if err := os.MkdirAll(trDir, 0o755); err != nil {
@@ -368,7 +357,7 @@ func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 
 	// load raw material
 	for _, s := range srcs {
-		s.rows = loadSeg4(filepath.Join(a.outDir, "step1", s.base, "transcript.tsv"))
+		s.rows = loadSeg4(filepath.Join(a.inputsDir(), s.base, "transcript.tsv"))
 		if s.isVideo {
 			s.events = loadEvents(filepath.Join(a.describeDir(), s.base, "events.tsv"))
 		}

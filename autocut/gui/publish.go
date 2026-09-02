@@ -52,11 +52,11 @@ package main
 // rewording the instruction and redrawing has nothing to do with the
 // description -- so they do not share a column and fight for its height.
 //
-// step6/thumbnail.png        the upload: the picture with the words printed on
-// step6/thumbnail-plain.png  the picture as the model drew it, no words --
+// publish/thumbnail.png        the upload: the picture with the words printed on
+// publish/thumbnail-plain.png  the picture as the model drew it, no words --
 //                            what every rewording re-prints from
-// step6/description.txt      the YouTube description
-// step6/publish.json         all of it as data, beside the files
+// publish/description.txt      the YouTube description
+// publish/publish.json         all of it as data, beside the files
 
 import (
 	"context"
@@ -95,38 +95,34 @@ const (
 
 const youtubeSystem = `You write the upload text for a finished gaming video on YouTube: its title, and the description that sits under it.
 
-You are given what the video is made of -- its clips, what was seen and said in each, and the narration that was written over it. Write about the video that exists, and invent nothing that is not in it.
+You are given what the video is made of -- its clips, what was seen and said in each, and the narration that was written over it. That is the video.
 
-What the session notes single out is what the description should lead with.
-
-Return three parts in this order, with a blank line between them: the title on one line prefixed exactly "TITLE: ", the thumbnail instruction on one line prefixed exactly "THUMBNAIL: ", then the description text itself. No JSON, no code fence, no heading, no commentary about the task.
+What the session notes single out is what the description should lead with. Answer in the upload text's shape.
 
 The title.
 
 - Four to seven words. It is the YouTube title, and it is also printed across the upper part of the thumbnail afterwards, read at the size of a phone's sidebar -- every extra word costs one that mattered.
 - Say the specific thing that happens in THIS video: the moment, the mistake, the win, the thing nobody expected. A title that would fit any session of this game is a wasted title.
 - Plain words people say out loud. No colons splitting a subtitle off, no clickbait punctuation, no ALL CAPS -- it is drawn in large letters already.
-- Never promise something the clips do not contain.
+- Never promise something the clips do not contain: a title is a claim about the video, and this one is the claim most people will only ever read.
 
 The thumbnail instruction.
 
-- One or two sentences on a single line, telling an image model how to compose ONE picture out of the frames it is given: what this video is about, the game it is, the moment it shows. The first frame is the picture being edited; the rest are references to pull from, named by position ("the ship from the second image").
+- One or two sentences telling the image model how to compose ONE picture out of the frames: what this video is about, the game it is, the moment it shows.
 - It is an instruction, not a description. Anything you do not mention is left alone, so describing the whole scene gets a picture of something else instead of the moment that was filmed. Say what to combine, brighten, push forward, or clear out of the way.
 - Name only things the clips contain. "Add the dragon" to a video with no dragon in it is a thumbnail that lies about the video.
-- Ask for no text, no lettering, no title and no logo. The title is printed onto the upper part of the finished picture afterwards, so ask for that part to stay calm and uncluttered -- lettering the model draws there ends up underneath it.
 
 The description.
 
 - Open with one or two sentences that say what happens in this video, in plain language, and make someone want to watch it. This first line is the only part shown before "...more", so it has to work alone.
 - Then a short paragraph, three or four sentences, on what the session actually was: where it is set, who is in it, what went right and wrong.
-- Then a chapter list if the video has distinct beats -- one line each, "0:00 What this is", in the video's own running time counted from its start. Only if the beats are real; a made-up timestamp is worse than no chapter list.
+- Then a chapter list if the video has distinct beats -- one line per beat, "0:00 What this is", at the time the clip list gives for that clip ("at 1:23 in the video"), never a session time. Only if the beats are real; a made-up timestamp is worse than no chapter list.
 - Finish with a line of five to eight hashtags, lower case, naming the game, the genre and the kind of moment. No hashtag salad.
 
 Voice.
 
 - The voice of someone who was there and is telling a friend about it, not a press release. Contractions are fine.
-- No emoji walls, no "smash that like button", no promises about upload schedules, no links to things you were not told exist.
-- Never claim a person, a game mode or an outcome the clips do not show.`
+- No emoji walls, no "smash that like button", no promises about upload schedules, no links to things you were not told exist.`
 
 // ---- what the project keeps -----------------------------------------------------
 
@@ -270,7 +266,7 @@ type pubSlot struct {
 	path string
 }
 
-func (a *App) publishDir() string { return filepath.Join(a.outDir, "step6") }
+func (a *App) publishDir() string { return filepath.Join(a.outDir, "publish") }
 
 // publishRecorded reports whether the model has already written this session's
 // text. publish.json is that record: writePublishFiles lays it down as soon as
@@ -412,7 +408,7 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	wrote.SetVExpand(true)
 
 	openOut := gtk.NewButtonFromIconName("folder-open-symbolic")
-	openOut.SetTooltipText("step6/ — the thumbnail, the title and the description")
+	openOut.SetTooltipText("publish/ — the thumbnail, the title and the description")
 	openOut.ConnectClicked(func() { a.openFolder(a.publishDir()) })
 	p.out = gtk.NewLabel("")
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
@@ -619,7 +615,7 @@ func (s *pubSlot) choose() {
 func (p *publisher) pickImage(title, start string, done func(string)) {
 	a := p.a
 	if start == "" || !exists(start) {
-		start = filepath.Join(a.outDir, "step1", "frames")
+		start = filepath.Join(a.inputsDir(), "frames")
 		if vids, _ := a.snappedSources(); len(vids) > 0 {
 			if d := filepath.Join(start, baseName(vids[0])); exists(d) {
 				start = d
@@ -757,7 +753,7 @@ func (p *publisher) showShot() {
 	for _, name := range []string{"thumbnail.png", "thumbnail-plain.png"} {
 		if f := filepath.Join(p.a.publishDir(), name); exists(f) {
 			p.shot.SetFilename(f)
-			p.shot.SetTooltipText("step6/" + name)
+			p.shot.SetTooltipText("publish/" + name)
 			// cached for the marking layer: its draw handler and its drag
 			// both need to know where the picture is, per pointer move
 			p.shotPath = f
@@ -891,8 +887,18 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "THE FINISHED VIDEO: %d clips, %d:%02d long.\n",
 		len(segs), int(total)/60, int(total)%60)
+	// each clip headed by where it starts in the FINISHED video: the chapter
+	// list is written on that clock, and it is arithmetic the model would
+	// otherwise have to do from the clip lengths -- which a small one does not,
+	// and writes session times instead
 	b.WriteString("\nWHAT IS IN EACH CLIP:\n")
-	b.WriteString(clipBriefs(segs, rows, a.narratorMic()))
+	pos := 0.0
+	b.WriteString(clipBriefsWith(segs, rows, a.narratorMic(), func(i int, s cutSeg) string {
+		h := fmt.Sprintf("CLIP %d (at %d:%02d in the video, %.0f s): session %.1f–%.1f",
+			i+1, int(pos)/60, int(pos)%60, s.length(), s.S, s.E)
+		pos += s.length()
+		return h
+	}))
 	said := 0
 	var n strings.Builder
 	// running time, not session time: the description's chapter marks are
@@ -949,7 +955,8 @@ func (a *App) writeUpload(brief string) (title, instr, desc string, err error) {
 	if err := a.checkpoint(); err != nil {
 		return "", "", "", err
 	}
-	reply, err := a.llmChatRetry("publish", msgs, true)
+	tools, ffx := a.webToolsFor("publish") // the description may name what the game is
+	reply, err := a.llmChatRetryTools("publish", msgs, true, tools, a.webRunner("publish", ffx), nil)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -1095,13 +1102,13 @@ func (a *App) publishSuggest() {
 //
 // The model writes the text -- the title, the instruction and the description
 // -- once per project and then never again (needText, which ▶ passes as "has
-// the step6 record never been written"). ▶ after that redraws and re-renders:
+// the publish record never been written"). ▶ after that redraws and re-renders:
 // press it as often as you like with the instruction reworded or the images
 // changed, and it costs GPU time and no thinking. The record is the folder,
 // not the boxes. Gating on "is the title empty" meant clearing a field you
 // did not like silently bought you a fresh model call on the next ▶, and it
 // also meant a run that failed at the drawing rewrote the words it had just
-// written. Deleting step6/ is the deliberate way to start the text over, and
+// written. Deleting publish/ is the deliberate way to start the text over, and
 // "Suggest again" is the way to do it without losing the pictures.
 func (a *App) publishStage(st pubSettings, aspect string, segs []cutSeg,
 	entries []narrEntry, needText, written, textOnly bool) error {
