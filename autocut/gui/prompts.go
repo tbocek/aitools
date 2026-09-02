@@ -64,6 +64,12 @@ type promptDef struct {
 	// renaming a key would -- add a style, do not rename one.
 	style string
 	alts  []promptStyle
+	// solo is a prompt that has no wordings at all: one text, the same under
+	// every style. The system context is the only one -- it is the formats the
+	// material and the answers are in, which a style has no opinion about --
+	// and being solo is what keeps a wording name off its bench row, a ＋ off
+	// its heading and a style pick off its store.
+	solo bool
 }
 
 // defStyle names the wording a job ships with when it ships only one. It reads
@@ -90,8 +96,10 @@ func (d promptDef) builtins() []promptStyle {
 // one silently drops what a user wrote under the old name.
 var promptDefs = []promptDef{
 	// first, because it goes in front of every one of the others: the formats
-	// and the house rules they all work to (syscontext.go)
-	{key: "system", def: strings.TrimSpace(sysSystem)},
+	// and the house rules they all work to (syscontext.go). Solo: there is one
+	// of it, and picking Highlights or Showcase does not change how a stamp
+	// reads.
+	{key: "system", def: strings.TrimSpace(sysSystem), solo: true},
 	{key: "describe", def: strings.TrimSpace(describeSystem)},
 	{key: "fix", def: strings.TrimSpace(fixSystem)},
 	// four wordings, the generic one first: it is what a project that has never
@@ -355,6 +363,9 @@ func (a *App) pickPromptStyle(key, name string) {
 // dropdown's own notify::selected.
 func (a *App) applyStyle(name string) {
 	for _, d := range promptDefs {
+		if d.solo {
+			continue // one wording, and no style has anything to say about it
+		}
 		target := d.styleName()
 		for _, s := range a.promptStyleList(d.key) {
 			if s.Name == name {

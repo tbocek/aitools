@@ -317,7 +317,7 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 		"the menu in the heading":      "head.Append(pick)",
 		"＋ to save a new wording":      "head.Append(add)",
 		"Reset/Remove":                 "head.Append(drop)",
-		"the context row without them": "showCtx(r.key == \"\")",
+		"the context row without them": "showCtx(r)",
 	} {
 		if !strings.Contains(ed, want) {
 			t.Errorf("the heading row is missing %s (%s)", what, want)
@@ -393,7 +393,7 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	got := a.prepEditNames()
-	want := []string{"User Context", "System context (Default)", "Describe (Default)", "Transcript (Default)",
+	want := []string{"User Context", "System context", "Describe (Default)", "Transcript (Default)",
 		"Cut (General)", "Audit (Default)", "Narration (Default)",
 		"Upload text (Default)"}
 	if len(got) != len(want) {

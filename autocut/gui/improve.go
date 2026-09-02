@@ -87,8 +87,11 @@ func (a *App) improveBrief(complaint string) []map[string]any {
 
 	b.WriteString("\n\nThe prompts this machine sends, one per job:\n")
 	for _, d := range promptDefs {
-		fmt.Fprintf(&b, "\n=== prompt %s (wording: %s) ===\n%s\n",
-			d.key, a.promptPickName(d.key), a.prompt(d.key))
+		head := d.key
+		if !d.solo { // a prompt with one wording has no name to give
+			head += fmt.Sprintf(" (wording: %s)", a.promptPickName(d.key))
+		}
+		fmt.Fprintf(&b, "\n=== prompt %s ===\n%s\n", head, a.prompt(d.key))
 	}
 
 	b.WriteString("\n\nThe run log, most recent last:\n\n")

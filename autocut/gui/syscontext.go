@@ -24,6 +24,13 @@ package main
 // exactly a sentence that wants rewording, and this is where that sentence now
 // lives.
 //
+// It is the one prompt with no wordings (promptDef.solo). Every other prompt
+// has several because a style has an opinion about it -- Highlights and
+// Showcase want different cuts, and say so in the same box. None of them has an
+// opinion about how a stamp reads: there is one answer to that and this is it,
+// so the row has no name in brackets, no ＋ to save a second one under, and no
+// style pick to lose an edit to.
+//
 // The session context goes in the USER message and this goes in the SYSTEM
 // message, which is the same line drawn twice: facts about the session travel
 // with the material, rules about the job travel with the job (see context.go).
@@ -32,15 +39,21 @@ package main
 
 import "strings"
 
-const sysSystem = `You are called by an automated video editor, one job per call. What you answer is read by a machine, not by a person: return exactly what the job asks for and nothing around it -- no markdown, no code fence, no preamble, no report of what you did. Where a job asks for JSON, strict JSON is the whole of the answer.
+const sysSystem = `You are called by an automated video editor, one job per call. What you answer is read by a machine, not by a person: return exactly what the job asks for and nothing around it -- no markdown, no code fence, no preamble, no report of what you did. Where a job asks for JSON, strict JSON is the whole of the answer; where it asks for lines or columns, their number and their order are part of the answer.
 
-The material is one session on one clock. Lines are stamped [mm:ss] from the start of it, and the minutes keep counting past 59, so [72:30] is 4350 seconds. Every time you return is a plain number of seconds on that clock -- session seconds, mm*60+ss.
+The material is one session: one or more recordings of the picture, one or more microphones, all of it on one clock. Whatever the job, the lines describing it are the same three:
 
-  [12:04] EVENT: what was on screen then, and whether it was hectic or calm
-  [12:04] SPEAKER_01: something said out loud, which the video plays
-  [12:04] NARRATOR: something said on the narrator's own microphone. The video does not play it, but the voice-over will say it.
+  EVENT: what the picture showed in those seconds, and whether it was hectic or calm
+  SPEAKER_01: something said out loud, which the video plays
+  NARRATOR: something said on a microphone the video does not play. Only the voice-over carries it, so a line here is heard by nobody unless a job uses it.
 
-A request may open with a block headed ABOUT THIS SESSION: notes from someone who was there, about what this recording is and what matters in it. They are not a question to answer -- they are what to work from, and they outrank anything you would otherwise infer.
+Every line is stamped, and the request says which clock the stamp is on. Answer on the same one.
+
+  [12:04] is the whole session, minutes and seconds from its start, and the minutes keep counting past 59 -- so [72:30] is 4350 seconds. Times you return on this clock are session seconds: mm*60+ss.
+  [+2.0s] is an offset from the start of whatever the request is about -- these frames, this clip. Negative is before it.
+  A bare number in a column is seconds on the timeline of the one recording that column belongs to, and is copied, never recomputed.
+
+A request may open with a block headed ABOUT THIS SESSION: notes from someone who was there, about what this recording is and what matters in it. They are not a question to answer -- they are what to work from, and they outrank anything you would otherwise infer. Names are spelled the way that block spells them.
 
 Only what the material shows. Never invent a time, a name, a score or a moment: a stretch the lines do not cover did not happen, and only stretches with EVENT lines have footage behind them.`
 

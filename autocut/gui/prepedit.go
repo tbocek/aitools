@@ -64,10 +64,11 @@ func prepRows() []prepRow {
 			"spelled, what to make sure ends up in the video.\n\nSent with every request " +
 			"this project makes: the frame describer, the transcript fixer, the cut and " +
 			"its audit, the narration and the upload text. Left empty, nothing is sent."},
-		{"System context", "system", "The formats every job works to: how the material " +
-			"is stamped and laid out, that times are session seconds, and that the answer " +
-			"is read by a machine.\n\nSent in front of every prompt below, so a fact about " +
-			"this tool is written once instead of in each of them."},
+		{"System context", "system", "The formats every job works to: the three kinds " +
+			"of line, which clock a request stamps them on, and that the answer is read " +
+			"by a machine.\n\nSent in front of every prompt below, so a fact about this " +
+			"tool is written once instead of in each of them. It has no wordings: the " +
+			"formats are the same whichever style the video is cut in."},
 		{"Describe", "describe", fmt.Sprintf(
 			"%d frames per request, plus the last %d descriptions and up to %d spoken "+
 				"lines either side as context. No frame is ever sent twice: those "+
@@ -102,7 +103,9 @@ func (a *App) prepEditNames() []string {
 		if r.key == "" {
 			continue
 		}
-		out[i] += " (" + a.promptPickName(r.key) + ")"
+		if !promptDefFor(r.key).solo {
+			out[i] += " (" + a.promptPickName(r.key) + ")"
+		}
 		if a.promptOwned(r.key) {
 			out[i] += " ✎"
 		}
@@ -167,10 +170,16 @@ func (a *App) prepEditor() gtk.Widgetter {
 	// has one wording by definition -- the one you wrote -- so a ＋ and a Reset
 	// would each be a control with nothing to do, and a greyed row of them says
 	// "this row is broken" rather than "this row is different".
-	showCtx := func(on bool) {
-		mark.SetVisible(!on)
-		add.SetVisible(!on)
-		drop.SetVisible(!on)
+	showCtx := func(r prepRow) {
+		prompt := r.key != ""
+		mark.SetVisible(prompt)
+		drop.SetVisible(prompt)
+		// ＋ saves what is in the box as a NEW wording, which only means
+		// something for a job that HAS wordings. The system context is one
+		// text under every style, so a second one of it would be a name
+		// nothing ever picks -- Reset stays, because putting the built-in back
+		// is exactly as useful here as anywhere else.
+		add.SetVisible(prompt && !promptDefFor(r.key).solo)
 	}
 
 	tv.Buffer().ConnectChanged(func() {
@@ -204,7 +213,7 @@ func (a *App) prepEditor() gtk.Widgetter {
 		r := rows[i]
 		lbl.SetText(r.title())
 		lbl.SetTooltipText(r.tip)
-		showCtx(r.key == "")
+		showCtx(r)
 		quiet = true
 		if r.key == "" {
 			a.ctxView = tv
