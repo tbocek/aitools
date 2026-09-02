@@ -35,10 +35,13 @@ func TestCtxBlockIsEmptyWhenTheBoxIs(t *testing.T) {
 	}
 }
 
-// TestEveryPromptNamesTheContextHeading: each prompt tells the model that a
-// block under this heading may arrive and what to do with it. Change the
-// heading in ctxBlock and five prompts start describing something that is not
-// there -- source-level, because nothing at run time compares the two.
+// TestEveryPromptNamesTheContextHeading: the block under this heading is
+// announced once, by the system context that goes in front of every job.
+// Change the heading in ctxBlock and that prompt starts describing something
+// that is not there -- source-level, because nothing at run time compares the
+// two. The second half is the reason it is announced only once: a job that
+// wants something done with the notes says so, but none of them re-introduces
+// the block, or the model is told twice what it is looking at.
 func TestEveryPromptNamesTheContextHeading(t *testing.T) {
 	const head = "ABOUT THIS SESSION"
 	a := &App{}
@@ -46,9 +49,18 @@ func TestEveryPromptNamesTheContextHeading(t *testing.T) {
 	if !strings.HasPrefix(a.ctxBlock(), head) {
 		t.Fatalf("the block no longer opens with %q: %q", head, short(a.ctxBlock()))
 	}
+	if !strings.Contains(promptDefFor("system").def, head) {
+		t.Fatalf("the system context never mentions %q, so the block arrives unannounced in every job", head)
+	}
 	for _, d := range promptDefs {
-		if !strings.Contains(d.def, head) {
-			t.Errorf("the %q prompt never mentions %q, so the block arrives unannounced", d.key, head)
+		if d.key == "system" {
+			continue
+		}
+		for _, p := range d.builtins() {
+			if strings.Contains(p.Text, "block headed "+head) {
+				t.Errorf("%q (%s) introduces the %q block again, which the system context already did",
+					d.key, p.Name, head)
+			}
 		}
 	}
 }

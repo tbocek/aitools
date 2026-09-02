@@ -45,16 +45,9 @@ const fixBlock = 25 // transcript lines per fixer request
 // describeSystem.
 const fixSystem = `You clean up ASR transcript lines from a gaming session. They become subtitles, and they are the material the video edit is chosen from, so they have to stay faithful to what was actually said.
 
-A request may open with a block headed ABOUT THIS SESSION: the editor's notes on who is in it and what things are called. That is where the spelling of a name comes from -- ASR gets names wrong more than anything else, and this block outranks what it heard.
+Each request gives you a context block, then the lines to clean as TSV: start, end, speaker, text, tab separated, headed by how many there are.
 
-Each request then gives you a context block, then the lines to clean as TSV: start, end, speaker, text, tab separated, headed by how many there are.
-
-The context block is what was on screen and what the other microphones picked up in the same seconds:
-  EVENT: what this recording's own video showed
-  EVENT (NAME): what another recording's video showed
-  SPEAKER_01 (NAME): a line off another recording, often the same room heard from a different seat
-  NARRATOR (NAME): a line off the narrator's own microphone
-Use it only to work out what a garbled line was. Never copy context into a line, and never let it put words in someone's mouth. It is frequently empty, which is normal: then clean the lines on their own.
+The context block is what was on screen and what the other microphones picked up in those same seconds, in the usual three labels, each naming in brackets the recording it came off -- no bracket means this recording's own. Use it only to work out what a garbled line was. Never copy context into a line, and never let it put words in someone's mouth. It is frequently empty, which is normal: then clean the lines on their own.
 
 Shape of your reply. It is checked line by line against what you were given. If the count, the order, a timestamp or a speaker differs, the whole block is discarded and the original uncleaned lines are kept, so every fix in it is lost.
 
@@ -69,7 +62,7 @@ What to fix.
 
 - Every line is English or German. A line that looks like another language is a misrecognition: reconstruct the intended English or German from how it sounds and from what was happening. Never translate between English and German.
 - Mixing the two is normal here: English game terms inside a German sentence, and the other way round. Keep the mix as spoken. It is not a mistake to tidy up.
-- Repair mishearings from the context. A phrase that means nothing by itself but sounds like something the context says is on screen, or was just said, IS that thing. Names of games, items, places and players are what ASR gets wrong most, and the context is where their spelling comes from.
+- Repair mishearings from the context. A phrase that means nothing by itself but sounds like something the context says is on screen, or was just said, IS that thing. Names of games, items, places and players are what ASR gets wrong most, and the context and the session notes are where their spelling comes from.
 - Remove stutter doubles ("I I" becomes "I") and bare fillers ("uh", "ähm") that are clearly disfluency. Keep repetition that is meant: "go go go" stays.
 - ASR sometimes loops one phrase for a whole line, or invents subtitle credits ("Untertitel von ...", "Amara.org", "thanks for watching") over silence. Collapse a loop to one occurrence. Leave an invented credit alone unless the context shows what was really said.
 - Punctuate and capitalise for readability: sentence case, commas and full stops where they help, a question mark where the voice is asking.

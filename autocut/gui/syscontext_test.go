@@ -106,3 +106,64 @@ func TestTheCutWordingsDoNotRepeatTheSystemContext(t *testing.T) {
 		t.Error("the default wording lost the reply shape its own parser reads")
 	}
 }
+
+// TestTheSystemContextHasNoWordings: the formats are the formats -- a session
+// stamp reads the same whether the video is cut for Highlights or for Showcase
+// -- so this one prompt is outside the wording machinery. That is one flag
+// (promptDef.solo) read in four places, and all four are checked here: picking
+// a style must not touch its text, the bench row must not name a wording it
+// does not have, the ＋ that saves a new wording must not be offered, and the
+// improve brief must not head it with one.
+func TestTheSystemContextHasNoWordings(t *testing.T) {
+	ownConfig(t)
+	d := promptDefFor("system")
+	if !d.solo {
+		t.Fatal("the system context is back in the wording machinery, and the rest of this test says why it is not")
+	}
+	if len(d.alts) != 0 {
+		t.Errorf("the system context has %d alternative wordings, which no style has anything to say about", len(d.alts))
+	}
+	a := &App{}
+	before := a.prompt("system")
+	for _, style := range []string{"Highlights", "Rating / tier list", "Showcase", shortsStyleName} {
+		a.applyStyle(style)
+		if got := a.prompt("system"); got != before {
+			t.Fatalf("style %q rewrote the system context, so a job's formats depend on how the video is cut:\n%s", style, short(got))
+		}
+	}
+	// the cut did move, or applyStyle was doing nothing at all and the check
+	// above passes for the wrong reason
+	if a.prompt("cut") == strings.TrimSpace(genericSystem) {
+		t.Error("applyStyle left the cut prompt on the default too, so nothing above was actually exercised")
+	}
+	for _, name := range a.prepEditNames() {
+		if strings.HasPrefix(name, "System context") && strings.Contains(name, "(") {
+			t.Errorf("the bench row reads %q, naming a wording the system context does not have", name)
+		}
+	}
+	if src := readSrc(t, "prepedit.go"); !strings.Contains(src, "add.SetVisible(prompt && !promptDefFor(r.key).solo)") {
+		t.Error("the ＋ is offered on the system context row, and there is nowhere for a second wording to go")
+	}
+	user, _ := improveBriefText(t, a)
+	if !strings.Contains(user, "=== prompt system ===") {
+		t.Error("the improve brief does not show the system context, which is in front of every call it is being asked about")
+	}
+	if strings.Contains(user, "prompt system (wording:") {
+		t.Error("the improve brief names a wording for the system context, and the model can then ask for a change to a wording that does not exist")
+	}
+}
+
+// improveBriefText is the user half of the brief, which is where the prompts
+// are listed.
+func improveBriefText(t *testing.T, a *App) (string, []map[string]any) {
+	t.Helper()
+	msgs := a.improveBrief("nothing in particular")
+	for _, m := range msgs {
+		if m["role"] == "user" {
+			s, _ := m["content"].(string)
+			return s, msgs
+		}
+	}
+	t.Fatal("the improve brief has no user message")
+	return "", nil
+}

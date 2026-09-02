@@ -610,8 +610,11 @@ func TestAClipWithNoLineIsLeftAlone(t *testing.T) {
 // user can rewrite -- so this pins the words that have to mean the same thing
 // in both.
 func TestTheNarratePromptDescribesTheBriefItGets(t *testing.T) {
-	for _, want := range []string{"EVENT", "SPEAKER_01", "NARRATOR", "[+12s]"} {
-		if !strings.Contains(narrSystem, want) {
+	// the labels and the offset stamp are described once, in the system
+	// context this prompt is sent behind, so the promise is read off both.
+	told := strings.TrimSpace(sysSystem) + "\n\n" + narrSystem
+	for _, want := range []string{"EVENT", "SPEAKER_01", "NARRATOR", "[+2.0s]", "offsets from that clip's start"} {
+		if !strings.Contains(told, want) {
 			t.Errorf("the narration prompt never mentions %q, so the model is left to "+
 				"work out the shape of its own input", want)
 		}

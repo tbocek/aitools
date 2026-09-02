@@ -97,7 +97,7 @@ const youtubeSystem = `You write the upload text for a finished gaming video on 
 
 You are given what the video is made of -- its clips, what was seen and said in each, and the narration that was written over it. Write about the video that exists, and invent nothing that is not in it.
 
-The request may open with a block headed ABOUT THIS SESSION: the editor's own notes, written by someone who was there. Every name, spelling and fact in it outranks what you would otherwise have guessed, and what it singles out is what the description should lead with.
+What the session notes single out is what the description should lead with.
 
 Return three parts in this order, with a blank line between them: the title on one line prefixed exactly "TITLE: ", the thumbnail instruction on one line prefixed exactly "THUMBNAIL: ", then the description text itself. No JSON, no code fence, no heading, no commentary about the task.
 
