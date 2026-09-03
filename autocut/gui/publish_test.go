@@ -1,9 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -618,18 +624,228 @@ func TestPublishIsFoldedIntoProduce(t *testing.T) {
 		"p.a.updateProduceInfo()") {
 		t.Error("changing the image row leaves a stale count on the Inputs line")
 	}
-	// cheap and fails-fast before long: the words and the picture, then the
-	// render -- an sd.cpp that is down costs seconds, not a finished encode
+	// the words and the picture run BESIDE the render, not before it: neither
+	// reads a file the other writes, and the render is minutes where they are
+	// seconds
 	body := funcBody(t, "produce.go", `func \(a \*App\) produceClicked\(\) \{`)
 	// the model call has no byte count to report, so the bar pulses until the
 	// first real part is counted -- without this ▶ looks hung while it thinks
 	if !strings.Contains(body, "a.pulseUntilCounted()") {
 		t.Error("nothing moves the bar while the model thinks")
 	}
-	iStage := strings.Index(body, "a.publishStage(")
-	iRender := strings.Index(body, "a.produce(segs, entries, st, vids, auds)")
-	if iStage < 0 || iRender < 0 || iStage > iRender {
-		t.Errorf("▶ no longer runs the publish stage before the render: %d %d", iStage, iRender)
+	for _, want := range []string{
+		"var wg sync.WaitGroup",       // the publish half on its own goroutine...
+		"wg.Wait()",                   // ...and both finish before the run says so
+		"a.publishStage(trackFrames,", // on the other half of the bar, or the two fight over the needle
+		"a.produce(segs, entries, st, vids, auds)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("▶ no longer runs the publish stage beside the render -- missing %q", want)
+		}
+	}
+	// the render owns the fraction and the publish half owns its own line: the
+	// needle is the thing that takes minutes
+	if !strings.Contains(body, `a.qJob(trackSTT, "render", 0, 0)`) ||
+		!strings.Contains(body, `a.qJob(trackFrames, "publish", 0, 0)`) {
+		t.Error("the two halves do not each own a track of the bar")
+	}
+	if !strings.Contains(body, "a.qDone(trackFrames, 0)") {
+		t.Error("the publish half claims part of the needle, which belongs to the render")
+	}
+	// a failed title does not throw away a finished encode: they are separate
+	// deliverables and the expensive one is the video
+	if !strings.Contains(body, "the render carries on") {
+		t.Error("a failure in the words still costs the render")
+	}
+	if !strings.Contains(body, "if err == nil && pubErr != nil {") {
+		t.Error("a failure in the words is not reported at all once the render succeeds")
+	}
+}
+
+// One mark for "make me another one of these", wherever the app offers it: the
+// narration re-rolls a line with it, the voice picker re-draws a sample with
+// it, and the thumbnail is drawn again with it.
+func TestRegeneratingWearsTheOneMark(t *testing.T) {
+	const mark = `gtk.NewButtonFromIconName("view-refresh-symbolic")`
+	for file, what := range map[string]string{
+		"narrate.go":       "the line re-roll",
+		"narrate_voice.go": "the voice sample re-roll",
+	} {
+		if !strings.Contains(readSrc(t, file), mark) {
+			t.Errorf("%s (%s) no longer wears the regenerate mark", file, what)
+		}
+	}
+	pub := readSrc(t, "publish.go")
+	for _, want := range []string{"p.redraw = " + mark, "p.suggest = " + mark} {
+		if !strings.Contains(pub, want) {
+			t.Errorf("publish.go no longer contains %q", want)
+		}
+	}
+	if strings.Contains(pub, `NewButtonWithLabel("Suggest again")`) {
+		t.Error("the suggest button is a label again, beside three icons that mean the same thing")
+	}
+	if !strings.Contains(pub, `p.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above", p.redraw)`) {
+		t.Error("the redraw button is not on the thumbnail's heading")
+	}
+}
+
+// The redraw draws and does nothing else: no model call, no render. ▶ was the
+// only way to redraw and it also renders, so trying a second thumbnail cost a
+// whole encode.
+func TestTheRedrawDrawsAndNothingElse(t *testing.T) {
+	body := funcBody(t, "publish.go", `func \(a \*App\) publishRedraw\(\) \{`)
+	if !strings.Contains(body, "a.publishStage(trackSTT, st, aspect, segs, entries, false, written, false)") {
+		t.Errorf("publishRedraw does not run the picture half of publishStage:\n%s", body)
+	}
+	if strings.Contains(body, "writeUpload") || strings.Contains(body, "a.produce(") {
+		t.Error("the redraw writes text or renders the video")
+	}
+	for _, want := range []string{"st := p.snapshot()", "aspect := a.produceCut().Aspect", "a.produceEntries()"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("publishRedraw no longer reads %q before its goroutine", want)
+		}
+	}
+	if !strings.Contains(body, "if a.running {") {
+		t.Error("the redraw can start on top of a run")
+	}
+	if !strings.Contains(body, `a.publishDone("thumbnail drawn", failed)`) {
+		t.Error("the redraw reports somebody else's outcome")
+	}
+	if !strings.Contains(funcBody(t, "publish.go", `func \(a \*App\) publishSuggest\(\) \{`),
+		`a.publishDone("title, instruction and description rewritten", failed)`) {
+		t.Error("the suggest run no longer says what it did")
+	}
+}
+
+// The picture on screen is re-read when the file under it changes. GtkPicture
+// compares the GFile it is handed against the one it holds and returns early
+// when they are equal -- and every path here rewrites the same two names, so
+// the name is exactly what cannot be used to notice a change.
+func TestTheShownThumbnailIsReReadWhenItChanges(t *testing.T) {
+	body := funcBody(t, "publish.go", `func \(p \*publisher\) showShot\(\) \{`)
+	if !strings.Contains(body, "gdk.NewTextureFromFilename(f)") || !strings.Contains(body, "p.shot.SetPaintable(tex)") {
+		t.Errorf("showShot hands GtkPicture a filename it may already hold:\n%s", body)
+	}
+	for _, c := range []struct{ file, fn string }{
+		{"publish_text.go", `func \(p \*publisher\) recomposite\(\) \{`},
+		{"publish.go", `func \(p \*publisher\) refresh\(\) \{`},
+	} {
+		if !strings.Contains(funcBody(t, c.file, c.fn), "howShot()") {
+			t.Errorf("%s does not go through showShot", c.fn)
+		}
+	}
+}
+
+// A marked box is the Cut page's text box: dashed violet, dragged by its
+// border to resize and by its middle to move, with the pointer saying which
+// before anything is pressed.
+func TestAMarkedBoxIsDraggedLikeTheCutsTextBox(t *testing.T) {
+	src := readSrc(t, "publish_text.go")
+	out := funcBody(t, "publish_text.go", `func pubBoxOutline\(`)
+	for _, want := range []string{"cr.SetSourceRGBA(0.6, 0.55, 0.95, 0.9)", "cr.SetDash([]float64{4, 3}, 0)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the marked box is not drawn like the cut's: missing %q", want)
+		}
+	}
+	if !strings.Contains(readSrc(t, "cut_fxview.go"), "cr.SetDash([]float64{4, 3}, 0)") {
+		t.Error("the cut's own box is no longer dashed, so this page is copying nothing")
+	}
+	for _, want := range []string{"fxEdges(x, y, bx, by, bw, bh)", "resizeFree(snapPointPx(x, fxSnapPx, xs...),", "fxCursorName(h, v, l, t, in)"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("publish_text.go no longer contains %q", want)
+		}
+	}
+	if !strings.Contains(src, "snapEdgePx(nx, grab.w0, fxSnapPx, xs...)") {
+		t.Error("the box does not follow the hand while it is moved")
+	}
+	if !strings.Contains(src, "ts[i].Cx, ts[i].Cy, ts[i].Wf, ts[i].Hf = b.cx, b.cy, b.wf, b.hf") {
+		t.Error("a moved or resized box is never written back")
+	}
+	if pubBoxMin < pubIconPx {
+		t.Errorf("a box may be dragged to %g px, smaller than the ✎ it wears (%g)", pubBoxMin, pubIconPx)
+	}
+}
+
+// A marked box snaps, as the cut's does: to the picture's own edges and
+// middle, to the band the title is printed in, and to every other box.
+func TestAMarkedBoxSnapsToTheFrameAndToTheOthers(t *testing.T) {
+	src := readSrc(t, "publish_text.go")
+	for _, want := range []string{
+		"xs = []float64{ox, ox + dw/2, ox + dw}",
+		"xs = append(xs, ox+tx, ox+tx+tw)",
+		"xs = append(xs, bx, bx+bw/2, bx+bw)",
+		"if i == skip {",
+		"snapPointPx(x, fxSnapPx, xs...)",
+		"snapEdgePx(nx, grab.w0, fxSnapPx, xs...)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("publish_text.go no longer contains %q", want)
+		}
+	}
+	if !strings.Contains(readSrc(t, "cut_fxview.go"), "const fxSnapPx = 10.0") {
+		t.Error("the cut's snap reach moved; this page is sharing a constant that is gone")
+	}
+	if !strings.Contains(src, "wf: math.Abs(bx1-x0) / dw,") {
+		t.Error("a new box commits the raw drag rather than the snapped band")
+	}
+}
+
+// The ✎ is drawn, not typed: a glyph is the font's idea of a pencil at 13 px,
+// and on a machine whose sans-serif has no U+270E it is an empty box -- tofu
+// on the only control that rewords a caption.
+func TestTheEditMarkIsAPathAndNotAGlyph(t *testing.T) {
+	src := readSrc(t, "publish_text.go")
+	if strings.Contains(funcBody(t, "publish_text.go", `func \(p \*publisher\) textOverlay\(`), "ShowText") {
+		t.Error("the edit mark is a glyph again, which is tofu wherever the font has no pencil")
+	}
+	if !strings.Contains(src, "drawPencil(cr, ix+pubIconPx/2, iy+pubIconPx/2, pubIconPx*0.62)") {
+		t.Error("the chip no longer draws the pencil")
+	}
+	body := funcBody(t, "publish_text.go", `func drawPencil\(`)
+	for _, want := range []string{"cr.Rotate(-math.Pi / 4)", "cr.ClosePath()", "cr.Fill()"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("drawPencil no longer contains %q", want)
+		}
+	}
+	if !strings.Contains(readSrc(t, "cut_hear.go"), "func drawSpeaker(") {
+		t.Error("drawSpeaker is gone; the rule this follows went with it")
+	}
+}
+
+// A frame can BE the thumbnail: the session usually already contains the
+// picture, and the only way to get it there was to make it the base and ask
+// sd.cpp to change as little as possible.
+func TestAnImageCanBeUsedAsTheThumbnailAsItIs(t *testing.T) {
+	src := readSrc(t, "publish.go")
+	if !strings.Contains(src, `use := gtk.NewButtonWithLabel("Use as thumbnail")`) ||
+		!strings.Contains(src, "s.useAsThumbnail()") {
+		t.Error("an image in the row has no way to become the thumbnail as it is")
+	}
+	body := funcBody(t, "publish.go", `func \(s \*pubSlot\) useAsThumbnail\(\) \{`)
+	for _, want := range []string{
+		"pubWriteCropped(",
+		"thumbnail-plain.png",
+		"p.recomposite()",
+		"if p.a.running {",
+		"st.Own = true",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("useAsThumbnail does not %q:\n%s", want, body)
+		}
+	}
+	for _, gone := range []string{"drawThumbnail", "publishStage", "sdDraw"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("useAsThumbnail calls %q -- it is meant to draw nothing", gone)
+		}
+	}
+	crop := readSrc(t, "publish_crop.go")
+	if strings.Count(crop, "func pubCropImage(") != 1 {
+		t.Error("the crop is not in one place")
+	}
+	for _, fn := range []string{"pubCropRefImage", "pubWriteCropped"} {
+		if !strings.Contains(funcBody(t, "publish_crop.go", `func `+fn+`\(`), "pubCropImage(path, r, srcA, outA)") {
+			t.Errorf("%s does its own crop instead of the shared one", fn)
+		}
 	}
 }
 
@@ -653,4 +869,114 @@ func funcBody(t *testing.T, file, head string) string {
 		t.Fatalf("%s: no function matching %s", file, head)
 	}
 	return m
+}
+
+// The plain copy is a PNG whatever the frame was, and the size a drawn one is.
+//
+// Two ways the button did nothing. It copied the source bytes through when no
+// crop was needed -- which is most frames -- so a JPEG was written to a file
+// called thumbnail-plain.png, cairo refused to read it ("undefined"), the
+// words were never printed and thumbnail.png was never rewritten: the picture
+// on screen simply did not change. And at source size a capture frame is a
+// 14 MB PNG, seven times what YouTube takes for a thumbnail, so the one that
+// did land was a file the upload would refuse.
+func TestAChosenThumbnailIsAPNGTheSizeADrawnOneIs(t *testing.T) {
+	dir := t.TempDir()
+	// a JPEG, like every extracted frame, already the video's shape -- the
+	// case that used to copy the bytes through
+	src := filepath.Join(dir, "frame.jpg")
+	img := image.NewRGBA(image.Rect(0, 0, 1920, 1080))
+	for y := 0; y < 1080; y++ {
+		for x := 0; x < 1920; x++ {
+			img.Set(x, y, color.RGBA{uint8(x % 251), uint8(y % 241), 90, 255})
+		}
+	}
+	f, err := os.Create(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jpeg.Encode(f, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	w, h := pubBox("16:9")
+	srcA, outA := imageAspect(src), float64(w)/float64(h)
+	if !pubWholeFrame(pubSettings{}.cropRect(srcA, outA), srcA, outA) {
+		t.Fatal("the fixture is not the case that used to copy bytes through")
+	}
+	out := filepath.Join(dir, "thumbnail-plain.png")
+	if err := pubWriteCropped(src, pubSettings{}.cropRect(srcA, outA), srcA, outA, w, h, out); err != nil {
+		t.Fatalf("pubWriteCropped: %v", err)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 8 || string(b[1:4]) != "PNG" {
+		t.Fatalf("the plain copy is not a PNG: % x", b[:8])
+	}
+	got, err := png.Decode(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("the plain copy will not decode as a PNG: %v", err)
+	}
+	if d := got.Bounds(); d.Dx() != w || d.Dy() != h {
+		t.Errorf("the plain copy is %dx%d, want the %dx%d a drawn one is", d.Dx(), d.Dy(), w, h)
+	}
+	// ...and the words print onto it, which never happened while it was a JPEG
+	if err := drawPubTexts(out, filepath.Join(dir, "thumbnail.png"), nil, "A Title"); err != nil {
+		t.Errorf("the words will not print onto a chosen thumbnail: %v", err)
+	}
+	// a picture already inside the box is left alone rather than blown up
+	small := image.NewRGBA(image.Rect(0, 0, 40, 30))
+	if pubFit(small, w, h) != image.Image(small) {
+		t.Error("a picture smaller than the box was resized anyway")
+	}
+}
+
+// Choosing a picture is the answer to "what should the thumbnail be", so ▶
+// stops drawing over it. It used to redraw on the next run, because the run
+// draws whenever the record does not say otherwise -- so the choice survived
+// exactly until the next press of ▶.
+func TestAChosenThumbnailIsNotRedrawnByARun(t *testing.T) {
+	blob, err := json.Marshal(pubSettings{Own: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"own":true`) {
+		t.Errorf("the choice is not written to the project: %s", blob)
+	}
+	if blob, _ := json.Marshal(pubSettings{}); strings.Contains(string(blob), "own") {
+		t.Errorf("a drawn thumbnail writes the key anyway: %s", blob)
+	}
+	// the run asks before it draws, and prints the words instead
+	stage := funcBody(t, "publish.go", `func \(a \*App\) publishStage\(`)
+	i, j := strings.Index(stage, "if st.Own {"), strings.Index(stage, "a.drawThumbnail(st, aspect)")
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("publishStage draws before it asks whether the picture was chosen (%d, %d)", i, j)
+	}
+	if !strings.Contains(stage, "return a.printPubWords(st)") {
+		t.Error("a chosen thumbnail gets no words printed on it")
+	}
+	// ↻ is the one thing that takes it back
+	if !strings.Contains(funcBody(t, "publish.go", `func \(a \*App\) publishRedraw\(\) \{`), "st.Own = false") {
+		t.Error("the redraw does not clear the choice, so ↻ would draw and the next run would not")
+	}
+	// nothing else touches it: rewording a title reprints onto whatever is
+	// there, drawn or chosen
+	for _, c := range []struct{ file, fn string }{
+		{"publish.go", `func \(a \*App\) publishSuggest\(\) \{`},
+		{"publish_text.go", `func \(p \*publisher\) recomposite\(\) \{`},
+	} {
+		if strings.Contains(funcBody(t, c.file, c.fn), ".Own") {
+			t.Errorf("%s changes whether the thumbnail was chosen", c.fn)
+		}
+	}
+	// and it round-trips through the page
+	if !strings.Contains(funcBody(t, "publish.go", `func \(p \*publisher\) snapshot\(\) pubSettings \{`), "Own: p.own") {
+		t.Error("the snapshot drops the choice")
+	}
+	if !strings.Contains(funcBody(t, "publish.go", `func \(p \*publisher\) apply\(`), "p.crop, p.own = st.Crop, st.Own") {
+		t.Error("a project load drops the choice")
+	}
 }

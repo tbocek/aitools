@@ -275,7 +275,10 @@ type narrator struct {
 	// wavs the server refused: stalling on them again would pause at every clip
 	synthFail map[string]bool
 	list      *gtk.ListBox
-	rows      []*narrRow
+	// the scroller the list sits in, kept so a rebuild can put the reader back
+	// where they were (rebuildRows)
+	listScroll *gtk.ScrolledWindow
+	rows       []*narrRow
 	// what typing owes the disk. The line boxes and the clock fields write
 	// the whole narration file and re-count the output folder, which is a
 	// write and a directory walk per keystroke unless they are collected
@@ -536,6 +539,7 @@ func (a *App) buildNarrate() gtk.Widgetter {
 		}
 	})
 	left := gtk.NewScrolledWindow()
+	n.listScroll = left
 	left.SetChild(n.list)
 	left.SetVExpand(true)
 	// The rows wrap; they do not scroll sideways. Left on the default the
@@ -780,6 +784,19 @@ func (n *narrator) queueRebuild() {
 func (n *narrator) rebuildRows() {
 	if n.list == nil {
 		return // headless (tests): the entries are the model, the rows a view of it
+	}
+	// Where the reader was. A rebuild throws every row away and builds it
+	// again, and a fresh list is scrolled to the top -- so editing line twelve
+	// and committing it put line one on screen and line twelve somewhere below
+	// the fold, which is what "it jumps back to the start" was.
+	//
+	// The OFFSET is restored, not the focus. A rebuild is usually raised by the
+	// focus leaving a box (queueRebuild), so grabbing it back would pull it off
+	// whatever it was moving to -- and the one path that does want the focus
+	// asks for it afterwards by name (focusLine).
+	at, sel := n.listOffset(), -1
+	if r := n.list.SelectedRow(); r != nil {
+		sel = r.Index()
 	}
 	n.building = true
 	for {
@@ -1052,6 +1069,49 @@ The eight it mixes: happy, angry, sad, afraid, disgusted, melancholic, surprised
 		n.rows = append(n.rows, &narrRow{text: text, speak: speak, stamp: stamp})
 	}
 	n.building = false
+	n.restoreOffset(at, sel)
+}
+
+// listOffset is how far down the narration list the reader has scrolled, or 0
+// where there is no scroller to ask (a test's page).
+func (n *narrator) listOffset() float64 {
+	if n.listScroll == nil {
+		return 0
+	}
+	if adj := n.listScroll.VAdjustment(); adj != nil {
+		return adj.Value()
+	}
+	return 0
+}
+
+// restoreOffset puts the list back where it was after a rebuild, and re-selects
+// the row that was selected.
+//
+// On the idle rather than now: the rows have just been appended and have no
+// height yet, so the adjustment has no range to hold the value and setting it
+// here would clamp it to nought -- which is the very jump this exists to stop.
+// Clamped to what the new list can actually show, because the rebuild may have
+// left fewer rows than the offset was measured against (a line deleted, another
+// project loaded).
+//
+// The selection goes back through selectRow, which holds n.building across it:
+// picking a row seeks the preview, and a row that was already picked being put
+// back is not a hand asking for anything.
+func (n *narrator) restoreOffset(at float64, sel int) {
+	if n.listScroll == nil || (at <= 0 && sel < 0) {
+		return
+	}
+	glib.IdleAdd(func() {
+		if n.listScroll == nil {
+			return
+		}
+		if adj := n.listScroll.VAdjustment(); adj != nil && at > 0 {
+			adj.SetValue(math.Max(0, math.Min(at, adj.Upper()-adj.PageSize())))
+		}
+		if sel >= 0 && sel < len(n.rows) {
+			n.selectRow(sel)
+		}
+	})
 }
 
 // restamp redraws the times on a row and on the row above it, and the second

@@ -346,3 +346,47 @@ func TestNarrationLandsWhereItWasPlaced(t *testing.T) {
 			"this is the units bug: adelay counts milliseconds")
 	}
 }
+
+// The encode has to be one a hardware decoder will take. x264's slower presets
+// ask for 16 reference frames; at 4K that is a decoded picture buffer no H.264
+// level under 6.0 can hold, so the stream is stamped Level 6.0 -- which no
+// consumer hardware decoder implements. The file then decodes perfectly in
+// software and tears into blocks in every player that uses the GPU, which
+// reads as a compression fault and is not one.
+//
+// Measured rather than argued: the same one-second 4K encode, with and
+// without the cap.
+func TestTheEncodeStaysWithinAHardwareDecodersLevel(t *testing.T) {
+	if _, err := exec.LookPath(ffTool("ffmpeg")); err != nil {
+		t.Skip("no ffmpeg")
+	}
+	if !strings.Contains(strings.Join(codecArgs(prodSettings{Codec: "h264", Preset: "veryslow", CRF: 24}), " "), "-refs 4") {
+		t.Fatal("the h264 encode no longer caps its reference frames")
+	}
+	dir := t.TempDir()
+	level := func(args ...string) string {
+		out := filepath.Join(dir, "x.mp4")
+		cmd := append([]string{"-v", "error", "-y", "-f", "lavfi", "-i",
+			"testsrc2=size=3840x2160:rate=30", "-t", "1"}, args...)
+		if err := exec.Command(ffTool("ffmpeg"), append(cmd, out)...).Run(); err != nil {
+			t.Fatalf("encode %v: %v", args, err)
+		}
+		b, err := exec.Command(ffTool("ffprobe"), "-v", "error", "-select_streams", "v:0",
+			"-show_entries", "stream=level", "-of", "csv=p=0", out).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	// what the settings actually send
+	got := level(codecArgs(prodSettings{Codec: "h264", Preset: "veryslow", CRF: 30})...)
+	if got != "51" && got != "50" && got != "42" && got != "41" && got != "40" {
+		t.Errorf("a 4K veryslow encode declares level %s -- hardware decoders stop at 51", got)
+	}
+	// ...and that it is the cap doing it, not the resolution or the preset
+	if bad := level("-c:v", "libx264", "-preset", "veryslow", "-crf", "30", "-pix_fmt", "yuv420p"); bad == got {
+		t.Errorf("uncapped and capped both declare level %s -- the test proves nothing", bad)
+	} else {
+		t.Logf("uncapped level %s, capped level %s", bad, got)
+	}
+}

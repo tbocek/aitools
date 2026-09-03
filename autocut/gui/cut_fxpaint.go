@@ -71,12 +71,40 @@ func fxOverPx(f cutFx, ox, oy, ow, oh float64) (x, y, w, h float64) {
 	return ox + bx, oy + by, bw, bh
 }
 
+// How the dark edge round a title is made, shared by the two places that make
+// one: fxEdgeR is how far it reaches beyond the glyph, as a fraction of the
+// font size, and fxEdgeA how dark it is. The render strokes with them
+// (textSVG, at twice the radius, since a stroke straddles the outline); the
+// preview and the thumbnail dilate with them here.
+//
+// fxEdgeSteps is how many directions that dilation samples. It was eight, on
+// the compass, and eight is not enough twice over: the four diagonals sat at
+// d·√2 rather than d, so the edge was fatter on a diagonal than on a stem, and
+// between the eight there was nothing, so it was faceted. Sixteen on a circle
+// is smooth at any size a title is read at.
+const (
+	fxEdgeR     = 0.08
+	fxEdgeA     = 0.85
+	fxEdgeSteps = 16
+)
+
 // drawFxText paints one text effect into the box it was given, the way the
 // render will put it: the same font size and the same line breaks (fitText
 // answers for both), each line centred on its own measured width -- which is
-// what SVG's text-anchor does too. The dark edge is eight offset copies rather
-// than the SVG's stroke, because cairo's Go binding has no text path to
-// stroke; it is the same idea at preview resolution.
+// what SVG's text-anchor does too.
+//
+// The dark edge is the glyph drawn again around itself rather than the SVG's
+// stroke, because cairo's Go binding has no text path to stroke. What it must
+// not be is those copies painted straight onto the picture. At fxEdgeA each
+// they COMPOUND where they overlap, so the edge came out in bands -- one
+// copy's worth of black, then two, then three -- and on a letter whose
+// diagonals meet a stem, a K, the bands separate and read as three edges
+// round one letter. Drawn into a group they are one shape, composited once,
+// at one alpha: which is what a stroke is, and what the render already did.
+//
+// Both passes over all the lines, outline then fill, in that order for the
+// reason textSVG gives: a descender of one line must not be drawn over the
+// outline of the next.
 func drawFxText(cr *cairo.Context, f cutFx, alpha, tx, ty, tw, th float64) {
 	size, lines := fitText(f.Text, tw, th)
 	if size <= 0 || alpha <= 0.01 {
@@ -86,20 +114,31 @@ func drawFxText(cr *cairo.Context, f cutFx, alpha, tx, ty, tw, th float64) {
 	cr.SetFontSize(size)
 	base := textBaselines(ty, th, size, len(lines))
 	mid := tx + tw/2
-	d := math.Max(1, size*0.08)
+	d := math.Max(1, size*fxEdgeR)
+	left := func(ln string) float64 { return mid - cr.TextExtents(ln).XAdvance/2 }
+
+	cr.PushGroup()
+	cr.SetSourceRGB(0, 0, 0)
 	for i, ln := range lines {
 		if strings.TrimSpace(ln) == "" {
 			continue
 		}
-		x := mid - cr.TextExtents(ln).XAdvance/2
-		cr.SetSourceRGBA(0, 0, 0, 0.85*alpha)
-		for _, o := range [8][2]float64{{-d, 0}, {d, 0}, {0, -d}, {0, d},
-			{-d, -d}, {d, -d}, {-d, d}, {d, d}} {
-			cr.MoveTo(x+o[0], base[i]+o[1])
+		x := left(ln)
+		for k := 0; k < fxEdgeSteps; k++ {
+			a := 2 * math.Pi * float64(k) / fxEdgeSteps
+			cr.MoveTo(x+d*math.Cos(a), base[i]+d*math.Sin(a))
 			cr.ShowText(ln)
 		}
-		cr.SetSourceRGBA(1, 1, 1, alpha)
-		cr.MoveTo(x, base[i])
+	}
+	cr.PopGroupToSource()
+	cr.PaintWithAlpha(fxEdgeA * alpha)
+
+	cr.SetSourceRGBA(1, 1, 1, alpha)
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		cr.MoveTo(left(ln), base[i])
 		cr.ShowText(ln)
 	}
 }

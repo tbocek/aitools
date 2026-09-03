@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
@@ -1161,46 +1162,64 @@ func (a *App) produceClicked() {
 	a.updateRunControls()
 	a.logExp.SetExpanded(true)
 	if written {
-		a.logf(">>> producing %s: redraw the thumbnail, then render %d clips, %s/%s crf %d",
+		a.logf(">>> producing %s: %d clips at %s/%s crf %d, and the thumbnail redrawn beside them",
 			filepath.Base(st.OutFile), len(segs), st.Container, st.Codec, st.CRF)
 	} else {
-		a.logf(">>> producing %s: write the upload text, draw the thumbnail, then render %d clips, %s/%s crf %d",
+		a.logf(">>> producing %s: %d clips at %s/%s crf %d, and the upload text and thumbnail written beside them",
 			filepath.Base(st.OutFile), len(segs), st.Container, st.Codec, st.CRF)
 	}
 	a.qReset()
-	a.qJob(trackSTT, "publish", 0, 0)
-	a.prog(trackSTT, 0, "thinking")
+	// two halves, side by side. The render owns the fraction -- it is minutes
+	// where the other is seconds, so the needle IS the render's progress --
+	// and the words-and-picture half owns the second line of the bar, which
+	// is what it has to say for itself.
+	a.qJob(trackSTT, "render", 0, 0)
+	a.prog(trackSTT, 0, "preparing")
+	a.qJob(trackFrames, "publish", 0, 0)
+	a.prog(trackFrames, 0, "thinking")
 	a.pulseUntilCounted()
 
 	go func() {
-		if err := a.publishStage(pst, aspect, segs, entries, !written, written, false); err != nil {
+		// The two halves do not touch. The upload text and the thumbnail are
+		// written from the cut and the narration and read their frames out of
+		// inputs/; the render reads the same cut and narration and writes
+		// produce/ and the video. Neither reads a file the other writes, and
+		// the render never reads the publish record -- so there was nothing
+		// for the render to wait for, and it waited anyway: a minute of an
+		// idle encoder while a model thought about a title, and then the
+		// thumbnail drawing on the GPU while the CPU had nothing to do.
+		//
+		// A failure in the words does not throw the render away any more.
+		// They are separate deliverables, the expensive one is the video, and
+		// an sd.cpp that is down is not a reason to spend the encode again.
+		var wg sync.WaitGroup
+		var pubErr error
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pubErr = a.publishStage(trackFrames, pst, aspect, segs, entries, !written, written, false)
+			a.qDone(trackFrames, 0) // its own line goes quiet; the needle was never its
 			glib.IdleAdd(func() {
-				a.running = false
-				a.updateRunControls()
 				if p := a.pub; p != nil {
-					p.refresh() // whatever was written landed before the failure
+					p.refresh() // whatever landed, up as soon as it is written
 				}
-				a.updateGates()
-				if errors.Is(err, errStopped) {
-					a.progress.SetText("production stopped")
-					return
-				}
-				a.logf("produce FAILED: %v", err)
-				a.progress.SetText("production failed — see log")
 			})
-			return
-		}
-		glib.IdleAdd(func() {
-			if p := a.pub; p != nil {
-				p.refresh() // the thumbnail and the text, up before the long half starts
+			if pubErr != nil && !errors.Is(pubErr, errStopped) {
+				a.logfIdle("!!! the upload text and thumbnail failed: %v -- the render carries on", pubErr)
 			}
-			a.qJob(trackSTT, "render", 0, 0)
-			a.prog(trackSTT, 0, "preparing")
-		})
+		}()
 		err := a.produce(segs, entries, st, vids, auds)
+		wg.Wait()
+		// the render's word is the run's: it is what the press was for, and a
+		// title that did not get written is a line in the log, not a failure
+		// to show for a video that rendered
+		if err == nil && pubErr != nil {
+			err = pubErr
+		}
 		glib.IdleAdd(func() {
 			a.running = false
 			a.updateRunControls()
+			a.updateGates()
 			if err != nil {
 				if !errors.Is(err, errStopped) {
 					a.logf("produce FAILED: %v", err)
@@ -2434,8 +2453,32 @@ func codecArgs(st prodSettings) []string {
 		return []string{"-c:v", "libvpx-vp9", "-crf", strconv.Itoa(st.CRF), "-b:v", "0",
 			"-row-mt", "1", "-cpu-used", vp9Speed(st.Preset), "-pix_fmt", "yuv420p"}
 	default:
+		// -refs is the whole of what keeps this playable on hardware.
+		//
+		// x264's slower presets ask for 16 reference frames. At 4K that is a
+		// decoded picture buffer no H.264 level below 6.0 can hold, so x264
+		// stamps the stream Level 6.0 -- and no consumer hardware decoder
+		// implements 6.0. The common ones stop at 5.1, whose buffer at
+		// 3840x2160 is five frames. So a veryslow render came out a file
+		// ffmpeg decodes perfectly in software and every hardware decoder
+		// tears into blocks: the static parts right, everything moving wrong,
+		// worst where the motion is. It looks exactly like a compression
+		// fault and is not one -- the encode is fine, it is addressed to a
+		// decoder that does not exist. Measured: veryslow at 4K declares
+		// level 6.0, and the same encode with this declares 5.1.
+		//
+		// Four rather than five: five is the ceiling at 4K and a ceiling is
+		// not a place to sit -- an output a little wider would be over it
+		// again. Everything else the preset does, the motion search and the
+		// trellis and the subpixel, is untouched, which is what the preset
+		// was chosen for.
+		//
+		// The level itself is left to x264. With the buffer inside 5.1 it
+		// computes one that fits, and computing it beats naming one: a level
+		// declared higher than the picture needs is the same refusal on a
+		// small output that 6.0 is on a large one.
 		return []string{"-c:v", "libx264", "-preset", st.Preset,
-			"-crf", strconv.Itoa(st.CRF), "-pix_fmt", "yuv420p"}
+			"-crf", strconv.Itoa(st.CRF), "-pix_fmt", "yuv420p", "-refs", "4"}
 	}
 }
 

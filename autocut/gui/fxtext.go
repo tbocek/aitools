@@ -224,8 +224,12 @@ func textSVG(f cutFx, outW, outH int) []byte {
 		// the outline first, the fill over it: one pass each, so a descender
 		// of one line is never drawn over the outline of the next
 		for _, pass := range [2]string{
-			fmt.Sprintf(`fill="none" stroke="#000" stroke-width="%s" stroke-linejoin="round" opacity="0.85"`,
-				trimNum(size*0.16)),
+			// twice the radius: a stroke straddles the outline, so half of it
+			// is inside the glyph and half is the edge the preview dilates by
+			// (fxEdgeR). One number for both, or the thumbnail and the video
+			// wear different edges and only a screenshot says so.
+			fmt.Sprintf(`fill="none" stroke="#000" stroke-width="%s" stroke-linejoin="round" opacity="%s"`,
+				trimNum(size*fxEdgeR*2), trimNum(fxEdgeA)),
 			`fill="#ffffff"`,
 		} {
 			for i, ln := range lines {

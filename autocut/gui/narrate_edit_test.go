@@ -975,3 +975,56 @@ func TestTheNarrationColumnWrapsRatherThanScrollingSideways(t *testing.T) {
 		}
 	}
 }
+
+// A rebuild keeps the reader's place. Every row is thrown away and built
+// again -- a time edit commits, a re-roll changes an end time, a take lands --
+// and a fresh GtkListBox is scrolled to the top, so editing line twelve put
+// line one on screen and line twelve below the fold. That is what "it jumps
+// back to the start" was, and it happened on the ordinary path: type a line,
+// leave the box.
+//
+// The offset is put back and not the focus, because a rebuild is usually
+// raised BY the focus leaving (queueRebuild) and taking it back would pull it
+// off whatever it was moving to. The one caller that does want the focus asks
+// for it by name afterwards.
+func TestARebuildKeepsTheReadersPlace(t *testing.T) {
+	src := readSrc(t, "narrate.go")
+	for _, want := range []string{
+		"at, sel := n.listOffset(), -1", // taken before the rows go
+		"n.restoreOffset(at, sel)",      // and put back after they are built
+		"n.listScroll = left",           // the scroller the offset is read from
+		"adj.Upper()-adj.PageSize()",    // clamped to what the new list can show
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("narrate.go no longer contains %q -- the list goes back to the top on every rebuild", want)
+		}
+	}
+	// on the idle: the rows have just been appended and have no height yet, so
+	// the adjustment has no range and setting the value now clamps it to nought
+	body := funcBody(t, "narrate.go", `func \(n \*narrator\) restoreOffset\(`)
+	if !strings.Contains(body, "glib.IdleAdd(func() {") {
+		t.Errorf("restoreOffset sets the offset before the rows have a height:\n%s", body)
+	}
+	// the selection goes back through selectRow, which holds n.building across
+	// it -- picking a row seeks the preview, and putting back a row that was
+	// already picked is not a hand asking for anything
+	if !strings.Contains(body, "n.selectRow(sel)") {
+		t.Error("restoreOffset re-selects the row some other way than selectRow")
+	}
+	if !strings.Contains(funcBody(t, "narrate.go", `func \(n \*narrator\) selectRow\(`), "n.building = true") {
+		t.Error("selectRow no longer guards the seek, so restoring a selection would jump the preview")
+	}
+	// and rebuildRows still takes the offset before it empties the list, or it
+	// would read nought off a list it had already torn down
+	rb := funcBody(t, "narrate.go", `func \(n \*narrator\) rebuildRows\(`)
+	i, j := strings.Index(rb, "n.listOffset()"), strings.Index(rb, "n.list.Remove(row)")
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("rebuildRows reads the offset after emptying the list (offset %d, remove %d)", i, j)
+	}
+	// headless, where there is no scroller at all: no panic, no work
+	n := &narrator{}
+	if got := n.listOffset(); got != 0 {
+		t.Errorf("a page with no scroller has offset %g", got)
+	}
+	n.restoreOffset(120, 3) // must not reach for a nil scroller
+}

@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/cairo"
+	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
@@ -48,11 +49,46 @@ type pubText struct {
 // box is the pubText as the drawing code speaks it, kept on the frame.
 func (t pubText) box() fxBox { return fxBox{cx: t.Cx, cy: t.Cy, wf: t.Wf, hf: t.Hf}.clamp() }
 
-// pubTitleBox is where the title goes: a band across the upper part of the
-// picture. Fixed rather than draggable because the title is not a marked text
-// -- it is typed in its own entry, and the image model is told to keep this
-// part of the frame calm for it, which only works if "this part" never moves.
+// pubTitleBox is where the title goes before anybody moves it: a band across
+// the upper part of the picture, which is where a thumbnail title belongs and
+// what the image model is asked to leave calm (pubNoLettering).
+//
+// It was FIXED, and the reason given was that the model is told to keep this
+// part of the frame clear, which only works if "this part" never moves. That
+// held while every thumbnail was drawn. It stopped holding when a picture
+// could be chosen instead (pubSlot.useAsThumbnail) -- there is no model to
+// tell anything then -- and it was never much of a reason anyway: the box the
+// words are in and the box the model is asked about are the same box, so the
+// instruction can simply say where it is (pubTitleWhere).
+//
+// What it cost was worse than it looked. The title was drawn on the picture
+// with no outline, no ✎ and no handle: two blocks of words on the thumbnail,
+// one of which nothing on the page could reach. The way to move a title was
+// to type it a second time as a marked text and leave the band empty.
 var pubTitleBox = fxBox{cx: 0.5, cy: 0.14, wf: 0.94, hf: 0.18}
+
+// titleBox is where THIS project's title goes: the band it was dragged to, or
+// the default one.
+func (st pubSettings) titleBox() fxBox {
+	if st.TitleBox == nil {
+		return pubTitleBox
+	}
+	return st.TitleBox.box()
+}
+
+// pubTitleWhere is the third of the picture the title band sits in, for the
+// sentence the image model is asked to keep clear (pubNoLettering). Named
+// rather than measured, because "keep the upper part calm" is an instruction a
+// model follows and "keep 0.14 to 0.23 calm" is not.
+func pubTitleWhere(b fxBox) string {
+	switch {
+	case b.cy < 1.0/3:
+		return "upper"
+	case b.cy > 2.0/3:
+		return "lower"
+	}
+	return "middle"
+}
 
 // drawPubTexts prints the words onto the plain picture and writes the result:
 // every marked text in its box, then the title across the top, drawn exactly
@@ -61,7 +97,7 @@ var pubTitleBox = fxBox{cx: 0.5, cy: 0.14, wf: 0.94, hf: 0.18}
 // nothing to print the plain bytes are copied through untouched -- a decode
 // and re-encode of a picture nothing was drawn on is a lossless way to make
 // the two files differ.
-func drawPubTexts(plain, out string, texts []pubText, title string) error {
+func drawPubTexts(plain, out string, texts []pubText, title string, tb fxBox) error {
 	title = strings.TrimSpace(title)
 	var on []pubText
 	for _, t := range texts {
@@ -87,7 +123,7 @@ func drawPubTexts(plain, out string, texts []pubText, title string) error {
 		drawFxText(cr, cutFx{Text: t.Text}, 1, x, y, bw, bh)
 	}
 	if title != "" {
-		x, y, bw, bh := pubTitleBox.px(w, h)
+		x, y, bw, bh := tb.px(w, h)
 		drawFxText(cr, cutFx{Text: title}, 1, x, y, bw, bh)
 	}
 	return surf.WriteToPNG(out)
@@ -107,7 +143,7 @@ func (p *publisher) recomposite() {
 		return // nothing drawn yet; the run prints the words when it draws
 	}
 	title := strings.TrimSpace(p.title.Text())
-	if err := drawPubTexts(plain, dir+"/thumbnail.png", p.texts, title); err != nil {
+	if err := drawPubTexts(plain, dir+"/thumbnail.png", p.texts, title, p.snapshot().titleBox()); err != nil {
 		p.a.logf("thumbnail words: %v", err)
 		return
 	}
@@ -137,13 +173,26 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 	area := gtk.NewDrawingArea()
 	p.shotOver = area
 	area.SetTooltipText("Drag a box over the picture to put words on it — they are printed " +
-		"to fill the box, like a Text effect in Cut, and the box can be marked as often " +
-		"as you like. Press a box's ✎ to reword or remove it. The title is printed " +
+		"to fill the box, like a Text effect in Cut. Drag a box's border to resize it or its " +
+		"middle to move it, and press its ✎ to reword or remove it. The title is printed " +
 		"across the top on its own.")
 
-	// the rubber band, while a new box is being dragged out: widget pixels,
+	// the rubber band, while a NEW box is being dragged out: widget pixels,
 	// shared by the drag and the draw
 	var band *[4]float64
+	// and the box being moved or resized: which one, what was grabbed, where
+	// it started, and where it is now. Live in widget pixels and committed to
+	// fractions once the hand lets go -- a box that only moved when the drag
+	// ended would be a box you place blind.
+	var grab struct {
+		on                             bool
+		i                              int
+		horiz, vert, left, top, inside bool
+		px, py, ax, ay                 float64
+		x0, y0, w0, h0                 float64
+		cur                            [4]float64
+	}
+	cursor := ""
 
 	// disp is where the shown picture sits in the widget, or ok=false when
 	// there is nothing to mark on.
@@ -154,11 +203,58 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 		ox, oy, dw, dh = fxDisp(w, h, p.shotA)
 		return ox, oy, dw, dh, dw > 0 && dh > 0
 	}
-	// iconPx is text i's ✎ chip, in widget pixels: the box's top-left corner,
-	// held inside it.
+	// rectPx is text i's box in widget pixels -- the live one while it is
+	// being dragged, so everything drawn and hit-tested agrees with the hand.
+	rectPx := func(i int, ox, oy, dw, dh float64) (x, y, w, h float64) {
+		if grab.on && grab.i == i {
+			return grab.cur[0], grab.cur[1], grab.cur[2], grab.cur[3]
+		}
+		bx, by, bw, bh := p.texts[i].box().px(dw, dh)
+		return ox + bx, oy + by, bw, bh
+	}
+	// iconPx is text i's ✎ chip: the box's top-left corner, held inside it.
 	iconPx := func(i int, ox, oy, dw, dh float64) (x, y float64) {
-		bx, by, _, _ := p.texts[i].box().px(dw, dh)
-		return ox + bx + 2, oy + by + 2
+		bx, by, _, _ := rectPx(i, ox, oy, dw, dh)
+		return bx + 2, by + 2
+	}
+	// snapLines is what a box lands on: the picture's own edges and middle,
+	// the band the title is printed in, and every OTHER box's edges and
+	// middle. Skip is the box being dragged -- a box snapping to itself would
+	// stick to wherever it started.
+	//
+	// The title band is in the list because the title is words on this same
+	// picture: a caption meant to sit under it, or to line up with its left
+	// edge, is a thing you can only do by hand otherwise, and at this size by
+	// hand means a pixel or two out.
+	snapLines := func(skip int, ox, oy, dw, dh float64) (xs, ys []float64) {
+		xs = []float64{ox, ox + dw/2, ox + dw}
+		ys = []float64{oy, oy + dh/2, oy + dh}
+		tb := pubTitleBox
+		tx, ty, tw, th := tb.px(dw, dh)
+		xs = append(xs, ox+tx, ox+tx+tw)
+		ys = append(ys, oy+ty, oy+ty+th)
+		for i := range p.texts {
+			if i == skip {
+				continue
+			}
+			bx, by, bw, bh := rectPx(i, ox, oy, dw, dh)
+			xs = append(xs, bx, bx+bw/2, bx+bw)
+			ys = append(ys, by, by+bh/2, by+bh)
+		}
+		return xs, ys
+	}
+	// grabAt is what a press at (x, y) has hold of: the topmost box whose
+	// border or middle is under it, or -1. Last first, because that is the one
+	// drawn on top and so the one the eye is pointing at.
+	grabAt := func(x, y, ox, oy, dw, dh float64) (i int, horiz, vert, left, top, inside bool) {
+		for i := len(p.texts) - 1; i >= 0; i-- {
+			bx, by, bw, bh := rectPx(i, ox, oy, dw, dh)
+			h, v, l, t, in := fxEdges(x, y, bx, by, bw, bh)
+			if h || v || in {
+				return i, h, v, l, t, in
+			}
+		}
+		return -1, false, false, false, false, false
 	}
 
 	area.SetDrawFunc(func(_ *gtk.DrawingArea, cr *cairo.Context, w, h int) {
@@ -166,38 +262,103 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 		if !ok {
 			return
 		}
-		for i, t := range p.texts {
-			bx, by, bw, bh := t.box().px(dw, dh)
-			// a hairline, same weight as the crop box's, so a box whose words
-			// blend into the picture can still be found and re-worded
-			cr.SetSourceRGBA(1, 1, 1, 0.55)
-			cr.SetLineWidth(1)
-			cr.Rectangle(ox+bx+0.5, oy+by+0.5, bw-1, bh-1)
-			cr.Stroke()
+		for i := range p.texts {
+			bx, by, bw, bh := rectPx(i, ox, oy, dw, dh)
+			// dashed and violet, the same frame the Cut page draws around the
+			// text effect being worked on (cut_fxview.go): the two are the
+			// same object -- a box words are fitted into -- and a solid
+			// hairline here read as part of the picture
+			pubBoxOutline(cr, bx, by, bw, bh)
 			ix, iy := iconPx(i, ox, oy, dw, dh)
 			cr.SetSourceRGBA(0, 0, 0, 0.7)
 			cr.Rectangle(ix, iy, pubIconPx, pubIconPx)
 			cr.Fill()
-			cr.SetSourceRGBA(1, 1, 1, 0.95)
-			cr.SelectFontFace("sans-serif", cairo.FontSlantNormal, cairo.FontWeightNormal)
-			cr.SetFontSize(pubIconPx * 0.65)
-			e := cr.TextExtents("✎")
-			cr.MoveTo(ix+(pubIconPx-e.Width)/2-e.XBearing, iy+(pubIconPx-e.Height)/2-e.YBearing)
-			cr.ShowText("✎")
+			drawPencil(cr, ix+pubIconPx/2, iy+pubIconPx/2, pubIconPx*0.62)
 		}
 		if band != nil {
-			cr.SetSourceRGBA(1, 1, 1, 0.9)
-			cr.SetLineWidth(1.5)
-			cr.Rectangle(band[0], band[1], band[2], band[3])
-			cr.Stroke()
+			pubBoxOutline(cr, band[0], band[1], band[2], band[3])
 		}
 	})
 
+	// the arrows on a border and the hand inside one, which is the whole of
+	// how anyone finds out a border resizes
+	motion := gtk.NewEventControllerMotion()
+	motion.ConnectMotion(func(x, y float64) {
+		name := "default"
+		if ox, oy, dw, dh, ok := disp(float64(area.AllocatedWidth()), float64(area.AllocatedHeight())); ok {
+			if i, h, v, l, t, in := grabAt(x, y, ox, oy, dw, dh); i >= 0 {
+				name = fxCursorName(h, v, l, t, in)
+			}
+		}
+		if name != cursor {
+			cursor = name
+			area.SetCursor(gdk.NewCursorFromName(name, nil))
+		}
+	})
+	area.AddController(motion)
+
 	g := gtk.NewGestureDrag()
 	var x0, y0 float64
-	g.ConnectDragBegin(func(x, y float64) { x0, y0 = x, y })
+	g.ConnectDragBegin(func(x, y float64) {
+		x0, y0 = x, y
+		grab.on = false
+		ox, oy, dw, dh, ok := disp(float64(area.AllocatedWidth()), float64(area.AllocatedHeight()))
+		if !ok {
+			return
+		}
+		i, h, v, l, t, in := grabAt(x, y, ox, oy, dw, dh)
+		if i < 0 {
+			return // clear of every box: this drag marks a new one
+		}
+		bx, by, bw, bh := rectPx(i, ox, oy, dw, dh)
+		grab.on, grab.i = true, i
+		grab.horiz, grab.vert, grab.left, grab.top, grab.inside = h, v, l, t, in
+		grab.px, grab.py = x, y
+		grab.x0, grab.y0, grab.w0, grab.h0 = bx, by, bw, bh
+		grab.cur = [4]float64{bx, by, bw, bh}
+		// the edge kept still is the far one from whichever was grabbed
+		grab.ax, grab.ay = bx+bw, by+bh
+		if !l {
+			grab.ax = bx
+		}
+		if !t {
+			grab.ay = by
+		}
+	})
 	g.ConnectDragUpdate(func(dx, dy float64) {
-		band = &[4]float64{math.Min(x0, x0+dx), math.Min(y0, y0+dy), math.Abs(dx), math.Abs(dy)}
+		ox, oy, dw, dh, ok := disp(float64(area.AllocatedWidth()), float64(area.AllocatedHeight()))
+		if grab.on {
+			xs, ys := []float64(nil), []float64(nil)
+			if ok {
+				xs, ys = snapLines(grab.i, ox, oy, dw, dh)
+			}
+			x, y := grab.px+dx, grab.py+dy
+			if grab.horiz || grab.vert {
+				// the edge under the hand IS what moves, so putting the
+				// pointer on a line puts the edge on it (snapPointPx)
+				nx, ny, nw, nh := resizeFree(snapPointPx(x, fxSnapPx, xs...),
+					snapPointPx(y, fxSnapPx, ys...), grab.ax, grab.ay,
+					grab.x0, grab.y0, grab.w0, grab.h0, pubBoxMin,
+					grab.horiz, grab.vert, grab.left, grab.top)
+				grab.cur = [4]float64{nx, ny, nw, nh}
+			} else {
+				// the whole box slides, so any of its three lines on an axis
+				// may be the one that lands (snapEdgePx)
+				nx, ny := grab.x0+dx, grab.y0+dy
+				grab.cur = [4]float64{snapEdgePx(nx, grab.w0, fxSnapPx, xs...),
+					snapEdgePx(ny, grab.h0, fxSnapPx, ys...), grab.w0, grab.h0}
+			}
+			area.QueueDraw()
+			return
+		}
+		// a NEW box: the corner under the hand snaps to the same lines
+		bx1, by1 := x0+dx, y0+dy
+		if ok {
+			xs, ys := snapLines(-1, ox, oy, dw, dh)
+			bx1, by1 = snapPointPx(bx1, fxSnapPx, xs...), snapPointPx(by1, fxSnapPx, ys...)
+		}
+		band = &[4]float64{math.Min(x0, bx1), math.Min(y0, by1),
+			math.Abs(bx1 - x0), math.Abs(by1 - y0)}
 		area.QueueDraw()
 	})
 	g.ConnectDragEnd(func(dx, dy float64) {
@@ -205,25 +366,50 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 		area.QueueDraw()
 		ox, oy, dw, dh, ok := disp(float64(area.AllocatedWidth()), float64(area.AllocatedHeight()))
 		if !ok {
+			grab.on = false
 			return
 		}
-		// a press that never travelled is a press, and the only thing here to
-		// press is a ✎
-		if math.Abs(dx) < 8 && math.Abs(dy) < 8 {
-			for i := range p.texts {
-				ix, iy := iconPx(i, ox, oy, dw, dh)
-				if x0 >= ix && x0 <= ix+pubIconPx && y0 >= iy && y0 <= iy+pubIconPx {
+		// a box that was moved or resized: its new corners, back into
+		// fractions of the picture
+		if grab.on {
+			i, r := grab.i, grab.cur
+			grab.on = false
+			if math.Abs(dx) < 2 && math.Abs(dy) < 2 {
+				// a press that never travelled, on a box: the ✎ if it landed
+				// on one, and otherwise nothing -- pressing a box is not an
+				// edit of it
+				if ix, iy := iconPx(i, ox, oy, dw, dh); x0 >= ix && x0 <= ix+pubIconPx && y0 >= iy && y0 <= iy+pubIconPx {
 					p.editText(i)
-					return
 				}
+				area.QueueDraw()
+				return
 			}
+			b := fxBox{
+				cx: (r[0] + r[2]/2 - ox) / dw,
+				cy: (r[1] + r[3]/2 - oy) / dh,
+				wf: r[2] / dw,
+				hf: r[3] / dh,
+			}.clamp()
+			ts := append([]pubText(nil), p.texts...)
+			ts[i].Cx, ts[i].Cy, ts[i].Wf, ts[i].Hf = b.cx, b.cy, b.wf, b.hf
+			p.setTexts(ts)
 			return
 		}
+		// a press that never travelled, clear of every box, is a press on
+		// nothing: the ✎s were asked about above
+		if math.Abs(dx) < 8 && math.Abs(dy) < 8 {
+			return
+		}
+		// the band as it was last drawn, snapped -- not the raw drag, or the
+		// box would jump off the line it was shown sitting on
+		bx1, by1 := x0+dx, y0+dy
+		xs, ys := snapLines(-1, ox, oy, dw, dh)
+		bx1, by1 = snapPointPx(bx1, fxSnapPx, xs...), snapPointPx(by1, fxSnapPx, ys...)
 		b := fxBox{
-			cx: (x0 + dx/2 - ox) / dw,
-			cy: (y0 + dy/2 - oy) / dh,
-			wf: math.Abs(dx) / dw,
-			hf: math.Abs(dy) / dh,
+			cx: ((x0+bx1)/2 - ox) / dw,
+			cy: ((y0+by1)/2 - oy) / dh,
+			wf: math.Abs(bx1-x0) / dw,
+			hf: math.Abs(by1-y0) / dh,
 		}.clamp()
 		p.a.askPubText("", func(s string) {
 			if strings.TrimSpace(s) == "" {
@@ -239,6 +425,56 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 	ov.SetChild(pic)
 	ov.AddOverlay(area)
 	return ov
+}
+
+// drawPencil is the ✎ as a path rather than as the character.
+//
+// It was cr.ShowText("✎") and it came out as an empty box: a glyph is the
+// font's idea of a pencil at 13 px, and on a machine whose sans-serif has no
+// U+270E there is no pencil at all -- only tofu, on a chip that is the only
+// way to reword a caption. Every other mark on these pages is drawn for this
+// reason (drawSpeaker in cut_hear.go says so in as many words).
+//
+// Held the way a hand holds one: tip at the lower left, barrel up to the
+// right, and a band where the lead meets the wood so the shape reads as a
+// pencil and not as an arrow.
+func drawPencil(cr *cairo.Context, cx, cy, size float64) {
+	cr.Save()
+	cr.Translate(cx, cy)
+	cr.Rotate(-math.Pi / 4)
+	l, hh, tip := size*0.9, size*0.19, size*0.26
+	cr.SetSourceRGBA(1, 1, 1, 0.95)
+	cr.MoveTo(-l/2, 0)
+	cr.LineTo(-l/2+tip, -hh)
+	cr.LineTo(l/2, -hh)
+	cr.LineTo(l/2, hh)
+	cr.LineTo(-l/2+tip, hh)
+	cr.ClosePath()
+	cr.Fill()
+	cr.SetSourceRGBA(0, 0, 0, 0.6)
+	cr.SetLineWidth(math.Max(1, size*0.09))
+	cr.MoveTo(-l/2+tip, -hh)
+	cr.LineTo(-l/2+tip, hh)
+	cr.Stroke()
+	cr.Restore()
+}
+
+// pubBoxMin is the smallest a marked box may be dragged to, in widget pixels:
+// small enough for a word in a corner, big enough that its ✎ still fits and
+// the hand can find its border again.
+const pubBoxMin = 28.0
+
+// pubBoxOutline is the frame around a marked box, and it is the Cut page's
+// frame around the text effect being worked on: dashed violet, same weight,
+// because they are the same object -- a box words are fitted into -- and a
+// solid hairline over a photograph reads as part of the photograph.
+func pubBoxOutline(cr *cairo.Context, x, y, w, h float64) {
+	cr.SetSourceRGBA(0.6, 0.55, 0.95, 0.9)
+	cr.SetLineWidth(1.5)
+	cr.SetDash([]float64{4, 3}, 0)
+	cr.Rectangle(x, y, w, h)
+	cr.Stroke()
+	cr.SetDash(nil, 0)
 }
 
 // editText reopens text i's words. Saving empty removes it -- the words are

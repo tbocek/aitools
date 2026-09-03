@@ -67,6 +67,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
@@ -154,6 +155,18 @@ type pubSettings struct {
 	// box existed must not read as "pushed into the top-left corner".
 	Crop *pubPoint `json:"crop,omitempty"`
 
+	// Own says the thumbnail is a picture chosen from the row rather than one
+	// the model drew (pubSlot.useAsThumbnail). While it is set, ▶ writes the
+	// words and leaves the picture alone: choosing a frame IS the answer to
+	// "what should the thumbnail be", and redrawing over it on the next run
+	// would be the tool overruling it -- which is exactly what happened, since
+	// ▶ draws whenever the record says nothing.
+	//
+	// Cleared by ↻ over the thumbnail, which is the one thing that means
+	// "draw over this". Nothing else touches it: rewording the title reprints
+	// the words on whatever is there, drawn or chosen.
+	Own bool `json:"own,omitempty"`
+
 	// The words printed onto the picture after the draw (publish_text.go):
 	// each a box in fractions of the finished thumbnail and the text fitted
 	// into it. The title is not one of them -- it has its own field below and
@@ -231,7 +244,10 @@ type publisher struct {
 	// "never chosen" the project file stores; aspect is the cut's, cached by
 	// reread because the crop box is redrawn on every pointer move and reading
 	// cut.json per frame is not a thing to do in a draw handler.
-	crop   *pubPoint
+	crop *pubPoint
+	// the thumbnail is a picture chosen from the row, not a drawn one
+	// (pubSettings.Own)
+	own    bool
 	aspect string
 
 	// the marked words and the layer that shows them (publish_text.go).
@@ -255,6 +271,7 @@ type publisher struct {
 	shot              *gtk.Picture // what was drawn last
 	out               *gtk.Label
 	suggest           *gtk.Button
+	redraw            *gtk.Button
 }
 
 // pubSlot is one image in the row: which position it is in, what is in it, and
@@ -335,6 +352,20 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	shotFrame := videoFrame(p.textOverlay(p.shot))
 	shotFrame.SetMarginTop(4)
 
+	// ↻ over the picture, and the same ↻ the narration re-rolls a line with:
+	// one mark for "make me another one of these", wherever the app offers it.
+	//
+	// It draws and does nothing else -- no model call, no render -- because
+	// that is the loop this page is for: reword the instruction, look, reword
+	// it again. ▶ was the only way to redraw and it also rendered the video,
+	// so trying a second thumbnail cost an encode.
+	p.redraw = gtk.NewButtonFromIconName("view-refresh-symbolic")
+	p.redraw.AddCSSClass("flat")
+	p.redraw.SetTooltipText("Draw the thumbnail again from the images and the instruction as they " +
+		"stand — a fresh draw, nothing rewritten and nothing rendered. The title is printed onto " +
+		"it afterwards, as always.")
+	p.redraw.ConnectClicked(func() { a.publishRedraw() })
+
 	// LEFT: everything that makes the picture, in the order it happens --
 	// choose the images, say what to change, say what to keep out, look at what
 	// came back. Nothing on this side calls the language model: the instruction
@@ -349,6 +380,7 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	col.Append(promptBox)
 	col.Append(p.heading("Negative prompt", "What must not appear"))
 	col.Append(negBox)
+	col.Append(p.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above", p.redraw))
 	col.Append(shotFrame)
 
 	drawScroll := gtk.NewScrolledWindow()
@@ -390,7 +422,7 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	// rewrites -- it is one call and it writes all three, the instruction on the
 	// other side of the page included -- and it is the only thing that rewrites
 	// them: ▶ writes them once and then never touches them again
-	p.suggest = gtk.NewButtonWithLabel("Suggest again")
+	p.suggest = gtk.NewButtonFromIconName("view-refresh-symbolic")
 	p.suggest.AddCSSClass("flat")
 	p.suggest.SetTooltipText("Ask the model for a fresh title, thumbnail instruction and " +
 		"description — the only thing that does. ▶ never rewrites text that has already been " +
@@ -521,6 +553,51 @@ func (p *publisher) addImage() {
 	})
 }
 
+// useAsThumbnail makes this picture the thumbnail without drawing anything:
+// it is written as the plain copy and the words are printed onto it, which is
+// the same last step a drawn one gets (recomposite).
+//
+// It exists because a session often already contains the picture. The frame
+// where the tower is lit and centred is a better thumbnail than anything a
+// model will invent from it, and until now the only way to get it there was
+// to make it the base and ask sd.cpp to change as little as possible -- a GPU
+// run to approximate a file that was already on disk.
+//
+// Cropped like the base is (pubCropRect): a thumbnail is the video's shape,
+// and a widescreen frame dropped whole into a vertical thumbnail would be
+// letterboxed by whatever showed it.
+func (s *pubSlot) useAsThumbnail() {
+	p := s.p
+	if p.a.running {
+		p.a.setStatus("a run is already active — stop it first (⏹)")
+		return
+	}
+	dir := p.a.publishDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		p.a.logf("thumbnail: %v", err)
+		return
+	}
+	w, h := pubBox(p.a.produceCut().Aspect)
+	srcA, outA := imageAspect(s.path), float64(w)/float64(h)
+	if err := pubWriteCropped(s.path, p.snapshot().cropRect(srcA, outA), srcA, outA, w, h,
+		filepath.Join(dir, "thumbnail-plain.png")); err != nil {
+		p.a.logf("thumbnail: %v", err)
+		p.a.setStatus("could not use that image — see log")
+		return
+	}
+	// the choice, remembered: ▶ prints the words onto it and draws nothing,
+	// until ↻ over the thumbnail says otherwise
+	st := p.snapshot()
+	st.Own = true
+	p.apply(st)
+	p.a.logf(">>> publish: %s is the thumbnail, as it is — no model, no GPU, and ▶ will not redraw it",
+		filepath.Base(s.path))
+	p.recomposite() // the title and the marked words go on, as on a drawn one
+	p.a.updateGates()
+	p.a.setStatus("thumbnail taken from " + filepath.Base(s.path) +
+		" — the words are printed on it; ↻ draws over it")
+}
+
 func (s *pubSlot) build() gtk.Widgetter {
 	pic := gtk.NewPicture()
 	pic.SetCanShrink(true)
@@ -565,6 +642,14 @@ func (s *pubSlot) build() gtk.Widgetter {
 		mk.ConnectClicked(func() { s.p.setFrames(moveToFront(s.p.frames, s.i)) })
 		row.Append(mk)
 	}
+	use := gtk.NewButtonWithLabel("Use as thumbnail")
+	use.AddCSSClass("flat")
+	use.SetTooltipText("Put this picture on the thumbnail as it is -- cropped to the video's " +
+		"shape, no model and no GPU. The title and any marked words are printed onto it, and " +
+		"↻ over the thumbnail draws over it again whenever you want the model back.")
+	use.ConnectClicked(func() { s.useAsThumbnail() })
+	row.Append(use)
+
 	change := gtk.NewButtonWithLabel("Change…")
 	change.AddCSSClass("flat")
 	change.SetTooltipText("Swap this image for another, keeping its place in the row")
@@ -651,7 +736,7 @@ func (p *publisher) pickImage(title, start string, done func(string)) {
 // out before the run is a value the run cannot see change under it.
 func (p *publisher) snapshot() pubSettings {
 	st := pubSettings{Frames: append([]string(nil), p.frames...), Crop: p.crop,
-		Texts: append([]pubText(nil), p.texts...)}
+		Own: p.own, Texts: append([]pubText(nil), p.texts...)}
 	st.Title = strings.TrimSpace(p.title.Text())
 	st.Prompt = strings.TrimSpace(viewText(p.prompt))
 	st.Negative = strings.TrimSpace(viewText(p.neg))
@@ -662,7 +747,7 @@ func (p *publisher) snapshot() pubSettings {
 // apply is snapshot's inverse: what a run wrote, or what a project holds, put
 // back on the page.
 func (p *publisher) apply(st pubSettings) {
-	p.crop = st.Crop
+	p.crop, p.own = st.Crop, st.Own
 	p.setFrames(st.Frames)
 	// quiet: the title entry re-prints the words when TYPED in, and this is
 	// not typing -- a run or a project load is putting back words that are
@@ -697,7 +782,7 @@ func (a *App) currentPublish() *pubSettings {
 		st.Frames[i] = a.relToRoot(f)
 	}
 	// nothing chosen and nothing written is not worth a key in the file
-	if len(st.Frames) == 0 && st.Crop == nil && len(st.Texts) == 0 &&
+	if len(st.Frames) == 0 && st.Crop == nil && len(st.Texts) == 0 && !st.Own &&
 		st.Title == "" && st.Prompt == "" && st.Desc == "" {
 		return nil
 	}
@@ -752,7 +837,19 @@ func (p *publisher) showShot() {
 	// without its words is still the thumbnail
 	for _, name := range []string{"thumbnail.png", "thumbnail-plain.png"} {
 		if f := filepath.Join(p.a.publishDir(), name); exists(f) {
-			p.shot.SetFilename(f)
+			// the TEXTURE, not the filename. GtkPicture compares the GFile it
+			// is given against the one it holds and returns early when they
+			// are equal -- so re-printing the words writes thumbnail.png and
+			// then shows the copy already decoded, and the box you had just
+			// typed into came up empty. Every path here rewrites the same two
+			// names, so the name is exactly what cannot be used to notice a
+			// change.
+			if tex, err := gdk.NewTextureFromFilename(f); err == nil {
+				p.shot.SetPaintable(tex)
+			} else {
+				p.a.logf("thumbnail: %v", err)
+				p.shot.SetFilename(f)
+			}
 			p.shot.SetTooltipText("publish/" + name)
 			// cached for the marking layer: its draw handler and its drag
 			// both need to know where the picture is, per pointer move
@@ -1052,6 +1149,58 @@ func cleanDescription(reply string) string {
 // rewrites the title, the thumbnail instruction and the description, and
 // nothing is drawn or rendered. It is the only thing that rewrites them -- ▶
 // (produceClicked) writes them once and then never touches them again.
+// publishRedraw draws the thumbnail again and nothing else: the images and the
+// instruction as the boxes have them, through sd.cpp, with the title printed on
+// afterwards. No model call -- the words are not touched -- and no render.
+//
+// It is the picture half of publishStage with needText false, which is the same
+// path ▶ takes; there is no second way to draw a thumbnail, so a fix to how one
+// is drawn cannot reach one button and miss the other.
+func (a *App) publishRedraw() {
+	if a.running {
+		a.setStatus("a run is already active — stop it first (⏹)")
+		return
+	}
+	p := a.pub
+	if p == nil {
+		return
+	}
+	segs := a.produceSegs()
+	if len(segs) == 0 {
+		a.setStatus("no cut yet — the thumbnail is drawn from the cut's own frames")
+		return
+	}
+	// read on this thread, like every other run: the goroutine must not go
+	// looking at widgets or at the editor
+	// ↻ is the one thing that means "draw over this", so it is the one thing
+	// that takes the picture back off a chosen frame
+	st := p.snapshot()
+	st.Own = false
+	p.apply(st)
+	entries := a.produceEntries()
+	aspect := a.produceCut().Aspect
+	written := a.publishRecorded()
+	a.saveProjectNow()
+
+	a.running = true
+	a.stopFlag.Store(false)
+	a.pauseFlag.Store(false)
+	a.runCtx, a.runCancel = context.WithCancel(context.Background())
+	a.qReset()
+	a.updateRunControls()
+	a.logExp.SetExpanded(true)
+	a.logf(">>> publish: drawing the thumbnail again — one sd.cpp call, nothing rewritten")
+	a.qJob(trackSTT, "publish", 0, 0)
+	a.prog(trackSTT, 0, "drawing")
+	a.pulseUntilCounted()
+
+	go func() {
+		var failed error
+		defer func() { a.publishDone("thumbnail drawn", failed) }()
+		failed = a.publishStage(trackSTT, st, aspect, segs, entries, false, written, false)
+	}()
+}
+
 func (a *App) publishSuggest() {
 	if a.running {
 		a.setStatus("a run is already active — stop it first (⏹)")
@@ -1088,8 +1237,8 @@ func (a *App) publishSuggest() {
 
 	go func() {
 		var failed error
-		defer func() { a.publishDone(failed) }()
-		failed = a.publishStage(st, aspect, segs, entries, true, written, true)
+		defer func() { a.publishDone("title, instruction and description rewritten", failed) }()
+		failed = a.publishStage(trackSTT, st, aspect, segs, entries, true, written, true)
 	}()
 }
 
@@ -1110,7 +1259,7 @@ func (a *App) publishSuggest() {
 // also meant a run that failed at the drawing rewrote the words it had just
 // written. Deleting publish/ is the deliberate way to start the text over, and
 // "Suggest again" is the way to do it without losing the pictures.
-func (a *App) publishStage(st pubSettings, aspect string, segs []cutSeg,
+func (a *App) publishStage(track int, st pubSettings, aspect string, segs []cutSeg,
 	entries []narrEntry, needText, written, textOnly bool) error {
 	// A starting image on the very first run, so the row is not empty the
 	// first time the page is opened. Nothing chooses between them any more
@@ -1132,7 +1281,7 @@ func (a *App) publishStage(st pubSettings, aspect string, segs []cutSeg,
 	if needText {
 		brief := a.publishBrief(segs, entries)
 		a.logCtx("publish")
-		a.prog(trackSTT, 0, "writing the title, the instruction and the description")
+		a.prog(track, 0, "writing the title, the instruction and the description")
 		title, instr, desc, err := a.writeUpload(brief)
 		if err != nil {
 			return err
@@ -1158,7 +1307,14 @@ func (a *App) publishStage(st pubSettings, aspect string, segs []cutSeg,
 	if textOnly {
 		return nil
 	}
-	a.prog(trackSTT, 0.5, "drawing the thumbnail")
+	if st.Own {
+		// the thumbnail is a picture that was chosen, and choosing it was the
+		// answer. The words still go on it: they are printed locally from the
+		// plain copy, which is what that picture now is.
+		a.logfIdle("    publish: the thumbnail is a chosen picture — not redrawing it (↻ over it draws)")
+		return a.printPubWords(st)
+	}
+	a.prog(track, 0.5, "drawing the thumbnail")
 	return a.drawThumbnail(st, aspect)
 }
 
@@ -1335,7 +1491,25 @@ func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 	return nil
 }
 
-func (a *App) publishDone(err error) {
+// printPubWords prints the title and the marked texts onto the plain copy,
+// which is what a run does after a draw and what it does INSTEAD of a draw
+// when the thumbnail is a picture that was chosen (pubSettings.Own). Nothing
+// to print onto is not a failure: the picture is chosen on the page and a run
+// that got here before one was is simply early.
+func (a *App) printPubWords(st pubSettings) error {
+	dir := a.publishDir()
+	plain := filepath.Join(dir, "thumbnail-plain.png")
+	if !exists(plain) {
+		a.logfIdle("    publish: no picture to print the words onto yet")
+		return nil
+	}
+	return drawPubTexts(plain, filepath.Join(dir, "thumbnail.png"), st.Texts, st.Title)
+}
+
+// publishDone ends either of the two runs this page starts, and says which one
+// finished: they land in the same place and leave the page in the same state,
+// but "rewritten" over a redraw is a line that lies about what just happened.
+func (a *App) publishDone(what string, err error) {
 	glib.IdleAdd(func() {
 		a.running = false
 		a.updateRunControls()
@@ -1345,11 +1519,11 @@ func (a *App) publishDone(err error) {
 		a.updateGates()
 		if err != nil {
 			if !errors.Is(err, errStopped) {
-				a.logf("suggestions FAILED: %v", err)
-				a.progress.SetText("suggestions failed — see log")
+				a.logf("%s FAILED: %v", what, err)
+				a.progress.SetText(what + " failed — see log")
 				return
 			}
-			a.progress.SetText("suggestions stopped")
+			a.progress.SetText(what + " stopped")
 			return
 		}
 		// the fresh title is words on the picture too: re-print it onto the
@@ -1359,6 +1533,6 @@ func (a *App) publishDone(err error) {
 			p.recomposite()
 		}
 		a.progress.SetFraction(1)
-		a.progress.SetText("title, instruction and description rewritten — ▶ draws and renders")
+		a.progress.SetText(what + " — ▶ renders the video")
 	})
 }

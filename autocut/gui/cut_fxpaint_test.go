@@ -203,3 +203,68 @@ func TestBothPreviewsPaintThroughTheOnePainter(t *testing.T) {
 		}
 	}
 }
+
+// The dark edge round a title is ONE shape at one alpha.
+//
+// It is the glyph drawn again around itself -- cairo's Go binding has no text
+// path to stroke -- and those copies used to be painted straight onto the
+// picture at fxEdgeA each. Overlapping, they compound: the edge came out in
+// bands of one, two and three copies' worth of black, and on a letter whose
+// diagonals meet a stem, a K, the bands separate and read as three edges round
+// one letter. A group composites the union once, which is what a stroke is and
+// what the render already did.
+func TestTheTitlesEdgeIsOneShapeAndNotStackedCopies(t *testing.T) {
+	body := funcBody(t, "cut_fxpaint.go", `func drawFxText\(`)
+	for _, want := range []string{
+		"cr.PushGroup()",
+		"cr.PopGroupToSource()",
+		"cr.PaintWithAlpha(fxEdgeA * alpha)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("drawFxText no longer contains %q -- the edge stacks again", want)
+		}
+	}
+	// the copies themselves must be opaque: an alpha on each is the banding,
+	// grouped or not
+	if strings.Contains(body, "0.85*alpha)") || strings.Contains(body, "SetSourceRGBA(0, 0, 0,") {
+		t.Error("the edge copies carry an alpha of their own, which is what compounded")
+	}
+	// sixteen directions on a circle, not eight on a compass: the compass put
+	// its diagonals at d·√2 and left gaps between them
+	if fxEdgeSteps < 16 {
+		t.Errorf("the edge samples %d directions, too few to be smooth on a diagonal", fxEdgeSteps)
+	}
+	if !strings.Contains(body, "d*math.Cos(a)") || !strings.Contains(body, "d*math.Sin(a)") {
+		t.Error("the edge is back on a compass rather than a circle")
+	}
+	// both passes over all the lines, outline then fill, for the reason
+	// textSVG gives: a descender must not land on the next line's outline
+	i, j := strings.Index(body, "cr.PaintWithAlpha"), strings.Index(body, "cr.SetSourceRGBA(1, 1, 1, alpha)")
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("the fill is not drawn after the whole outline (%d, %d)", i, j)
+	}
+}
+
+// ...and the render wears the same edge, from the same number. A stroke
+// straddles the outline, so its width is twice the radius the preview dilates
+// by -- one constant for both, or the thumbnail and the video differ in a way
+// only a screenshot shows.
+func TestThePreviewAndTheRenderWearTheSameEdge(t *testing.T) {
+	f := cutFx{Kind: "text", Text: "The Kenos Tower", Cx: 0.5, Cy: 0.5, Wf: 0.9, Hf: 0.3}
+	const w, h = 1920, 1080
+	_, _, bw, bh := f.textBox().px(w, h)
+	size, lines := fitText(f.Text, bw, bh)
+	if size <= 0 || len(lines) == 0 {
+		t.Fatalf("the fixture does not fit: size %g, %d line(s)", size, len(lines))
+	}
+	svg := string(textSVG(f, w, h))
+	if want := `stroke-width="` + trimNum(size*fxEdgeR*2) + `"`; !strings.Contains(svg, want) {
+		t.Errorf("the render's stroke is not twice the preview's radius -- want %s", want)
+	}
+	if !strings.Contains(svg, `opacity="`+trimNum(fxEdgeA)+`"`) {
+		t.Error("the render's edge is not fxEdgeA dark")
+	}
+	if !strings.Contains(svg, `stroke-linejoin="round"`) {
+		t.Error("the render's edge lost its round join")
+	}
+}

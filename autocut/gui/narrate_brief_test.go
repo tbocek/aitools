@@ -725,3 +725,67 @@ func TestOnlyWhatTheVideoCarriesIsOffLimits(t *testing.T) {
 		t.Error("the render no longer takes a clip's audio from its own video alone")
 	}
 }
+
+// A pause is an entry, not punctuation. The voice runs straight through a
+// comma, a dash and a full stop -- IndexTTS2 reads a line as one breath -- so
+// a beat written into the words is a beat that never happens, and the setup
+// and the punchline come out in one flat run. The only pause the render can
+// make is the silence between two entries, which it already has: a clip may
+// carry several, each with its own "at" and its own emotion (bindEntries).
+//
+// So the prompt has to say that in the words the writer reads, and the
+// example has to show it -- an example of one line with dots in it is what
+// gets copied.
+func TestAPauseIsAnEntryAndNotPunctuation(t *testing.T) {
+	for _, want := range []string{
+		"A pause is an entry, not punctuation",
+		"runs straight through a comma",        // why it cannot be written in
+		"ending the line and starting another", // ...and what to do instead
+		"two and a half words a second",        // the arithmetic that places the second one
+		"its own \"at\" and its own emotion",
+	} {
+		if !strings.Contains(narrSystem, want) {
+			t.Errorf("the prompt no longer says %q, so a pause goes back to being a comma", want)
+		}
+	}
+	// the worked example is the load-bearing half: one thought per entry,
+	// seconds apart, and the prompt says that is what it is showing
+	if !strings.Contains(narrSystem, "The first clip is what a pause looks like") {
+		t.Error("nothing names the example as an example of a pause")
+	}
+	if n := strings.Count(narrSystem, "  -> at "); n < 5 {
+		t.Errorf("the examples show %d placed lines, want enough to show a clip carrying several", n)
+	}
+	// ...and the emotion moves across them, which is the other half of what
+	// makes a pause land
+	for _, want := range []string{"[calm]", "[happy]", "the setup calm, the reaction surprised"} {
+		if !strings.Contains(narrSystem, want) {
+			t.Errorf("the prompt no longer says %q", want)
+		}
+	}
+	// the render can actually do it: several entries on one clip, each placed
+	// by its own "at", is what bindEntries accepts
+	segs := []cutSeg{{S: 100, E: 160}}
+	got, problem := bindEntries(segs, []rawEntry{
+		{Start: 100, End: 160, At: 10, Text: "Nobody has the key.", Emotion: "calm"},
+		{Start: 100, End: 160, At: 13, Text: "Housekeeping!", Emotion: "happy"},
+	})
+	if problem != "" {
+		t.Fatalf("two entries on one clip were refused: %s", problem)
+	}
+	if len(got) != 2 || got[0].At != 10 || got[1].At != 13 {
+		t.Errorf("the pause did not survive binding: %+v", got)
+	}
+	if got[0].Emotion != "calm" || got[1].Emotion != "happy" {
+		t.Errorf("each entry did not keep its own emotion: %+v", got)
+	}
+
+	// and a two-word line is allowed when it is the funny one -- the prompt
+	// used to forbid every one of them
+	if strings.Contains(narrSystem, "never a two-word caption") {
+		t.Error("the prompt still bans a two-word line outright")
+	}
+	if !strings.Contains(narrSystem, "two words are a whole line when they are the funny ones") {
+		t.Error("the prompt no longer allows the short funny line")
+	}
+}

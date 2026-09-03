@@ -28,6 +28,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"math"
 	"os"
@@ -119,14 +120,119 @@ func pubCropRefImage(path string, r fxRect, srcA, outA float64) (string, error) 
 	if srcA <= 0 || outA <= 0 || pubWholeFrame(r, srcA, outA) {
 		return sdRefImage(path)
 	}
-	f, err := os.Open(path)
+	sub, err := pubCropImage(path, r, srcA, outA)
 	if err != nil {
 		return "", err
+	}
+	if sub == nil {
+		return sdRefImage(path) // a decoder with no SubImage: the whole frame
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, sub); err != nil {
+		return "", err
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+// pubWriteCropped is the same crop written as a PNG, for the picture that
+// becomes the thumbnail as it stands (pubSlot.useAsThumbnail).
+//
+// Always ENCODED, never copied through. The frames are JPEGs and the ones that
+// need no crop are most of them, so copying the bytes was writing a JPEG to a
+// file called thumbnail-plain.png -- which cairo then refused to read ("png
+// surface: undefined"), so the words were never printed, thumbnail.png was
+// never rewritten, and the button looked like it did nothing at all. The only
+// thing that made it survivable is that it left the old thumbnail alone.
+//
+// The re-encode costs a decode and an encode of one still. That is the price
+// of the file being what its name says.
+func pubWriteCropped(path string, r fxRect, srcA, outA float64, w, h int, out string) error {
+	img, err := pubCropImage(path, r, srcA, outA)
+	if err != nil {
+		return err
+	}
+	if img == nil {
+		if img, err = pubDecode(path); err != nil {
+			return err
+		}
+	}
+	img = pubFit(img, w, h)
+	f, err := os.Create(out)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return png.Encode(f, img)
+}
+
+// pubFit scales an image down to exactly w by h. The crop above has already
+// made the shape right, so this is a size and not a fit: no letterbox, no
+// stretch worth the name.
+//
+// It is here because a chosen thumbnail and a drawn one are the same product
+// and have to be the same size. A capture frame is 3840 wide; written straight
+// out it is a 14 MB PNG, which is seven times what YouTube will accept for a
+// thumbnail -- so the button that put your own frame there produced a file the
+// upload refuses, which is a worse kind of not working than the button doing
+// nothing.
+//
+// Area average, not nearest: this is always a downscale, often by three or
+// four, and nearest at that ratio is a picture of aliasing. Upscales are left
+// alone -- a frame smaller than the box is returned as it is rather than blown
+// up into softness.
+func pubFit(src image.Image, w, h int) image.Image {
+	b := src.Bounds()
+	if w <= 0 || h <= 0 || b.Dx() <= w || b.Dy() <= h {
+		return src
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		y0 := b.Min.Y + y*b.Dy()/h
+		y1 := b.Min.Y + (y+1)*b.Dy()/h
+		for x := 0; x < w; x++ {
+			x0 := b.Min.X + x*b.Dx()/w
+			x1 := b.Min.X + (x+1)*b.Dx()/w
+			var rs, gs, bs, as, n uint64
+			for sy := y0; sy < y1; sy++ {
+				for sx := x0; sx < x1; sx++ {
+					cr, cg, cb, ca := src.At(sx, sy).RGBA()
+					rs, gs, bs, as, n = rs+uint64(cr), gs+uint64(cg), bs+uint64(cb), as+uint64(ca), n+1
+				}
+			}
+			if n == 0 {
+				continue
+			}
+			dst.Set(x, y, color.RGBA64{uint16(rs / n), uint16(gs / n), uint16(bs / n), uint16(as / n)})
+		}
+	}
+	return dst
+}
+
+// pubDecode is one image file, whatever it is encoded as.
+func pubDecode(path string) (image.Image, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	return img, err
+}
+
+// pubCropImage is the crop itself: the part of the file the box keeps, or nil
+// where the whole frame is kept and the caller should use the file as it is.
+func pubCropImage(path string, r fxRect, srcA, outA float64) (image.Image, error) {
+	if srcA <= 0 || outA <= 0 || pubWholeFrame(r, srcA, outA) {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
 	defer f.Close()
 	src, _, err := image.Decode(f)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	b := src.Bounds()
 	wf := pubCropW(r.hf, srcA, outA)
@@ -136,7 +242,7 @@ func pubCropRefImage(path string, r fxRect, srcA, outA float64) (string, error) 
 	y1 := y0 + int(math.Round(r.hf*float64(b.Dy())))
 	cut := image.Rect(x0, y0, x1, y1).Intersect(b)
 	if cut.Empty() {
-		return "", fmt.Errorf("the crop box keeps none of %s", path)
+		return nil, fmt.Errorf("the crop box keeps none of %s", path)
 	}
 	// SubImage is what every std image type offers and none of them promise;
 	// the type assertion is the check, and a decoder that does not have it
@@ -145,13 +251,9 @@ func pubCropRefImage(path string, r fxRect, srcA, outA float64) (string, error) 
 		SubImage(image.Rectangle) image.Image
 	})
 	if !ok {
-		return sdRefImage(path)
+		return nil, nil
 	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, sub.SubImage(cut)); err != nil {
-		return "", err
-	}
-	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+	return sub.SubImage(cut), nil
 }
 
 // ---- the box on the picture -------------------------------------------------
