@@ -491,7 +491,7 @@ func webTools() []map[string]any {
 			"parameters": map[string]any{"type": "object", "properties": map[string]any{
 				"broad":  map[string]any{"type": "string", "description": "the general subject, e.g. the game"},
 				"medium": map[string]any{"type": "string", "description": "the subject and the thing"},
-				"narrow": map[string]any{"type": "string", "description": "the thing's exact name, as the notes spell it"},
+				"narrow": map[string]any{"type": "string", "description": "the thing's exact name, as the user context spells it"},
 			}, "required": []string{"broad", "medium", "narrow"}}}},
 		{"type": "function", "function": map[string]any{
 			"name":        "web_read",

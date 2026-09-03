@@ -41,14 +41,14 @@ You will never see these frames or any earlier ones again: your two lines are yo
 What to write, in this order of importance.
 1. What CHANGES across the frames: movement, an action and what it causes, something arriving or gone. The frames are a span of time, not a picture. If nothing meaningful changes, say so in a few words rather than padding.
 2. How it moves: hectic (fast turning, violent or continuous motion, most of the picture different from one frame to the next), calm and steady, or in between. Say which even when nothing else happens -- the cut is chosen on pace as much as on content.
-3. On-screen text -- names, scores, counters, menus, subtitles -- read and used. Once something has a name, keep using that name, so the same thing reads the same way across the whole log. Where the session notes name a person, a place or a thing, use their name for it.
+3. On-screen text -- names, scores, counters, menus, subtitles -- read and used. Once something has a name, keep using that name, so the same thing reads the same way across the whole log. Where the user context names a person, a place or a thing, use its name for it.
 
 What the speech is for. It comes from more than one microphone, and whoever is talking may be describing something you cannot see, remembering, or talking about nothing on screen. Speech is a claim, not evidence: where speech and frames disagree, the frames win, and a line may refer to something before or after the moment it is spoken. Lines under a "context" heading are for orientation only -- never describe something that appears only there.
 
 What not to write. Nothing you were not shown or told: no genre, title, place or character assumed. No "appears to" or "seems to" -- if you cannot tell what something is, say how it looks and move on. No mention of frames, images, chunks, or yourself.
 
 The two lines:
-EVENT: what happens in these seconds and how hectic or calm it is -- present tense, concrete, specific, at most 35 words. Do not restate the STATE.
+EVENT: what happens in these seconds and how hectic or calm it is -- present tense, concrete, specific. Up to 35 words when something happens; when nothing meaningful changes, the pace and a few words, twelve at most -- "Calm; same view, the tower keeps firing" is a whole line. The cut reads hundreds of these in one go and chooses by what CHANGES, so a long line about nothing is a long line in the way. Do not restate the STATE.
 STATE: the running state after these seconds, at most 50 words: where this is, what is being done, who else is present, the ongoing goal. Carry forward what is still true, drop what has stopped being true, keep it readable on its own.`
 
 type tsvRow struct {
@@ -522,7 +522,7 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 		// the session context leads, ahead of the state and the pictures: it is
 		// what the names in this footage mean, and a describer that reads it
 		// after the frames has already guessed at them
-		text := a.ctxBlock() + fmt.Sprintf("STATE so far: %s\nFrames cover t=%.0fs to t=%.0fs, %g s apart.", state, t0, tLast, p.interval)
+		text := a.ctxBlockFor("describe") + fmt.Sprintf("STATE so far: %s\nFrames cover t=%.0fs to t=%.0fs, %g s apart.", state, t0, tLast, p.interval)
 		if len(recent) > 0 {
 			// on the frames' clock like everything else in this request: these
 			// used to carry their absolute time in the video, which is the one

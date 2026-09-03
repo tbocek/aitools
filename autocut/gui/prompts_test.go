@@ -366,16 +366,16 @@ func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
 				"default is the one that has not decided on a shape yet", guess)
 		}
 	}
-	// it asks what the session is instead of assuming, and the notes are where
-	// the answer comes from when there is one
-	for _, want := range []string{"about this session", "work it out"} {
+	// it asks what the session is instead of assuming, and the user context is
+	// where the answer comes from when there is one
+	for _, want := range []string{"say what this session is", "user context", "work it out"} {
 		if !strings.Contains(low, want) {
 			t.Errorf("the default cut wording never says %q -- with no genre to fall "+
 				"back on, reading the session first is the whole method", want)
 		}
 	}
-	// and it reads the kind of video off the notes rather than off the Style
-	// dropdown: a project whose notes open "this is a showcase of the towers"
+	// and it reads the kind of video off the user context rather than off the
+	// Style dropdown: a project whose context opens "this is a showcase of the towers"
 	// is cut as a showcase with the Style still on General
 	for _, want := range []string{"a showcase of things", "a rating or a verdict"} {
 		if !strings.Contains(low, want) {

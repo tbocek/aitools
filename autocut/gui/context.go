@@ -1,6 +1,6 @@
 package main
 
-// The session context: what the editor knows and the material does not say.
+// The user context: what the person editing knows and the material does not say.
 //
 // Who is in this session, what they were trying to do, what happened that the
 // frames only hint at, what to call the thing everyone keeps mispronouncing --
@@ -52,26 +52,47 @@ func (a *App) applySessionCtx(s string) {
 
 // ctxBlock is the context as a request carries it, or nothing at all when the
 // box is empty -- an empty heading is worse than no heading, since a model
-// reading "ABOUT THIS SESSION:" followed by nothing will happily invent what
-// belongs under it.
+// reading a heading followed by nothing will happily invent what belongs under
+// it.
+//
+// It is headed USER CONTEXT because that is what it is: what the person
+// running this tool typed into the box. It used to be headed "ABOUT THIS
+// SESSION", which named a thing that does not exist -- the session is the
+// footage, and the footage says nothing here. Everything downstream reads the
+// heading, so a prompt that talks about it uses the same words the block
+// wears.
 //
 // It goes in the USER message, ahead of the material, never in the system
 // prompt. Two reasons: the prompt boxes stay what the user wrote rather than
 // what the tool assembled, and a step's rules stay separable from this
 // session's facts when one of them turns out to be wrong.
-func (a *App) ctxBlock() string {
+func (a *App) ctxBlock() string { return a.ctxBlockFor("cut") }
+
+// ctxBlockFor is the block as one job carries it. The speech rule under it is
+// about what to DO with spoken lines -- keep them, caption them, cut on them
+// -- and only the jobs that decide that get it: the cut, its audit, and the
+// narration. The frame describer, the transcript fixer and the upload text
+// are told the context and nothing about a decision they never make.
+func (a *App) ctxBlockFor(key string) string {
 	s := a.sessionCtx()
 	if s == "" {
 		return ""
 	}
-	return "ABOUT THIS SESSION, FROM THE EDITOR -- written by someone who was " +
-		"there, so it outranks anything you infer from the material:\n" + s +
-		"\n\n" + ctxSpeech + "\n\n"
+	b := "USER CONTEXT -- written by the person who made this recording and " +
+		"is editing it. It outranks anything you infer from the material, and it " +
+		"outranks the rules of the job you were given wherever the two disagree; " +
+		"only the mechanics of the answer -- its shape, its clock, what may be " +
+		"invented -- are not its to change:\n" + s + "\n\n"
+	switch key {
+	case "cut", "audit", "narrate":
+		b += ctxSpeech + "\n\n"
+	}
+	return b
 }
 
-// ctxSpeech rides under the notes, and only under them.
+// ctxSpeech rides under the user context, and only under it.
 //
-// It is how the notes bear on the spoken lines, and it used to be a paragraph
+// It is how that context bears on the spoken lines, and it used to be a paragraph
 // in the system prompt -- sent to every job of every session, including the
 // ones whose notes box is empty, where it described a block that was not
 // there. Here it is sent exactly when there is something for it to be about,
@@ -81,7 +102,7 @@ func (a *App) ctxBlock() string {
 // The rule itself is the same rule, and it is worth its words: read the wrong
 // way it is the worst answer this app can give. An aside to the editor
 // captioned into the video, or the video thrown away as asides.
-const ctxSpeech = `The speech is content unless the notes above say otherwise: the speakers are in the video, and what they say is why a moment is worth keeping. Where the notes call it directions ("this part is boring", "speed this up"), do what a direction asks at the second it asks and keep its words out of the video -- never caption them, and never keep a stretch just because it was spoken over. An instruction about a kind of stretch -- speed the dull parts up and show them instead of cutting them, caption each thing as it is named -- holds wherever such a stretch occurs. It decides segments too: a stretch to be shown fast has to be in the cut, with a speed effect over it, or there is nothing left to speed up.`
+const ctxSpeech = `The speech is content unless the user context above says otherwise: the speakers are in the video, and what they say is why a moment is worth keeping. Where the user context calls it directions ("this part is boring", "speed this up"), do what a direction asks at the second it asks and keep its words out of the video -- never caption them, and never keep a stretch just because it was spoken over. An instruction about a kind of stretch -- speed the dull parts up and show them instead of cutting them, caption each thing as it is named -- holds wherever such a stretch occurs. It decides segments too: a stretch to be shown fast has to be in the cut, with a speed effect over it, or there is nothing left to speed up.`
 
 // logCtx says, in the log, that this step's requests carried the context. A
 // second input that changes the result and appears nowhere in the run is how

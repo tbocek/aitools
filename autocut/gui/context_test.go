@@ -27,7 +27,7 @@ func TestCtxBlockIsEmptyWhenTheBoxIs(t *testing.T) {
 	if !strings.Contains(got, "Beans was told not to open the chest.") {
 		t.Errorf("the context did not reach the block: %q", got)
 	}
-	if !strings.HasPrefix(got, "ABOUT THIS SESSION") {
+	if !strings.HasPrefix(got, "USER CONTEXT") {
 		t.Errorf("block does not open with the heading the prompts name: %q", short(got))
 	}
 	if !strings.HasSuffix(got, "\n\n") {
@@ -40,10 +40,10 @@ func TestCtxBlockIsEmptyWhenTheBoxIs(t *testing.T) {
 // Change the heading in ctxBlock and that prompt starts describing something
 // that is not there -- source-level, because nothing at run time compares the
 // two. The second half is the reason it is announced only once: a job that
-// wants something done with the notes says so, but none of them re-introduces
+// wants something done with the user context says so, but none of them re-introduces
 // the block, or the model is told twice what it is looking at.
 func TestEveryPromptNamesTheContextHeading(t *testing.T) {
-	const head = "ABOUT THIS SESSION"
+	const head = "USER CONTEXT"
 	a := &App{}
 	a.setSessionCtx("x")
 	if !strings.HasPrefix(a.ctxBlock(), head) {
@@ -53,10 +53,10 @@ func TestEveryPromptNamesTheContextHeading(t *testing.T) {
 	// itself in the request, and a session whose notes box is empty sends no
 	// notes and should be told nothing about them
 	if strings.Contains(promptDefFor("system").def, head) {
-		t.Errorf("the system context describes %q to every job, including the ones that get no notes", head)
+		t.Errorf("the system context describes %q to every job, including the ones that get none", head)
 	}
 	if b := (&App{}).ctxBlock(); b != "" {
-		t.Errorf("an empty notes box still sends something: %q", b)
+		t.Errorf("an empty context box still sends something: %q", b)
 	}
 	for _, d := range promptDefs {
 		if d.key == "system" {
@@ -122,10 +122,12 @@ func TestEveryLLMStepSendsTheContext(t *testing.T) {
 	// every place a user message is built, by the file it lives in and the
 	// string that starts it
 	want := []struct{ file, sig string }{
-		{"describe.go", "text := a.ctxBlock()"},    // the frame describer
-		{"transcript.go", "user := a.ctxBlock()"},  // the transcript fixer
-		{"cut_suggest.go", "user := a.ctxBlock()"}, // suggest, its audit and its effects
-		{"narrate.go", "user := a.ctxBlock()"},     // the narration
+		{"describe.go", `text := a.ctxBlockFor("describe")`},   // the frame describer
+		{"transcript.go", `user := a.ctxBlockFor("fix")`},      // the transcript fixer
+		{"cut_suggest.go", `user := a.ctxBlockFor("cut")`},     // suggest...
+		{"cut_suggest.go", `user := a.ctxBlockFor("audit")`},   // ...and its audit
+		{"narrate.go", `user := a.ctxBlockFor("narrate")`},     // the narration
+		{"publish.go", `msg("user", a.ctxBlockFor("youtube")`}, // the upload text
 	}
 	for _, w := range want {
 		src, err := os.ReadFile(w.file)
@@ -142,9 +144,70 @@ func TestEveryLLMStepSendsTheContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	users := regexp.MustCompile(`(?m)^\tuser := `).FindAllString(string(src), -1)
-	withCtx := regexp.MustCompile(`(?m)^\tuser := a\.ctxBlock\(\) \+ `).FindAllString(string(src), -1)
+	withCtx := regexp.MustCompile(`(?m)^\tuser := a\.ctxBlockFor\("\w+"\) \+ `).FindAllString(string(src), -1)
 	if len(users) != len(withCtx) {
 		t.Errorf("cut_suggest.go builds %d user messages but only %d carry the context",
 			len(users), len(withCtx))
+	}
+}
+
+// TestTheUserContextOutranksEveryWordingButTheMechanics: a wording is a set of
+// defaults for a session nobody described, and the USER CONTEXT was written by
+// the person whose video it is. Where they disagree the context wins, and every
+// job's wording says so at its end -- assembled on, so an edited copy carries
+// it and a wording added later cannot forget it. The system context is the one
+// place it does not reach: that is how the answer is read, not how the video
+// is made, and a context that could change it would break the reader.
+func TestTheUserContextOutranksEveryWordingButTheMechanics(t *testing.T) {
+	a := &App{}
+	a.setSessionCtx("Beans = the one in purple. Caption every tower as it is named.")
+	for _, d := range promptDefs {
+		got := a.sysPrompt(d.key)
+		has := strings.Contains(got, ctxRule)
+		if d.key == "system" {
+			if has {
+				t.Error("the system context carries the precedence rule, so the user context can rewrite the mechanics")
+			}
+			continue
+		}
+		if !has {
+			t.Errorf("%q is assembled without the precedence rule, so its defaults beat the user context", d.key)
+		}
+		// at the END, after the wording's own rules, where the model has them
+		// in its hands -- not buried before them
+		if i, j := strings.Index(got, strings.TrimSpace(a.prompt(d.key))), strings.Index(got, ctxRule); i < 0 || j < i {
+			t.Errorf("%q carries the rule before its own wording", d.key)
+		}
+	}
+	// the rule names both halves: what gives way, and what does not
+	for _, want := range []string{
+		"the user context wins and the rule above gives way",
+		"What it does not change is the mechanics",
+		"the shape of the answer, the clock, what may be invented",
+	} {
+		if !strings.Contains(ctxRule, want) {
+			t.Errorf("the precedence rule no longer says %q", want)
+		}
+	}
+	// and the block says the same from its side, so the two messages agree
+	if b := a.ctxBlock(); !strings.Contains(b, "outranks the rules of the job") ||
+		!strings.Contains(b, "are not its to change") {
+		t.Errorf("the block does not claim the precedence the rule grants it: %q", short(b))
+	}
+	// a session with no context is told nothing about one
+	none := &App{}
+	for _, d := range promptDefs {
+		if strings.Contains(none.sysPrompt(d.key), ctxRule) {
+			t.Errorf("%q describes a user context to a session that has none", d.key)
+		}
+	}
+	// the mechanics no longer state a tolerance the gate does not use: the
+	// range is the request's, and a tenth was what sent a model into eleven
+	// minutes of arithmetic
+	if strings.Contains(promptDefFor("system").def, "within a tenth") {
+		t.Error("the system context still promises a tenth of the target, which is tighter than the gate")
+	}
+	if !strings.Contains(promptDefFor("system").def, "inside the accepted range the request states") {
+		t.Error("the system context does not point at the request's accepted range")
 	}
 }

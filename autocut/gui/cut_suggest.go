@@ -199,7 +199,7 @@ For each segment, ask in this order.
 
 Then for the whole cut.
 
-5. Every moment the ABOUT THIS SESSION notes name must be in the cut. Add it if missing; fix a segment that stops short of it.
+5. Every moment the USER CONTEXT names must be in the cut. Add it if missing; fix a segment that stops short of it.
 6. The first segment must establish what the session is.
 7. After your corrections the segments must still be in order and must not overlap. If extending one runs into the next, extend it and drop the next, saying so.
 8. Keep the total inside the accepted range you were given: pay for additions by dropping the weakest segments. Inside it, leave the total alone -- a cut that is already accepted does not need trimming towards the middle of the range.
@@ -248,7 +248,7 @@ func (a *App) auditCut(session string, target, span float64, segs []cutSeg, fx [
 		fxBlock = "PROPOSED EFFECTS:\n" + b.String() + "\n"
 	}
 	alo, ahi := a.suggestWindow(target)
-	user := a.ctxBlock() + fmt.Sprintf("THE BRIEF THE CUT WAS MADE FROM:\n%s\n\n"+
+	user := a.ctxBlockFor("audit") + fmt.Sprintf("THE BRIEF THE CUT WAS MADE FROM:\n%s\n\n"+
 		"SESSION LENGTH: %.0f seconds (%s). Every second you name is inside it.\n\n"+
 		"TARGET LENGTH: %.0f seconds of finished video. ACCEPTED: %.0f to %.0f seconds.\n\n"+
 		"PROPOSED SEGMENTS:\n%s\n%sSESSION TIMELINE:\n%s",
@@ -481,6 +481,23 @@ func minSuggestSegs(target float64) int {
 // and this is four times that with a floor, so a cut that really is made of
 // many short moments is not refused. What it catches is the runaway, which
 // misses by an order of magnitude and not by a few.
+// maxSuggestFx is the same guard for the effects, and it exists for the same
+// reason at the other end of the reply: a wording that says three or four per
+// five minutes, a user context that asks for the speech on screen, and a model
+// resolving the two by writing one text effect per spoken line. Hundreds of
+// them, each carrying a sentence, is the answer that runs into the token
+// ceiling and arrives truncated.
+//
+// Generous, because the user context is allowed to ask for many -- a caption
+// on each of twenty things in a showcase is a legitimate answer. What it
+// catches is the subtitle track, which misses by an order of magnitude.
+func maxSuggestFx(target float64) int {
+	if n := int(target / 10); n > 24 {
+		return n
+	}
+	return 24
+}
+
 func maxSuggestSegs(target float64) int {
 	if n := int(target / 5); n > 40 {
 		return n
@@ -637,7 +654,7 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 	// recording -- because a model that has lost its place has nothing in the
 	// request to lose its place against. Both spellings, since the conversion
 	// between them is where a run of plausible numbers turns into nonsense.
-	user := a.ctxBlock() + fmt.Sprintf("SESSION LENGTH: %.0f seconds, which the timeline "+
+	user := a.ctxBlockFor("cut") + fmt.Sprintf("SESSION LENGTH: %.0f seconds, which the timeline "+
 		"writes as %s. Every start and end you give is a number of SECONDS between 0 and "+
 		"%.0f.\n\nTARGET LENGTH: %.0f seconds of finished video. "+
 		"ACCEPTED: %.0f to %.0f seconds, and at most %d segments. Stop at the first set of "+
@@ -706,6 +723,11 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 			}
 		} else if len(out.Segments) < minSuggestSegs(target) {
 			problem = fmt.Sprintf("fewer than %d segments", minSuggestSegs(target))
+		} else if n := maxSuggestFx(target); len(out.Fx) > n {
+			problem = fmt.Sprintf("%d effects, which is a subtitle track and not a cut "+
+				"-- keep it under %d. Everything said goes on screen through the "+
+				"narration step's captions, not through text effects here",
+				len(out.Fx), n)
 		} else if n := maxSuggestSegs(target); len(out.Segments) > n {
 			// said as a shape problem, because that is what it is: an answer
 			// this long is a model that stopped choosing moments

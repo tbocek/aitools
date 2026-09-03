@@ -35,8 +35,8 @@ func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
 		t.Fatalf("the cut styles do not offer %q", shortsStyleName)
 	}
 	for _, want := range []string{
-		"20 to 30 seconds",   // the format's length, said to the model
-		"ABOUT THIS SESSION", // the subject comes from the user's own notes
+		"20 to 30 seconds", // the format's length, said to the model
+		"USER CONTEXT",     // the subject comes from the user's own notes
 	} {
 		if !strings.Contains(shorts, want) {
 			t.Errorf("the Shorts prompt does not say %q", want)

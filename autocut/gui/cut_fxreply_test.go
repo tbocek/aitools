@@ -173,8 +173,8 @@ func TestTheNotesSayWhetherTheSpeechIsTheVideoOrInstructionsAboutIt(t *testing.T
 	a0.setSessionCtx("the tower is Kenos")
 	sent := a0.ctxBlock()
 	for _, want := range []string{
-		"The speech is content unless the notes above say otherwise", // the default...
-		"Where the notes call it directions",                         // ...and the one thing that changes it
+		"The speech is content unless the user context above says otherwise", // the default...
+		"Where the user context calls it directions",                         // ...and the one thing that changes it
 		"never caption them",
 		"It decides segments too",
 	} {
@@ -182,7 +182,7 @@ func TestTheNotesSayWhetherTheSpeechIsTheVideoOrInstructionsAboutIt(t *testing.T
 			t.Errorf("the notes block no longer says %q", want)
 		}
 	}
-	if strings.Contains(sysSystem, "Where the notes call it directions") {
+	if strings.Contains(sysSystem, "Where the user context calls it directions") {
 		t.Error("the system prompt says it too, to every job of every session")
 	}
 	a := &App{root: t.TempDir()}

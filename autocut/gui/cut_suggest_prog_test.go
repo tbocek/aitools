@@ -221,3 +221,40 @@ func TestTheWordingsAllowALongSegmentUnderSpeed(t *testing.T) {
 		}
 	}
 }
+
+// The user context outranks the wording's own numbers, and the wording says so.
+//
+// A cut prompt that says "three or four effects per five minutes" and a user
+// context that says "put what they said on screen" are a contradiction, and
+// the model resolved it by obeying the prompt: 32 speed effects, zero
+// captions, and an audit that then spent twelve minutes noticing. The counts
+// are defaults now, and the one thing the context cannot ask the effects to
+// become is a subtitle track -- that is a step of its own.
+func TestTheUserContextOutranksTheEffectDefaults(t *testing.T) {
+	cut := readSrc(t, "cut.go")
+	for _, want := range []string{
+		"That count is a DEFAULT, and the USER CONTEXT outranks it.",
+		"The one thing this list cannot become is a subtitle track.",
+		"narration step with its captions voice",
+	} {
+		if !strings.Contains(cut, want) {
+			t.Errorf("the effect rules no longer say %q", want)
+		}
+	}
+	// and the gate that catches the subtitle track names where captions come
+	// from, so a rejected answer is told what to do instead of what not to do
+	if maxSuggestFx(300) < 24 || maxSuggestFx(3000) <= maxSuggestFx(300) {
+		t.Errorf("the effect ceiling is %d for a 300 s target and %d for 3000 -- "+
+			"a context that asks for many captions is refused",
+			maxSuggestFx(300), maxSuggestFx(3000))
+	}
+	src := readSrc(t, "cut_suggest.go")
+	for _, want := range []string{
+		"} else if n := maxSuggestFx(target); len(out.Fx) > n {",
+		`"narration step's captions, not through text effects here"`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut_suggest.go no longer contains %q", want)
+		}
+	}
+}

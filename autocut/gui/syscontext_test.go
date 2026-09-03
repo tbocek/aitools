@@ -25,10 +25,17 @@ func TestEveryJobIsToldTheFormatsOnce(t *testing.T) {
 			"is the order the bench shows and the order the calls go out in", promptDefs[0].key)
 	}
 
+	first := strings.SplitN(strings.TrimSpace(sysSystem), "\n\n", 2)[0]
 	for _, key := range []string{"describe", "fix", "cut", "audit", "narrate", "youtube"} {
 		got := a.sysPrompt(key)
-		if !strings.HasPrefix(got, strings.TrimSpace(sysSystem)) {
-			t.Errorf("the %s job is not told the formats first:\n%s", key, got)
+		if !strings.HasPrefix(got, first) {
+			t.Errorf("the %s job is not told the formats first:\n%s", key, short(got))
+		}
+		// the parts every job reads, whichever job it is
+		for _, want := range []string{"\nTHE ANSWER\n", "\nTHE MATERIAL\n", "\nTHE CLOCKS\n", "\nNEVER INVENT\n"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("the %s job is not sent the %q section", key, strings.TrimSpace(want))
+			}
 		}
 		if !strings.HasSuffix(got, a.prompt(key)) {
 			t.Errorf("the %s job's own prompt is not what follows the context", key)
@@ -268,5 +275,95 @@ func TestTheSystemContextIsUnderHeadings(t *testing.T) {
 	// box sends none of it
 	if strings.Contains(sysSystem, "ABOUT THIS SESSION") {
 		t.Error("the system context describes the notes block to jobs that may get no notes")
+	}
+}
+
+// TestEachJobIsSentOnlyTheSectionsItCanUse: the box is one text and is sent
+// whole to nobody. The describing step used to be handed the audit's reply
+// shape and the narration's emotions; the transcript fixer was told what a
+// zoom does -- seven kilobytes in front of every call, of which a describe
+// call could use two. The sections go by heading, and the jobs list keeps only
+// the job's own line.
+func TestEachJobIsSentOnlyTheSectionsItCanUse(t *testing.T) {
+	ownConfig(t)
+	a := &App{}
+	for _, c := range []struct {
+		key     string
+		own     string   // its own line in the jobs list
+		others  []string // lines that belong to other jobs
+		without []string // sections it has no use for
+		with    []string // ...and the ones it must still get
+	}{
+		{"describe", "\n  describe:", []string{"\n  audit:", "\n  narrate:", "\n  cut:", "\n  upload text:"},
+			[]string{"\nTHE CUT\n", "\nTHE FOUR STEPS\n", "\nTOOLS\n"}, nil},
+		{"fix", "\n  transcript:", []string{"\n  describe:", "\n  cut:", "\n  narrate:"},
+			[]string{"\nTHE CUT\n", "\nTHE FOUR STEPS\n", "\nTOOLS\n"}, nil},
+		{"cut", "\n  cut:", []string{"\n  audit:", "\n  narrate:", "\n  describe:"},
+			nil, []string{"\nTHE CUT\n", "\nTHE FOUR STEPS\n", "\nTOOLS\n"}},
+		{"audit", "\n  audit:", []string{"\n  cut:", "\n  narrate:"},
+			[]string{"\nTOOLS\n"}, []string{"\nTHE CUT\n", "\nTHE FOUR STEPS\n"}},
+		{"narrate", "\n  narrate:", []string{"\n  cut:", "\n  audit:"},
+			[]string{"\nTHE CUT\n"}, []string{"\nTHE FOUR STEPS\n", "\nTOOLS\n", "a time in the video is not a time in the session"}},
+		{"youtube", "\n  upload text:", []string{"\n  cut:", "\n  narrate:"},
+			[]string{"\nTHE CUT\n"}, []string{"\nTHE FOUR STEPS\n", "\nTOOLS\n", "a time in the video is not a time in the session"}},
+	} {
+		got := a.sysPrompt(c.key)
+		if !strings.Contains(got, c.own) {
+			t.Errorf("%s is not told its own answer shape", c.key)
+		}
+		for _, o := range c.others {
+			if strings.Contains(got, o) {
+				t.Errorf("%s is told another job's answer shape: %q", c.key, strings.TrimSpace(o))
+			}
+		}
+		for _, w := range c.without {
+			if strings.Contains(got, w) {
+				t.Errorf("%s is sent the %q section, which it has no use for", c.key, strings.TrimSpace(w))
+			}
+		}
+		for _, w := range c.with {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s is not sent %q, which it needs", c.key, strings.TrimSpace(w))
+			}
+		}
+		// and it is smaller than the whole box, or the filter did nothing
+		if len(got) >= len(sysSystem)+len(a.prompt(c.key)) {
+			t.Errorf("%s is sent the whole box: %d bytes", c.key, len(got))
+		}
+	}
+	// the system context itself is never cut down: the bench shows the box
+	if got := a.sysPrompt("system"); !strings.Contains(got, "\n  audit:") || !strings.Contains(got, "\nTHE CUT\n") {
+		t.Error("the system context's own assembly is filtered, so the bench would show a box missing its sections")
+	}
+	// a section somebody adds to the box under a heading this does not know
+	// goes to every job: the safe reading of an unknown section is that it
+	// matters. And an edit with no headings at all goes whole.
+	a.setPrompt("system", strings.TrimSpace(sysSystem)+"\n\nHOUSE RULE\nName the game every time.")
+	for _, key := range []string{"describe", "fix", "cut", "narrate"} {
+		if !strings.Contains(a.sysPrompt(key), "HOUSE RULE\nName the game every time.") {
+			t.Errorf("%s did not get a section the user added to the box", key)
+		}
+	}
+	a.setPrompt("system", "stamps are in minutes")
+	if !strings.HasPrefix(a.sysPrompt("describe"), "stamps are in minutes") {
+		t.Error("a box with no headings was not sent whole")
+	}
+	// the speech rule rides under the context only where speech is decided
+	a.setSessionCtx("Beans = purple")
+	for _, key := range []string{"cut", "audit", "narrate"} {
+		if !strings.Contains(a.ctxBlockFor(key), "The speech is content") {
+			t.Errorf("%s decides what to do with speech and is not told the rule", key)
+		}
+	}
+	for _, key := range []string{"describe", "fix", "youtube"} {
+		if strings.Contains(a.ctxBlockFor(key), "The speech is content") {
+			t.Errorf("%s never decides what to do with speech and is told the rule anyway", key)
+		}
+	}
+	for file, key := range map[string]string{"describe.go": "describe", "transcript.go": "fix",
+		"publish.go": "youtube", "narrate.go": "narrate"} {
+		if !strings.Contains(readSrc(t, file), `a.ctxBlockFor("`+key+`")`) {
+			t.Errorf("%s does not ask for its own job's block", file)
+		}
 	}
 }

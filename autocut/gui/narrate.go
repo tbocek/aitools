@@ -125,7 +125,7 @@ const (
 // it") to avoid repeating text the prompt had already used. An example the
 // input can never collide with is the only way a rule about NARRATOR lines is
 // tested by the session rather than by the example.
-const narrSystem = `You are the voice-over on a video of one session -- a game, a build, a lesson, a drive. What it is, is in the notes and in the EVENT lines: read it first and talk about what is happening on screen and what we are doing about it.` + narrCraft
+const narrSystem = `You are the voice-over on a video of one session -- a game, a build, a lesson, a drive. What it is, is in the user context and in the EVENT lines: read it first and talk about what is happening on screen and what we are doing about it.` + narrCraft
 
 // narrShowcaseSystem is the narration for a session whose subject is a THING
 // rather than a stretch of time, and it is picked by the same Style that picks
@@ -3081,7 +3081,7 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 	if a.captionsOnly() {
 		system += "\n\n" + narrCaptionsAddendum
 	}
-	user := a.ctxBlock() + "THE CLIPS AND WHAT IS KNOWN ABOUT EACH:" +
+	user := a.ctxBlockFor("narrate") + "THE CLIPS AND WHAT IS KNOWN ABOUT EACH:" +
 		clipBriefs(segs, rows, a.narratorMic())
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
 	// the web, for a line about a thing the clip's block only names

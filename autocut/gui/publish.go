@@ -101,7 +101,7 @@ const youtubeSystem = `You write the upload text for a finished gaming video on 
 
 You are given what the video is made of -- its clips, what was seen and said in each, and the narration that was written over it. That is the video.
 
-What the session notes single out is what the description should lead with. Answer in the upload text's shape.
+What the user context singles out is what the description should lead with. Answer in the upload text's shape.
 
 The title.
 
@@ -1071,7 +1071,7 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 func (a *App) writeUpload(brief string) (title, instr, desc string, err error) {
 	msgs := []map[string]any{
 		msg("system", a.sysPrompt("youtube")),
-		msg("user", a.ctxBlock()+brief),
+		msg("user", a.ctxBlockFor("youtube")+brief),
 	}
 	if err := a.checkpoint(); err != nil {
 		return "", "", "", err

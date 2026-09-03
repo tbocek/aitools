@@ -104,9 +104,9 @@ const (
 // narrow job each, every rule load-bearing, no rule explained twice, and the
 // job given as a numbered procedure rather than as taste. "Keep what matters"
 // is a judgement such a model makes badly and differently every run; "list
-// what the notes name, find where each happens, divide the target by the
+// what the user context names, find where each happens, divide the target by the
 // count" is arithmetic it does the same way every time. So each wording is a
-// procedure: derive the subject from the notes, enumerate, budget, place --
+// procedure: derive the subject from the user context, enumerate, budget, place --
 // and the rules every style shares (boundaries, length, the reply) are one
 // tail (cutReply) rather than five copies.
 //
@@ -122,9 +122,9 @@ const genericSystem = `You choose the moments a video is cut from. The recording
 
 Work in this order.
 
-1. Say what this session is, in one line. The ABOUT THIS SESSION notes usually say it in their first sentence; with no notes, work it out from the timeline -- what the speakers say they are doing in the first minutes, and what the EVENT lines keep showing. Cut for THAT, not for what a session like it usually contains.
+1. Say what this session is, in one line. The USER CONTEXT usually says it in its first sentence; with none, work it out from the timeline -- what the speakers say they are doing in the first minutes, and what the EVENT lines keep showing. Cut for THAT, not for what a session like it usually contains.
 
-2. List what the notes name: every thing, moment, person or part. Each one gets a segment where it happens on the timeline. Find the place by the speech and the EVENT lines around it, and take the whole beat -- the setup, the thing itself, and what came of it, even when they are minutes apart. These come first and are never dropped for length.
+2. List what the user context names: every thing, moment, person or part. Each one gets a segment where it happens on the timeline. Find the place by the speech and the EVENT lines around it, and take the whole beat -- the setup, the thing itself, and what came of it, even when they are minutes apart. These come first and are never dropped for length.
 
 3. Fill the rest of the target length by the kind of video this is:
 - a showcase of things (a model, a unit, a build, a piece of kit): every thing named, each seen whole, seen close, seen working, and judged -- and never a stretch where the thing is off screen.
@@ -141,7 +141,7 @@ const suggestSystem = `You choose the moments for a highlight video of a gaming 
 
 Work in this order.
 
-1. List what the ABOUT THIS SESSION notes name: every moment, person or thing. Each gets a segment where it happens -- find the place by the speech and the EVENT lines around it, and take the whole beat: setup, the thing itself, and the reaction after it, even when they are minutes apart. Cutting at the first mention hands the viewer a setup with no payoff. These come first and are never dropped for length.
+1. List what the USER CONTEXT names: every moment, person or thing. Each gets a segment where it happens -- find the place by the speech and the EVENT lines around it, and take the whole beat: setup, the thing itself, and the reaction after it, even when they are minutes apart. Cutting at the first mention hands the viewer a setup with no payoff. These come first and are never dropped for length.
 
 2. List the peaks, from the timeline: an EVENT line that says hectic, a win, a disaster, a near miss, a reveal, a callback to something set up earlier -- and every line people reacted to: a laugh, a scream, swearing, someone confidently wrong. A joke beats a technically impressive moment nobody reacted to.
 
@@ -170,7 +170,7 @@ const ratingSystem = `You cut a rating video: a session where people play, watch
 
 Work in this order.
 
-1. List the items. If the ABOUT THIS SESSION notes name them or the scoring, that is the list. Otherwise take it from the speech and the EVENT lines: the maps, levels, weapons, songs -- whatever this session scores. Write every item down with the seconds where it is played or tried.
+1. List the items. If the USER CONTEXT names them or the scoring, that is the list. Otherwise take it from the speech and the EVENT lines: the maps, levels, weapons, songs -- whatever this session scores. Write every item down with the seconds where it is played or tried.
 
 2. Find the ranking. It is almost always near the end: the tier list, the countdown, the "so the winner is". Note where it starts and where the top item is named.
 
@@ -204,11 +204,11 @@ const showcaseSystem = `You cut a showcase: a session where someone shows a thin
 
 Work in this order.
 
-1. Name the subject. The ABOUT THIS SESSION notes say what is being shown -- take their word for it, spelled their way. With no notes, take it from the speech and the EVENT lines: what is on the table, in the hand, on the screen.
+1. Name the subject. The USER CONTEXT says what is being shown -- take its word for it, spelled its way. With none, take it from the speech and the EVENT lines: what is on the table, in the hand, on the screen.
 
 2. Count the things. A showcase of towers is one entry per tower; a showcase of one figure is one entry. Find them where the speech or an EVENT line names one, and write each down with the second it first enters and the second the session leaves it -- everything about it is between those two, and nothing outside them belongs to it. Several things is the same job repeated, and going long on the first leaves the last with nothing.
 
-3. Budget: divide the target length by the number of things. That is each one's share before you look at any of them. A thing the notes call out may take more; the extra comes out of the others and the total does not move.
+3. Budget: divide the target length by the number of things. That is each one's share before you look at any of them. A thing the user context calls out may take more; the extra comes out of the others and the total does not move.
 
 4. For each thing, in the order they come up, spend its share on these, in this order:
 - What it is: where it is first named or first properly in frame. One segment, and the viewer knows what they are looking at.
@@ -268,14 +268,14 @@ func (a *App) styleTarget(key, name string) {
 // watched on a phone mid-scroll. suggestSystem builds a video someone watches
 // from start to finish; a Short is scrolled INTO, so it opens mid-action,
 // stays on its one subject, and is gone before it needs a second one. The
-// subject comes from the editor -- the ABOUT THIS SESSION notes -- and this
+// subject comes from the user -- the USER CONTEXT block -- and this
 // prompt's job is everything else: finding where that subject happens,
 // cutting it hard, and marking the few effects that make a phone read it.
 //
 // The cut is budgeted, not browsed. Left to feel its way, the model kept
 // overshooting -- a 25-second target came back as twice that -- because
 // "about 25 seconds" gave it nothing to compute. So the prompt makes it do
-// arithmetic first: the notes' important parts are the beats, the target
+// arithmetic first: the context's important parts are the beats, the target
 // divided by their count is each beat's opening share, and seconds are traded
 // between beats before any timestamp is chosen -- a lull squeezed to the 5
 // seconds it needs, the surplus spent on the beat that earns it. The sum is
@@ -294,9 +294,9 @@ const shortsSystem = `You cut a YouTube Short from a gaming session: one vertica
 
 Work in this order. Budget the seconds before you touch the timeline.
 
-1. The ABOUT THIS SESSION notes say what this Short is about. Count the parts they call important -- those are the beats, told in order. Find where each one happens on the timeline. If the notes name nothing, there is one beat and it takes the whole budget: the single best moment of the session -- the loudest reaction, the biggest surprise, the funniest line.
+1. The USER CONTEXT says what this Short is about. Count the parts it calls important -- those are the beats, told in order. Find where each one happens on the timeline. If it names nothing, there is one beat and it takes the whole budget: the single best moment of the session -- the loudest reaction, the biggest surprise, the funniest line.
 
-2. Divide the target length by the number of beats: that is each beat's opening share. The notes decide how many there are -- one part, three, five -- and the arithmetic is the same at every count: five beats against a 25-second target open at 5 seconds each; a single beat opens with all 25.
+2. Divide the target length by the number of beats: that is each beat's opening share. The user context decides how many there are -- one part, three, five -- and the arithmetic is the same at every count: five beats against a 25-second target open at 5 seconds each; a single beat opens with all 25.
 
 3. Now trade seconds between beats, keeping the same total. A beat that is only setup or a lull gets squeezed to what it takes to be understood -- 5 seconds is often plenty -- and every second it gives up goes to the beat that earns it, usually the opener or the payoff. A beat that carries the clip may take more than one segment; a dull one never gets more time.
 
@@ -304,7 +304,7 @@ Work in this order. Budget the seconds before you touch the timeline.
 
 5. Land the length by trimming inside segments, never by dropping a named beat.
 
-The beats are one story told in parts, not a compilation: each segment is there because the notes asked for it. A good moment outside the named parts belongs to a different Short -- leave it. As many segments as the beats need and no more, usually one per beat.
+The beats are one story told in parts, not a compilation: each segment is there because the user context asked for it. A good moment outside the named parts belongs to a different Short -- leave it. As many segments as the beats need and no more, usually one per beat.
 
 Effects, for a phone.
 
@@ -321,7 +321,7 @@ Effects, for a phone.
 // instruction three times. The reply shape is not in here either: it is in
 // cutReply, which every wording ends on, Shorts included.
 //
-// The notes come first in it on purpose. What to do with a dull stretch is
+// The user context comes first in it on purpose. What to do with a dull stretch is
 // exactly what the editor writes down -- "the boring parts you can speed up
 // and show instead of cutting them" -- and that sentence is an instruction
 // about the SEGMENTS as much as about the effects: the stretch has to be kept
@@ -334,6 +334,8 @@ const fxRules = `
 Effects.
 
 - Few and deliberate: three or four across five minutes of finished video, each with a reason you could say out loud. Not one on every segment, and not none.
+- That count is a DEFAULT, and the USER CONTEXT outranks it. Asked for a caption on each thing as it is named, write those captions. Asked to speed every dull stretch, write those speeds. Asked for none, write none. A rule here that contradicts what the person editing asked for is this list being wrong about their video.
+- The one thing this list cannot become is a subtitle track. One text effect per line of speech is hundreds of them -- more than a single answer can hold, and not what these are for. Putting everything said on screen is the narration step with its captions voice, which writes the lines and Produce burns into the picture; a cut that tries to do it here gets cut off in the middle and lands nothing at all.
 - Pick the kind by what the moment needs, not by variety. Something important on screen and easy to miss -> zoom onto it. A viewer who would not know what is happening -> text saying it. A stretch that must be shown but not watched -> speed. The one beat worth landing on -> stop. Sound that does not sit right against the rest -> volume.
 - A stretch that has to be shown but not watched is ONE segment with a speed effect over it, never a row of small segments with the dull seconds left out. The cut is what the video contains; the effects are how it plays. Cutting between every line of speech to skip the pauses is how an answer turns into hundreds of segments and stops being a cut.
 - A segment under a speed effect may be two to four times the ordinary length -- minutes rather than a minute -- because it costs the finished video its seconds DIVIDED by the rate: two minutes at 4 spends thirty seconds of the target. That is what makes showing a long dull stretch affordable, and it is a rough guide like the others, not a limit.
@@ -354,7 +356,7 @@ const cutReply = `
 
 Where a segment ends: on the payoff, never just before it. A moment that only makes sense because of something earlier needs that earlier thing in the cut too, or neither. Too long: shorten the weakest segments. Too short: extend to the payoff first, then add the next moment on your list.
 
-Answer in the cut's shape. Before you answer, add up how long your segments RUN -- end minus start, and that divided by the rate wherever a speed effect covers them, because a stretch at 4 costs the video a quarter of its seconds -- and check: the total is inside the accepted range you were given; every segment has an EVENT line inside it; every start is later than the end before it; every effect lies inside one of your segments; everything the notes name is in.
+Answer in the cut's shape. Before you answer, add up how long your segments RUN -- end minus start, and that divided by the rate wherever a speed effect covers them, because a stretch at 4 costs the video a quarter of its seconds -- and check: the total is inside the accepted range you were given; every segment has an EVENT line inside it; every start is later than the end before it; every effect lies inside one of your segments; everything the user context names is in.
 
 One pass at the total. Land inside the range and answer; do not trim and re-add to reach an exact number. If the total is outside it you will be told what it came to and given your answer back to correct, which costs one short reply -- where working it out to the second before answering costs the whole call.`
 
