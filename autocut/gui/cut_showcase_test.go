@@ -24,8 +24,20 @@ func TestTheShowcaseWordingIsPickableAndCutsForLooking(t *testing.T) {
 		t.Errorf("the cut job does not go out with the Showcase wording:\n%s",
 			got[:min(200, len(got))])
 	}
-	if got := a.prompt("narrate"); got != strings.TrimSpace(narrSystem) {
-		t.Error("picking Showcase changed the narration, which ships no wording of that name")
+	// the narration has a Showcase wording too, and one pick turns both: a
+	// video cut for looking at a thing wants a voice about that thing
+	if got := a.prompt("narrate"); got != strings.TrimSpace(narrShowcaseSystem) {
+		t.Errorf("the narration did not follow the style:\n%s", got[:min(200, len(got))])
+	}
+	// ...and it is the same craft under a different subject, not a second
+	// narration to keep in step by hand
+	if !strings.HasSuffix(strings.TrimSpace(narrShowcaseSystem), strings.TrimSpace(narrCraft)) ||
+		!strings.HasSuffix(strings.TrimSpace(narrSystem), strings.TrimSpace(narrCraft)) {
+		t.Error("the two narrations no longer share narrCraft")
+	}
+	// a job with no wording of that name is still on its own default
+	if got := a.promptPickName("describe"); got != defStyle {
+		t.Errorf("the describer is on %q, want the default -- there is no Showcase describer", got)
 	}
 	// and it rides the same seam as every other job
 	if !strings.HasSuffix(a.sysPrompt("cut"), strings.TrimSpace(showcaseSystem)) {

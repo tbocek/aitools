@@ -144,7 +144,11 @@ var promptDefs = []promptDef{
 	// effects ride the cut reply again -- every style's, see fxRules -- and
 	// the audit checks them, so the key is gone the way "thumbnail" below
 	// went: a project's edited copy is a dead key nobody reads.
-	{key: "narrate", def: strings.TrimSpace(narrSystem)},
+	// two wordings, and the second is the same craft about a different
+	// subject: a showcase wants a voice about the thing on the table, where
+	// the default wants one about what is happening (see narrShowcaseSystem).
+	{key: "narrate", def: strings.TrimSpace(narrSystem),
+		alts: []promptStyle{{"Showcase", strings.TrimSpace(narrShowcaseSystem)}}},
 	// "thumbnail" was here: a second Publish prompt that picked which frame to
 	// edit and wrote the instruction for it. Removed, not renamed -- the key is
 	// gone from the registry, so a project that saved an edited copy of it just

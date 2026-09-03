@@ -87,6 +87,31 @@ type Project struct {
 	PromptStyles map[string][]promptStyle `json:"prompt_styles,omitempty"`
 	PromptPick   map[string]string        `json:"prompt_pick,omitempty"`
 
+	// Which kind of video this session is: the name the Style dropdown on
+	// Prepare is on -- General, Showcase, Rating / tier list, YouTube Shorts,
+	// or a wording saved here under a name of its own. Written every save,
+	// read every load, and applied last so it wins (applyStyle).
+	//
+	// It is in the PROJECT and not beside the prompts, which are the machine's
+	// (promptstore.go), because the two are different questions. How you like
+	// to be cut for is the same in January's raid as in March's; whether THIS
+	// session is a showcase of towers or a highlight reel is a fact about this
+	// session, like its notes and its target length. Kept per machine it was
+	// the last project's answer: a showcase opened after a highlight reel was
+	// cut as a highlight reel, and the dropdown said so, and the only way to
+	// notice was to read it.
+	//
+	// One string rather than the pick per job, because that is what the
+	// dropdown is: it lists the cut's wordings and applyStyle turns every
+	// other job to the one of that name, or to its default. Storing the six
+	// answers would be storing the same fact six times and inviting them to
+	// disagree.
+	//
+	// Absent in a project written before this, and then nothing is applied and
+	// the machine's own last pick stands -- which is what such a project got
+	// anyway, so opening one changes nothing about it.
+	Style string `json:"style,omitempty"`
+
 	Produce *prodSettings `json:"produce,omitempty"`
 	// the thumbnail and the upload text. Absent until the thumbnail half of
 	// Produce has something on it, so an older project -- or a session that stops at the
@@ -228,11 +253,17 @@ func (a *App) currentProject() Project {
 		Interval:   a.frameInterval(),
 		FrameScale: scaleName,
 		Language:   a.projectLanguage(),
-		VidDir:     a.relToRoot(a.vidDir),
-		AudDir:     a.relToRoot(a.audDir),
-		Context:    a.sessionCtx(),
-		Produce:    prod,
-		Publish:    a.currentPublish(),
+		// the cut's wording IS the style: the dropdown lists that job's
+		// wordings and every other job follows it (applyStyle). Written even
+		// when it is the shipped default, so that "this project is General"
+		// and "this project predates the field" stay different answers -- the
+		// first has to be able to switch a machine back off Showcase.
+		Style:   a.promptPickName("cut"),
+		VidDir:  a.relToRoot(a.vidDir),
+		AudDir:  a.relToRoot(a.audDir),
+		Context: a.sessionCtx(),
+		Produce: prod,
+		Publish: a.currentPublish(),
 	}
 }
 
@@ -565,6 +596,12 @@ func (a *App) applyProject(p Project) {
 	}
 	a.applyLanguage(p.Language)
 	a.applyPromptStyles(p.PromptStyles, p.PromptPick, p.Prompts)
+	// ...and the style last, so the project's own answer wins over whatever
+	// this machine was left on. A project written before the field says
+	// nothing and keeps the machine's, which is what it had before.
+	if p.Style != "" {
+		a.applyStyle(p.Style)
+	}
 	a.applySessionCtx(p.Context)
 	a.migrateHints(p)
 	a.applyProdSettings(p.Produce)

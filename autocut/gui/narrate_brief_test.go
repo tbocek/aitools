@@ -108,21 +108,35 @@ func TestClipBriefsCarryTheWordsTheKindAndTheTiming(t *testing.T) {
 	}
 }
 
-// TestTheNarrationDoesNotTalkOverItself pins the one rule that follows from
-// how Produce mixes: the clip keeps its own audio under the voice-over, so a
-// narration that quotes what is said in the clip is heard twice. The prompt
-// used to ask for the opposite in as many words -- "reuse the speaker's own
-// quotable lines VERBATIM" -- and wrote a narrator that read the transcript
-// back over the people saying it. The two files are edited in different places
-// and nothing at run time notices they disagree.
+// TestTheNarrationDoesNotTalkOverItself pins the rule that follows from how
+// Produce mixes -- a clip whose own voices are kept plays them under the
+// voice-over, so a narration that says one back is heard twice -- and, since
+// the prompt was redone, the fact that it is a rule about SOME sessions.
+//
+// The everyday session here has the voices split off and the voice lane
+// silenced: nothing anybody said is in the video, and there "say what was
+// said, better" is the whole job. So the no-repeat rule lives in the note
+// (narrNoMicNote) and rides along exactly when the scenes keep the speech,
+// which speechHeard is the one reading of.
 func TestTheNarrationDoesNotTalkOverItself(t *testing.T) {
 	if strings.Contains(narrSystem, "VERBATIM") {
-		t.Error("the prompt asks for the clip's own lines back, which the render then plays underneath them")
+		t.Error("the prompt asks for the clip's own lines back as they stand")
 	}
-	for _, want := range []string{"Never repeat a SPEAKER line", "the viewer hears it"} {
-		if !strings.Contains(narrSystem, want) {
-			t.Errorf("the prompt never says %q, so nothing stops the narration repeating the clip", want)
+	for _, want := range []string{"never say one back", "heard by the viewer"} {
+		if !strings.Contains(narrNoMicNote, want) {
+			t.Errorf("the note never says %q, so nothing stops the narration repeating a clip that plays its voices", want)
 		}
+	}
+	// ...and the base prompt is written for the other case, plainly enough
+	// that a model has no doubt whose voice is in the video
+	for _, want := range []string{"the only voice in the video", "nothing anybody said is played", "Say what was said, better"} {
+		if !strings.Contains(narrSystem, want) {
+			t.Errorf("the prompt no longer says %q", want)
+		}
+	}
+	// and it does not invent to fill the silence it is handed
+	if !strings.Contains(narrSystem, "Add nothing nobody said and the pictures do not show") {
+		t.Error("the prompt no longer forbids inventing what it was not given")
 	}
 	// ...and the render is what makes it true: the original is ducked, not
 	// dropped. If this ever becomes a replace, the rule above is wrong.
@@ -158,8 +172,10 @@ func TestTheNarrationIsCommentaryAndNotMemoir(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Never report your own body", // the memoir, in one line
-		"Quote at most one NARRATOR", // a run of them is a transcript, not a joke
-		"broken speech-to-text",      // which is what the runs were made of
+		// a spoken line is material to say properly, never a transcript to
+		// read out: the runs of speech-to-text were what that looked like
+		"never to quote as it stands",
+		"broken speech-to-text",
 	} {
 		if !strings.Contains(narrSystem, want) {
 			t.Errorf("the prompt no longer says %q", want)
@@ -187,13 +203,12 @@ func TestTheNarrationLeavesRoom(t *testing.T) {
 	for _, want := range []string{
 		"Less is more", // the instruction, in the words the model reads first
 		"ceiling across all its entries, not a target", // ...what the number under each clip means
-		"Silence is part of this",                      // ...and what happens in the space that leaves
-		`gets text ""`,                                 // a clip may get no line at all
-		`  -> ""`,                                      // and the example shows one, which is what gets copied
-		"one or two clips",                             // ...but as the exception: shown two examples of which
-		"Most clips get a line",                        // one was "", the model went half-silent (5 of 9)
-		"the offset it happens",                        // a line lands on a moment, not on a clip
-		"it's a bit crowded",                           // describing the picture is allowed when it is funny
+		`gets text ""`,          // a clip may get no line at all
+		`  -> ""`,               // and the example shows one, which is what gets copied
+		"one or two clips",      // ...but as the exception: shown two examples of which
+		"Most clips get a line", // one was "", the model went half-silent (5 of 9)
+		"the offset it happens", // a line lands on a moment, not on a clip
+		"it's a bit crowded",    // describing the picture is allowed when it is funny
 	} {
 		if !strings.Contains(narrSystem, want) {
 			t.Errorf("the prompt no longer says %q -- the narration goes back to "+
@@ -514,8 +529,8 @@ func TestTheExampleIsInventedAndNotTheSessions(t *testing.T) {
 // mix. Each is edited separately and none notices the others drift.
 func TestTheLineLandsWhereTheWriterPutIt(t *testing.T) {
 	for _, want := range []string{
-		`"at" is the second your line starts`, // the field, defined where the model reads it
-		"never before that moment is on screen",
+		`"at" the second the line starts`, // the field, defined where the model reads it
+		"react to the vault after we have seen the vault",
 		`"at":<sec>`,           // ...and in the JSON it returns
 		"like and subscribe",   // the sign-off exists
 		"near that clip's end", // ...and sits at the end, not the head, of the last clip
@@ -681,12 +696,18 @@ func TestOnlyWhatTheVideoCarriesIsOffLimits(t *testing.T) {
 		t.Errorf("a line the video carries is not marked audible:\n%s", brief)
 	}
 
-	// ...and the prompt has to ask for it, or the mark means nothing
-	for _, want := range []string{"NARRATOR", "Quote at most one NARRATOR line per clip"} {
+	// ...and the prompt has to ask for it, or the mark means nothing. It asks
+	// for all of them now rather than one per clip: a line nobody will ever
+	// hear is material, and rationing it was rationing the session's own words
+	for _, want := range []string{"NARRATOR", "material nobody will ever hear unless you use it"} {
 		if !strings.Contains(narrSystem, want) {
 			t.Errorf("the prompt never says %q, so the narration stays silent about "+
 				"lines nobody else will ever say", want)
 		}
+	}
+	// and where the video DOES carry them, the note says so instead
+	if !strings.Contains(narrNoMicNote, "The NARRATOR lines are still yours") {
+		t.Error("the note takes the narrator's own lines away along with the speakers'")
 	}
 
 	// the fact the whole distinction rests on: a clip's audio is its video's,

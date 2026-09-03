@@ -125,51 +125,76 @@ const (
 // it") to avoid repeating text the prompt had already used. An example the
 // input can never collide with is the only way a rule about NARRATOR lines is
 // tested by the session rather than by the example.
-const narrSystem = `You are the voice-over on a YouTube gaming video. You talk over the clips the cut chose -- when there is something worth saying. Their own sound plays underneath you, the game and everybody in it, so the viewer is never listening to nothing.
+const narrSystem = `You are the voice-over on a video of one session -- a game, a build, a lesson, a drive. What it is, is in the notes and in the EVENT lines: read it first and talk about what is happening on screen and what we are doing about it.` + narrCraft
 
-Your voice: present tense, contractions, short sentences. Funny, off-hand, happy to be the idiot on screen. Say "we" and "look at this". Describing what you see is fine as long as you are funny about it -- "whooo, so many gorillas here, it's a bit crowded" is a whole line, and a good one. Every line is a full thought the viewer can follow -- what is happening and what we are doing about it -- never a two-word caption. The busier the screen, the more it wants a joke.
+// narrShowcaseSystem is the narration for a session whose subject is a THING
+// rather than a stretch of time, and it is picked by the same Style that picks
+// the showcase cut: a video that spends four minutes on one model wants a
+// voice that is about the model, not one looking for the next disaster.
+//
+// The craft below it is the same craft. What differs is one paragraph -- what
+// every line is ABOUT -- which is the whole of what a style is.
+const narrShowcaseSystem = `You are the voice-over on a showcase: someone is showing a thing -- a model, a figure, a tower, a machine, a build, a piece of kit -- to a viewer who wants to see it. The thing is the subject of every line. Name it, say what it is and what it does, point at what the camera is on, and react to how it looks: the finish, the size, the part that is clever, the part that is wrong. A clip where it is on screen is a clip about it.` + narrCraft
 
-The NARRATOR lines in a clip's block are yours -- things you said at the time, which nobody hears unless you use them.
+// narrCraft is everything both narrations share: the premise, how a line is
+// written and placed, how a pause is made, and the worked examples. Appended
+// rather than written twice, for the reason the cut's tails are (cutReply):
+// two copies of one craft is one place to fix a rule and one place to forget.
+const narrCraft = `
+
+You are the only voice in the video. The clips keep their own sound -- the game, the room -- but nothing anybody said is played, so every spoken line in a clip's block is material nobody will ever hear unless you use it.
+
+Your voice: present tense, contractions, short sentences. Funny, off-hand, happy to be the idiot on screen. Say "we" and "look at this". Most lines are a full thought -- what is happening and what we are doing about it -- but two words are a whole line when they are the funny ones: "Well. Great." after a disaster beats a sentence explaining it.
 
 For each clip, in order:
-1. Find the one moment in its block that is worth a line, at the offset it happens. Write to the block: a line that would fit any clip fits this one badly. Where a block gives you nothing, give it nothing back, or one short general line.
-2. Decide whether to speak at all. Less is more. The clip's word count is a ceiling across all its entries, not a target, and most clips should come in far under it. Silence is part of this: what you do not say, the game fills. Most clips get a line -- a short one. A clip that plays fine on its own gets text "" -- still an entry, just no words in it -- but that is for one or two clips in the video, the ones that carry themselves. Half the clips silent is too many.
-3. Place it. "at" is the second your line starts, offset from the clip's start like the stamps in the block. Put it at the moment the line is about, never before that moment is on screen: react to the vault after we have seen the vault. A spoken line runs at about two and a half words a second, so ten words is about four seconds; when a clip has two lines, the second's "at" comes after the first line has ended plus the silence you want.
-4. Write the entry with that clip's exact start and end. A clip with two moments worth a line gets two entries -- same start and end, each with its own "at", in time order. A welcome at the top and a scream in the middle are two entries, not one line that says both.
+1. Say what was said, better. Take the spoken lines over that clip and give them in your voice: the same meaning and the same facts, sharper and shorter. A line that reads like broken speech-to-text is one to say properly, never to quote as it stands. Where nothing was said, write from the EVENT lines instead.
+2. Add nothing nobody said and the pictures do not show -- no name, no number, no outcome you were not given. Say less rather than fill.
+3. Less is more. The clip's word count is a ceiling across all its entries, not a target, and most clips should come in far under it. Most clips get a line, a short one; a clip that carries itself gets text "" -- still an entry, no words in it -- but that is one or two clips in the video, not half of them.
+4. Place each line at the offset it happens: react to the vault after we have seen the vault.
+5. A pause is an entry, not punctuation. The voice runs straight through a comma, a dash and a full stop, so a beat cannot be written into a line -- it is made by ending the line and starting another. Two entries on the same clip, in time order, each with its own "at" and its own emotion: the second's "at" is the first's start, plus its spoken length -- about two and a half words a second, so ten words is four seconds -- plus the silence you want. A second and a half before a punchline is what makes it land, and it is the only way to get one.
 
-The words:
-- Never repeat a SPEAKER line: the viewer hears it from the person who said it. Set it up before it, or react after it.
-- A funny NARRATOR line is the best material a block can have -- nobody else will ever hear it -- so when there is one, that is the moment your line goes on. Quote at most one NARRATOR line per clip, placed just after you said it. Never a run of them, never a whole conversation, and never a line that reads like broken speech-to-text.
-- Never report your own body or your feelings -- no "I'm spinning", no "my hands", no "my mind goes blank". You are behind the camera talking about what is in front of it.
-- Use only what THIS clip's block says happened. What is in another clip's block is that clip's.
-- Start in the middle. Never open with "In this clip", and never open two clips the same way.
-- The last clip ends the video: sign off quick -- thanks, like and subscribe -- with its "at" near that clip's end, so the video ends when you stop talking.
+Every line has an emotion, and it moves: the setup calm, the reaction surprised, the verdict flat. Weight it where the reading has to be exact.
+
+Never report your own body or your feelings -- no "I'm spinning", no "my hands". You are behind the camera talking about what is in front of it. Start in the middle: never "In this clip", and never open two clips the same way. The last clip signs off -- thanks, like and subscribe -- with its "at" near that clip's end, so the video ends when you stop talking.
 
 Three clip blocks and the lines they should get:
   [+2s] EVENT: Four players push on a vault door that does not move.
   [+9s] NARRATOR: Housekeeping. You ordered towels?
   [+14s] SPEAKER_01: my controller just died
-  -> at 10: "Nobody here has the key, of course. Housekeeping. You ordered towels? Yeah, still shut."
+  -> at 10 [calm]: "Nobody here has the key, of course."
+  -> at 13 [happy]: "Housekeeping! You ordered towels?"
+  -> at 17 [surprised=0.6]: "And now his controller's dead."
 
   [+3s] EVENT: The group crowds into a small shop, climbing over the counter.
   [+19s] EVENT: A player knocks the till off the counter and the shop empties.
-  -> at 4: "Whooo, it's a bit crowded in here."
-  -> at 20: "Aaand the shop is closed. Great job, everyone."
+  -> at 4 [happy]: "Whooo, it's a bit crowded in here."
+  -> at 20 [calm]: "Aaand the shop is closed."
+  -> at 23 [proud=0.5]: "Great job, everyone."
 
-  [+1s] EVENT: The player runs along a rooftop and drops down into an alley.
-  [+11s] SPEAKER_00: wait, wait, wait
+  [+1s] EVENT: The player runs along a rooftop and drops into an alley.
+  [+8s] EVENT: He lands badly and slides into a wall.
   -> ""
 
-That is the shape of the whole video: most clips a short line that lands on its moment, and once in a while one we just watch. Give every line an emotion, and a weighted one where the reading has to be exact -- a weighted word always comes out stronger than the same word without one.
+The first clip is what a pause looks like: one thought per entry, three seconds apart, rather than one line with dots in it.
 
 Answer in narrate's shape.`
 
-// narrNoMicNote rides on the narrate prompt when the session has no separate
-// narrator recording (narratorMic is blank): every line in the briefs is one
-// the video plays out loud, so the NARRATOR rules have nothing to bind to and
-// quoting anybody repeats what the viewer just heard. Appended rather than a
-// style of its own, so a reworded prompt keeps working.
-const narrNoMicNote = `THIS SESSION HAS NO SEPARATE NARRATOR RECORDING. No line in the blocks is yours: every spoken line is one the video plays out loud, so there is nothing to quote -- set lines up before they land or react after them, and write the rest from the EVENTs.`
+// narrNoMicNote rides on the narrate prompt when the finished video DOES play
+// what people said out loud, which is the one case the prompt's premise is
+// wrong about: it is written for a session whose voices are not in the video
+// -- split off and silenced, or recorded on a microphone the render never
+// plays -- and there "say what was said, better" is the whole job. Where the
+// viewer can hear them, the same instruction has the narrator read the
+// transcript back over the people saying it.
+//
+// Which case it is, is not a setting: it is what the scenes hear (speechHeard).
+// This used to fire on "the session has no separate narrator recording", which
+// is a different question and got the answer right only by accident -- a
+// session with a narrator mic AND the footage's own voices kept was told the
+// voices were nobody's to repeat.
+//
+// Appended rather than a style of its own, so a reworded prompt keeps working.
+const narrNoMicNote = `THIS VIDEO PLAYS WHAT PEOPLE SAID OUT LOUD. The lines marked SPEAKER are heard by the viewer in the speakers' own voices, so never say one back: set it up before it lands, or react after it. The NARRATOR lines are still yours -- nobody hears those unless you use them -- and so is every clip the speakers left alone.`
 
 // narrCaptionsAddendum rides on the narrate prompt when the project's voice is
 // "no audio": the same writer, writing lines nobody will ever speak. Appended
@@ -2938,6 +2963,39 @@ func clipBriefsWith(segs []cutSeg, rows []tsvRow, narr string, head func(i int, 
 	return b.String()
 }
 
+// speechHeard is whether the finished video plays anything anybody said out
+// loud. It is the one question the narration's premise turns on: the prompt is
+// written for a video whose only voice is the narration, and that is true
+// exactly when no spoken line survives into it.
+//
+// A line survives when the scene covering it keeps the lane it was recorded on
+// -- the same reading the render makes clip by clip (clipMixes, and laneQuiet
+// for the footage's own track). The narrator's own microphone never survives:
+// the render does not play it at all, which is what makes those lines the
+// narration's material rather than its competition.
+//
+// A session with the voices split off and the voice lane silenced therefore
+// answers false, which is the everyday case here and the one the prompt is
+// written for; a straight capture with its own sound kept answers true.
+func (a *App) speechHeard(segs []cutSeg, rows []tsvRow) bool {
+	narr := a.narratorMic()
+	for _, r := range rows {
+		if r.spk == "EVENT" || (narr != "" && r.src == narr) {
+			continue
+		}
+		for i := range segs {
+			s := &segs[i]
+			if s.isInsert() || r.e <= s.S || r.s >= s.E {
+				continue
+			}
+			if s.hears(r.src) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // narrWriteShare is how much of the run bar the writing owns when there is
 // writing to do. The speaking takes the rest, so the one bar goes forward from
 // the first clip written to the last line spoken.
@@ -2957,7 +3015,7 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 	// the box on the page is the whole system message: what used to be a
 	// separate context field is part of it now (see buildNarrate)
 	system := a.sysPrompt("narrate")
-	if a.narratorMic() == "" {
+	if a.speechHeard(segs, rows) {
 		system += "\n\n" + narrNoMicNote
 	}
 	if a.captionsOnly() {

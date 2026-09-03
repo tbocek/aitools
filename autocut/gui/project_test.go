@@ -793,3 +793,84 @@ func TestNothingChoosesTheOutputFolder(t *testing.T) {
 		t.Errorf("the output folder is assigned in %d places, want 2 (main and setProject)", sets)
 	}
 }
+
+// The style is the project's, not the machine's: which kind of video THIS
+// session is -- a showcase of towers, a highlight reel, a Short -- is a fact
+// about the session, like its notes and its target length. Kept per machine it
+// was the last project's answer, so a showcase opened after a highlight reel
+// was cut as a highlight reel and the dropdown quietly said so.
+//
+// applyProject and currentProject both read widgets the rest of a project
+// needs, so what runs here is the half that decides the style -- applyStyle,
+// which is what a load calls -- and the wiring around it is pinned to the
+// source, as every other page-bound path in this package is.
+func TestAProjectRemembersItsOwnStyle(t *testing.T) {
+	ownConfig(t)
+	a := &App{root: t.TempDir()}
+	a.loadGlobalPrompts()
+
+	// what a save writes is the wording the Style dropdown is on, which is the
+	// cut's: the dropdown lists that job's wordings and every other job
+	// follows it (applyStyle), so the six answers are one fact
+	src := readSrc(t, "project.go")
+	if !strings.Contains(src, `a.promptPickName("cut"),`) {
+		t.Error("a save no longer writes the style the dropdown is on")
+	}
+	if !strings.Contains(src, "Style string `json:\"style,omitempty\"`") {
+		t.Error("the project has no style field")
+	}
+	// ...and a load applies it LAST, after the wordings a pre-merge project
+	// may also carry, or those would overwrite it
+	i := strings.Index(src, "a.applyPromptStyles(p.PromptStyles, p.PromptPick, p.Prompts)")
+	j := strings.Index(src, "a.applyStyle(p.Style)")
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("applyProject does not apply the style last (wordings %d, style %d)", i, j)
+	}
+	// only when the project names one: an older file says nothing and the
+	// machine's own last answer stands, which is what such a file got anyway
+	if !strings.Contains(src, "if p.Style != \"\" {\n\t\ta.applyStyle(p.Style)") {
+		t.Error("a project that names no style is not left alone")
+	}
+
+	// the load itself, which is applyStyle: it reaches the cut and every job
+	// that follows it, over whatever this machine was left on
+	a.applyStyle("Highlights")
+	a.applyStyle("Showcase")
+	if got := a.promptPickName("cut"); got != "Showcase" {
+		t.Errorf("after loading a Showcase project the cut is on %q", got)
+	}
+	if got := a.promptPickName("narrate"); got != "Showcase" {
+		t.Errorf("the narration is on %q -- one pick turns every job that has a wording of that name", got)
+	}
+	if got := a.promptPickName("describe"); got != defStyle {
+		t.Errorf("the describer is on %q, want the default -- there is no Showcase describer", got)
+	}
+	// and back off it again: "this project is General" and "this project
+	// predates the field" have to stay different answers, which is why the
+	// default is written rather than omitted
+	a.applyStyle(defStyle)
+	if got := a.promptPickName("cut"); got != defStyle {
+		t.Errorf("a General project left the machine on %q", got)
+	}
+
+	// the field survives the file, which is the whole point
+	blob, err := json.MarshalIndent(Project{Style: "Rating / tier list"}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"style": "Rating / tier list"`) {
+		t.Errorf("the style is not in the file:\n%s", blob)
+	}
+	var back Project
+	if err := json.Unmarshal(blob, &back); err != nil {
+		t.Fatal(err)
+	}
+	a.applyStyle(back.Style)
+	if got := a.promptPickName("cut"); got != "Rating / tier list" {
+		t.Errorf("through the file the style came back as %q", got)
+	}
+	// an empty one is absent from the file rather than written as ""
+	if blob, _ := json.Marshal(Project{}); strings.Contains(string(blob), "style") {
+		t.Errorf("a project with no style still writes the key: %s", blob)
+	}
+}
