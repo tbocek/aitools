@@ -48,7 +48,7 @@ func TestTheShowcaseWordingIsPickableAndCutsForLooking(t *testing.T) {
 	// be on screen, seen whole and seen close, and several things share the
 	// length instead of the first one eating it
 	for _, want := range []string{
-		`{"segments":[{"start":<sec>,"end":<sec>}],"fx":[`, // the reply suggestParse reads
+		`{"segments":[{"start":<sec>,"end":<sec>,"speed":<rate, only on a segment that runs at that rate from end to end>}],"fx":[`, // the reply suggestParse reads
 		"target length",             // the length the run checks
 		"is not a showcase segment", // the subject out of frame is not one
 		"The whole of it",           // the pass that shows its size and shape

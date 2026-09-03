@@ -89,10 +89,15 @@ func TestThePlaybackTickRepaintsTheLineNotTheBands(t *testing.T) {
 	}
 	// a full repaint moves the line's layer too: the scrollbar under a paused
 	// player repaints the bands at the new offset, and a line left where it
-	// was would stand on the wrong second until the next tick
-	body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) redrawTracks\(\) \{`)
+	// was would stand on the wrong second until the next tick. The draws live
+	// in queueTracks -- the half a pan and a zoom use on their own, without the
+	// preview sync -- and redrawTracks is that plus the syncs.
+	body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) queueTracks\(\) \{`)
 	if !strings.Contains(body, "ed.lineArea.QueueDraw()") {
-		t.Error("redrawTracks no longer repaints the line's layer")
+		t.Error("queueTracks no longer repaints the line's layer")
+	}
+	if body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) redrawTracks\(\) \{`); !strings.Contains(body, "ed.queueTracks()") {
+		t.Error("redrawTracks no longer queues the tracks, so an edit repaints nothing")
 	}
 	// and the framing overlay still follows the clock on the cheap path
 	body = funcBody(t, "cut_playline.go", `func \(ed \*cutEditor\) redrawLine\(\) \{`)

@@ -29,7 +29,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
@@ -81,6 +83,17 @@ func (a *App) suggestClicked() {
 	a.updateRunControls()
 	a.logExp.SetExpanded(true)
 	a.logf(">>> suggest: target %.0f s — two LLM calls (choose, then audit), a few minutes", target)
+	// two places can name the length -- the target box and the user context --
+	// and only the box is what the reply is judged by. A context that says
+	// "about 12 min" over a box that says 5:00 sends the model after a length
+	// the gate then refuses, three times over; said here, once, before the
+	// first call, it is a thing the person can fix rather than a run that fails
+	if want, ok := ctxLength(a.sessionCtx()); ok {
+		if lo, hi := a.suggestWindow(target); want < lo || want > hi {
+			a.logf(">>> suggest: the user context says ~%s but the target box says %s — the box is what the reply is judged by",
+				mmss(want), mmss(target))
+		}
+	}
 	if shortsClamped {
 		a.logf(">>> target %s s is not a Short (20-30 s) — aiming at %.0f s instead",
 			strings.TrimSpace(a.ed.target.Text()), shortsLen)
@@ -505,6 +518,29 @@ func maxSuggestSegs(target float64) int {
 	return 40
 }
 
+// ctxLength is a length the user context names for the finished video, in
+// seconds, and whether it names one at all. "12min", "~15 min", "5 minutes",
+// "90 s", "90 seconds": a number with a unit of time on it. A bare number is
+// not a length -- "500 wins" and "level 2" are not durations -- and the first
+// one with a unit is taken, because a context that names two is a context
+// whose author knows which one they meant.
+func ctxLength(ctx string) (float64, bool) {
+	m := ctxLenRe.FindStringSubmatch(ctx)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	if strings.HasPrefix(strings.ToLower(m[2]), "m") {
+		n *= 60
+	}
+	return n, true
+}
+
+var ctxLenRe = regexp.MustCompile(`(?i)~?\b(\d+(?:[.,]\d+)?)\s*(min(?:ute)?s?|m|s|sec(?:ond)?s?)\b`)
+
 // suggestWindow is how far a suggestion's total may drift from the target
 // before it is rejected -- by the suggest loop and by the audit alike. The
 // wide band exists because a highlight cut is a wish, not a contract:
@@ -656,7 +692,8 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 	// between them is where a run of plausible numbers turns into nonsense.
 	user := a.ctxBlockFor("cut") + fmt.Sprintf("SESSION LENGTH: %.0f seconds, which the timeline "+
 		"writes as %s. Every start and end you give is a number of SECONDS between 0 and "+
-		"%.0f.\n\nTARGET LENGTH: %.0f seconds of finished video. "+
+		"%.0f.\n\nTARGET LENGTH: %.0f seconds of finished video -- the target box, which is "+
+		"what the reply is judged by; a length named in the user context does not change it. "+
 		"ACCEPTED: %.0f to %.0f seconds, and at most %d segments. Stop at the first set of "+
 		"moments that lands in that range.\n\nSESSION TIMELINE:\n%s",
 		span, mmss(span), span, target, lo, hi, maxSuggestSegs(target), session)
@@ -702,82 +739,9 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 		if err != nil {
 			return nil, nil, err
 		}
-		clean := strings.TrimSpace(reply)
-		if i := strings.Index(clean, "{"); i >= 0 {
-			clean = clean[i:]
-		}
-		clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
-		var out struct {
-			Segments []struct{ Start, End float64 } `json:"segments"`
-			Fx       []sugFx                        `json:"fx"`
-		}
-		problem := noAnswer(reply)
-		if problem != "" {
-			// nothing to parse: say so rather than reporting the parser's
-			// bafflement at an empty string (llm.go)
-		} else if err := json.Unmarshal([]byte(clean), &out); err != nil {
-			// a reply the token ceiling chopped in half wants a shorter
-			// answer, not a more careful one (cutOff, llm.go)
-			if problem = cutOff(reply, err); problem == "" {
-				problem = "not valid JSON: " + err.Error()
-			}
-		} else if len(out.Segments) < minSuggestSegs(target) {
-			problem = fmt.Sprintf("fewer than %d segments", minSuggestSegs(target))
-		} else if n := maxSuggestFx(target); len(out.Fx) > n {
-			problem = fmt.Sprintf("%d effects, which is a subtitle track and not a cut "+
-				"-- keep it under %d. Everything said goes on screen through the "+
-				"narration step's captions, not through text effects here",
-				len(out.Fx), n)
-		} else if n := maxSuggestSegs(target); len(out.Segments) > n {
-			// said as a shape problem, because that is what it is: an answer
-			// this long is a model that stopped choosing moments
-			problem = fmt.Sprintf("%d segments, which is not a cut -- keep it under %d, "+
-				"and use a speed effect over one long segment where a stretch has to be "+
-				"shown but not watched", len(out.Segments), n)
-		} else {
-			var segs []cutSeg
-			past := 0
-			for _, s := range out.Segments {
-				if s.End <= s.Start {
-					problem = "segment with end before start"
-					break
-				}
-				if span > 0 && s.Start >= span {
-					past++ // a second the session never reached
-				}
-				segs = append(segs, cutSeg{S: s.Start, E: s.End})
-			}
-			// said before anything about the total, because it is the fault
-			// underneath it: a cut whose segments run past the end of the
-			// recording fails the length gate too, and being told the total
-			// sends the next attempt to rebalance an answer whose real problem
-			// is that it stopped reading the timeline.
-			if problem == "" && past > 0 {
-				problem = fmt.Sprintf("%d of your %d segments start after the session ends "+
-					"at %.0f s -- nothing was recorded there", past, len(out.Segments), span)
-			}
-			// only video-backed time counts, and it is counted after the drop:
-			// a suggestion that spent half its length on stretches nobody
-			// filmed is short, and being told the number it actually landed on
-			// is what makes the next attempt aim elsewhere
-			asked := len(segs)
-			segs = a.keepFilmed(segs)
-			if n := asked - len(segs); n > 0 {
-				a.logfIdle(">>> suggest attempt %d: %d segment(s) dropped for having no footage", try+1, n)
-			}
-			// against the target as the video will run, not as the segments
-			// read: an answer that spends a minute of footage at ×4 has
-			// proposed fifteen seconds of video, and telling it the minute is
-			// telling it something it can do nothing with
-			fx := fxFromReply(out.Fx)
-			total := cutLen(applyFx(segs, fx))
-			if problem == "" {
-				if lo, hi := a.suggestWindow(target); total < lo || total > hi {
-					problem = fmt.Sprintf("total %.0fs, target %.0fs", total, target)
-				} else {
-					return segs, fx, nil
-				}
-			}
+		segs, fx, problem := a.checkCutReply(reply, target, span, try+1)
+		if problem == "" {
+			return segs, fx, nil
 		}
 		a.logfIdle(">>> suggest attempt %d rejected: %s", try+1, problem)
 		// the search goes with the first refusal. The tools are there for a
@@ -798,6 +762,152 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 		msgs = retryTurn(msgs, reply, problem)
 	}
 	return nil, nil, fmt.Errorf("no valid cut after 3 attempts")
+}
+
+// checkCutReply reads one answer to the cut and says what is wrong with it --
+// all of it, one fault per sentence, worst first -- or hands back the cut.
+//
+// Everything, not the first thing. The check was an if/else chain, one problem
+// per attempt, so an answer with three faults took three attempts to be told
+// about the third and there are only three. One run: told "139 effects" on the
+// second attempt, it fixed that and was then told the total, never that half
+// its timestamps lay past the end of the recording, never that the speed it
+// had written onto its segments had been thrown away. Told all three at once
+// it has one round to fix them in, and it is a round it gets.
+func (a *App) checkCutReply(reply string, target, span float64, attempt int) ([]cutSeg, []cutFx, string) {
+	problem := noAnswer(reply)
+	if problem != "" {
+		// nothing to parse: say so rather than reporting the parser's
+		// bafflement at an empty string (llm.go)
+		return nil, nil, problem
+	}
+	clean := strings.TrimSpace(reply)
+	if i := strings.Index(clean, "{"); i >= 0 {
+		clean = clean[i:]
+	}
+	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
+	var out struct {
+		// speed and rate on a SEGMENT are the same thing said where a model
+		// keeps saying it: a stretch that runs at 4 is one segment with one
+		// number on it, which is exactly what the wording asks for and not
+		// quite the shape the reply names. It is read as the speed effect it
+		// means rather than thrown away -- thrown away, the arithmetic the
+		// model did with it was right and the total it was told was wrong.
+		Segments []struct{ Start, End, Speed, Rate float64 } `json:"segments"`
+		Fx       []sugFx                                     `json:"fx"`
+	}
+	if err := json.Unmarshal([]byte(clean), &out); err != nil {
+		// a reply the token ceiling chopped in half wants a shorter answer,
+		// not a more careful one (cutOff, llm.go)
+		if problem = cutOff(reply, err); problem == "" {
+			problem = "not valid JSON: " + err.Error()
+		}
+		return nil, nil, problem
+	}
+	for _, s := range out.Segments {
+		if r := math.Max(s.Speed, s.Rate); r > 0 {
+			out.Fx = append(out.Fx, sugFx{Kind: "speed", Start: s.Start, End: s.End, Rate: r})
+		}
+	}
+	var probs []string
+
+	// timestamps past the end of the recording, segments and effects alike.
+	// Said first, because it is the fault underneath the others: a cut whose
+	// seconds run past the end fails the length gate too, and being told the
+	// total sends the next attempt to rebalance an answer whose real problem
+	// is that it read the timeline's stamps as decimals. That is what these
+	// numbers are, every time -- 2804 for the line stamped [28:04] -- so the
+	// message does the one conversion the model got wrong, on its own number.
+	past, first := 0, 0.0
+	for _, s := range out.Segments {
+		if span > 0 && s.Start >= span {
+			if past == 0 {
+				first = s.Start
+			}
+			past++
+		}
+	}
+	for _, f := range out.Fx {
+		if span > 0 && f.Start >= span {
+			if past == 0 {
+				first = f.Start
+			}
+			past++
+		}
+	}
+	if past > 0 {
+		probs = append(probs, fmt.Sprintf("%d of your timestamps lie after the session ends at %.0f s%s",
+			past, span, mmssHint(first, span)))
+	}
+
+	if len(out.Segments) < minSuggestSegs(target) {
+		probs = append(probs, fmt.Sprintf("fewer than %d segments", minSuggestSegs(target)))
+	} else if n := maxSuggestFx(target); len(out.Fx) > n {
+		probs = append(probs, fmt.Sprintf("%d effects, which is a subtitle track and not a cut "+
+			"-- keep it under %d. Everything said goes on screen through the "+
+			"narration step's captions, not through text effects here",
+			len(out.Fx), n))
+	} else if n := maxSuggestSegs(target); len(out.Segments) > n {
+		// said as a shape problem, because that is what it is: an answer
+		// this long is a model that stopped choosing moments
+		probs = append(probs, fmt.Sprintf("%d segments, which is not a cut -- keep it under %d, "+
+			"and use a speed effect over one long segment where a stretch has to be "+
+			"shown but not watched", len(out.Segments), n))
+	}
+
+	var segs []cutSeg
+	for _, s := range out.Segments {
+		if s.End <= s.Start {
+			probs = append(probs, "a segment ends before it starts")
+			break
+		}
+		segs = append(segs, cutSeg{S: s.Start, E: s.End})
+	}
+	// only video-backed time counts, and it is counted after the drop: a
+	// suggestion that spent half its length on stretches nobody filmed is
+	// short, and being told the number it actually landed on is what makes
+	// the next attempt aim elsewhere
+	asked := len(segs)
+	segs = a.keepFilmed(segs)
+	if n := asked - len(segs); n > 0 {
+		a.logfIdle(">>> suggest attempt %d: %d segment(s) dropped for having no footage", attempt, n)
+	}
+	// against the target as the video will run, not as the segments read: an
+	// answer that spends a minute of footage at ×4 has proposed fifteen
+	// seconds of video, and telling it the minute is telling it something it
+	// can do nothing with. Both numbers go back, so the model can see which
+	// of the two it got wrong.
+	fx := fxFromReply(out.Fx)
+	total := cutLen(applyFx(segs, fx))
+	if lo, hi := a.suggestWindow(target); total < lo || total > hi {
+		raw := 0.0
+		for _, s := range segs {
+			raw += s.E - s.S
+		}
+		probs = append(probs, fmt.Sprintf("total %.0f s of finished video from %.0f s of footage "+
+			"(the speed effects counted), where %.0f to %.0f is accepted", total, raw, lo, hi))
+	}
+	if len(probs) > 0 {
+		return nil, nil, strings.Join(probs, "; ")
+	}
+	return segs, fx, ""
+}
+
+// mmssHint is the conversion a stamp-read-as-a-decimal got wrong, done on the
+// model's own number: 2804 came from [28:04], which is 28*60+4. Empty when the
+// number does not read as a stamp at all, rather than a hint that is itself a
+// guess.
+func mmssHint(n, span float64) string {
+	mm, ss := int(n)/100, int(n)%100
+	if ss >= 60 || mm <= 0 {
+		return ""
+	}
+	secs := mm*60 + ss
+	if float64(secs) > span {
+		return ""
+	}
+	return fmt.Sprintf(" -- %.0f is not a second: a stamp [%02d:%02d] is mm*60+ss, %d",
+		n, mm, ss, secs)
 }
 
 // clampFxToSegs holds a proposed effect to the cut as it will actually play:

@@ -258,3 +258,69 @@ func TestTheUserContextOutranksTheEffectDefaults(t *testing.T) {
 		}
 	}
 }
+
+// The speed budget is arithmetic, and the wording does it rather than leaving
+// the model to derive it. "Show half the session" against a shorter target is
+// two numbers and a rate: the seconds that must run fast follow from them, and
+// a model told the formula with a worked example spends its call choosing
+// WHICH stretches rather than rediscovering how many seconds -- which is what
+// eleven minutes of reasoning once went on.
+func TestTheWordingSaysHowManySecondsMustRunFast(t *testing.T) {
+	for _, want := range []string{
+		"B = (F - T) * r / (r - 1)",
+		"F 850, T 720, r 4: B = 130 * 4/3 = 173 seconds at 4 and 677 at 1",
+		"B at or below 0 means no speed is needed",
+		"B above F means that footage cannot be squeezed to that target at that rate",
+		"one segment each, with its speed on it",
+	} {
+		if !strings.Contains(cutReply, want) {
+			t.Errorf("the cut reply rules no longer say %q", want)
+		}
+	}
+	// and the worked example is right, or the model learns the wrong sum
+	f, target, r := 850.0, 720.0, 4.0
+	b := (f - target) * r / (r - 1)
+	if int(b+0.5) != 173 || int(f-b+0.5) != 677 {
+		t.Errorf("the example's arithmetic is B=%.0f, N=%.0f", b, f-b)
+	}
+	// which lands where the example says: 677 + 173/4 = 720
+	if got := (f - b) + b/r; got < 719.5 || got > 720.5 {
+		t.Errorf("677 s at 1 and 173 s at 4 come to %.1f s, not the target", got)
+	}
+}
+
+// Two places can name the length, and only the box is judged. A context that
+// says "about 12 min" over a target box left at 5:00 sent the model after a
+// length the gate refused three times in a row -- 846 s of video against
+// 180-450 -- and nothing said the two disagreed. Now the log says so before
+// the first call, and the request says which one counts.
+func TestALengthInTheContextThatDisagreesWithTheBoxIsSaidOutLoud(t *testing.T) {
+	for _, c := range []struct {
+		ctx  string
+		want float64
+		ok   bool
+	}{
+		{"Show half of the video (~12min), but speed the rest", 720, true},
+		{"about 15 min of it", 900, true},
+		{"keep it to 5 minutes", 300, true},
+		{"a 90 s teaser", 90, true},
+		{"90 seconds, no more", 90, true},
+		{"you get a bonus at 500 wins, and level 2 is where it starts", 0, false}, // numbers, no unit
+		{"", 0, false},
+	} {
+		got, ok := ctxLength(c.ctx)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("ctxLength(%q) = %g, %v; want %g, %v", c.ctx, got, ok, c.want, c.ok)
+		}
+	}
+	src := readSrc(t, "cut_suggest.go")
+	for _, want := range []string{
+		"if want, ok := ctxLength(a.sessionCtx()); ok {",
+		"the box is what the reply is judged by",
+		"the target box, which is \"+\n\t\t\"what the reply is judged by; a length named in the user context does not change it",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut_suggest.go no longer contains %q", want)
+		}
+	}
+}

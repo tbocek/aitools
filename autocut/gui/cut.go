@@ -358,7 +358,9 @@ Where a segment ends: on the payoff, never just before it. A moment that only ma
 
 Answer in the cut's shape. Before you answer, add up how long your segments RUN -- end minus start, and that divided by the rate wherever a speed effect covers them, because a stretch at 4 costs the video a quarter of its seconds -- and check: the total is inside the accepted range you were given; every segment has an EVENT line inside it; every start is later than the end before it; every effect lies inside one of your segments; everything the user context names is in.
 
-One pass at the total. Land inside the range and answer; do not trim and re-add to reach an exact number. If the total is outside it you will be told what it came to and given your answer back to correct, which costs one short reply -- where working it out to the second before answering costs the whole call.`
+One pass at the total. Land inside the range and answer; do not trim and re-add to reach an exact number. If the total is outside it you will be told what it came to and given your answer back to correct, which costs one short reply -- where working it out to the second before answering costs the whole call.
+
+When the user context fixes how much footage to show -- half the session, every round, the whole build -- and that is more than the target, speed is what closes the gap, and it is arithmetic before it is taste. Footage F seconds, target T, rate r: the seconds that must run at r are B = (F - T) * r / (r - 1), and the rest run at 1. F 850, T 720, r 4: B = 130 * 4/3 = 173 seconds at 4 and 677 at 1. B at or below 0 means no speed is needed. B above F means that footage cannot be squeezed to that target at that rate: keep less of it, or use a higher rate, and say which in the reply. Take the B seconds from the stretches where nothing is said and nothing changes, longest first, until they add up -- one segment each, with its speed on it.`
 
 // cutSeg is one piece of the finished video. Normally it is a stretch of the
 // session: S and E are session seconds and the footage under them is what plays.
@@ -619,14 +621,20 @@ type cutEditor struct {
 	// it. Its row is cut_selband.go.
 	selOn       bool
 	selHov      bool
-	bandHov     bool   // the pointer is over the green bar's clip, ends included
-	bandKillHov int    // ...and the bar whose ✕ it is on, which lights red; -1 for none
-	selCur      string // the cursor name the source area last asked for
-	audCur      string // ...and the lanes
-	thumbHt     int    // thumbnail height; the 🔍 buttons change it
-	srcHt       int    // the height the source area was last asked for; see fitSrc
-	playhead    float64
-	hasPlay     bool
+	bandHov     bool // the pointer is over the green bar's clip, ends included
+	bandKillHov int  // ...and the bar whose ✕ it is on, which lights red; -1 for none
+	// wheel zooming, coalesced: the deltas that arrived since the last frame
+	// and whether a frame is already booked to apply them. See the scroll
+	// controller in buildCut for why one wheel gesture is many events.
+	zoomPend  float64
+	zoomBook  bool
+	scrollMut bool   // syncScroll is setting the adjustment; its value-changed is not a scroll
+	selCur    string // the cursor name the source area last asked for
+	audCur    string // ...and the lanes
+	thumbHt   int    // thumbnail height; the 🔍 buttons change it
+	srcHt     int    // the height the source area was last asked for; see fitSrc
+	playhead  float64
+	hasPlay   bool
 	// where ⏸ stopped, and whether it did. ▶ has places it starts from that
 	// are not the line (a held edge, a held clip); resuming is not one of
 	// them, and this is how the two are told apart. See toggle.
@@ -1251,6 +1259,24 @@ func (ed *cutEditor) relayout() {
 	if ed.sel.lane >= ed.laneN {
 		ed.sel.lane = 0
 	}
+	ed.layoutPx()
+	if ed.srcArea != nil {
+		// height only: the width is whatever the page gives us. The +8 is the
+		// picture band's own breathing room; the lane below it is where the
+		// camera and clock effects live (cut_fx.go).
+		ed.fitSrc()
+		ed.fitAudio()
+		ed.fitSelAud() // a reload may have taken the recording the selection was of
+		ed.syncScroll()
+		ed.redrawTracks()
+	}
+	ed.updateTotal()
+}
+
+// layoutPx is the half of relayout that is arithmetic: where every run and
+// every recording sits in timeline px at the current zoom. On its own it is
+// what a zoom needs, and nothing a zoom does not.
+func (ed *cutEditor) layoutPx() {
 	ed.spans = timeSpans(ed.vids)
 	x := 0.0
 	for i := range ed.spans {
@@ -1268,17 +1294,6 @@ func (ed *cutEditor) relayout() {
 	for i := range ed.vids {
 		ed.vids[i].pxOrigin = ed.xOf(ed.vids[i].start)
 	}
-	if ed.srcArea != nil {
-		// height only: the width is whatever the page gives us. The +8 is the
-		// picture band's own breathing room; the lane below it is where the
-		// camera and clock effects live (cut_fx.go).
-		ed.fitSrc()
-		ed.fitAudio()
-		ed.fitSelAud() // a reload may have taken the recording the selection was of
-		ed.syncScroll()
-		ed.redrawTracks()
-	}
-	ed.updateTotal()
 }
 
 // picTop is where the picture band starts: under the ruler's clock and the
@@ -1452,11 +1467,17 @@ func (ed *cutEditor) syncScroll() {
 	if ed.hadj == nil {
 		return
 	}
+	// five writes, and every one of them can emit value-changed -- a new
+	// upper re-clamps the value, a new page size re-clamps it again -- each of
+	// which used to be a full redraw. The handler sits this out; whoever
+	// called relayout draws once when the layout is settled.
+	ed.scrollMut = true
 	ed.hadj.SetUpper(ed.totalW)
 	ed.hadj.SetPageSize(ed.viewW)
 	ed.hadj.SetStepIncrement(ed.viewW / 8)
 	ed.hadj.SetPageIncrement(ed.viewW * 0.9)
 	ed.hadj.SetValue(ed.hadj.Value()) // re-clamps against the new upper
+	ed.scrollMut = false
 	ed.viewX = ed.hadj.Value()
 	ed.hbar.SetVisible(ed.totalW > ed.viewW+0.5)
 }
@@ -3151,6 +3172,26 @@ func (ed *cutEditor) redrawTracks() {
 	if ed.srcArea == nil {
 		return
 	}
+	ed.queueTracks()
+	// the framing overlay is a view of the same state -- where the camera is
+	// at the playhead, what is held -- and its pointer-grabbing follows the
+	// same state, so both are settled here rather than at every call site
+	if ed.fxArea != nil {
+		ed.syncFxCursor()
+		ed.syncPreviewZoom()
+	}
+}
+
+// queueTracks is the drawing half of redrawTracks: every band asked to paint,
+// and nothing about the preview. A pan and a zoom come through here directly,
+// because all they changed is where things are drawn -- and syncPreviewZoom
+// writes a transform and a size request onto the preview widget, which is a
+// relayout of the largest widget on the page for a wheel notch that did not
+// touch it.
+func (ed *cutEditor) queueTracks() {
+	if ed.srcArea == nil {
+		return
+	}
 	ed.fitSrc() // the effects lane is as deep as the effects pile up
 	ed.srcArea.QueueDraw()
 	if ed.audArea != nil {
@@ -3163,13 +3204,8 @@ func (ed *cutEditor) redrawTracks() {
 	if ed.lineArea != nil {
 		ed.lineArea.QueueDraw()
 	}
-	// the framing overlay is a view of the same state -- where the camera is
-	// at the playhead, what is held -- and its pointer-grabbing follows the
-	// same state, so both are settled here rather than at every call site
 	if ed.fxArea != nil {
 		ed.fxArea.QueueDraw()
-		ed.syncFxCursor()
-		ed.syncPreviewZoom()
 	}
 }
 
@@ -4866,7 +4902,7 @@ func (a *App) buildCut() gtk.Widgetter {
 				ed.setOff(ed.viewX + dx*ed.viewW/8)
 			}
 			if dy != 0 {
-				ed.zoomAt(ed.lastX, math.Pow(1.25, -dy))
+				ed.zoomWheel(dy)
 			}
 			return true
 		})
@@ -5430,7 +5466,13 @@ func (a *App) buildCut() gtk.Widgetter {
 	ed.hadj = gtk.NewAdjustment(0, 0, 0, 1, 1, 0)
 	ed.hadj.ConnectValueChanged(func() {
 		ed.viewX = ed.hadj.Value()
-		ed.redrawTracks()
+		if ed.scrollMut {
+			return // syncScroll is writing it, and draws once itself when it must
+		}
+		// a pan or a zoom moves where things are drawn and nothing else: the
+		// preview's camera layer depends on the playhead and the effects, not
+		// on the view, so it is not re-synced for every pixel of scrolling
+		ed.queueTracks()
 	})
 	ed.hbar = gtk.NewScrollbar(gtk.OrientationHorizontal, ed.hadj)
 	ed.hbar.SetVisible(false)
@@ -5589,13 +5631,49 @@ func (a *App) buildCut() gtk.Widgetter {
 // centered stays centered.
 func (ed *cutEditor) zoomStep(factor float64) { ed.zoomAt(ed.viewW/2, factor) }
 
+// zoomWheel is a wheel delta arriving. It is banked and applied once, on the
+// next idle, rather than zoomed on the spot.
+//
+// A wheel gesture is not one event. A touchpad, or a mouse with a free-spinning
+// wheel, delivers a notch as a run of fractional deltas -- ten or twenty in a
+// frame -- and each one used to be a whole zoom: relayout, five writes to the
+// scrollbar's adjustment (each of which could redraw), a redraw of four areas
+// and a re-sync of the preview widget. Twenty of those between two display
+// frames is the lag: the frames that get shown are the ones the work happened
+// to finish before. Banked, the twenty deltas are one factor, applied once,
+// drawn once, and the picture follows the wheel instead of trailing it.
+func (ed *cutEditor) zoomWheel(dy float64) {
+	ed.zoomPend += dy
+	if ed.zoomBook {
+		return
+	}
+	ed.zoomBook = true
+	glib.IdleAdd(func() {
+		ed.zoomBook = false
+		dy := ed.zoomPend
+		ed.zoomPend = 0
+		if dy != 0 {
+			ed.zoomAt(ed.lastX, math.Pow(1.25, -dy))
+		}
+	})
+}
+
 // zoomAt zooms about a point of the VIEW (a cursor position, or its middle),
 // keeping whatever is under that point under it afterwards.
 func (ed *cutEditor) zoomAt(viewX, factor float64) {
 	t := ed.tAtView(viewX)
-	ed.pps = math.Max(ed.minPps(), math.Min(120, ed.pps*factor))
-	ed.relayout()
-	ed.setOff(ed.xOf(t) - viewX)
+	pps := math.Max(ed.minPps(), math.Min(120, ed.pps*factor))
+	if pps == ed.pps {
+		return // against a stop: nothing to lay out and nothing to draw
+	}
+	ed.pps = pps
+	// the pixels, the scrollbar, one draw. Not relayout: that is for a change
+	// of what is ON the timeline and re-syncs the preview widget's camera
+	// layer too, and a zoom changes only where things are drawn.
+	ed.layoutPx()
+	ed.syncScroll()
+	ed.setOff(ed.xOf(t) - viewX) // its value-changed is the one redraw
+	ed.updateTotal()
 }
 
 // minPps is the zoom at which the whole session fits across the window, and

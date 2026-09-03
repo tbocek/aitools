@@ -211,7 +211,7 @@ func TestTheShortsWiringIsInPlace(t *testing.T) {
 	for file, wants := range map[string][]string{
 		"cut_suggest.go": {
 			"`json:\"fx\"`", // a cut reply carrying fx still parses -- the fallback
-			"} else if len(out.Segments) < minSuggestSegs(target) {",
+			"if len(out.Segments) < minSuggestSegs(target) {",
 			`shorts := a.promptPickName("cut") == shortsStyleName`,
 			"target, shortsClamped = shortsTargetFix(target)",
 			// both acceptance gates ask the style-aware window, not a shared 1.5x

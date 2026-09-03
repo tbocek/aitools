@@ -517,7 +517,7 @@ func noAnswer(reply string) string {
 		return ""
 	}
 	return "you returned no answer at all -- the whole reply was reasoning. " +
-		"Think briefly, then write the JSON itself"
+		"Think briefly, then write the complete JSON: every segment and every effect, not a sample"
 }
 
 // thinkAgain is whether the NEXT attempt should still be allowed to think.

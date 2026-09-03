@@ -409,7 +409,7 @@ func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
 	// sentence for every job in the app, which is why it is said once in the
 	// system context instead of in each wording (syscontext.go).
 	for _, want := range []string{
-		`{"segments":[{"start":<sec>,"end":<sec>}],"fx":[`, // what suggestParse reads
+		`{"segments":[{"start":<sec>,"end":<sec>,"speed":<rate, only on a segment that runs at that rate from end to end>}],"fx":[`, // what suggestParse reads
 		"target length", // the length the run checks
 	} {
 		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+def, want) {
