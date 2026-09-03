@@ -116,8 +116,10 @@ func TestTheCutOnlyPreviewIsWired(t *testing.T) {
 		"ed.cutPlayBtn = gtk.NewButtonWithLabel(\"▶✂\")",
 		"func (ed *cutEditor) playAs(cut bool) {",
 		"ed.cutOnly = cut",
-		// the clock changes meaning with it
-		"t = cutPos(ed.segs, ed.playhead)",
+		// the clock changes meaning with it, and reads the effects: the
+		// finished video's clock is the one the speed effects are in
+		"t = ed.cutPos(ed.playhead)",
+		"func (ed *cutEditor) cutPos(t float64) float64 { return cutPos(ed.fxSegs(), t) }",
 		// and the track says which seconds are about to be skipped
 		"for _, g := range ed.droppedSpans() {",
 	} {

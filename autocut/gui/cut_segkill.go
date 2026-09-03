@@ -92,7 +92,7 @@ func (ed *cutEditor) killSeg(i int) {
 	ed.dropEdge()
 	ed.bandKillHov = -1 // the indices moved; whatever was lit is not that clip now
 	ed.persist()
-	ed.a.setStatus(fmt.Sprintf("removed the scene at %s (%.0f s) — ↶ Undo takes it back",
-		mmss(s.S), s.E-s.S))
+	ed.a.setStatus(fmt.Sprintf("removed the scene at %s (%s) — ↶ Undo takes it back",
+		mmss(s.S), ed.spanSecs(s.S, s.E)))
 	ed.redrawTracks()
 }

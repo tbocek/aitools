@@ -92,7 +92,7 @@ func TestSuggestReportsWhileItRunsInsteadOfOnlyPulsing(t *testing.T) {
 	}
 	src := string(b)
 	for _, want := range []struct{ frag, why string }{
-		{`a.llmChatRetryTools("suggest", msgs, true, tools, a.webRunner("suggest", ffx), onText)`,
+		{`a.llmChatRetryTools("suggest", msgs, think, tools, a.webRunner("suggest", ffx), onText)`,
 			"a call that is not streamed cannot be counted while it runs"},
 		{`a.llmChatRetryOn("audit", msgs, true, onText)`,
 			"the audit call is streamed and recorded under its own name"},

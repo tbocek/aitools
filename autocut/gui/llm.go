@@ -62,7 +62,14 @@ type toolCall struct {
 // chatReply is what one round returns: words, or calls, or both.
 type chatReply struct {
 	Content string
-	Calls   []toolCall
+	// what the model told itself on the way to the answer, when the server
+	// keeps it out of the content instead of wrapping it in <think> tags.
+	// It is NOT part of the reply -- no caller parses it, no retry echoes it
+	// back -- and it exists for one reason: the recorded exchange (chatRec).
+	// A call that reasons for three minutes and answers nothing was written
+	// down as a blank page, which is the one case the pages are read for.
+	Think string
+	Calls []toolCall
 }
 
 // toolRunner answers one call by name; what it returns is what the model
@@ -154,15 +161,24 @@ func (a *App) chatRound(step string, msgs []map[string]any, thinking bool,
 	return rep, err
 }
 
-// recorded is the reply as the exchange log shows it: the words, and after
-// them the calls -- a round that only called a tool is otherwise an empty
-// page in the log.
+// recorded is the reply as the exchange log shows it: the thinking, the words,
+// and after them the calls -- a round that only called a tool, or only
+// reasoned, is otherwise an empty page in the log.
+//
+// The reasoning is wrapped in <think> tags rather than kept in a field of its
+// own, because that is how a model that inlines its thinking already arrives
+// and the page folds it away by that very marker (chatHTML). One spelling on
+// the page, whichever way the server sent it.
 func (r chatReply) recorded() string {
+	body := r.Content
+	if strings.TrimSpace(r.Think) != "" && !strings.Contains(body, "</think>") {
+		body = "<think>" + r.Think + "</think>" + body
+	}
 	if len(r.Calls) == 0 {
-		return r.Content
+		return body
 	}
 	var b strings.Builder
-	b.WriteString(r.Content)
+	b.WriteString(body)
 	for _, c := range r.Calls {
 		fmt.Fprintf(&b, "\n[tool call %s(%s)]", c.Function.Name, c.Function.Arguments)
 	}
@@ -246,7 +262,10 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool,
 	var out struct {
 		Choices []struct {
 			Message struct {
-				Content   string     `json:"content"`
+				Content string `json:"content"`
+				// the same out-of-band thinking readChatStream reads, for a
+				// call nobody streamed: kept for the record and nothing else
+				Reasoning string     `json:"reasoning_content"`
 				ToolCalls []toolCall `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
@@ -258,7 +277,8 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool,
 	if len(out.Choices) == 0 {
 		return chatReply{}, fmt.Errorf("no choices (%s): %v", resp.Status, out.Error)
 	}
-	return chatReply{Content: out.Choices[0].Message.Content, Calls: out.Choices[0].Message.ToolCalls}, nil
+	return chatReply{Content: out.Choices[0].Message.Content,
+		Think: out.Choices[0].Message.Reasoning, Calls: out.Choices[0].Message.ToolCalls}, nil
 }
 
 // readChatStream assembles a server-sent-event reply, handing the caller the
@@ -271,14 +291,14 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool,
 // put back together by that index.
 func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (chatReply, error) {
 	br := bufio.NewReader(r)
-	var b strings.Builder
+	var b, think strings.Builder
 	var calls []toolCall
 	for {
 		line, err := br.ReadString('\n')
 		if s := strings.TrimSpace(line); strings.HasPrefix(s, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(s, "data:"))
 			if payload == "[DONE]" {
-				return chatReply{Content: b.String(), Calls: calls}, nil
+				return chatReply{Content: b.String(), Think: think.String(), Calls: calls}, nil
 			}
 			var ch struct {
 				Choices []struct {
@@ -311,6 +331,7 @@ func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (ch
 				d := ch.Choices[0].Delta
 				if d.Reasoning != "" {
 					w.wrote(d.Reasoning, true)
+					think.WriteString(d.Reasoning) // for the record, not for the reply
 				}
 				if d.Content != "" {
 					w.wrote(d.Content, false)
@@ -338,7 +359,8 @@ func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (ch
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return chatReply{Content: b.String(), Calls: calls}, nil // a stream that ends without [DONE] still said what it said
+				// a stream that ends without [DONE] still said what it said
+				return chatReply{Content: b.String(), Think: think.String(), Calls: calls}, nil
 			}
 			if a.stopFlag.Load() {
 				return chatReply{}, errStopped
@@ -430,6 +452,55 @@ func jsonEnd(obj string) (float64, bool) {
 
 // llmChatRetry absorbs one transport hiccup, which a multi-hour pass will hit
 // -- but never retries a user stop.
+// ---- what a rejected answer does to the conversation -------------------------
+
+// noAnswer names the failure a JSON parser cannot: a reply with no answer in
+// it at all.
+//
+// A thinking model can spend the whole budget reasoning and stop without
+// writing a word, and the reasoning is kept out of the reply on purpose
+// (readChatStream) -- so what the caller parses is the empty string, and
+// json's "unexpected end of JSON input" is a true sentence that sends the
+// reader looking for a JSON bug in a reply that was never written. Empty means
+// empty, and the model is told that instead.
+func noAnswer(reply string) string {
+	if _, answer := splitThink(reply); strings.TrimSpace(answer) != "" {
+		return ""
+	}
+	return "you returned no answer at all -- the whole reply was reasoning. " +
+		"Think briefly, then write the JSON itself"
+}
+
+// thinkAgain is whether the NEXT attempt should still be allowed to think.
+//
+// A model that answered nothing spent the whole budget reasoning and was cut
+// off inside it -- 32768 tokens of thinking and no words, which the log reports
+// as "0 B came back" after ten minutes. Asking the same question the same way
+// gets the same answer, three times, and half an hour goes by before the step
+// gives up. So the attempt after an empty one is asked with thinking off: the
+// server is told enable_thinking false and given the shorter ceiling
+// (llmChatPost), which is the one change that makes the words arrive.
+//
+// Only after an EMPTY answer. A reply that came out as bad JSON or as the
+// wrong shape is a model that is writing and getting it wrong, and taking its
+// reasoning away would not help it get it right.
+func thinkAgain(think bool, reply string) bool { return think && noAnswer(reply) == "" }
+
+// retryTurn puts a rejected answer and its correction into the history.
+//
+// An empty answer is not echoed back. There is nothing to show the model, and
+// an empty assistant turn is one the next round has to make sense of -- some
+// servers refuse a conversation containing one outright, and the rest are
+// being told "you said:" followed by nothing. The correction carries the whole
+// message in that case, which is what noAnswer is for.
+func retryTurn(msgs []map[string]any, reply, problem string) []map[string]any {
+	if strings.TrimSpace(reply) != "" {
+		msgs = append(msgs, msg("assistant", reply))
+	}
+	return append(msgs, msg("user",
+		"Your answer failed validation: "+problem+". Return corrected strict JSON only."))
+}
+
 func (a *App) llmChatRetry(step string, msgs []map[string]any, thinking bool) (string, error) {
 	return a.llmChatRetryOn(step, msgs, thinking, nil)
 }

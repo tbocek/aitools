@@ -169,8 +169,8 @@ func (ed *cutEditor) mergeDropped() bool {
 		}
 		a, b := math.Min(s.S, n.S), math.Max(s.E, n.E)
 		ed.coalesce() // which is where two touching clips of one camera become one
-		ed.a.setStatus(fmt.Sprintf("joined into one scene, %s – %s (%.1f s) — "+
-			"↶ Undo puts the border back", mmss(a), mmss(b), b-a))
+		ed.a.setStatus(fmt.Sprintf("joined into one scene, %s – %s (%s) — "+
+			"↶ Undo puts the border back", mmss(a), mmss(b), ed.spanSecs(a, b)))
 		ed.redrawTracks()
 		return true
 	}

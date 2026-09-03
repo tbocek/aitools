@@ -252,7 +252,7 @@ func TestTheBarPulsesOnlyWhileNothingCanBeCounted(t *testing.T) {
 		t.Error("the speaking does not continue where the writing stopped")
 	}
 	// and the writing is only measurable because the reply is streamed
-	if !strings.Contains(string(page), `a.llmChatRetryTools("narrate", msgs, true, tools, a.webRunner("narrate", ffx), onText)`) {
+	if !strings.Contains(string(page), `a.llmChatRetryTools("narrate", msgs, think, tools, a.webRunner("narrate", ffx), onText)`) {
 		t.Error("the narration request is not streamed, so there is nothing to count until it is over")
 	}
 }

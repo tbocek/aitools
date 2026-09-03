@@ -3097,11 +3097,13 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 				"writing %d/%d clips", best, len(segs))
 		}
 	}
+	// thinking, until an attempt comes back with nothing: see thinkAgain
+	think := true
 	for try := 0; try < 3; try++ {
 		if err := a.checkpoint(); err != nil {
 			return nil, err
 		}
-		reply, err := a.llmChatRetryTools("narrate", msgs, true, tools, a.webRunner("narrate", ffx), onText)
+		reply, err := a.llmChatRetryTools("narrate", msgs, think, tools, a.webRunner("narrate", ffx), onText)
 		if err != nil {
 			return nil, err
 		}
@@ -3113,8 +3115,11 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 		var out struct {
 			Entries []rawEntry `json:"entries"`
 		}
-		problem := ""
-		if err := json.Unmarshal([]byte(clean), &out); err != nil {
+		problem := noAnswer(reply)
+		if problem != "" {
+			// nothing to parse: say so rather than reporting the parser's
+			// bafflement at an empty string (llm.go)
+		} else if err := json.Unmarshal([]byte(clean), &out); err != nil {
 			problem = "not valid JSON: " + err.Error()
 		} else {
 			entries, p := bindEntries(segs, out.Entries)
@@ -3124,8 +3129,12 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 			problem = p
 		}
 		a.logfIdle(">>> narration attempt %d rejected: %s", try+1, problem)
-		msgs = append(msgs, msg("assistant", reply),
-			msg("user", "Your answer failed validation: "+problem+". Return corrected strict JSON only."))
+		if next := thinkAgain(think, reply); next != think {
+			think = next
+			a.logfIdle(">>> narrate: the model spent the whole call thinking and wrote " +
+				"nothing — asking again with thinking off")
+		}
+		msgs = retryTurn(msgs, reply, problem)
 	}
 	return nil, fmt.Errorf("no valid narration after 3 attempts")
 }

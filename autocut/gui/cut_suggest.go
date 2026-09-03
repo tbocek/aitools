@@ -129,7 +129,6 @@ func (a *App) suggestClicked() {
 				a.progress.SetText("suggest failed — see log")
 				return
 			}
-			total := 0.0
 			a.ed.pushUndo() // a suggestion is a proposal; Undo clears it again
 			// A re-suggest replaces the old cut, never stacks on it -- but only
 			// the footage half of it. The inserts were placed by hand, the model
@@ -139,7 +138,6 @@ func (a *App) suggestClicked() {
 			for _, s := range segs {
 				a.ed.segs = append(a.ed.segs, cutSeg{
 					S: a.ed.snapEdge(s.S, true), E: a.ed.snapEdge(s.E, false)})
-				total += s.E - s.S
 			}
 			a.ed.coalesce()
 			// The audit checks the effects against the segments, but it is
@@ -168,6 +166,10 @@ func (a *App) suggestClicked() {
 			a.ed.setBase() // from here on, Revert comes back to this suggestion
 			a.progress.SetFraction(1)
 			a.progress.SetText(fmt.Sprintf("suggested %d segments", len(segs)))
+			// the length of the VIDEO this makes, effects included, which is
+			// what the target was a target for: read straight off the
+			// segments it would over-report every speed-up in the answer
+			total := a.ed.cutLen()
 			a.logf(">>> suggested %d segments, %d:%02d total",
 				len(segs), int(total)/60, int(total)%60)
 			if len(fx) > 0 {
@@ -354,10 +356,10 @@ func (a *App) auditCut(session string, target float64, segs []cutSeg, fx []cutFx
 		}
 		merged = append(merged, s)
 	}
-	total := 0.0
-	for _, s := range merged {
-		total += s.E - s.S
-	}
+	// with the effects the audit is returning laid over it: a check that adds
+	// a ×4 and then measures the cut without it is checking a video nobody
+	// will watch (applyFx, cut_speedmix.go)
+	total := cutLen(applyFx(merged, fxOut))
 	lo, hi := a.suggestWindow(target)
 	if len(merged) < minSuggestSegs(target) || total < lo || total > hi {
 		a.logfIdle(">>> audit rejected: %d segments, %.0f s against a %.0f s target — "+
@@ -627,11 +629,13 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 			a.prog(trackSTT, suggestChooseShare*f, "%d moments", n)
 		}
 	}
+	// thinking, until an attempt comes back with nothing: see thinkAgain
+	think := true
 	for try := 0; try < 3; try++ {
 		if err := a.checkpoint(); err != nil {
 			return nil, nil, err
 		}
-		reply, err := a.llmChatRetryTools("suggest", msgs, true, tools, a.webRunner("suggest", ffx), onText)
+		reply, err := a.llmChatRetryTools("suggest", msgs, think, tools, a.webRunner("suggest", ffx), onText)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -644,8 +648,11 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 			Segments []struct{ Start, End float64 } `json:"segments"`
 			Fx       []sugFx                        `json:"fx"`
 		}
-		problem := ""
-		if err := json.Unmarshal([]byte(clean), &out); err != nil {
+		problem := noAnswer(reply)
+		if problem != "" {
+			// nothing to parse: say so rather than reporting the parser's
+			// bafflement at an empty string (llm.go)
+		} else if err := json.Unmarshal([]byte(clean), &out); err != nil {
 			problem = "not valid JSON: " + err.Error()
 		} else if len(out.Segments) < minSuggestSegs(target) {
 			problem = fmt.Sprintf("fewer than %d segments", minSuggestSegs(target))
@@ -667,21 +674,27 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 			if n := asked - len(segs); n > 0 {
 				a.logfIdle(">>> suggest attempt %d: %d segment(s) dropped for having no footage", try+1, n)
 			}
-			total := 0.0
-			for _, s := range segs {
-				total += s.E - s.S
-			}
+			// against the target as the video will run, not as the segments
+			// read: an answer that spends a minute of footage at ×4 has
+			// proposed fifteen seconds of video, and telling it the minute is
+			// telling it something it can do nothing with
+			fx := fxFromReply(out.Fx)
+			total := cutLen(applyFx(segs, fx))
 			if problem == "" {
 				if lo, hi := a.suggestWindow(target); total < lo || total > hi {
 					problem = fmt.Sprintf("total %.0fs, target %.0fs", total, target)
 				} else {
-					return segs, fxFromReply(out.Fx), nil
+					return segs, fx, nil
 				}
 			}
 		}
 		a.logfIdle(">>> suggest attempt %d rejected: %s", try+1, problem)
-		msgs = append(msgs, msg("assistant", reply),
-			msg("user", "Your answer failed validation: "+problem+". Return corrected strict JSON only."))
+		if next := thinkAgain(think, reply); next != think {
+			think = next
+			a.logfIdle(">>> suggest: the model spent the whole call thinking and wrote " +
+				"nothing — asking again with thinking off")
+		}
+		msgs = retryTurn(msgs, reply, problem)
 	}
 	return nil, nil, fmt.Errorf("no valid cut after 3 attempts")
 }

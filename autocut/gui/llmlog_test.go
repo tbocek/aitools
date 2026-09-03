@@ -79,6 +79,39 @@ func TestAnExchangeIsKeptWholeWithItsImages(t *testing.T) {
 	}
 }
 
+// End to end: the server answers with reasoning and no content. The caller gets
+// the empty reply it always got -- the answer is what it parses -- but the page
+// holds the reasoning, and says which kind of nothing this was.
+func TestACallThatOnlyThoughtIsRecordedAsSuch(t *testing.T) {
+	a := chatFake(t, 200,
+		`{"choices":[{"message":{"content":"","reasoning_content":"I could start at 12s... or 14s..."}}]}`)
+	reply, err := a.llmChat("probe", []map[string]any{msg("user", "x")}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "" {
+		t.Errorf("the reasoning leaked into the reply: %q", reply)
+	}
+	pages, _ := filepath.Glob(filepath.Join(a.llmDir(), "*.html"))
+	if len(pages) != 1 {
+		t.Fatalf("the call left %d pages, want 1", len(pages))
+	}
+	b, err := os.ReadFile(pages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(b)
+	for _, want := range []string{
+		"<details><summary>thinking</summary>", // the working is on the page...
+		"I could start at 12s",
+		"(no answer", // ...and the page says the answer was missing, not the record
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page does not hold %q:\n%s", want, page)
+		}
+	}
+}
+
 func TestAFailedCallIsKeptWithItsError(t *testing.T) {
 	a := chatFake(t, 500, `{"error":"boom"}`)
 	_, err := a.llmChat("probe", []map[string]any{msg("user", "x")}, false)

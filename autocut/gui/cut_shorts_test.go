@@ -217,7 +217,7 @@ func TestTheShortsWiringIsInPlace(t *testing.T) {
 			// both acceptance gates ask the style-aware window, not a shared 1.5x
 			"if len(merged) < minSuggestSegs(target) || total < lo || total > hi {",
 			"if lo, hi := a.suggestWindow(target); total < lo || total > hi {",
-			"return segs, fxFromReply(out.Fx), nil",
+			"return segs, fx, nil",
 			// the audit gets the effects with the segments and hands both back
 			"segs, fx = a.auditCut(session, target, segs, fx)",
 			// the clamp runs against the segments as applied, snapEdge and

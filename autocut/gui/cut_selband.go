@@ -382,9 +382,9 @@ func (ed *cutEditor) holdSel(part int) {
 	ed.dropFx()
 	ed.selOn = true
 	a, b := ed.selSpan()
-	ed.a.setStatus(fmt.Sprintf("selection %s – %s (%.1f s) — drag its middle to move it, "+
+	ed.a.setStatus(fmt.Sprintf("selection %s – %s (%s) — drag its middle to move it, "+
 		"either end to change that end (both snap to the cuts), ✕ throws it away, "+
-		"⌦ removes the footage in it", mmss(a), mmss(b), b-a))
+		"⌦ removes the footage in it", mmss(a), mmss(b), ed.spanSecs(a, b)))
 	ed.redrawTracks()
 }
 

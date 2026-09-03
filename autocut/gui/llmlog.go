@@ -114,9 +114,27 @@ func (c *chatRec) stream(sofar string) {
 	c.streamed = len(sofar)
 }
 
+// splitThink is the reply in its two halves: what the model told itself, tags
+// and all, and the answer after it. Both spellings of thinking end up marked
+// the same way by the time anything here sees a reply -- inline from the model,
+// or wrapped by chatReply.recorded when the server sent it in a field of its
+// own -- so this is the one place that knows the marker.
+func splitThink(reply string) (think, answer string) {
+	if i := strings.LastIndex(reply, "</think>"); i >= 0 {
+		return reply[:i+len("</think>")], reply[i+len("</think>"):]
+	}
+	return "", reply
+}
+
 // done completes the record: the same page, rewritten whole with the reply --
 // or the error, which is when the record matters most -- and the verdict and
 // the answer's first words in the log.
+//
+// The verdict measures the ANSWER, and names the thinking separately. They are
+// not the same number and the difference is the one worth reading: a model that
+// spends four minutes reasoning and writes nothing has an answer of 0 B, and a
+// log line calling that "31 kB came back" sends the next reader hunting for a
+// parser bug in a reply that was never written.
 func (c *chatRec) done(reply string, took time.Duration, callErr error) {
 	if c == nil {
 		return
@@ -125,7 +143,14 @@ func (c *chatRec) done(reply string, took time.Duration, callErr error) {
 		c.f.Close() // the live page is done growing; the rewrite replaces it
 		c.f = nil
 	}
-	verdict := fmt.Sprintf("%s came back in %s", sizeOf(len(reply)), durOf(took))
+	think, answer := splitThink(reply)
+	verdict := fmt.Sprintf("%s came back in %s", sizeOf(len(answer)), durOf(took))
+	if think != "" {
+		verdict += fmt.Sprintf(", after %s of thinking", sizeOf(len(think)))
+	}
+	if strings.TrimSpace(answer) == "" && callErr == nil {
+		verdict += " — the model answered nothing at all"
+	}
 	if callErr != nil {
 		verdict = fmt.Sprintf("the call failed after %s: %v", durOf(took), callErr)
 	}
@@ -265,16 +290,22 @@ func chatHTML(step, model string, thinking bool, msgs []map[string]any, reply st
 		b.WriteString("<pre>")
 		return []byte(b.String())
 	}
-	answer := reply
-	if i := strings.LastIndex(reply, "</think>"); i >= 0 {
+	think, answer := splitThink(reply)
+	if think != "" {
 		b.WriteString("<details><summary>thinking</summary><pre>" +
-			esc(reply[:i+len("</think>")]) + "</pre></details>\n")
-		answer = reply[i+len("</think>"):]
+			esc(think) + "</pre></details>\n")
 	}
 	if strings.TrimSpace(answer) != "" {
 		b.WriteString("<pre>" + esc(answer) + "</pre>\n")
 	} else if callErr == nil {
-		b.WriteString("<p class=\"meta\">(empty reply)</p>\n")
+		// the page has to say WHICH nothing this is. An empty answer under a
+		// fold full of reasoning is a model that thought and never wrote; an
+		// empty page with nothing behind it is a server that sent nothing.
+		msg := "(empty reply)"
+		if think != "" {
+			msg = "(no answer — the model spent the call thinking; the reasoning is folded above)"
+		}
+		b.WriteString("<p class=\"meta\">" + msg + "</p>\n")
 	}
 	b.WriteString("</body></html>\n")
 	return []byte(b.String())

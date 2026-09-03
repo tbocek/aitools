@@ -72,12 +72,16 @@ func (a *App) removeSelRange() {
 			mmss(math.Min(ed.sel.t0, ed.sel.t1)), mmss(math.Max(ed.sel.t0, ed.sel.t1))))
 		return
 	}
-	before, kept := len(ed.segs), ed.keptLen()
+	// measured on the finished video's clock, not on the session's: a stretch
+	// under a ×2 is half as many seconds of video as it is of footage, and
+	// "removed 20 s" over a video that got 10 s shorter is the number nobody
+	// can check against the total under the tracks (cutLen).
+	before, was := len(ed.segs), ed.cutLen()
 	ed.pushUndo()
 	ed.removeRange(ed.sel.t0, ed.sel.t1)
 	ed.sel.active = false
 	ed.clearMarks()
-	a.setStatus(removedMsg(kept-ed.keptLen(), before, len(ed.segs)))
+	a.setStatus(removedMsg(was-ed.cutLen(), before, len(ed.segs)))
 }
 
 // removedMsg is what the line says afterwards.

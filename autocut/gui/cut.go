@@ -1580,10 +1580,16 @@ func (ed *cutEditor) showTime() {
 	// can still say where the line is, so it stays until there is a cut to read.
 	t, tip := ed.playhead, ed.playheadTip()
 	if ed.cutOnly && len(ed.segs) > 0 {
-		t = cutPos(ed.segs, ed.playhead)
+		// through the effects, not over them: this clock claims to be the
+		// finished video's, and a ×2 halves the seconds the video spends on
+		// the footage the line is walking through. Read straight off the
+		// segments it drifted further from the picture with every effect --
+		// the preview was already playing at the effect's rate (syncPlayRate)
+		// while the number counted session seconds.
+		t = ed.cutPos(ed.playhead)
 		tip = fmt.Sprintf("%s into the cut, of %s — the finished video's own clock "+
-			"(the ▶✂ preview). Session time here is %s.",
-			mmss(t), mmss(cutLen(ed.segs)), playheadClock(ed.playhead, ed.hasPlay))
+			"(the ▶✂ preview), the speed effects included. Session time here is %s.",
+			mmss(t), mmss(ed.cutLen()), playheadClock(ed.playhead, ed.hasPlay))
 	}
 	ed.clock.SetMarkup("<small>" + playheadClock(t, ed.hasPlay) + "</small>")
 	ed.clock.SetTooltipText(tip)
@@ -2813,8 +2819,8 @@ func (ed *cutEditor) edgeStatus() {
 		return
 	}
 	s := ed.segs[ed.edgeSeg]
-	ed.a.setStatus(fmt.Sprintf("clip %d: %s – %s (%.1f s)", ed.edgeSeg+1,
-		fmtClock(s.S), fmtClock(s.E), s.E-s.S))
+	ed.a.setStatus(fmt.Sprintf("clip %d: %s – %s (%s)", ed.edgeSeg+1,
+		fmtClock(s.S), fmtClock(s.E), ed.spanSecs(s.S, s.E)))
 }
 
 // nudgeEdge moves the held edge by whole frames and shows the frame it lands
@@ -3054,8 +3060,8 @@ func (ed *cutEditor) segStatus() {
 	if s == nil {
 		return
 	}
-	ed.a.setStatus(fmt.Sprintf("clip %d: %s – %s (%.1f s)", ed.segSel+1,
-		fmtClock(s.S), fmtClock(s.E), s.length()))
+	ed.a.setStatus(fmt.Sprintf("clip %d: %s – %s (%s)", ed.segSel+1,
+		fmtClock(s.S), fmtClock(s.E), ed.spanSecs(s.S, s.E)))
 }
 
 // nudgeSeg moves the held clip by whole frames, the same way ‹f and f› move a
@@ -3615,12 +3621,64 @@ func (ed *cutEditor) persist() {
 // no edit on this page makes it longer or shorter.
 func (ed *cutEditor) cutLen() float64 {
 	sum := 0.0
-	// through the same pipe the render reads (splitSpliced + applyFx), so the
-	// number under the tracks is the length of the video Produce would make
-	for _, s := range applyFx(splitSpliced(ed.segs), ed.fx) {
+	for _, s := range ed.fxSegs() {
 		sum += s.length() // a spliced card takes no session time and still runs
 	}
 	return sum
+}
+
+// fxSegs is the cut as the render will run it: the spliced cards cut out into
+// their own clips, and every clip carrying the rate the effects over it come to
+// (splitSpliced + applyFx, which is produceSegs' own pipe).
+//
+// Every number this page prints about TIME goes through here, because the
+// question behind all of them is the same one -- how long is the video, and
+// how far into it is this -- and a clip's session seconds stopped being that
+// answer the moment speed effects existed. A ×2 over half a scene is half a
+// scene the finished video does not contain, and a total that reads the
+// segments straight says it does.
+func (ed *cutEditor) fxSegs() []cutSeg { return applyFx(splitSpliced(ed.segs), ed.fx) }
+
+// cutPos is where session time t falls on the finished video's clock, effects
+// and all. The reading the ▶✂ preview is asked for.
+func (ed *cutEditor) cutPos(t float64) float64 { return cutPos(ed.fxSegs(), t) }
+
+// runLen is how long the session seconds t0..t1 run in the finished video --
+// the same arithmetic as above for a stretch that is not a whole clip, which
+// is what a selection and a clip in hand both are.
+//
+// A stop is nought in the spans and runs at ×1 here, exactly as the render
+// treats it: the picture stands still and the footage under it plays on, so a
+// stop costs the video no time (rateStep.applied, cut_fxstill.go). It is the
+// speed-ups and slow-downs that move this number.
+func (ed *cutEditor) runLen(t0, t1 float64) float64 {
+	if t1 <= t0 {
+		return 0
+	}
+	out, at := 0.0, t0
+	for _, st := range rateSpans(ed.fx) {
+		lo, hi := math.Max(st.t0, t0), math.Min(st.t1, t1)
+		if hi <= lo {
+			continue
+		}
+		out += math.Max(0, lo-at) // seconds no effect covers run at ×1
+		out += (hi - lo) / st.applied()
+		at = hi
+	}
+	return out + math.Max(0, t1-at)
+}
+
+// spanSecs is how a stretch's length is written in a status line: its own
+// seconds, and what it comes to in the video when an effect makes those two
+// different. Both, because both are being asked about -- the first is the
+// footage you are pointing at, the second is what it costs the video -- and a
+// cut with no effects in it reads exactly as it always did.
+func (ed *cutEditor) spanSecs(t0, t1 float64) string {
+	raw, run := t1-t0, ed.runLen(t0, t1)
+	if math.Abs(raw-run) < 0.05 {
+		return fmt.Sprintf("%.1f s", raw)
+	}
+	return fmt.Sprintf("%.1f s, %.1f s in the video", raw, run)
 }
 
 func (ed *cutEditor) updateTotal() {
