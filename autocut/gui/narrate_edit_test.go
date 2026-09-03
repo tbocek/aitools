@@ -969,7 +969,7 @@ func TestTheNarrationColumnWrapsRatherThanScrollingSideways(t *testing.T) {
 	}
 	// every other scrolling column in the app already says it, which is what
 	// made this one the exception rather than the rule
-	for _, f := range []string{"cut_form.go", "improve.go", "publish.go"} {
+	for _, f := range []string{"cut_form.go", "publish.go"} {
 		if !strings.Contains(readSrc(t, f), "SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)") {
 			t.Errorf("%s no longer wraps its column, so narrate.go is not following a rule any more", f)
 		}

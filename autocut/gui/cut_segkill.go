@@ -1,6 +1,6 @@
 package main
 
-// The ✕ on a kept scene.
+// Dropping a scene, and the ✕ badge every remove on this page is drawn as.
 //
 // Removing footage used to be a button in the toolbar, and a toolbar button
 // asks the hand to do the work twice: put the red line on the scene, cross the
@@ -9,25 +9,28 @@ package main
 // the playhead happened to sit on -- and a verb that guesses is a verb that
 // occasionally removes something nobody pointed at.
 //
-// So it moves onto the thing it acts on. (A － Remove is back on the bar since,
-// for the one job a per-scene ✕ cannot do -- cutting a hole in the middle of a
-// scene, which leaves two scenes that did not exist to be pressed. It guesses
-// nothing: it is the selection's verb alone. See cut_selrm.go.) Every stretch the cut keeps is tinted
-// green over the thumbnails; each one now carries a ✕ in its top-right corner,
-// and pressing it drops THAT stretch. There is no ambiguity left to resolve:
-// the scene you pressed is the scene that goes.
+// So it moved onto the thing it acts on. (A － Remove is back on the bar since,
+// for the one job an ✕ cannot do -- cutting a hole in the middle of a scene,
+// which leaves two scenes that did not exist to be pressed. It guesses nothing:
+// it is the selection's verb alone. See cut_selrm.go.)
 //
-// This does put a control on the tint, which drawSelBand's own rule says is
-// the answer and not the control. The rule is worth breaking here for the one
-// reason it exists: the band can only ever speak for the clip under the red
-// line, so a ✕ there would have kept the whole "move the line first" dance
-// that made the button tiring. The tint is per-scene, and this verb is too.
+// Where it moved to has changed once. It was a badge in the top-right corner of
+// every green stretch, drawn on the thumbnails; it is now the ✕ on the green
+// bar in the selection row (cut_selband.go), which stands for the clip in hand
+// or the clip under the red line. Two marks for one verb was the state of the
+// page for a while -- the bar had grown the blue band's whole vocabulary and
+// the ✕ came with it -- and one of them had to go. The bar's is the one that
+// stayed: it has a flat row to itself, so it is legible over dark footage and
+// bright without fighting the picture, and the row is wide enough to give the
+// mark a plate. The cost is honest and worth saying: the bar speaks for one
+// clip, so dropping a scene means having the line in it, where a badge per
+// scene did not. ⌦ still removes whatever is in hand, which is how the cards
+// and the sounds go.
 //
-// Only footage. A violet insert is not green and gets none, and neither does
-// the one insert that IS drawn green -- a sound laid over the picture, where a
-// ✕ would have to mean the sound or the frames under it and could not say
-// which. Both are removed by taking them in hand and pressing ⌦, which is the
-// same key the button was on.
+// What the badge looks like is here because four different things wear it: the
+// bar's ✕, a cut lane's, an emptied row's (cut_lane.go) and an effect's
+// (cut_fxkill.go). One recipe, so a remove looks like a remove wherever it is
+// drawn -- and one place to change if it ever should.
 
 import (
 	"fmt"
@@ -40,47 +43,38 @@ const (
 	segKillR   = 4.0  // the arms of the ✕, from its centre
 	segKillPad = 3.0  // the plate's edge, beyond the arms
 	segKillHit = 10.0 // and the target, which is bigger than either
-	segKillIn  = 11.0 // its centre, in from the scene's right border
+	segKillIn  = 11.0 // its centre, in from the edge it is drawn against
 	segKillTop = 11.0 // and down from the top of the picture band
-	// under this a scene has no corner to spare. The number is not a taste: the
-	// target reaches segKillIn+segKillHit in from the right border, and a scene
+	// under this a thing has no corner to spare. The number is not a taste:
+	// the target reaches segKillIn+segKillHit in from the edge, and anything
 	// narrower than twice that has its MIDDLE inside the ✕ -- so a click meant
-	// to put the red line on the clip would remove the clip. Twice the reach,
-	// and a little over, so the left half of every scene wearing a ✕ is plain
-	// timeline. Narrower ones are removed with ⌦, like anything else too small
-	// to aim at.
+	// for the thing itself would remove the thing. Twice the reach, and a
+	// little over, so the half away from the badge is plain timeline.
 	segKillMin = 2*(segKillIn+segKillHit) + 6
 )
 
-// segKillCentre is where scene i's ✕ sits -- timeline x, area y -- and whether
-// it has one at all.
-func (ed *cutEditor) segKillCentre(i int) (float64, float64, bool) {
-	if i < 0 || i >= len(ed.segs) {
-		return 0, 0, false
+// drawKillBadge paints one ✕ centred on cx,cy: a plate, then the arms.
+//
+// A plate under the mark, always: two white strokes laid straight onto a
+// thumbnail are legible over a dark frame and invisible over a bright one, and
+// a control that disappears on half the footage is not a control. Red only
+// under the pointer -- a row of red buttons standing open over the cut reads
+// as damage already done.
+func drawKillBadge(cr *cairo.Context, cx, cy float64, hot bool) {
+	if hot {
+		cr.SetSourceRGBA(0.85, 0.24, 0.28, 0.95)
+	} else {
+		cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.55)
 	}
-	s := ed.segs[i]
-	if s.isInsert() {
-		return 0, 0, false
+	cr.Arc(cx, cy, segKillR+segKillPad, 0, 2*math.Pi)
+	cr.Fill()
+	cr.SetSourceRGBA(1, 1, 1, 0.9)
+	cr.SetLineWidth(1.6)
+	for _, d := range [][2]float64{{-1, -1}, {-1, 1}} {
+		cr.MoveTo(cx+segKillR*d[0], cy+segKillR*d[1])
+		cr.LineTo(cx-segKillR*d[0], cy-segKillR*d[1])
 	}
-	x0, x1 := ed.xOf(s.S), ed.xOf(s.E)
-	if x1-x0 < segKillMin {
-		return 0, 0, false
-	}
-	return x1 - segKillIn, ed.segTop(s) + segKillTop, true
-}
-
-// segKillAt is the kept scene whose ✕ is under a press at timeline-x px and
-// area-y y, or -1. Square rather than round: the plate is a disc but the hand
-// is aiming at a corner, and the corners of the target are the part of it the
-// pointer arrives at first.
-func (ed *cutEditor) segKillAt(px, y float64) int {
-	for i := range ed.segs {
-		cx, cy, ok := ed.segKillCentre(i)
-		if ok && math.Abs(px-cx) <= segKillHit && math.Abs(y-cy) <= segKillHit {
-			return i
-		}
-	}
-	return -1
+	cr.Stroke()
 }
 
 // killSeg drops scene i. It is removeSelClicked's own arithmetic with the
@@ -96,57 +90,9 @@ func (ed *cutEditor) killSeg(i int) {
 	// whatever was in hand was holding an index, and the indices have moved
 	ed.dropSeg()
 	ed.dropEdge()
-	ed.killHovOn = false
+	ed.bandKillHov = false
 	ed.persist()
 	ed.a.setStatus(fmt.Sprintf("removed the scene at %s (%.0f s) — ↶ Undo takes it back",
 		mmss(s.S), s.E-s.S))
 	ed.redrawTracks()
-}
-
-// hoverSegKill lights the ✕ under the pointer. x below zero means the pointer
-// has left the band.
-func (ed *cutEditor) hoverSegKill(x, y float64) {
-	i := -1
-	if x >= 0 && ed.hitPics(y) {
-		i = ed.segKillAt(x+ed.viewX, y)
-	}
-	if on := i >= 0; on != ed.killHovOn || (on && i != ed.killHov) {
-		ed.killHovOn, ed.killHov = on, i
-		if ed.srcArea != nil {
-			ed.srcArea.QueueDraw()
-		}
-	}
-}
-
-// drawSegKill paints the badges. Called from drawTrack inside its translation,
-// so x here is timeline px like everything drawn around it.
-//
-// A plate under the mark, always: two white strokes laid straight onto a
-// thumbnail are legible over a dark frame and invisible over a bright one, and
-// a control that disappears on half the footage is not a control. Red only
-// under the pointer -- a row of red buttons standing open over the cut reads
-// as damage already done.
-func (ed *cutEditor) drawSegKill(cr *cairo.Context, vx0, vx1 float64) {
-	for i := range ed.segs {
-		cx, cy, ok := ed.segKillCentre(i)
-		if !ok || cx < vx0-segKillHit || cx > vx1+segKillHit {
-			continue
-		}
-		hot := ed.killHovOn && ed.killHov == i
-		if hot {
-			cr.SetSourceRGBA(0.85, 0.24, 0.28, 0.95)
-		} else {
-			cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.55)
-		}
-		cr.Arc(cx, cy, segKillR+segKillPad, 0, 2*math.Pi)
-		cr.Fill()
-		// the mark itself is a path, like every other mark on this page
-		cr.SetSourceRGBA(1, 1, 1, 0.9)
-		cr.SetLineWidth(1.6)
-		for _, d := range [][2]float64{{-1, -1}, {-1, 1}} {
-			cr.MoveTo(cx+segKillR*d[0], cy+segKillR*d[1])
-			cr.LineTo(cx-segKillR*d[0], cy-segKillR*d[1])
-		}
-		cr.Stroke()
-	}
 }

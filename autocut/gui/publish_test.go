@@ -33,16 +33,22 @@ func TestTheInstructionAsksForNoLetteringInsteadOfTheTitle(t *testing.T) {
 	if strings.Contains(got, "Ghost Ship Disaster") {
 		t.Errorf("the title is still sent to the image model, so it is lettered twice:\n%s", got)
 	}
-	if !strings.Contains(got, pubNoLettering) {
+	if !strings.Contains(got, "Do not write any words, letters, titles, logos or captions") {
 		t.Error("the instruction no longer forbids lettering -- the model's words end up under the printed title")
 	}
 	if !strings.Contains(got, "\n\n") {
 		t.Error("the no-lettering sentence runs on from the edit instead of standing on its own")
 	}
 	// the sentence has to hold the title's band open too, or the print lands
-	// on a busy top edge
-	if !strings.Contains(strings.ToLower(pubNoLettering), "upper part") {
-		t.Error("the no-lettering sentence does not ask for a calm upper part, where the title goes")
+	// on a busy edge -- and it has to name the band the title is ACTUALLY in,
+	// since that band can be dragged (pubSettings.TitleBox)
+	if !strings.Contains(got, "Keep the upper part of the picture calm") {
+		t.Errorf("the default band is not asked for by name:\n%s", got)
+	}
+	moved := editInstruction(pubSettings{Prompt: edit,
+		TitleBox: &pubText{Cx: 0.5, Cy: 0.85, Wf: 0.9, Hf: 0.2}})
+	if !strings.Contains(moved, "Keep the lower part of the picture calm") {
+		t.Errorf("a title dragged to the bottom still asks for a calm top:\n%s", moved)
 	}
 
 	// an empty instruction is empty, not the boilerplate on its own: a model
@@ -684,7 +690,8 @@ func TestRegeneratingWearsTheOneMark(t *testing.T) {
 	if strings.Contains(pub, `NewButtonWithLabel("Suggest again")`) {
 		t.Error("the suggest button is a label again, beside three icons that mean the same thing")
 	}
-	if !strings.Contains(pub, `p.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above", p.redraw)`) {
+	if !strings.Contains(pub, `p.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above",`) ||
+		!strings.Contains(pub, "p.export, p.redraw))") {
 		t.Error("the redraw button is not on the thumbnail's heading")
 	}
 }
@@ -772,7 +779,7 @@ func TestAMarkedBoxSnapsToTheFrameAndToTheOthers(t *testing.T) {
 	src := readSrc(t, "publish_text.go")
 	for _, want := range []string{
 		"xs = []float64{ox, ox + dw/2, ox + dw}",
-		"xs = append(xs, ox+tx, ox+tx+tw)",
+		"for i := 0; i < nbox(); i++ {",
 		"xs = append(xs, bx, bx+bw/2, bx+bw)",
 		"if i == skip {",
 		"snapPointPx(x, fxSnapPx, xs...)",
@@ -824,7 +831,7 @@ func TestAnImageCanBeUsedAsTheThumbnailAsItIs(t *testing.T) {
 	body := funcBody(t, "publish.go", `func \(s \*pubSlot\) useAsThumbnail\(\) \{`)
 	for _, want := range []string{
 		"pubWriteCropped(",
-		"thumbnail-plain.png",
+		"p.a.thumbPlain()", // written as the plain copy, by the one name for it
 		"p.recomposite()",
 		"if p.a.running {",
 		"st.Own = true",
@@ -924,7 +931,7 @@ func TestAChosenThumbnailIsAPNGTheSizeADrawnOneIs(t *testing.T) {
 		t.Errorf("the plain copy is %dx%d, want the %dx%d a drawn one is", d.Dx(), d.Dy(), w, h)
 	}
 	// ...and the words print onto it, which never happened while it was a JPEG
-	if err := drawPubTexts(out, filepath.Join(dir, "thumbnail.png"), nil, "A Title"); err != nil {
+	if err := drawPubTexts(out, filepath.Join(dir, "thumbnail.png"), nil, "A Title", pubTitleBox); err != nil {
 		t.Errorf("the words will not print onto a chosen thumbnail: %v", err)
 	}
 	// a picture already inside the box is left alone rather than blown up
@@ -976,7 +983,202 @@ func TestAChosenThumbnailIsNotRedrawnByARun(t *testing.T) {
 	if !strings.Contains(funcBody(t, "publish.go", `func \(p \*publisher\) snapshot\(\) pubSettings \{`), "Own: p.own") {
 		t.Error("the snapshot drops the choice")
 	}
-	if !strings.Contains(funcBody(t, "publish.go", `func \(p \*publisher\) apply\(`), "p.crop, p.own = st.Crop, st.Own") {
+	if !strings.Contains(funcBody(t, "publish.go", `func \(p \*publisher\) apply\(`), "p.crop, p.own, p.titleBox = st.Crop, st.Own, st.TitleBox") {
 		t.Error("a project load drops the choice")
+	}
+}
+
+// The title is a box on the picture like any other: outlined, dragged by its
+// border, moved by its middle, and wearing a ✎ that opens its words.
+//
+// It was printed with none of that -- no outline, no handle, no chip -- so a
+// thumbnail showed two blocks of words and the page could reach only one of
+// them. The way to move a title was to type it a second time as a marked text
+// and leave the band empty, which is what the picture that raised this had in
+// it: the same seven words printed twice.
+func TestTheTitleIsAReachableBoxLikeAnyOther(t *testing.T) {
+	src := readSrc(t, "publish_text.go")
+	for _, want := range []string{
+		"return len(p.texts) + 1", // the title is the last box...
+		"isTitle := func(i int) bool { return hasTitle() && i == len(p.texts) }", // ...while it has words
+		"for i := 0; i < nbox(); i++ {",                                          // drawn, snapped against and hit-tested with the rest
+		"p.setTitleBox(&pubText{",                                                // a drag on it writes its band
+		"p.editTitle()",                                                          // and its ✎ opens the title's words
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("publish_text.go no longer contains %q -- the title is unreachable again", want)
+		}
+	}
+	// its words are the entry's, not a list item's: this is the YouTube title
+	// first and words on a picture second
+	body := funcBody(t, "publish_text.go", `func \(p \*publisher\) editTitle\(\) \{`)
+	if !strings.Contains(body, "p.title.SetText(strings.TrimSpace(s))") {
+		t.Errorf("the title's ✎ does not edit the title entry:\n%s", body)
+	}
+	// Remove means what it means on every other box: take these words off the
+	// picture. It used to put the BAND back instead, which on a band nobody
+	// had moved was a no-op -- so Remove did nothing at all.
+	if !strings.Contains(body, `p.title.SetText("")`) {
+		t.Errorf("Remove on the title leaves the words on the picture:\n%s", body)
+	}
+	if !strings.Contains(body, "p.setTitleBox(nil)") {
+		t.Error("Remove leaves the band where a removed title was, not where a title starts")
+	}
+	if i, j := strings.Index(body, `p.title.SetText("")`), strings.Index(body, "p.setTitleBox(nil)"); i > j {
+		t.Error("the band is reset before the words are cleared, so the reprint uses the old words")
+	}
+	if !strings.Contains(funcBody(t, "publish_text.go", `func \(st pubSettings\) titleBox\(\)`), "return pubTitleBox") {
+		t.Error("a project that never moved the title has no default band")
+	}
+
+	// the band round-trips through the project
+	blob, err := json.Marshal(pubSettings{TitleBox: &pubText{Cx: 0.5, Cy: 0.8, Wf: 0.9, Hf: 0.2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"title_box"`) {
+		t.Errorf("the title's band is not written to the project: %s", blob)
+	}
+	if blob, _ := json.Marshal(pubSettings{}); strings.Contains(string(blob), "title_box") {
+		t.Errorf("a title in the default band writes the key anyway: %s", blob)
+	}
+	plain, err := json.Marshal(pubSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back pubSettings
+	if err := json.Unmarshal(plain, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got := back.titleBox(); got != pubTitleBox {
+		t.Errorf("a project with no band came back with %+v, want the default", got)
+	}
+	moved := pubSettings{TitleBox: &pubText{Cx: 0.5, Cy: 0.8, Wf: 0.9, Hf: 0.2}}
+	if got := moved.titleBox(); got.cy != 0.8 {
+		t.Errorf("a moved band came back at %v", got.cy)
+	}
+
+	// ...and the words are printed in the band the project asks for, which is
+	// the whole point of moving it
+	if !strings.Contains(funcBody(t, "publish_text.go", `func drawPubTexts\(`), "x, y, bw, bh := tb.px(w, h)") {
+		t.Error("the title is printed in a fixed band whatever the project says")
+	}
+	// one function prints the words, and it reads the project's band: the
+	// words a keystroke re-prints and the words a run prints have to be the
+	// same words in the same boxes
+	if !strings.Contains(funcBody(t, "publish.go", `func \(a \*App\) printPubWords\(`), "st.titleBox()") {
+		t.Error("the printing uses the default band whatever the project says")
+	}
+	if !strings.Contains(funcBody(t, "publish_text.go", `func \(p \*publisher\) recomposite\(\) \{`),
+		"p.a.printPubWords(p.snapshot())") {
+		t.Error("the page prints the words its own way instead of through the one printing")
+	}
+	// the run's own print, after a draw, reads it too
+	if !strings.Contains(funcBody(t, "publish.go", `func \(a \*App\) drawThumbnail\(`), "st.titleBox()") {
+		t.Error("a drawn thumbnail prints the title in the default band")
+	}
+	// and a chosen one goes through the same printing rather than its own
+	if !strings.Contains(funcBody(t, "publish.go", `func \(a \*App\) publishStage\(`), "return a.printPubWords(st)") {
+		t.Error("a chosen thumbnail prints its words some other way")
+	}
+
+	// a box is where words are. A marked one goes when its words go, and the
+	// title's goes the same way -- Remove used to take the words off the
+	// picture and leave the dashed rectangle and its ✎ sitting over nothing.
+	if !strings.Contains(src, `hasTitle := func() bool { return strings.TrimSpace(p.title.Text()) != "" }`) {
+		t.Error("the title's box is drawn whether or not there is a title in it")
+	}
+
+	// where a band sits, in the words a model follows
+	for _, c := range []struct {
+		cy   float64
+		want string
+	}{{0.14, "upper"}, {0.5, "middle"}, {0.86, "lower"}} {
+		if got := pubTitleWhere(fxBox{cx: 0.5, cy: c.cy, wf: 0.9, hf: 0.18}); got != c.want {
+			t.Errorf("a band at %.2f is called %q, want %q", c.cy, got, c.want)
+		}
+	}
+}
+
+// The thumbnail leaves the app as a JPEG, and the working copy stays a PNG.
+//
+// It is re-printed from the plain picture every time a word changes, so a
+// generation of JPEG per keystroke would be a thumbnail that got worse the
+// more it was worked on. What YouTube takes is a JPEG under 2 MB, so the one
+// conversion happens on the way out.
+func TestTheThumbnailExportsAsAJPEGThatFits(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "thumbnail.png")
+	// noise, so the encoder cannot cheat its way under any limit
+	img := image.NewRGBA(image.Rect(0, 0, 1280, 720))
+	for y := 0; y < 720; y++ {
+		for x := 0; x < 1280; x++ {
+			img.Set(x, y, color.RGBA{uint8(x * y % 253), uint8(x % 251), uint8(y % 241), 255})
+		}
+	}
+	f, err := os.Create(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	out := filepath.Join(dir, "t.jpg")
+	n, err := writeJPEGUnder(src, out, pubJPEGMax)
+	if err != nil {
+		t.Fatalf("writeJPEGUnder: %v", err)
+	}
+	if n > pubJPEGMax {
+		t.Errorf("the export is %d bytes, over the %d YouTube takes", n, pubJPEGMax)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 3 || b[0] != 0xFF || b[1] != 0xD8 {
+		t.Fatalf("the export is not a JPEG: % x", b[:3])
+	}
+	got, err := jpeg.Decode(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("the export will not decode: %v", err)
+	}
+	// the size is kept: 1280x720 is what YouTube wants, so shrinking to save
+	// bytes would be losing the thing rather than compressing it
+	if d := got.Bounds(); d.Dx() != 1280 || d.Dy() != 720 {
+		t.Errorf("the export is %dx%d, want the thumbnail's own size", d.Dx(), d.Dy())
+	}
+	// a limit nothing can meet still writes the best it managed, rather than
+	// failing with a file the user cannot see
+	small, err := writeJPEGUnder(src, filepath.Join(dir, "tiny.jpg"), 1)
+	if err != nil {
+		t.Errorf("an impossible limit failed instead of writing the smallest it could: %v", err)
+	}
+	if small >= n {
+		t.Errorf("the smallest it could manage (%d) is no smaller than its best quality (%d)", small, n)
+	}
+
+	// the button is beside the ↻, on the thumbnail's own heading
+	src2 := readSrc(t, "publish.go")
+	if !strings.Contains(src2, `p.export = gtk.NewButtonFromIconName("document-save-symbolic")`) ||
+		!strings.Contains(src2, "p.exportThumb()") {
+		t.Error("the thumbnail has no export button")
+	}
+	if !strings.Contains(src2, "p.export, p.redraw))") {
+		t.Error("the export button is not on the thumbnail's heading beside the redraw")
+	}
+	// it exports what is on screen -- the words printed -- not the plain copy
+	body := funcBody(t, "publish.go", `func \(p \*publisher\) exportThumb\(\) \{`)
+	if !strings.Contains(body, "a.thumbFile()") {
+		t.Error("the export takes the picture without its words")
+	}
+	if !strings.Contains(body, "nothing to export yet") {
+		t.Error("exporting before anything is drawn fails silently")
+	}
+	// and a name without a suffix gets one: a JPEG called .png is a file
+	// every uploader argues about
+	if !strings.Contains(body, `out += ".jpg"`) {
+		t.Error("the export can be written under a name that does not say what it is")
 	}
 }

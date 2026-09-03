@@ -105,8 +105,9 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 	{"cut", "Cut", "edit-cut-symbolic", "Choose the clips the video is made of",
 		"Run Prepare first — the cut works on the footage and its frames",
 		"The footage over the session timeline, with everything the cut keeps tinted " +
-			"green over it, and a waveform lane per sound below. Each green stretch carries " +
-			"an ✕ in its top-right corner, and pressing it drops that scene — ⌦ does the " +
+			"green over it, and a waveform lane per sound below. The row above the pictures " +
+			"is the cut in bars: a green bar per kept stretch, the one the red line is in " +
+			"drawn tall with handles on its ends and an ✕ that drops it — ⌦ does the " +
 			"same to whatever is in hand, which is how the cards and the sounds go. On the " +
 			"seam between the pictures and the lanes a selection wears a ▲▼ handle saying " +
 			"what it is about: both arrows lit is picture and sound together, ▲ narrows it " +
@@ -1289,17 +1290,9 @@ func (a *App) build(app *gtk.Application) {
 	// do play have their own beside their own ▶ (cut.go, narrate.go), and
 	// those are still one number between them (volumeCtl, SetPreviewVolume).
 	ctlRow.Append(a.progress)
-	// Ask about what just happened, from wherever you noticed it. On this bar
-	// and not on a page, because the complaint is never about the page you are
-	// standing on: what a cut kept is noticed while watching the produced file,
-	// and what the narration says is noticed after it has been spoken
-	// (improve.go).
-	improve := gtk.NewButtonWithLabel("Improve")
-	improve.SetTooltipText("Say what you did not like — the model reads this session's " +
-		"log and its own exchanges, says why it did that, and names the sentence in the " +
-		"prompt that would change it")
-	improve.ConnectClicked(a.improveClicked)
-	ctlRow.Append(improve)
+	// No Improve button here. It asked the model why a step decided what it
+	// did and offered edits to the prompts that would change it -- taken out
+	// with its prompt and its cards; the prompts are edited on Prepare.
 	// the one Outputs heading in the app; the group behind it is the visible
 	// page's own, swapped by showStep
 	outLbl := gtk.NewLabel("Outputs:")

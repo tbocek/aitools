@@ -43,12 +43,22 @@ const (
 
 const (
 	selGripPx = 6.0  // px either side of an end that grabs that end
-	selKillW  = 12.0 // the ✕ target, inset from the right end
+	selKillW  = 12.0 // the blue band's ✕ target, inset from the right end
 	selKillIn = 8.0
 	// under this the band has no middle worth aiming at, so it is all grips and
 	// the ✕ is not drawn: a selection of a few frames is moved by its ends or
 	// thrown away with Esc.
 	selMinBand = 40.0
+	// the GREEN bar's ✕ is the plated badge the lanes and the effects wear
+	// (drawKillBadge), because it is the same verb they answer -- and its
+	// plate clears the right-hand grip with a pixel to spare, or the mark
+	// would be drawn on pixels that trim the clip instead of removing it.
+	bandKillIn = selGripPx + segKillR + segKillPad + 1
+	// and it is only offered on a bar with the room, by segKillMin's rule: the
+	// target reaches bandKillIn+segKillHit in from the right end, so a bar
+	// narrower than twice that would have its middle -- the part a press picks
+	// the clip UP by -- inside a button that throws the clip away.
+	bandKillMin = 2*(bandKillIn+segKillHit) + 6
 )
 
 // selBandTop is the band's y inside the source-track area: under the scope
@@ -148,14 +158,18 @@ func (ed *cutEditor) bandBars() []int {
 // and have to answer the hand the same way. The blue bar is asked before this
 // one everywhere (press, cursor, hover), exactly as it is drawn on top.
 //
-// The ✕ removes the clip, which is what the scene's own ✕ over the pictures
-// does (cut_segkill.go). It was left off this bar at first on the grounds that
-// deleting footage is not the cheap, undoable nothing that throwing away a
-// selection is -- but the scene badge already offers exactly that verb in
-// exactly that corner, and it is the blue bar drawn on top of this one that
-// splits the green in two and hides the badge underneath. A bar that answers
-// every other verb of the blue's and not this one is the odd one out, so it
-// answers this one too: same corner, same undo, same sentence in the status.
+// The ✕ removes the clip. It was left off this bar at first on the grounds
+// that deleting footage is not the cheap, undoable nothing that throwing away
+// a selection is, and that a badge on every green stretch over the thumbnails
+// already offered the verb -- but a bar that answers every other verb of the
+// blue's and not this one is the odd one out, and two marks for one verb, one
+// of them on footage it could not stay legible over, was worse than either
+// alone. The badge over the pictures is gone and this is the survivor
+// (cut_segkill.go): same undo, same sentence in the status.
+//
+// Its target is the badge's own -- a square around the plate, segKillHit
+// either side -- and it is asked AFTER the ends, so the outer few px of the
+// bar stay the grip that trims the clip.
 func (ed *cutEditor) bandClipPartAt(px float64) (int, int) {
 	i := ed.bandClipIdx()
 	if i < 0 {
@@ -168,7 +182,7 @@ func (ed *cutEditor) bandClipPartAt(px float64) (int, int) {
 		return i, selStart
 	case math.Abs(px-x1) <= selGripPx:
 		return i, selEnd
-	case x1-x0 >= selMinBand && px >= x1-selKillIn-selKillW && px <= x1-selKillIn:
+	case x1-x0 >= bandKillMin && math.Abs(px-(x1-bandKillIn)) <= segKillHit:
 		return i, selKill
 	case px > x0 && px < x1:
 		return i, selWhole
@@ -352,22 +366,25 @@ func (ed *cutEditor) hoverTracks(x, y float64) {
 	ed.hoverFxKill(x, y)
 	ed.hoverScope(x, y) // the ▲▼ handle lives in this area now
 	on := x >= 0 && ed.hitSelBand(y) && ed.selPartAt(x+ed.viewX) != selNone
-	gOn := false
+	gOn, gKill := false, false
 	if x >= 0 && !on && ed.hitSelBand(y) {
 		// the green bar highlights only where the blue does not answer first:
 		// same precedence as the press and the cursor
 		_, part := ed.bandClipPartAt(x + ed.viewX)
 		gOn = part != selNone
+		// and its ✕ lights on its own, the way every other ✕ on the page does:
+		// the bar's ring says "this clip answers the hand", the red plate says
+		// "this press removes it", and they are not the same promise
+		gKill = part == selKill
 	}
-	if on != ed.selHov || gOn != ed.bandHov {
-		ed.selHov, ed.bandHov = on, gOn
-		ed.srcArea.QueueDraw()
+	if on != ed.selHov || gOn != ed.bandHov || gKill != ed.bandKillHov {
+		ed.selHov, ed.bandHov, ed.bandKillHov = on, gOn, gKill
+		if ed.srcArea != nil {
+			ed.srcArea.QueueDraw()
+		}
 	}
-	ed.hoverSegKill(x, y)
 	ed.hoverLaneKill(x, y)
-	// no border glow under the ✕: the press there removes the scene rather
-	// than trimming the border it overlaps, so the border must not offer
-	ed.hoverEdge(x, x >= 0 && ed.hitPics(y) && !ed.killHovOn)
+	ed.hoverEdge(x, x >= 0 && ed.hitPics(y))
 	ed.setCursor(ed.srcArea, ed.wantCursor(x, y))
 }
 
@@ -465,9 +482,9 @@ func (ed *cutEditor) wantCursor(x, y float64) string {
 		}
 		return "grab"
 	case ed.hitPics(y):
-		// the ✕ first, for the reason the press asks it first: it overlaps the
-		// border it sits beside, and a resize arrow over a button is a lie
-		if ed.segKillAt(x+ed.viewX, y) >= 0 || ed.laneKillAt(x+ed.viewX, y) != "" {
+		// a lane's ✕ first, for the reason the press asks it first: it can
+		// overlap a clip border, and a resize arrow over a button is a lie
+		if ed.laneKillAt(x+ed.viewX, y) != "" {
 			return "pointer"
 		}
 		if _, _, ok := ed.edgeAt(x + ed.viewX); ok {
@@ -541,7 +558,7 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 		}
 		s := ed.segs[i]
 		if gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E); gx1 >= vx0 && gx0 <= vx1 {
-			cr.Rectangle(gx0, y+5, math.Max(1, gx1-gx0-1), selBandH-10)
+			cr.Rectangle(gx0, y+7, math.Max(1, gx1-gx0-1), selBandH-14)
 		}
 	}
 	cr.Fill()
@@ -556,18 +573,13 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 				cr.Rectangle(hx-1.5, y, 3, selBandH)
 			}
 			cr.Fill()
-			// the ✕ that removes the clip, in the corner the blue's sits in
-			// and drawn to the same recipe, because the hand that has learnt
-			// one bar has learnt both
-			if gx1-gx0 >= selMinBand {
-				kx := gx1 - selKillIn - selKillW/2
-				cr.SetSourceRGBA(1, 1, 1, 0.85)
-				cr.SetLineWidth(1.6)
-				for _, d := range [][2]float64{{-1, -1}, {-1, 1}} {
-					cr.MoveTo(kx+3*d[0], y+selBandH/2+3*d[1])
-					cr.LineTo(kx-3*d[0], y+selBandH/2-3*d[1])
-				}
-				cr.Stroke()
+			// the ✕ that removes the clip: the plated badge, drawn always
+			// and red under the pointer, because this is the page's one
+			// "remove that" and it says so the same way everywhere
+			// (drawKillBadge). Not the blue's flat mark -- the blue's ✕
+			// throws away a selection and leaves the footage alone.
+			if gx1-gx0 >= bandKillMin {
+				drawKillBadge(cr, gx1-bandKillIn, y+selBandH/2, ed.bandKillHov)
 			}
 			switch {
 			case (ed.segOn && ed.segSel == i) || (ed.edgeOn && ed.edgeSeg == i):

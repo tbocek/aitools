@@ -123,13 +123,13 @@ func TestEveryLaneAHeldSceneCanHearWearsABadge(t *testing.T) {
 	}
 }
 
-func TestTheBadgeAndTheSceneKillCannotBePressedForEachOther(t *testing.T) {
+func TestTheBadgeLeavesTheSceneItselfPressable(t *testing.T) {
 	ed := hearEd(t)
-	// they are the two things done to a scene that is being pointed at, so
-	// they sit at opposite ends of it. At the narrowest scene that wears both
-	// there is still plain timeline between the targets
-	if gap := hearMin - (hearIn + hearHit) - (segKillIn + segKillHit); gap <= 0 {
-		t.Fatalf("at hearMin the two targets overlap by %.1f px", -gap)
+	// the badge is the scene's left end and nothing more: at the narrowest
+	// scene that wears one there is still plain timeline to press, or putting
+	// the line on the clip would switch a lane instead
+	if gap := hearMin - 2*(hearIn+hearHit); gap <= 0 {
+		t.Fatalf("at hearMin the badge's target covers the scene's middle by %.1f px", -gap)
 	}
 	if got, ok := ed.hearX(); !ok || got != ed.xOf(20)+hearIn {
 		t.Errorf("the badges sit at %.1f (%v), want %.1f in from the left border",

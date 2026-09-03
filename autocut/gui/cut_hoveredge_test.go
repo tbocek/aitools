@@ -250,7 +250,7 @@ func TestTheHoverIsWired(t *testing.T) {
 	}
 	for _, want := range []string{
 		"func (ed *cutEditor) hoverEdge(x float64, cut bool) {",
-		"ed.hoverEdge(x, x >= 0 && ed.hitPics(y) && !ed.killHovOn)", // the pictures, and no other row
+		"ed.hoverEdge(x, x >= 0 && ed.hitPics(y))", // the pictures, and no other row
 		"ed.setCursor(ed.srcArea, ed.wantCursor(x, y))",
 		"ed.hoverEdge(x, x >= 0)", // the lanes, all of which are the cut
 	} {

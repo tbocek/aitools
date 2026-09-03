@@ -154,13 +154,11 @@ var promptDefs = []promptDef{
 	// gone from the registry, so a project that saved an edited copy of it just
 	// keeps a dead key nobody reads.
 	{key: "youtube", def: strings.TrimSpace(youtubeSystem)},
-	// "improve" was here: the Improve button's own prompt. It is off the bench
-	// now -- the bench is the steps of an edit, and Improve is the tool asking
-	// about itself. The technical half of what it used to say (how a stamp
-	// reads, that the answer is machine-read) is the system context at the top
-	// of this table; the rest is not a wording anyone tunes, because what the
-	// user says to Improve is the complaint they type, and what comes back is
-	// edits to the prompts that ARE here. See improve.go.
+	// "improve" was here, and before that it had already come off the bench:
+	// the Improve button asked the model why a step decided what it did and
+	// offered edits to the prompts below. Button, prompt and cards are all
+	// gone, and a project that saved an edited copy of the key just keeps a
+	// dead key nobody reads.
 }
 
 func promptDefFor(key string) promptDef {

@@ -125,7 +125,6 @@ func shippedPrompts() []struct{ name, text string } {
 		{"audit", auditSystem},
 		{"narrate", narrSystem},
 		{"youtube", youtubeSystem},
-		{"improve", improveSystem},
 	}
 }
 
@@ -157,12 +156,17 @@ func TestNoWordingRepeatsASharedRule(t *testing.T) {
 	}
 	// ...and the context does still say all three, or the above passes because
 	// nothing anywhere says them
-	for _, want := range []string{"no markdown", "no code fence", "strict JSON", "Never invent",
-		"they outrank anything you would otherwise infer"} {
+	for _, want := range []string{"no markdown", "no code fence", "strict JSON", "Never invent"} {
 		if !strings.Contains(sysSystem, want) {
 			t.Errorf("the system context never says %q, and the wordings were emptied of it "+
 				"on the promise that it does", want)
 		}
+	}
+	// the notes outranking what a job would infer is said by the block that
+	// carries them, in the request itself -- so the context does not say it a
+	// second time, and this is the one place that has to still be true
+	if !strings.Contains(readSrc(t, "context.go"), "outranks anything you infer from the material") {
+		t.Error("nothing tells a job that the session notes outrank what it would infer")
 	}
 }
 
@@ -194,10 +198,10 @@ func TestTheSystemContextNamesTheWholePipeline(t *testing.T) {
 // TestTheSystemContextHasNoWordings: the formats are the formats -- a session
 // stamp reads the same whether the video is cut for Highlights or for Showcase
 // -- so this one prompt is outside the wording machinery. That is one flag
-// (promptDef.solo) read in four places, and all four are checked here: picking
-// a style must not touch its text, the bench row must not name a wording it
-// does not have, the ＋ that saves a new wording must not be offered, and the
-// improve brief must not head it with one.
+// (promptDef.solo) read in three places, and all three are checked here:
+// picking a style must not touch its text, the bench row must not name a
+// wording it does not have, and the ＋ that saves a new wording must not be
+// offered.
 func TestTheSystemContextHasNoWordings(t *testing.T) {
 	ownConfig(t)
 	d := promptDefFor("system")
@@ -228,26 +232,41 @@ func TestTheSystemContextHasNoWordings(t *testing.T) {
 	if src := readSrc(t, "prepedit.go"); !strings.Contains(src, "add.SetVisible(prompt && !promptDefFor(r.key).solo)") {
 		t.Error("the ＋ is offered on the system context row, and there is nowhere for a second wording to go")
 	}
-	user, _ := improveBriefText(t, a)
-	if !strings.Contains(user, "=== prompt system ===") {
-		t.Error("the improve brief does not show the system context, which is in front of every call it is being asked about")
-	}
-	if strings.Contains(user, "prompt system (wording:") {
-		t.Error("the improve brief names a wording for the system context, and the model can then ask for a change to a wording that does not exist")
-	}
 }
 
-// improveBriefText is the user half of the brief, which is where the prompts
-// are listed.
-func improveBriefText(t *testing.T, a *App) (string, []map[string]any) {
-	t.Helper()
-	msgs := a.improveBrief("nothing in particular")
-	for _, m := range msgs {
-		if m["role"] == "user" {
-			s, _ := m["content"].(string)
-			return s, msgs
+// The context is sectioned. It is the longest thing the model reads and it is
+// read by a 27B one: nine blocks of prose with nothing between them is nine
+// blocks it weighs equally, where a heading says which of them a question
+// belongs to. They are the app's own vocabulary, so a section that is renamed
+// here is a section somebody has to find again in every wording.
+func TestTheSystemContextIsUnderHeadings(t *testing.T) {
+	for _, h := range []string{
+		"THE ANSWER",     // what comes back, and nothing around it
+		"THE MATERIAL",   // the three labels
+		"THE CLOCKS",     // the three stamps
+		"THE FOUR STEPS", // where this job sits
+		"THE CUT",        // segments and effects
+		"WHAT EACH JOB IS GIVEN",
+		"TOOLS",
+		"NEVER INVENT",
+	} {
+		if !strings.Contains(sysSystem, "\n"+h) {
+			t.Errorf("the system context has no %q section", h)
 		}
 	}
-	t.Fatal("the improve brief has no user message")
-	return "", nil
+	// each heading is on its own line, or it is a phrase in a paragraph and
+	// not a heading at all
+	for _, line := range strings.Split(sysSystem, "\n") {
+		if strings.HasPrefix(line, "THE ") || strings.HasPrefix(line, "NEVER ") {
+			if strings.HasSuffix(line, ".") {
+				t.Errorf("%q is a sentence, not a heading", line)
+			}
+		}
+	}
+	// the notes have no section here at all: everything about them travels
+	// with them, in the request (ctxBlock), so a session with an empty notes
+	// box sends none of it
+	if strings.Contains(sysSystem, "ABOUT THIS SESSION") {
+		t.Error("the system context describes the notes block to jobs that may get no notes")
+	}
 }

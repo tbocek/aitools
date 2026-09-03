@@ -77,12 +77,14 @@ func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
 	// instruction about which seconds are cut as much as about the decoration.
 	// A rule about the notes, so the system context's (every cut is sent
 	// behind it), and not the effects wording's
+	withNotes := &App{}
+	withNotes.setSessionCtx("speed the boring parts up and show them")
 	for _, want := range []string{
 		"caption each thing as it is named",
 		"It decides segments too",
 	} {
-		if !strings.Contains(sysSystem, want) {
-			t.Errorf("the system context does not say %q, so the session notes "+
+		if !strings.Contains(withNotes.ctxBlock(), want) {
+			t.Errorf("the notes block does not say %q, so the session notes "+
 				"cannot ask for a dull stretch to be kept at speed", want)
 		}
 	}

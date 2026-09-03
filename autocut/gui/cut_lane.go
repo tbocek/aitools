@@ -331,12 +331,11 @@ func (ed *cutEditor) isCutLane(base string) bool { return cutLaneIdx(ed.cutLanes
 // one, or a lane put on by accident is a lane that can only be got rid of by
 // editing cut.json by hand.
 //
-// So the same badge a kept scene wears (cut_segkill.go), at the row's own left
-// edge beside its name, and asked BEFORE the scene's: a scene's ✕ sits at its
-// right end, this one at the lane's start, and the only press both could claim
-// is one on a scene that ends within a badge's width of where the lane begins.
-// A scene is removable by hand (⌦) and a lane behind another lane's badge would
-// not be.
+// So the same badge every remove on this page wears (drawKillBadge), at the
+// row's own left edge beside its name. It is the only ✕ drawn on the pictures
+// now -- the one that dropped a scene has moved to the green bar in the
+// selection row -- so the press it has to be told apart from is the clip
+// border it can sit on, and that one is asked after it (cut.go).
 
 // laneKillCentre is where the ✕ for a cut lane sits: timeline x, area y.
 func (ed *cutEditor) laneKillCentre(v *tlVideo) (float64, float64) {
@@ -385,20 +384,7 @@ func (ed *cutEditor) drawLaneKill(cr *cairo.Context, vx0, vx1 float64) {
 		if cx < vx0-segKillHit || cx > vx1+segKillHit {
 			continue
 		}
-		if ed.laneHov == v.base {
-			cr.SetSourceRGBA(0.85, 0.24, 0.28, 0.95)
-		} else {
-			cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.55)
-		}
-		cr.Arc(cx, cy, segKillR+segKillPad, 0, 2*math.Pi)
-		cr.Fill()
-		cr.SetSourceRGBA(1, 1, 1, 0.9)
-		cr.SetLineWidth(1.6)
-		for _, d := range [][2]float64{{-1, -1}, {-1, 1}} {
-			cr.MoveTo(cx+segKillR*d[0], cy+segKillR*d[1])
-			cr.LineTo(cx-segKillR*d[0], cy-segKillR*d[1])
-		}
-		cr.Stroke()
+		drawKillBadge(cr, cx, cy, ed.laneHov == v.base)
 	}
 }
 
@@ -524,20 +510,7 @@ func (ed *cutEditor) drawRowKill(cr *cairo.Context, vx0 float64) {
 			continue
 		}
 		cx, cy := vx0+segKillIn, ed.laneTop(r)+segKillTop
-		if ed.rowHov == r {
-			cr.SetSourceRGBA(0.85, 0.24, 0.28, 0.95)
-		} else {
-			cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.55)
-		}
-		cr.Arc(cx, cy, segKillR+segKillPad, 0, 2*math.Pi)
-		cr.Fill()
-		cr.SetSourceRGBA(1, 1, 1, 0.9)
-		cr.SetLineWidth(1.6)
-		for _, d := range [][2]float64{{-1, -1}, {-1, 1}} {
-			cr.MoveTo(cx+segKillR*d[0], cy+segKillR*d[1])
-			cr.LineTo(cx-segKillR*d[0], cy-segKillR*d[1])
-		}
-		cr.Stroke()
+		drawKillBadge(cr, cx, cy, ed.rowHov == r)
 	}
 }
 

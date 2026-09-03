@@ -49,8 +49,14 @@ func TestEveryPromptNamesTheContextHeading(t *testing.T) {
 	if !strings.HasPrefix(a.ctxBlock(), head) {
 		t.Fatalf("the block no longer opens with %q: %q", head, short(a.ctxBlock()))
 	}
-	if !strings.Contains(promptDefFor("system").def, head) {
-		t.Fatalf("the system context never mentions %q, so the block arrives unannounced in every job", head)
+	// the system prompt does NOT introduce it any more: the block announces
+	// itself in the request, and a session whose notes box is empty sends no
+	// notes and should be told nothing about them
+	if strings.Contains(promptDefFor("system").def, head) {
+		t.Errorf("the system context describes %q to every job, including the ones that get no notes", head)
+	}
+	if b := (&App{}).ctxBlock(); b != "" {
+		t.Errorf("an empty notes box still sends something: %q", b)
 	}
 	for _, d := range promptDefs {
 		if d.key == "system" {

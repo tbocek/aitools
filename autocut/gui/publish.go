@@ -26,7 +26,8 @@ package main
 // No words come from the model. The title and any marked texts are printed
 // onto the picture locally after the draw (publish_text.go), so rewording
 // them never costs a GPU run -- and the instruction tells the model to keep
-// the upper part of the frame calm and letter nothing (editInstruction).
+// the part of the frame the title lands in calm, and to letter nothing
+// (editInstruction).
 //
 // One model job, and its prompt lives on Prepare with all the others
 // (prepedit.go) -- this page shows only the two boxes that describe THIS
@@ -59,10 +60,12 @@ package main
 // publish/publish.json         all of it as data, beside the files
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/jpeg"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,10 +170,16 @@ type pubSettings struct {
 	// the words on whatever is there, drawn or chosen.
 	Own bool `json:"own,omitempty"`
 
+	// Where the title is printed, when it is not in the default band
+	// (pubTitleBox). A box like a marked text's -- drawn, dragged and resized
+	// exactly as one -- but the WORDS are the title entry's, so this one's
+	// Text is never read and never written.
+	TitleBox *pubText `json:"title_box,omitempty"`
+
 	// The words printed onto the picture after the draw (publish_text.go):
 	// each a box in fractions of the finished thumbnail and the text fitted
 	// into it. The title is not one of them -- it has its own field below and
-	// its own fixed band (pubTitleBox).
+	// its own band, which starts at the top and can be dragged (pubTitleBox).
 	Texts []pubText `json:"texts,omitempty"`
 
 	Title    string `json:"title,omitempty"`
@@ -247,8 +256,10 @@ type publisher struct {
 	crop *pubPoint
 	// the thumbnail is a picture chosen from the row, not a drawn one
 	// (pubSettings.Own)
-	own    bool
-	aspect string
+	own bool
+	// where the title is printed, nil for the default band (pubSettings.TitleBox)
+	titleBox *pubText
+	aspect   string
 
 	// the marked words and the layer that shows them (publish_text.go).
 	// texts is the state, like frames; shotPath and shotA are what showShot
@@ -272,6 +283,7 @@ type publisher struct {
 	out               *gtk.Label
 	suggest           *gtk.Button
 	redraw            *gtk.Button
+	export            *gtk.Button
 }
 
 // pubSlot is one image in the row: which position it is in, what is in it, and
@@ -366,6 +378,17 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 		"it afterwards, as always.")
 	p.redraw.ConnectClicked(func() { a.publishRedraw() })
 
+	// ...and out of the app. The thumbnail is kept as a PNG because it is
+	// re-printed from the plain copy every time a word changes, and a
+	// generation of JPEG per keystroke would be a picture that got worse the
+	// more it was worked on. What YouTube takes is a JPEG under 2 MB, so the
+	// one conversion happens here, on the way out, once.
+	p.export = gtk.NewButtonFromIconName("document-save-symbolic")
+	p.export.AddCSSClass("flat")
+	p.export.SetTooltipText("Export the thumbnail as a JPEG — what YouTube takes, " +
+		"under its 2 MB limit. The words are on it; the copy here stays a PNG.")
+	p.export.ConnectClicked(func() { p.exportThumb() })
+
 	// LEFT: everything that makes the picture, in the order it happens --
 	// choose the images, say what to change, say what to keep out, look at what
 	// came back. Nothing on this side calls the language model: the instruction
@@ -380,7 +403,8 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	col.Append(promptBox)
 	col.Append(p.heading("Negative prompt", "What must not appear"))
 	col.Append(negBox)
-	col.Append(p.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above", p.redraw))
+	col.Append(p.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above",
+		p.export, p.redraw))
 	col.Append(shotFrame)
 
 	drawScroll := gtk.NewScrolledWindow()
@@ -401,7 +425,7 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	p.title = gtk.NewEntry()
 	p.title.SetHExpand(true)
 	p.title.SetPlaceholderText("the video's title, also printed on the thumbnail — ▶ suggests one")
-	p.title.SetTooltipText("The YouTube title, printed across the upper part of the thumbnail " +
+	p.title.SetTooltipText("The YouTube title, printed across the thumbnail's title band " +
 		"after it is drawn — retyping it re-prints the words without redrawing the picture. " +
 		"Four to seven words: a thumbnail is read at the size of a phone's sidebar. " +
 		"Empty means no title on the picture.")
@@ -580,7 +604,7 @@ func (s *pubSlot) useAsThumbnail() {
 	w, h := pubBox(p.a.produceCut().Aspect)
 	srcA, outA := imageAspect(s.path), float64(w)/float64(h)
 	if err := pubWriteCropped(s.path, p.snapshot().cropRect(srcA, outA), srcA, outA, w, h,
-		filepath.Join(dir, "thumbnail-plain.png")); err != nil {
+		p.a.thumbPlain()); err != nil {
 		p.a.logf("thumbnail: %v", err)
 		p.a.setStatus("could not use that image — see log")
 		return
@@ -736,7 +760,7 @@ func (p *publisher) pickImage(title, start string, done func(string)) {
 // out before the run is a value the run cannot see change under it.
 func (p *publisher) snapshot() pubSettings {
 	st := pubSettings{Frames: append([]string(nil), p.frames...), Crop: p.crop,
-		Own: p.own, Texts: append([]pubText(nil), p.texts...)}
+		Own: p.own, TitleBox: p.titleBox, Texts: append([]pubText(nil), p.texts...)}
 	st.Title = strings.TrimSpace(p.title.Text())
 	st.Prompt = strings.TrimSpace(viewText(p.prompt))
 	st.Negative = strings.TrimSpace(viewText(p.neg))
@@ -747,7 +771,7 @@ func (p *publisher) snapshot() pubSettings {
 // apply is snapshot's inverse: what a run wrote, or what a project holds, put
 // back on the page.
 func (p *publisher) apply(st pubSettings) {
-	p.crop, p.own = st.Crop, st.Own
+	p.crop, p.own, p.titleBox = st.Crop, st.Own, st.TitleBox
 	p.setFrames(st.Frames)
 	// quiet: the title entry re-prints the words when TYPED in, and this is
 	// not typing -- a run or a project load is putting back words that are
@@ -783,7 +807,7 @@ func (a *App) currentPublish() *pubSettings {
 	}
 	// nothing chosen and nothing written is not worth a key in the file
 	if len(st.Frames) == 0 && st.Crop == nil && len(st.Texts) == 0 && !st.Own &&
-		st.Title == "" && st.Prompt == "" && st.Desc == "" {
+		st.TitleBox == nil && st.Title == "" && st.Prompt == "" && st.Desc == "" {
 		return nil
 	}
 	return &st
@@ -835,8 +859,8 @@ func (p *publisher) showShot() {
 	// the finished one first, then the plain copy: the plain one is what a
 	// run interrupted between the two writes leaves behind, and a picture
 	// without its words is still the thumbnail
-	for _, name := range []string{"thumbnail.png", "thumbnail-plain.png"} {
-		if f := filepath.Join(p.a.publishDir(), name); exists(f) {
+	for _, f := range []string{p.a.thumbFile(), p.a.thumbPlain()} {
+		if exists(f) {
 			// the TEXTURE, not the filename. GtkPicture compares the GFile it
 			// is given against the one it holds and returns early when they
 			// are equal -- so re-printing the words writes thumbnail.png and
@@ -850,7 +874,7 @@ func (p *publisher) showShot() {
 				p.a.logf("thumbnail: %v", err)
 				p.shot.SetFilename(f)
 			}
-			p.shot.SetTooltipText("publish/" + name)
+			p.shot.SetTooltipText("publish/" + filepath.Base(f))
 			// cached for the marking layer: its draw handler and its drag
 			// both need to know where the picture is, per pointer move
 			p.shotPath = f
@@ -1363,7 +1387,7 @@ func (a *App) writePublishFiles(st pubSettings) error {
 // words underneath ours. The calm-top half is for the title's band: a busy
 // top edge is a title nobody can read.
 const pubNoLettering = "Do not write any words, letters, titles, logos or " +
-	"captions into the picture. Keep the upper part of the picture calm and " +
+	"captions into the picture. Keep the %s part of the picture calm and " +
 	"uncluttered: a title will be printed across it afterwards."
 
 // editInstruction is what the image model is actually sent: the edit the
@@ -1376,7 +1400,10 @@ func editInstruction(st pubSettings) string {
 	if edit == "" {
 		return ""
 	}
-	return edit + "\n\n" + pubNoLettering
+	// where the band actually is, not always "upper": the title can be dragged
+	// now, and asking the model to keep clear a part of the frame the words no
+	// longer land in gets the wrong picture twice over
+	return edit + "\n\n" + fmt.Sprintf(pubNoLettering, pubTitleWhere(st.titleBox()))
 }
 
 // drawThumbnail is the sd.cpp half: hand the model the chosen frame, the other
@@ -1477,16 +1504,15 @@ func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "thumbnail-plain.png"), img, 0o644); err != nil {
+	if err := os.WriteFile(a.thumbPlain(), img, 0o644); err != nil {
 		return err
 	}
 	// the words go on last, locally: the title across the top band, each
 	// marked text filling its box. A print that fails still has a good
 	// picture in hand, and a thumbnail without its words beats no thumbnail.
-	if err := drawPubTexts(filepath.Join(dir, "thumbnail-plain.png"),
-		filepath.Join(dir, "thumbnail.png"), st.Texts, st.Title); err != nil {
+	if err := drawPubTexts(a.thumbPlain(), a.thumbFile(), st.Texts, st.Title, st.titleBox()); err != nil {
 		a.logfIdle("    publish: printing the words failed (%v) — the plain picture stands", err)
-		return os.WriteFile(filepath.Join(dir, "thumbnail.png"), img, 0o644)
+		return os.WriteFile(a.thumbFile(), img, 0o644)
 	}
 	return nil
 }
@@ -1497,13 +1523,100 @@ func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 // to print onto is not a failure: the picture is chosen on the page and a run
 // that got here before one was is simply early.
 func (a *App) printPubWords(st pubSettings) error {
-	dir := a.publishDir()
-	plain := filepath.Join(dir, "thumbnail-plain.png")
+	plain := a.thumbPlain()
 	if !exists(plain) {
-		a.logfIdle("    publish: no picture to print the words onto yet")
+		// nothing drawn or chosen yet. Not a failure and not worth a line:
+		// this runs on every pause in typing a title, and a log that said so
+		// each time would be a log about an empty page.
 		return nil
 	}
-	return drawPubTexts(plain, filepath.Join(dir, "thumbnail.png"), st.Texts, st.Title)
+	return drawPubTexts(plain, a.thumbFile(), st.Texts, st.Title, st.titleBox())
+}
+
+// The two files the thumbnail is, named once. They were spelled out at nine
+// call sites between two files, which is nine chances to write the plain one
+// where the finished one was meant -- and the two differ only by the words on
+// them, so getting it wrong shows up as a thumbnail that has quietly lost its
+// title rather than as anything failing.
+func (a *App) thumbPlain() string { return filepath.Join(a.publishDir(), "thumbnail-plain.png") }
+func (a *App) thumbFile() string  { return filepath.Join(a.publishDir(), "thumbnail.png") }
+
+// pubJPEGMax is the largest thumbnail YouTube accepts. The export drops
+// quality until it fits rather than handing back a file the upload refuses
+// with a number nobody sees.
+const pubJPEGMax = 2 << 20
+
+// exportThumb writes the thumbnail as a JPEG wherever the user says.
+//
+// Out of the app rather than into it: publish/thumbnail.png is the working
+// copy and stays a PNG, because every reworded title re-prints it from the
+// plain picture and a generation of JPEG per edit is a thumbnail that gets
+// worse the more it is worked on. This is the one conversion, on the way out.
+func (p *publisher) exportThumb() {
+	a := p.a
+	src := a.thumbFile()
+	if !exists(src) {
+		a.setStatus("nothing to export yet — draw a thumbnail, or use one of the images")
+		return
+	}
+	d := gtk.NewFileDialog()
+	d.SetTitle("Export the thumbnail")
+	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
+	d.SetInitialName(strings.TrimSuffix(filepath.Base(a.projPath), filepath.Ext(a.projPath)) + "-thumbnail.jpg")
+	filt := gtk.NewFileFilter()
+	filt.SetName("JPEG")
+	filt.AddSuffix("jpg")
+	filt.AddSuffix("jpeg")
+	filters := gio.NewListStore(gtk.GTypeFileFilter)
+	filters.Append(filt.Object)
+	d.SetFilters(filters)
+	d.Save(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
+		f, err := d.SaveFinish(res)
+		if err != nil || f == nil {
+			return // dismissed
+		}
+		out := f.Path()
+		if e := strings.ToLower(filepath.Ext(out)); e != ".jpg" && e != ".jpeg" {
+			out += ".jpg" // a JPEG named .png is a file every uploader argues about
+		}
+		n, err := writeJPEGUnder(src, out, pubJPEGMax)
+		if err != nil {
+			a.logf("!!! export: %v", err)
+			a.setStatus("could not export the thumbnail — see log")
+			return
+		}
+		a.logf(">>> exported %s (%s)", out, humanSize(n))
+		a.setStatus(fmt.Sprintf("exported %s — %s", filepath.Base(out), humanSize(n)))
+	})
+}
+
+// writeJPEGUnder encodes src as a JPEG at out, dropping quality until the file
+// is at most max bytes, and answers how big it came out.
+//
+// Quality first and size second: a thumbnail is read at the size of a phone's
+// sidebar, and 1280x720 is already the size YouTube wants, so scaling it down
+// to save bytes would be losing the thing rather than compressing it. The
+// steps stop at 40 -- below that the picture is worse than a slightly large
+// file, and 1280x720 at 40 is far under a megabyte anyway.
+func writeJPEGUnder(src, out string, max int64) (int64, error) {
+	img, err := pubDecode(src)
+	if err != nil {
+		return 0, err
+	}
+	var buf bytes.Buffer
+	for _, q := range []int{92, 85, 75, 60, 40} {
+		buf.Reset()
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: q}); err != nil {
+			return 0, err
+		}
+		if int64(buf.Len()) <= max {
+			break
+		}
+	}
+	if err := os.WriteFile(out, buf.Bytes(), 0o644); err != nil {
+		return 0, err
+	}
+	return int64(buf.Len()), nil
 }
 
 // publishDone ends either of the two runs this page starts, and says which one

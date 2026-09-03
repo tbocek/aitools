@@ -699,8 +699,8 @@ func TestTheLaneControlsAreWired(t *testing.T) {
 		`ed.laneBtn = gtk.NewButtonWithLabel("⇲ Lane")`,
 		"ed.laneBtn.SetVisible(ed.copyOn && ed.copyAud == \"\")",
 		"name := ed.addLane(v.path, v.at(ed.copyFrom), ed.playhead, ed.copyLen)",
-		// and the ✕ that takes a row away, asked before the scene's because a
-		// scene has ⌦ to fall back on and a row has nothing
+		// and the ✕ that takes a row away, asked before the clip border it can
+		// sit on: a resize arrow over a button is a lie
 		"if name := ed.laneKillAt(x+ed.viewX, y); name != \"\" {",
 	} {
 		if !strings.Contains(src, want) {
@@ -708,9 +708,9 @@ func TestTheLaneControlsAreWired(t *testing.T) {
 		}
 	}
 	i := strings.Index(src, "ed.laneKillAt(x+ed.viewX, y); name != \"\"")
-	j := strings.Index(src, "if i := ed.segKillAt(x+ed.viewX, y); i >= 0 {")
+	j := strings.Index(src, "if trimming = ed.pickAt(x+ed.viewX, false) == pickEdge; trimming {")
 	if i < 0 || j < 0 || i > j {
-		t.Error("the scene's ✕ is asked before the lane's, so a lane behind one cannot be pressed")
+		t.Error("a clip border is taken before the lane's ✕, so a lane badge over one cannot be pressed")
 	}
 }
 

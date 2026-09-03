@@ -78,7 +78,7 @@ func TestTheEndsOfTheBandAreItsHandles(t *testing.T) {
 		{x1, selEnd, "on the right end"},
 		{x1 - selGripPx + 1, selEnd, "just inside the right end"},
 		{(x0 + x1) / 2, selWhole, "in the middle"},
-		{x1 - selKillIn - selKillW/2, selKill, "on the ✕"},
+		{x1 - bandKillIn, selKill, "on the ✕"},
 		{x0 - 20, selNone, "clear of it on the left"},
 		{x1 + 20, selNone, "clear of it on the right"},
 	} {
@@ -273,8 +273,10 @@ func TestTheSelectionBandIsWired(t *testing.T) {
 		"if selPart = ed.selPartAt(x + ed.viewX); selPart == selKill {",
 		"ed.killSel()",
 		"ed.holdSel(selPart)",
-		// ...and on the green bar the same ✕ removes the clip it stands for
-		"ed.killSeg(i) // the scene badge's verb, in the band",
+		// ...and on the green bar the ✕ removes the clip it stands for: the
+		// page's one "drop that scene", now that the badge over the
+		// thumbnails is gone
+		"ed.killSeg(i) // the page's one \"drop that scene\"",
 		// ...and a press clear of it in the row starts a new selection, which
 		// is what the fall-through to the rubber band does
 		"ed.dropSel() // clear of it: this is a new selection",
@@ -353,10 +355,10 @@ func TestTheBandShowsEveryKeptClipAndSingsOutTheOneUnderThePlayhead(t *testing.T
 }
 
 // TestTheGreenBarsXRemovesThatClip: the green bar answers every verb the blue
-// one does, and that now includes the ✕. The scene badge over the pictures
-// already removes a stretch from exactly this corner -- and the blue bar,
-// drawn on top, is what splits the green in two and hides that badge -- so the
-// bar carries the verb itself.
+// one does, and that includes the ✕. It is the page's only "drop that scene"
+// since the badge over the thumbnails went: the bar has a flat row of its own,
+// so the mark is legible over any footage, and the row is deep enough to give
+// it the plate every other ✕ on the page wears.
 func TestTheGreenBarsXRemovesThatClip(t *testing.T) {
 	ed := bandEd(t) // clips 20-60 and 100-140
 	ed.sel.active = false
@@ -367,7 +369,7 @@ func TestTheGreenBarsXRemovesThatClip(t *testing.T) {
 		want int
 		what string
 	}{
-		{x1 - selKillIn - selKillW/2, selKill, "on the ✕"},
+		{x1 - bandKillIn, selKill, "on the ✕"},
 		{(x0 + x1) / 2, selWhole, "in the middle"},
 		{x0, selStart, "on the left end"},
 		{x1, selEnd, "on the right end"},
@@ -397,15 +399,16 @@ func TestTheGreenBarsXRemovesThatClip(t *testing.T) {
 }
 
 // TestTheGreenBarWearsItsXOnScreen: a verb the hand cannot see is a verb
-// nobody uses, so the mark is drawn -- and only on a bar with the room, the
-// same floor the blue bar's ✕ keeps.
+// nobody uses, so the mark is drawn always -- plate under arms, so it survives
+// whatever the bar is drawn over -- and only on a bar with the room to hold it
+// clear of its own middle (bandKillMin).
 func TestTheGreenBarWearsItsXOnScreen(t *testing.T) {
 	ed := bandEd(t)
 	ed.sel.active = false
 	ed.playhead, ed.hasPlay = 40, true
 	const w, h = 1300, 200
 	y := int(ed.selBandTop()) + selBandH/2
-	kx := int(ed.xOf(60) - selKillIn - selKillW/2)
+	kx := int(ed.xOf(60) - bandKillIn)
 	whitish := func(at func(x, y int) (uint8, uint8, uint8)) bool {
 		for dx := -3; dx <= 3; dx++ {
 			for dy := -3; dy <= 3; dy++ {
@@ -420,16 +423,122 @@ func TestTheGreenBarWearsItsXOnScreen(t *testing.T) {
 	if !whitish(renderTrack(t, ed, w, h)) {
 		t.Error("no ✕ is drawn on the green bar")
 	}
-	// a clip too narrow to aim at keeps its colour instead: same floor as the
-	// blue. The playhead moves inside the shrunken clip -- outside it there
-	// would be no bar at all, and no bar draws no ✕ for the wrong reason.
-	ed.segs[0].E = ed.segs[0].S + (selMinBand-4)/ed.pps
+	// a clip too narrow to aim at keeps its colour instead, and goes with ⌦
+	// like anything else too small to hit. The playhead moves inside the
+	// shrunken clip -- outside it there would be no bar at all, and no bar
+	// draws no ✕ for the wrong reason.
+	ed.segs[0].E = ed.segs[0].S + (bandKillMin-4)/ed.pps
 	ed.playhead = (ed.segs[0].S + ed.segs[0].E) / 2
 	if got := ed.bandClipIdx(); got != 0 {
 		t.Fatalf("the shrunken clip is not the bar (idx %d) -- the check below would pass for nothing", got)
 	}
-	kx = int(ed.xOf(ed.segs[0].E) - selKillIn - selKillW/2)
+	kx = int(ed.xOf(ed.segs[0].E) - bandKillIn)
 	if whitish(renderTrack(t, ed, w, h)) {
 		t.Error("a bar under the width floor still drew a ✕")
+	}
+}
+
+// The badge's target is bigger than its plate, and neither reaches the grip
+// that trims the clip: a control you can see but not comfortably hit is worse
+// than no control, and one that overlaps a different verb is worse than that.
+func TestTheGreenBarsXIsEasierToHitThanToSeeAndClearOfTheGrip(t *testing.T) {
+	if segKillHit <= segKillR+segKillPad {
+		t.Errorf("the ✕'s target (%.1f) is no bigger than its plate (%.1f)",
+			segKillHit, segKillR+segKillPad)
+	}
+	// the plate stops before the grip does: drawn over it, the mark would sit
+	// on pixels that resize the clip
+	if bandKillIn-(segKillR+segKillPad) <= selGripPx {
+		t.Errorf("the plate reaches %.1f px in from the end, inside the %.1f px grip",
+			bandKillIn-(segKillR+segKillPad), selGripPx)
+	}
+	ed := bandEd(t)
+	ed.sel.active = false
+	ed.playhead, ed.hasPlay = 40, true
+	x1 := ed.xOf(60)
+	for _, dx := range []float64{-(segKillR + segKillPad), segKillR + segKillPad} {
+		if _, part := ed.bandClipPartAt(x1 - bandKillIn + dx); part != selKill {
+			t.Errorf("the plate's %+.0f px edge takes part %d, not the ✕", dx, part)
+		}
+	}
+	// and it stops: the bar is not a remove button
+	if _, part := ed.bandClipPartAt(x1 - bandKillIn - 3*segKillHit); part == selKill {
+		t.Error("the ✕ answers from most of the way along the bar")
+	}
+}
+
+// The pointer lights it, and the bar's own ring is not that promise: the ring
+// says this clip answers the hand, the red plate says this press removes it.
+func TestTheGreenBarsXLightsUnderThePointer(t *testing.T) {
+	ed := bandEd(t)
+	ed.sel.active = false
+	ed.playhead, ed.hasPlay = 40, true
+	y := ed.selBandTop() + selBandH/2
+	kx := ed.xOf(60) - bandKillIn
+
+	ed.hoverTracks(kx-ed.viewX, y)
+	if !ed.bandKillHov {
+		t.Error("the pointer on the ✕ did not light it")
+	}
+	if c := ed.wantCursor(kx-ed.viewX, y); c != "pointer" {
+		t.Errorf("the pointer on the ✕ asked for %q, want a pointer", c)
+	}
+	// the middle of the same bar holds the bar, and lights no ✕
+	ed.hoverTracks(ed.xOf(30)-ed.viewX, y)
+	if ed.bandKillHov {
+		t.Error("the ✕ lit from the middle of the bar")
+	}
+	if !ed.bandHov {
+		t.Error("the bar itself did not light under the pointer")
+	}
+	// and the pointer leaving puts it out
+	ed.hoverTracks(kx-ed.viewX, y)
+	ed.hoverTracks(-1, -1)
+	if ed.bandKillHov || ed.bandHov {
+		t.Error("the pointer left the page and the bar stayed lit")
+	}
+
+	// in pixels: red plate under the pointer, dark plate off it
+	const w, h = 1300, 200
+	red := func(at func(x, y int) (uint8, uint8, uint8)) bool {
+		// off the centre by 5: the arms cross at the middle of the plate and
+		// they are white on both plates, hot or not
+		r, g, b := at(int(kx), int(y)-5)
+		return r > 150 && int(r) > int(g)+60 && int(r) > int(b)+60
+	}
+	ed.bandKillHov = false
+	if red(renderTrack(t, ed, w, h)) {
+		t.Error("the ✕ is red with the pointer elsewhere — every remove on the page reads as pressed")
+	}
+	ed.bandKillHov = true
+	if !red(renderTrack(t, ed, w, h)) {
+		t.Error("the ✕ under the pointer is not red")
+	}
+}
+
+// One recipe for the mark, wherever a remove is drawn: the bar's ✕, a cut
+// lane's, an emptied row's and an effect's are one function, so a remove looks
+// like a remove and there is one place to change it.
+func TestEveryKillBadgeIsTheSameBadge(t *testing.T) {
+	for _, f := range []string{"cut_selband.go", "cut_lane.go", "cut_fxkill.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "drawKillBadge(") {
+			t.Errorf("%s draws its ✕ some other way than drawKillBadge", f)
+		}
+		if strings.Contains(string(b), "cr.Arc(cx, cy, segKillR+segKillPad") {
+			t.Errorf("%s still has a copy of the badge's own drawing", f)
+		}
+	}
+	// and the verb － Remove was taken off the bar for is still the
+	// selection's alone: a toolbar remove that guesses is what the ✕ ended
+	b, err := os.ReadFile("cut.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "ed.remBtn.ConnectClicked(func() { a.removeSelRange() })") {
+		t.Error("－ Remove is wired to something other than the selection's verb")
 	}
 }

@@ -167,16 +167,23 @@ func TestTheWordingSaysWhichEffectAMomentNeeds(t *testing.T) {
 // is a rule about the notes, so it is the system context's: every cut wording
 // is sent behind it, Shorts included, and none of them says it again.
 func TestTheNotesSayWhetherTheSpeechIsTheVideoOrInstructionsAboutIt(t *testing.T) {
+	// it rides with the notes it is about (ctxSpeech), so a session with an
+	// empty notes box is told none of it
+	a0 := &App{}
+	a0.setSessionCtx("the tower is Kenos")
+	sent := a0.ctxBlock()
 	for _, want := range []string{
-		"ABOUT THIS SESSION says how to read the spoken lines",
-		"unless the notes say they are directions",
+		"The speech is content unless the notes above say otherwise", // the default...
+		"Where the notes call it directions",                         // ...and the one thing that changes it
 		"never caption them",
-		"With no notes about it, the speech is content.",
 		"It decides segments too",
 	} {
-		if !strings.Contains(sysSystem, want) {
-			t.Errorf("the system context no longer says %q", want)
+		if !strings.Contains(sent, want) {
+			t.Errorf("the notes block no longer says %q", want)
 		}
+	}
+	if strings.Contains(sysSystem, "Where the notes call it directions") {
+		t.Error("the system prompt says it too, to every job of every session")
 	}
 	a := &App{root: t.TempDir()}
 	list := a.promptStyleList("cut")

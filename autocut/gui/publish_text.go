@@ -12,12 +12,17 @@ package main
 // edge (drawFxText). Same layout code, so the thumbnail's words look like the
 // video's.
 //
-// Two kinds of words land this way. The TITLE goes across the upper part of
-// the picture in a fixed band (pubTitleBox) -- it is the YouTube title, typed
-// in its own entry, and the model that draws the picture is told to keep that
-// part of the frame calm (editInstruction). And any number of MARKED texts:
+// Two kinds of words land this way, and they are the same kind of object. The
+// TITLE goes in a band that starts across the upper part of the picture
+// (pubTitleBox) and can be dragged anywhere; the model that draws the picture
+// is told to keep whichever part it is in calm (pubTitleWhere). Its words are
+// the YouTube title, typed in its own entry. And any number of MARKED texts:
 // drag a box on the result, type the words, and they are printed to fill it.
-// Each box wears a ✎; pressing it reopens the words.
+//
+// Every box -- the title's included -- is outlined, dragged by its border,
+// moved by its middle and wears a ✎ that opens its words. The title's had none
+// of that once, and a thumbnail could show two blocks of words with only one
+// of them reachable.
 //
 // thumbnail-plain.png is the picture as the model drew it, no words;
 // thumbnail.png is the same picture with the words printed on. Rewording
@@ -137,13 +142,11 @@ func (p *publisher) recomposite() {
 	if p.a.running {
 		return
 	}
-	dir := p.a.publishDir()
-	plain := dir + "/thumbnail-plain.png"
-	if !exists(plain) {
-		return // nothing drawn yet; the run prints the words when it draws
-	}
-	title := strings.TrimSpace(p.title.Text())
-	if err := drawPubTexts(plain, dir+"/thumbnail.png", p.texts, title, p.snapshot().titleBox()); err != nil {
+	// the one printing, shared with the run (printPubWords): the words a
+	// keystroke re-prints and the words a run prints have to be the same
+	// words in the same boxes, and two copies of that arithmetic is two
+	// places for a box to be read differently
+	if err := p.a.printPubWords(p.snapshot()); err != nil {
 		p.a.logf("thumbnail words: %v", err)
 		return
 	}
@@ -203,13 +206,39 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 		ox, oy, dw, dh = fxDisp(w, h, p.shotA)
 		return ox, oy, dw, dh, dw > 0 && dh > 0
 	}
-	// rectPx is text i's box in widget pixels -- the live one while it is
-	// being dragged, so everything drawn and hit-tested agrees with the hand.
+	// The boxes on the picture are the marked texts and then the TITLE, which
+	// is index len(p.texts) throughout. The title is a box like any other --
+	// drawn, dragged, resized, and wearing a ✎ that opens its words -- and its
+	// words live in the entry on the other side of the page rather than in the
+	// list. It had none of that: it was printed on the picture with nothing to
+	// take hold of, so a thumbnail showed two blocks of words and the page
+	// could only reach one of them.
+	// ...and only while it HAS words. A box is where words are: a marked one
+	// goes when its words go (editText), and the title's has to go the same
+	// way, or Remove takes the words off the picture and leaves the dashed
+	// rectangle and its ✎ sitting there over nothing. Typing a title puts it
+	// back, which is the same rule read forwards.
+	hasTitle := func() bool { return strings.TrimSpace(p.title.Text()) != "" }
+	nbox := func() int {
+		if hasTitle() {
+			return len(p.texts) + 1
+		}
+		return len(p.texts)
+	}
+	isTitle := func(i int) bool { return hasTitle() && i == len(p.texts) }
+	boxOf := func(i int) fxBox {
+		if isTitle(i) {
+			return p.snapshot().titleBox()
+		}
+		return p.texts[i].box()
+	}
+	// rectPx is box i in widget pixels -- the live one while it is being
+	// dragged, so everything drawn and hit-tested agrees with the hand.
 	rectPx := func(i int, ox, oy, dw, dh float64) (x, y, w, h float64) {
 		if grab.on && grab.i == i {
 			return grab.cur[0], grab.cur[1], grab.cur[2], grab.cur[3]
 		}
-		bx, by, bw, bh := p.texts[i].box().px(dw, dh)
+		bx, by, bw, bh := boxOf(i).px(dw, dh)
 		return ox + bx, oy + by, bw, bh
 	}
 	// iconPx is text i's ✎ chip: the box's top-left corner, held inside it.
@@ -229,11 +258,7 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 	snapLines := func(skip int, ox, oy, dw, dh float64) (xs, ys []float64) {
 		xs = []float64{ox, ox + dw/2, ox + dw}
 		ys = []float64{oy, oy + dh/2, oy + dh}
-		tb := pubTitleBox
-		tx, ty, tw, th := tb.px(dw, dh)
-		xs = append(xs, ox+tx, ox+tx+tw)
-		ys = append(ys, oy+ty, oy+ty+th)
-		for i := range p.texts {
+		for i := 0; i < nbox(); i++ {
 			if i == skip {
 				continue
 			}
@@ -247,7 +272,7 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 	// border or middle is under it, or -1. Last first, because that is the one
 	// drawn on top and so the one the eye is pointing at.
 	grabAt := func(x, y, ox, oy, dw, dh float64) (i int, horiz, vert, left, top, inside bool) {
-		for i := len(p.texts) - 1; i >= 0; i-- {
+		for i := nbox() - 1; i >= 0; i-- {
 			bx, by, bw, bh := rectPx(i, ox, oy, dw, dh)
 			h, v, l, t, in := fxEdges(x, y, bx, by, bw, bh)
 			if h || v || in {
@@ -262,7 +287,7 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 		if !ok {
 			return
 		}
-		for i := range p.texts {
+		for i := 0; i < nbox(); i++ {
 			bx, by, bw, bh := rectPx(i, ox, oy, dw, dh)
 			// dashed and violet, the same frame the Cut page draws around the
 			// text effect being worked on (cut_fxview.go): the two are the
@@ -379,7 +404,11 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 				// on one, and otherwise nothing -- pressing a box is not an
 				// edit of it
 				if ix, iy := iconPx(i, ox, oy, dw, dh); x0 >= ix && x0 <= ix+pubIconPx && y0 >= iy && y0 <= iy+pubIconPx {
-					p.editText(i)
+					if isTitle(i) {
+						p.editTitle()
+					} else {
+						p.editText(i)
+					}
 				}
 				area.QueueDraw()
 				return
@@ -390,6 +419,10 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 				wf: r[2] / dw,
 				hf: r[3] / dh,
 			}.clamp()
+			if isTitle(i) {
+				p.setTitleBox(&pubText{Cx: b.cx, Cy: b.cy, Wf: b.wf, Hf: b.hf})
+				return
+			}
 			ts := append([]pubText(nil), p.texts...)
 			ts[i].Cx, ts[i].Cy, ts[i].Wf, ts[i].Hf = b.cx, b.cy, b.wf, b.hf
 			p.setTexts(ts)
@@ -475,6 +508,36 @@ func pubBoxOutline(cr *cairo.Context, x, y, w, h float64) {
 	cr.Rectangle(x, y, w, h)
 	cr.Stroke()
 	cr.SetDash(nil, 0)
+}
+
+// setTitleBox moves the title's band and re-prints. nil puts it back to the
+// default (pubTitleBox), which is what Remove means for a box whose words are
+// not its own to delete.
+func (p *publisher) setTitleBox(b *pubText) {
+	p.titleBox = b
+	if p.shotOver != nil {
+		p.shotOver.QueueDraw()
+	}
+	p.recomposite()
+}
+
+// editTitle is the title band's ✎. The words are the entry's on the other side
+// of the page -- this is the YouTube title first and words on a picture second
+// -- so the dialog edits that entry and the entry's own handler re-prints.
+//
+// Remove means what it means on every other box: take these words off the
+// picture. It used to put the BAND back to its default instead, which on a
+// band nobody had moved was a complete no-op -- Remove did nothing, visibly or
+// otherwise. Clearing the entry is the honest reading: nothing is printed, the
+// YouTube title is empty, and both say so in the one place the title lives.
+// The band goes back with it, so the next title starts where a title starts.
+func (p *publisher) editTitle() {
+	p.a.askPubText(p.title.Text(), func(s string) {
+		p.title.SetText(strings.TrimSpace(s)) // its handler re-prints
+	}, func() {
+		p.title.SetText("")
+		p.setTitleBox(nil)
+	})
 }
 
 // editText reopens text i's words. Saving empty removes it -- the words are

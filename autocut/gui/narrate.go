@@ -548,7 +548,7 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	// stay exactly as wide as they were, and a scrollbar appears under them --
 	// so making the window smaller hid the words rather than re-wrapping them.
 	// Every other scrolling column in the app says this (cut_form.go,
-	// improve.go, publish.go); this one had been the exception.
+	// publish.go); this one had been the exception.
 	left.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	// a floor, not the width: the divider opens this column at 790, which is
 	// wide enough that a narration line wraps into about three. As a minimum

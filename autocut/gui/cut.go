@@ -50,7 +50,11 @@ const (
 	// row rather than a tint on the pictures: a tint has nothing to take hold
 	// of, and this is the one thing on the page you are always about to move,
 	// resize or throw away. See drawSelBand.
-	selBandH = 16
+	//
+	// 22 and not 16 because the green bar wears the ✕ that drops a scene, and
+	// that mark is a plated badge like every other ✕ in the app (drawKillBadge):
+	// 14 px of plate needs a row it can sit inside rather than straddle.
+	selBandH = 22
 	gapPx    = 26  // display width of an unfilmed hole between two runs
 	laneGap  = 3   // px between two cameras' rows of the picture band
 	snapTol  = 5.0 // seconds the Add edges may move to find a better cut point
@@ -601,17 +605,16 @@ type cutEditor struct {
 	// the selection band's own hold, the same shape as the edge's and the
 	// effect's: whether the band is in hand, and whether the pointer is over
 	// it. Its row is cut_selband.go.
-	selOn     bool
-	selHov    bool
-	bandHov   bool // the pointer is over the green bar's clip, ends included
-	killHovOn bool // ...and over a kept scene's ✕ (cut_segkill.go)
-	killHov   int
-	selCur    string // the cursor name the source area last asked for
-	audCur    string // ...and the lanes
-	thumbHt   int    // thumbnail height; the 🔍 buttons change it
-	srcHt     int    // the height the source area was last asked for; see fitSrc
-	playhead  float64
-	hasPlay   bool
+	selOn       bool
+	selHov      bool
+	bandHov     bool   // the pointer is over the green bar's clip, ends included
+	bandKillHov bool   // ...and over that bar's ✕, which lights red (cut_segkill.go)
+	selCur      string // the cursor name the source area last asked for
+	audCur      string // ...and the lanes
+	thumbHt     int    // thumbnail height; the 🔍 buttons change it
+	srcHt       int    // the height the source area was last asked for; see fitSrc
+	playhead    float64
+	hasPlay     bool
 	// the row the preview is WATCHING, plus one; 0 for the cut's own answer,
 	// so a zero editor answers to the cut. Inside a kept scene the preview
 	// shows the scene's camera (camAt), which leaves no way to see what
@@ -795,7 +798,7 @@ type cutEditor struct {
 	// － Remove, the same span the other way round. It stood beside ＋ Add
 	// once, guessed what it was aimed at, and was taken off the bar for it;
 	// this one is the selection's verb and nothing else's (cut_selrm.go), so
-	// it can cut a hole in a scene, which the per-scene ✕ cannot.
+	// it can cut a hole in a scene, which the green bar's ✕ cannot.
 	remBtn *gtk.Button
 }
 
@@ -4083,12 +4086,13 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 		cr.Fill()
 	}
 
-	// the ✕ on every kept scene, over everything else the picture band draws:
-	// a control the inserts or the cut preview's dimming could paint over would be a
-	// control that is there on some frames and not others (cut_segkill.go)
-	ed.drawSegKill(cr, vx0, vx1)
-	ed.drawLaneKill(cr, vx0, vx1) // and the one that takes a whole row away
-	ed.drawRowKill(cr, vx0)       // and an emptied row's ✕, which removes the space
+	// the ✕ that takes a whole row away, over everything else the picture band
+	// draws: a control the inserts or the cut preview's dimming could paint
+	// over would be a control that is there on some frames and not others.
+	// The one that drops a scene is not here -- it is on the green bar in the
+	// selection row (drawSelBand), which is drawn just below.
+	ed.drawLaneKill(cr, vx0, vx1)
+	ed.drawRowKill(cr, vx0) // and an emptied row's ✕, which removes the space
 
 	// the effects lane, under the picture band (cut_fx.go)
 	ed.drawSelBand(cr, vx0, vx1)
@@ -4804,7 +4808,7 @@ func (a *App) buildCut() gtk.Widgetter {
 				// the clamps, snaps, preview and undo are one machinery.
 				if i, part := ed.bandClipPartAt(x + ed.viewX); part != selNone {
 					if part == selKill {
-						ed.killSeg(i) // the scene badge's verb, in the band
+						ed.killSeg(i) // the page's one "drop that scene"
 						return
 					}
 					ed.holdBandClip(i, part)
@@ -4869,26 +4873,22 @@ func (a *App) buildCut() gtk.Widgetter {
 				ed.toggleHear(base)
 				return
 			}
-			// the ✕ in a kept scene's corner, asked before the borders: it is
-			// drawn hard against the scene's right edge, so the same press
-			// would otherwise be read as taking hold of that border to trim it
+			// the ✕ badges the picture band carries, asked before the borders
+			// they can overlap: a press on one would otherwise be read as
+			// taking hold of a clip edge to trim it. Dropping a SCENE is not
+			// among them any more -- that ✕ is on the green bar in the
+			// selection row, and it is answered with the rest of that row's
+			// parts (bandClipPartAt, above).
 			if area == ed.srcArea && ed.hitPics(y) {
-				// a cut lane's own ✕ first: it sits at the row's start and a
-				// scene's sits at its end, so the only press both can claim is
-				// one on a scene ending where a lane begins -- and a scene has
-				// ⌦ to fall back on where a lane has nothing (cut_lane.go)
+				// a cut lane's own ✕ sits at the row's start (cut_lane.go)
 				if name := ed.laneKillAt(x+ed.viewX, y); name != "" {
 					ed.killLane(name)
 					return
 				}
 				// an empty row's ✕ can share ground with nothing: the row
-				// wearing it has no footage, so no lane badge and no scene
+				// wearing it has no footage, so no lane badge either
 				if r := ed.rowKillAt(x+ed.viewX, y); r >= 0 {
 					ed.killRow(r)
-					return
-				}
-				if i := ed.segKillAt(x+ed.viewX, y); i >= 0 {
-					ed.killSeg(i)
 					return
 				}
 			}

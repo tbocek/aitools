@@ -74,16 +74,10 @@ func TestEveryPromptIsExposed(t *testing.T) {
 	if len(declared) == 0 {
 		t.Fatal("found no system prompts at all -- the pattern went stale, not the code")
 	}
-	// improveSystem is the one prompt that is deliberately not on the bench:
-	// Improve is the tool asking about itself rather than a step of the edit,
-	// what the user brings to it is the complaint they type, and the technical
-	// half of it is the system context every job now gets (improve.go).
-	if !declared["improve"] {
-		t.Error("improveSystem is gone -- if the Improve prompt moved, this exemption " +
-			"should move with it rather than sitting here excusing nothing")
-	}
-	delete(declared, "improve")
-
+	// Nothing is exempt any more: improveSystem was, and it went out with the
+	// Improve button. Every prompt the binary declares is a step of an edit and
+	// is on the bench.
+	//
 	// counted across the wordings, not the jobs: a job can ship several, so what
 	// has to match is how many prompts exist against how many the dropdowns offer
 	exposed := 0

@@ -5,7 +5,7 @@ package main
 // A remove used to live on this bar and was taken off it (cut_segkill.go): it
 // guessed between the selection, the held clip and the playhead, and a verb
 // that guesses is a verb that occasionally removes something nobody pointed at.
-// The ✕ on each green scene replaced it, and for "drop THAT scene" it is the
+// The ✕ on the green bar replaced it, and for "drop THAT scene" it is the
 // better control -- the thing you press is the thing that goes.
 //
 // It cannot do this, though. A ✕ drops a whole scene, and the ask here is to

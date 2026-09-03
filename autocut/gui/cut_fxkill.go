@@ -89,8 +89,9 @@ func (ed *cutEditor) hoverFxKill(x, y float64) {
 	}
 }
 
-// drawFxKill paints the badges, the same plate-and-arms the scenes wear, on
-// top of the bands drawFxLane has already drawn. Called from drawTrack inside
+// drawFxKill paints the badges, the same plate-and-arms every other remove on
+// the page wears (drawKillBadge), on top of the bands drawFxLane has already
+// drawn. Called from drawTrack inside
 // its translation, so x here is timeline px like everything drawn around it.
 func (ed *cutEditor) drawFxKill(cr *cairo.Context, vx0, vx1 float64) {
 	for i := range ed.fx {
@@ -98,19 +99,6 @@ func (ed *cutEditor) drawFxKill(cr *cairo.Context, vx0, vx1 float64) {
 		if !ok || cx < vx0-segKillHit || cx > vx1+segKillHit {
 			continue
 		}
-		if ed.fxKillHov == i {
-			cr.SetSourceRGBA(0.85, 0.24, 0.28, 0.95)
-		} else {
-			cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.55)
-		}
-		cr.Arc(cx, cy, segKillR+segKillPad, 0, 2*math.Pi)
-		cr.Fill()
-		cr.SetSourceRGBA(1, 1, 1, 0.9)
-		cr.SetLineWidth(1.6)
-		for _, d := range [][2]float64{{-1, -1}, {-1, 1}} {
-			cr.MoveTo(cx+segKillR*d[0], cy+segKillR*d[1])
-			cr.LineTo(cx-segKillR*d[0], cy-segKillR*d[1])
-		}
-		cr.Stroke()
+		drawKillBadge(cr, cx, cy, ed.fxKillHov == i)
 	}
 }

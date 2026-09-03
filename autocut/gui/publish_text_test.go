@@ -76,7 +76,7 @@ func TestTheWordsLandInsideTheirBox(t *testing.T) {
 	plain := whitePNG(t, dir, 320, 180)
 	out := filepath.Join(dir, "out.png")
 	tx := pubText{Cx: 0.5, Cy: 0.75, Wf: 0.5, Hf: 0.2, Text: "GG WP"}
-	if err := drawPubTexts(plain, out, []pubText{tx}, ""); err != nil {
+	if err := drawPubTexts(plain, out, []pubText{tx}, "", pubTitleBox); err != nil {
 		t.Fatal(err)
 	}
 	img := decode(t, out)
@@ -100,7 +100,7 @@ func TestTheTitleIsPrintedAcrossTheUpperPart(t *testing.T) {
 	dir := t.TempDir()
 	plain := whitePNG(t, dir, 320, 180)
 	out := filepath.Join(dir, "out.png")
-	if err := drawPubTexts(plain, out, nil, "BIG WIN"); err != nil {
+	if err := drawPubTexts(plain, out, nil, "BIG WIN", pubTitleBox); err != nil {
 		t.Fatal(err)
 	}
 	img := decode(t, out)
@@ -124,7 +124,7 @@ func TestNothingToPrintCopiesThePlainBytesThrough(t *testing.T) {
 	dir := t.TempDir()
 	plain := whitePNG(t, dir, 64, 36)
 	out := filepath.Join(dir, "out.png")
-	if err := drawPubTexts(plain, out, []pubText{{Cx: 0.5, Cy: 0.5, Wf: 0.5, Hf: 0.2, Text: "  \n "}}, "  "); err != nil {
+	if err := drawPubTexts(plain, out, []pubText{{Cx: 0.5, Cy: 0.5, Wf: 0.5, Hf: 0.2, Text: "  \n "}}, "  ", pubTitleBox); err != nil {
 		t.Fatal(err)
 	}
 	a, _ := os.ReadFile(plain)
@@ -192,7 +192,10 @@ func TestTheMarkedTextsRideTheProjectAndTheRun(t *testing.T) {
 func TestThePromptComposesAndLeavesRoomForTheTitle(t *testing.T) {
 	for _, want := range []string{
 		"compose ONE picture out of the frames",
-		"printed onto the upper part of the finished picture afterwards",
+		// onto the picture, and not lettered by the model -- but no longer
+		// "the upper part": the band can be dragged (pubSettings.TitleBox),
+		// and the instruction names where it actually is (pubTitleWhere)
+		"the title is printed onto the finished picture afterwards",
 	} {
 		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+youtubeSystem, want) {
 			t.Errorf("the upload text is never told %q", want)

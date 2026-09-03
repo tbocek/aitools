@@ -65,8 +65,23 @@ func (a *App) ctxBlock() string {
 		return ""
 	}
 	return "ABOUT THIS SESSION, FROM THE EDITOR -- written by someone who was " +
-		"there, so it outranks anything you infer from the material:\n" + s + "\n\n"
+		"there, so it outranks anything you infer from the material:\n" + s +
+		"\n\n" + ctxSpeech + "\n\n"
 }
+
+// ctxSpeech rides under the notes, and only under them.
+//
+// It is how the notes bear on the spoken lines, and it used to be a paragraph
+// in the system prompt -- sent to every job of every session, including the
+// ones whose notes box is empty, where it described a block that was not
+// there. Here it is sent exactly when there is something for it to be about,
+// and it sits beside that something instead of six thousand characters
+// earlier.
+//
+// The rule itself is the same rule, and it is worth its words: read the wrong
+// way it is the worst answer this app can give. An aside to the editor
+// captioned into the video, or the video thrown away as asides.
+const ctxSpeech = `The speech is content unless the notes above say otherwise: the speakers are in the video, and what they say is why a moment is worth keeping. Where the notes call it directions ("this part is boring", "speed this up"), do what a direction asks at the second it asks and keep its words out of the video -- never caption them, and never keep a stretch just because it was spoken over. An instruction about a kind of stretch -- speed the dull parts up and show them instead of cutting them, caption each thing as it is named -- holds wherever such a stretch occurs. It decides segments too: a stretch to be shown fast has to be in the cut, with a speed effect over it, or there is nothing left to speed up.`
 
 // logCtx says, in the log, that this step's requests carried the context. A
 // second input that changes the result and appears nowhere in the run is how

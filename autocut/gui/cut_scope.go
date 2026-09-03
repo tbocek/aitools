@@ -186,8 +186,8 @@ func (ed *cutEditor) setSelScope(base string, pic bool) {
 			"goes silent. ▲ again for the sound filmed with them",
 			mmss(a), mmss(b)))
 	default:
-		ed.a.setStatus(fmt.Sprintf("▲▼ %s – %s is footage — ＋ Add keeps it, the ✕ in a green "+
-			"scene's corner drops one, ⧉ Copy takes the picture with the sound filmed with it",
+		ed.a.setStatus(fmt.Sprintf("▲▼ %s – %s is footage — ＋ Add keeps it, the ✕ on the green "+
+			"bar above drops the scene the line is in, ⧉ Copy takes the picture with the sound filmed with it",
 			mmss(a), mmss(b)))
 	}
 	ed.redrawTracks()

@@ -18,10 +18,12 @@ package main
 // a hand on a desk would do it, with a limiter on the finished clip so the sum
 // cannot reach the encoder clipping (clipCeil, produce.go).
 //
-// The badge sits at the LEFT of the held scene, where the ✕ that drops the
-// scene sits at the right: they are the two things you do to a scene you are
-// pointing at, and putting them at opposite ends means neither can be pressed
-// by mistake for the other. Both kinds of lane wear one -- the camera's own
+// The badge sits at the LEFT of the held scene, and only the left: the rest of
+// the scene is the press that puts the red line on it or takes it in hand, and
+// a badge in the middle of a clip is a button you hit while aiming at the clip.
+// (It used to be the left because the ✕ that drops a scene was at the right;
+// that ✕ is on the green bar now, cut_segkill.go, and the left is still where
+// this one belongs.) Both kinds of lane wear one -- the camera's own
 // sound, drawn under its pictures, and every separately recorded lane in the
 // band below -- because "which of these do I hear" is one question and the page
 // draws the answers in two places only by accident of layout.
@@ -39,11 +41,11 @@ const (
 	hearPad = 3.5  // the plate's edge, beyond it
 	hearHit = 10.0 // and the target, bigger than either
 	hearIn  = 12.0 // its centre, in from the held scene's LEFT border
-	// under this a scene has no room to wear one, for the same reason as
-	// segKillMin: the target reaches hearIn+hearHit in from the left border,
-	// the ✕ reaches as far in from the right, and a scene narrower than the
-	// two together has no plain timeline left in the middle to press.
-	hearMin = (hearIn + hearHit) + (segKillIn + segKillHit) + 6
+	// under this a scene has no room to wear one, by segKillMin's rule: the
+	// target reaches hearIn+hearHit in from the left border, and a scene
+	// narrower than twice that has its MIDDLE inside the badge -- so a press
+	// meant to put the line on the clip would switch a lane instead.
+	hearMin = 2*(hearIn+hearHit) + 6
 )
 
 // hearBadge is one lane's answer for the held scene, and where it is drawn.
