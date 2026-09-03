@@ -50,14 +50,18 @@ const (
 	// thrown away with Esc.
 	selMinBand = 40.0
 	// the GREEN bar's ✕ is the plated badge the lanes and the effects wear
-	// (drawKillBadge), because it is the same verb they answer -- and its
-	// plate clears the right-hand grip with a pixel to spare, or the mark
-	// would be drawn on pixels that trim the clip instead of removing it.
-	bandKillIn = selGripPx + segKillR + segKillPad + 1
+	// (drawKillBadge), because it is the same verb they answer -- and it sits
+	// far enough in that its TARGET begins where the end grip's stops. Set by
+	// the plate alone it cleared the grip to the eye and still shared pixels
+	// with it: the hand aiming at the badge's outer edge got the border, and
+	// the hand aiming at the border got a mark that looked like it was part of
+	// the handle. One press, one verb, no shared pixels.
+	bandKillIn = selGripPx + segKillHit
 	// and it is only offered on a bar with the room, by segKillMin's rule: the
 	// target reaches bandKillIn+segKillHit in from the right end, so a bar
 	// narrower than twice that would have its middle -- the part a press picks
-	// the clip UP by -- inside a button that throws the clip away.
+	// the clip UP by -- inside a button that throws the clip away. It costs a
+	// few px of floor to move the mark inboard; short clips go with ⌦.
 	bandKillMin = 2*(bandKillIn+segKillHit) + 6
 )
 
@@ -152,6 +156,35 @@ func (ed *cutEditor) bandBars() []int {
 	return out
 }
 
+// bandKillAt is the kept clip whose ✕ is under a press at timeline-x px, or -1.
+//
+// EVERY bar wears one, and every one of them is live -- not just the bar the
+// hand can trim and move. That is the difference between a control and a
+// control you have to unlock: with the ✕ on one bar only, dropping the third
+// clip of a cut meant putting the red line in it first, which is a press whose
+// only purpose is to make the next press possible. The effects lane has never
+// worked that way (cut_fxkill.go): every band there carries its own ✕ and
+// pressing it drops that band, whatever is selected. This is the same rule for
+// the same reason.
+//
+// Trimming and moving are still the tall bar's alone. They are drags with an
+// anchor -- what a clip's border may move to depends on the clip in hand -- and
+// the row says which bar that is by drawing it taller with handles on its ends.
+// Removing needs no anchor: the thing pressed is the thing that goes.
+//
+// The target is the badge's own, a square around the plate segKillHit either
+// side, and only on a bar with the room for it (bandKillMin).
+func (ed *cutEditor) bandKillAt(px float64) int {
+	for _, i := range ed.bandBars() {
+		s := ed.segs[i]
+		x0, x1 := ed.xOf(s.S), ed.xOf(s.E)
+		if x1-x0 >= bandKillMin && math.Abs(px-(x1-bandKillIn)) <= segKillHit {
+			return i
+		}
+	}
+	return -1
+}
+
 // bandClipPartAt is what a press at timeline-x px takes hold of on the green
 // bar: which clip, and which part of it. The parts are the blue bar's own --
 // ends first, then the ✕, then the middle -- because the two bars share a row
@@ -167,24 +200,26 @@ func (ed *cutEditor) bandBars() []int {
 // alone. The badge over the pictures is gone and this is the survivor
 // (cut_segkill.go): same undo, same sentence in the status.
 //
-// Its target is the badge's own -- a square around the plate, segKillHit
-// either side -- and it is asked AFTER the ends, so the outer few px of the
-// bar stay the grip that trims the clip.
+// The ✕ is any bar's (bandKillAt); the ends and the middle are the bar in
+// reach's. Asked in that order the outer few px of a bar stay the grip that
+// trims it -- a hand aiming at "a bit shorter" must not find "gone" -- and
+// everything else the row answers, it answers wherever the line happens to be.
 func (ed *cutEditor) bandClipPartAt(px float64) (int, int) {
 	i := ed.bandClipIdx()
-	if i < 0 {
-		return -1, selNone
+	x0, x1 := 0.0, 0.0
+	if i >= 0 {
+		x0, x1 = ed.xOf(ed.segs[i].S), ed.xOf(ed.segs[i].E)
+		switch {
+		case math.Abs(px-x0) <= selGripPx:
+			return i, selStart
+		case math.Abs(px-x1) <= selGripPx:
+			return i, selEnd
+		}
 	}
-	s := ed.segs[i]
-	x0, x1 := ed.xOf(s.S), ed.xOf(s.E)
-	switch {
-	case math.Abs(px-x0) <= selGripPx:
-		return i, selStart
-	case math.Abs(px-x1) <= selGripPx:
-		return i, selEnd
-	case x1-x0 >= bandKillMin && math.Abs(px-(x1-bandKillIn)) <= segKillHit:
-		return i, selKill
-	case px > x0 && px < x1:
+	if k := ed.bandKillAt(px); k >= 0 {
+		return k, selKill
+	}
+	if i >= 0 && px > x0 && px < x1 {
 		return i, selWhole
 	}
 	return -1, selNone
@@ -366,16 +401,18 @@ func (ed *cutEditor) hoverTracks(x, y float64) {
 	ed.hoverFxKill(x, y)
 	ed.hoverScope(x, y) // the ▲▼ handle lives in this area now
 	on := x >= 0 && ed.hitSelBand(y) && ed.selPartAt(x+ed.viewX) != selNone
-	gOn, gKill := false, false
+	gOn, gKill := false, -1
 	if x >= 0 && !on && ed.hitSelBand(y) {
 		// the green bar highlights only where the blue does not answer first:
 		// same precedence as the press and the cursor
-		_, part := ed.bandClipPartAt(x + ed.viewX)
+		var part int
+		_, part = ed.bandClipPartAt(x + ed.viewX)
 		gOn = part != selNone
-		// and its ✕ lights on its own, the way every other ✕ on the page does:
-		// the bar's ring says "this clip answers the hand", the red plate says
-		// "this press removes it", and they are not the same promise
-		gKill = part == selKill
+		// and the ✕ under the pointer lights on its own, the way every other ✕
+		// on the page does: the bar's ring says "this clip answers the hand",
+		// the red plate says "this press removes it", and they are not the
+		// same promise -- so the plate is lit by index, on whichever bar it is
+		gKill = ed.bandKillAt(x + ed.viewX)
 	}
 	if on != ed.selHov || gOn != ed.bandHov || gKill != ed.bandKillHov {
 		ed.selHov, ed.bandHov, ed.bandKillHov = on, gOn, gKill
@@ -551,6 +588,9 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 	// drawn alike where one has handles and the other has none would be a
 	// promise the row does not keep.
 	cur := ed.bandClipIdx()
+	// A pixel short of its own right edge so two clips that touch read as two,
+	// and deep enough to hold a badge: every bar carries the ✕, so no bar can
+	// be a stripe the plate hangs off either side of.
 	cr.SetSourceRGBA(0.2, 0.8, 0.3, 0.4)
 	for _, i := range ed.bandBars() {
 		if i == cur {
@@ -558,10 +598,23 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 		}
 		s := ed.segs[i]
 		if gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E); gx1 >= vx0 && gx0 <= vx1 {
-			cr.Rectangle(gx0, y+7, math.Max(1, gx1-gx0-1), selBandH-14)
+			cr.Rectangle(gx0, y+4, math.Max(1, gx1-gx0-1), selBandH-8)
 		}
 	}
 	cr.Fill()
+	// their ✕, drawn with the bars rather than with the one in reach: the mark
+	// is the same mark on every bar, and the bar under it is what differs
+	for _, i := range ed.bandBars() {
+		if i == cur {
+			continue
+		}
+		s := ed.segs[i]
+		gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E)
+		if gx1 < vx0 || gx0 > vx1 || gx1-gx0 < bandKillMin {
+			continue
+		}
+		drawKillBadge(cr, gx1-bandKillIn, y+selBandH/2, ed.bandKillHov == i)
+	}
 	if i := cur; i >= 0 {
 		s := ed.segs[i]
 		if gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E); gx1 >= vx0 && gx0 <= vx1 {
@@ -573,13 +626,13 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 				cr.Rectangle(hx-1.5, y, 3, selBandH)
 			}
 			cr.Fill()
-			// the ✕ that removes the clip: the plated badge, drawn always
-			// and red under the pointer, because this is the page's one
-			// "remove that" and it says so the same way everywhere
+			// and this bar's ✕, the same badge the others just got: drawn
+			// always and red under the pointer, because this is the page's
+			// one "remove that" and it says so the same way everywhere
 			// (drawKillBadge). Not the blue's flat mark -- the blue's ✕
 			// throws away a selection and leaves the footage alone.
 			if gx1-gx0 >= bandKillMin {
-				drawKillBadge(cr, gx1-bandKillIn, y+selBandH/2, ed.bandKillHov)
+				drawKillBadge(cr, gx1-bandKillIn, y+selBandH/2, ed.bandKillHov == i)
 			}
 			switch {
 			case (ed.segOn && ed.segSel == i) || (ed.edgeOn && ed.edgeSeg == i):

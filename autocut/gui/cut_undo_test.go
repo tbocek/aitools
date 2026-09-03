@@ -12,7 +12,11 @@ import (
 
 func newTestEd(t *testing.T) *cutEditor {
 	t.Helper()
-	return &cutEditor{a: &App{outDir: t.TempDir()}, pps: 4, thumbHt: 64}
+	// the hover indices start where buildCut starts them: -1 is "the pointer is
+	// on no badge", and a zero there would light the first one red on a page
+	// nobody has touched yet
+	return &cutEditor{a: &App{outDir: t.TempDir()}, pps: 4, thumbHt: 64,
+		rowHov: -1, fxKillHov: -1, bandKillHov: -1}
 }
 
 func TestCutUndoRestores(t *testing.T) {

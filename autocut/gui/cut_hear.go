@@ -31,6 +31,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/cairo"
@@ -40,7 +41,12 @@ const (
 	hearR   = 4.5  // the speaker cone, from its centre
 	hearPad = 3.5  // the plate's edge, beyond it
 	hearHit = 10.0 // and the target, bigger than either
-	hearIn  = 12.0 // its centre, in from the held scene's LEFT border
+	// its centre, in from the held scene's LEFT border -- far enough that the
+	// badge's TARGET begins where the border's grab ends (edgeGrab), the same
+	// clearance the bar's ✕ keeps from the grip at the other end. Closer in,
+	// the two shared pixels: a press meant for the border switched a lane,
+	// and the badge looked like part of the handle it was sitting on.
+	hearIn = edgeGrab + hearHit
 	// under this a scene has no room to wear one, by segKillMin's rule: the
 	// target reaches hearIn+hearHit in from the left border, and a scene
 	// narrower than twice that has its MIDDLE inside the badge -- so a press
@@ -132,10 +138,20 @@ func (ed *cutEditor) hearBadgesAud() []hearBadge {
 // -- there is nothing to migrate and nothing that can disagree with the
 // badges, because it IS the badges, written to every scene at once.
 //
-// The footage's own sound has no switch: its strip under the pictures is
-// drawn plateless on purpose (drawPairStrip), it is the row's shadow rather
-// than a mixer strip, and a scene shown from a camera is heard from it unless
-// that scene says otherwise -- which is the per-scene badge's question.
+// The footage's own sound wears one too, on its strip under the pictures. It
+// did not at first, on the grounds that the strip is drawn plateless on
+// purpose (drawPairStrip) -- it is the row's shadow rather than a mixer strip,
+// and a scene shown from a camera is heard from it unless that scene says
+// otherwise. But "is the camera's own sound in this video at all" is the same
+// coarse question as any other lane's, and the answer was reachable only one
+// scene at a time: a capture with the game audio nobody wants meant taking
+// every scene in hand and pressing the same plate on each, while the recorder
+// beside it had a single switch. One question, one control, both bands.
+//
+// It is a switch per ROW and not per file, because a camera stopped and
+// started again is several recordings in a line on one row -- the same reading
+// hushOneLane makes of an old project's single choice -- and "this camera's
+// sound, off" must not mean "off until the camera restarted".
 
 const (
 	// the switch's centre, in from the widget's left edge, and where a name
@@ -197,6 +213,85 @@ func (ed *cutEditor) laneSwitchAt(x, y float64) string {
 	return ""
 }
 
+// ---- the same switch on the footage's own strip -----------------------------
+
+// pairSwitch is one camera ROW's whole-cut switch for the sound filmed with
+// its pictures: every master lane drawn on that row, one plate over the lot.
+//
+// cx is a WIDGET x, like the band's switches: the tape scrolls under the
+// switch and the switch stays where it is, so it is there to press wherever
+// the view happens to be. cy is an area y, which in this widget is the same
+// thing -- only x is translated (drawTrack).
+type pairSwitch struct {
+	bases  []string
+	cx, cy float64
+	on     bool
+}
+
+// pairSwitches is one per row that has a paired strip, walking the layout
+// drawTrack draws so the hand lands where the eye is pointing. A row whose
+// footage filmed no sound has no strip and gets none.
+func (ed *cutEditor) pairSwitches() []pairSwitch {
+	var out []pairSwitch
+	for r := 0; r < ed.laneN; r++ {
+		h := ed.pairH(r)
+		if h == 0 {
+			continue
+		}
+		var bases []string
+		on := false
+		for i := range ed.vids {
+			if ed.vids[i].lane != r {
+				continue
+			}
+			if au := ed.pairAud(ed.vids[i].base); au != nil {
+				bases = append(bases, au.base)
+				on = on || ed.laneHeard(au.base)
+			}
+		}
+		if len(bases) == 0 {
+			continue
+		}
+		out = append(out, pairSwitch{bases, laneSwX, ed.laneTop(r) + ed.laneH() + h/2, on})
+	}
+	return out
+}
+
+// pairSwitchAt is the recordings whose switch is under a press, or nil. x is
+// the WIDGET x: the switch does not scroll with the tape.
+func (ed *cutEditor) pairSwitchAt(x, y float64) []string {
+	for _, s := range ed.pairSwitches() {
+		if math.Abs(x-s.cx) <= hearHit && math.Abs(y-s.cy) <= hearHit {
+			return s.bases
+		}
+	}
+	return nil
+}
+
+// pairSwitchName is what the status calls a row: the row, when its pictures
+// are several recordings in a line, and the recording itself when it is one.
+func pairSwitchName(bases []string) string {
+	if len(bases) == 1 {
+		return bases[0]
+	}
+	return fmt.Sprintf("the sound filmed with %s and %d more", bases[0], len(bases)-1)
+}
+
+// drawPairSwitches paints them, from inside drawTrack's translation -- so a
+// widget x has to be put back on the tape's own scale by the view's left edge,
+// the way an emptied row's ✕ is (drawRowKill). ed.viewX and not drawTrack's
+// vx0: that one is the CULLING edge, 80 px further left so a thumbnail or a
+// tick's label reaching into view still gets drawn, and a control drawn there
+// is a control 80 px off the side of the widget.
+//
+// Over the scene badges, which is the precedence the press keeps too: the
+// permanent control wins the pixels the two can share.
+func (ed *cutEditor) drawPairSwitches(cr *cairo.Context) {
+	for _, s := range ed.pairSwitches() {
+		hearPlate(cr, ed.viewX+s.cx, s.cy, s.on)
+	}
+}
+
 // toggleLaneAll turns one lane off, or on, for the whole cut: every scene's
 // answer rewritten to the same one. Off if any scene still hears it -- the
 // press means "stop hearing this" while any of it is left -- and on only from
@@ -214,12 +309,32 @@ func (ed *cutEditor) toggleLaneAll(base string) {
 	if base == "" {
 		return
 	}
+	ed.toggleLanesAll([]string{base}, base)
+}
+
+// toggleLanesAll is that press when the switch stands for several recordings at
+// once: a camera row, where one camera stopped and started again is several
+// files in a line and one switch over the lot (pairSwitches). name is what the
+// status calls them -- one lane says its own name, a row says the row's.
+//
+// Off if ANY of them is still heard anywhere, so a row half-silenced by
+// per-scene presses reads on and the switch finishes the job, rather than
+// turning the rest off in one press and back on in the next.
+func (ed *cutEditor) toggleLanesAll(bases []string, name string) {
+	if len(bases) == 0 {
+		return
+	}
 	if len(ed.segs) == 0 {
-		ed.a.setStatus(base + " has no scenes to be heard in yet — a lane is switched " +
+		ed.a.setStatus(name + " has no scenes to be heard in yet — a lane is switched " +
 			"where the cut keeps it, so cut something first")
 		return
 	}
-	on := !ed.laneHeard(base)
+	on := true
+	for _, b := range bases {
+		if ed.laneHeard(b) {
+			on = false
+		}
+	}
 	ed.pushUndo()
 	n := 0
 	for i := range ed.segs {
@@ -229,12 +344,12 @@ func (ed *cutEditor) toggleLaneAll(base string) {
 		}
 		var next []string
 		for _, q := range s.Quiet {
-			if q != base {
+			if !slices.Contains(bases, q) {
 				next = append(next, q)
 			}
 		}
 		if !on {
-			next = append(next, base)
+			next = append(next, bases...)
 		}
 		if len(next) != len(s.Quiet) {
 			n++
@@ -244,11 +359,11 @@ func (ed *cutEditor) toggleLaneAll(base string) {
 	ed.persist()
 	ed.redrawTracks()
 	if on {
-		ed.a.setStatus(fmt.Sprintf("%s is on for the whole cut — every scene hears it (%d changed)", base, n))
+		ed.a.setStatus(fmt.Sprintf("%s is on for the whole cut — every scene hears it (%d changed)", name, n))
 		return
 	}
 	ed.a.setStatus(fmt.Sprintf("%s is off for the whole cut — every scene silences it, and the "+
-		"switch on its name plate brings it back (%d changed)", base, n))
+		"switch beside it brings it back (%d changed)", name, n))
 }
 
 // hearBadgesSrc is the badges on the paired strips, in the picture band. Only

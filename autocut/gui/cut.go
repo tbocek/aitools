@@ -441,6 +441,14 @@ type cutSeg struct {
 	// audible everywhere rather than silent everywhere, which is the answer
 	// that can be heard and corrected rather than the one that is missed.
 	Quiet []string `json:"quiet,omitempty"`
+	// this clip STARTS at a border somebody made on purpose: | Split put it
+	// there (cut_split.go). Two clips of one camera that touch are otherwise
+	// one clip, and coalesce joins them the moment anything rearranges the
+	// list -- which is right for two selections that turned out to meet, and
+	// wrong for a border drawn deliberately to give a stretch its own camera,
+	// its own sound or its own place in the order. The flag is what tells the
+	// two apart. Nothing else sets it, so an ordinary cut.json is unchanged.
+	Split bool `json:"split,omitempty"`
 }
 
 // laneQuiet is the one reading of that list, so the page, the preview and the
@@ -608,13 +616,18 @@ type cutEditor struct {
 	selOn       bool
 	selHov      bool
 	bandHov     bool   // the pointer is over the green bar's clip, ends included
-	bandKillHov bool   // ...and over that bar's ✕, which lights red (cut_segkill.go)
+	bandKillHov int    // ...and the bar whose ✕ it is on, which lights red; -1 for none
 	selCur      string // the cursor name the source area last asked for
 	audCur      string // ...and the lanes
 	thumbHt     int    // thumbnail height; the 🔍 buttons change it
 	srcHt       int    // the height the source area was last asked for; see fitSrc
 	playhead    float64
 	hasPlay     bool
+	// where ⏸ stopped, and whether it did. ▶ has places it starts from that
+	// are not the line (a held edge, a held clip); resuming is not one of
+	// them, and this is how the two are told apart. See toggle.
+	resumeT  float64
+	resumeOn bool
 	// the row the preview is WATCHING, plus one; 0 for the cut's own answer,
 	// so a zero editor answers to the cut. Inside a kept scene the preview
 	// shows the scene's camera (camAt), which leaves no way to see what
@@ -795,6 +808,10 @@ type cutEditor struct {
 	// ＋ Add: the footage's verb, greyed while the selection is a sound's (see
 	// syncSelBtns).
 	addBtn *gtk.Button
+	// | Split, between them: the span kept AND cut free of what it lay in.
+	// Greyed by Add's own rule, because it is the same kind of verb about the
+	// same kind of selection (cut_split.go).
+	splitBtn *gtk.Button
 	// － Remove, the same span the other way round. It stood beside ＋ Add
 	// once, guessed what it was aimed at, and was taken off the bar for it;
 	// this one is the selection's verb and nothing else's (cut_selrm.go), so
@@ -3293,7 +3310,8 @@ func sameCut(a, b []cutSeg) bool {
 func sameSeg(a, b cutSeg) bool {
 	return a.S == b.S && a.E == b.E && a.Ins == b.Ins && a.Dur == b.Dur &&
 		a.Rate == b.Rate && a.Ss == b.Ss && a.Mute == b.Mute &&
-		a.Cam == b.Cam && a.Lane == b.Lane && sameQuiet(a.Quiet, b.Quiet)
+		a.Cam == b.Cam && a.Lane == b.Lane && a.Split == b.Split &&
+		sameQuiet(a.Quiet, b.Quiet)
 }
 
 // sameQuiet compares the two as SETS, not as lists. Which lane the user
@@ -3469,8 +3487,13 @@ func (ed *cutEditor) coalesce() {
 		// they touch. The seam between them is the cut from one camera to the
 		// other -- the whole point of the second row -- and merging them would
 		// throw the switch away and keep the seconds.
-		if !s.isInsert() && film >= 0 && s.Cam == out[film].Cam &&
-			s.S <= out[film].E+0.25 && allSpliced(out[film+1:]) {
+		// ...and a border | Split made is not one of those accidents. It was
+		// drawn to give this stretch a life of its own, and merging it away
+		// on the next edit anywhere in the cut would undo a press nobody
+		// repeated. A drag that puts the two back together clears the flag
+		// itself, which is the way back (mergeDropped).
+		if !s.isInsert() && !s.Split && film >= 0 && s.Cam == out[film].Cam &&
+			s.S <= out[film].E+mergeTol && allSpliced(out[film+1:]) {
 			if s.E > out[film].E {
 				out[film].E = s.E
 			}
@@ -3884,6 +3907,9 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 	// whether the held scene hears the camera it is shown from, said on that
 	// camera's own strip and pressable there (cut_hear.go)
 	ed.drawHearBadges(cr, ed.hearBadgesSrc(), vx0, vx1)
+	// and the switch for that sound in the whole cut, at the strip's left where
+	// a recorded lane's sits on its name plate
+	ed.drawPairSwitches(cr)
 
 	// ruler
 	stepS := tickStep(ed.pps)
@@ -4092,7 +4118,11 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 	// The one that drops a scene is not here -- it is on the green bar in the
 	// selection row (drawSelBand), which is drawn just below.
 	ed.drawLaneKill(cr, vx0, vx1)
-	ed.drawRowKill(cr, vx0) // and an emptied row's ✕, which removes the space
+	// and an emptied row's ✕, which removes the space. The VIEW's left edge,
+	// not vx0: that is the culling edge and sits a margin further left, which
+	// is where this badge used to be painted -- off the side of the widget,
+	// while the press for it worked at the edge you can see (rowKillAt).
+	ed.drawRowKill(cr, ed.viewX)
 
 	// the effects lane, under the picture band (cut_fx.go)
 	ed.drawSelBand(cr, vx0, vx1)
@@ -4326,6 +4356,23 @@ func (ed *cutEditor) toggle() {
 		ed.monRow = 0
 		ed.redrawTracks() // the dashed outline goes with it
 	}
+	// ⏸ then ▶ is one gesture -- "let me look at that" -- and it has to put the
+	// picture back where it stopped it. Without this the second press was read
+	// as a fresh start and took the line to whatever was held: pause halfway
+	// through the clip you are working on, press ▶, and you are at its first
+	// frame again, watching the part you had just watched.
+	//
+	// The line's own position is the test, not a flag: anything that moves it
+	// while paused -- a click on a track, a frame step with nothing held -- is
+	// the hand choosing a new place, and a press after that starts there. A
+	// step that moves the HELD thing instead leaves the line alone, so it
+	// resumes, which is what "step the clip and carry on" should do.
+	resume := ed.resumingHere()
+	if ed.playing() {
+		ed.markPause() // this press is the ⏸
+	} else {
+		ed.resumeOn = false // and this one spends what it left
+	}
 	// Where ▶ starts, which is not always where the line is. Only on the way
 	// into playing, whichever branch takes it: ⏸ has to stop where it is.
 	if !ed.playing() {
@@ -4341,6 +4388,10 @@ func (ed *cutEditor) toggle() {
 		// is the same chore in reverse.
 		case ed.cutOnly:
 			ed.cutOnlySnap()
+		// resuming: the line is where ⏸ left it, and that is where the
+		// picture goes on from. Under ▶✂ above it too -- cutOnlySnap only
+		// moves a line standing in a gap, which a paused one is not.
+		case resume:
 		// With a clip edge held, ▶ plays from the EDGE. It is the thing you are
 		// working on and the only reason to press play while holding it is to
 		// watch what you have just trimmed to; starting from wherever the
@@ -4365,18 +4416,30 @@ func (ed *cutEditor) toggle() {
 	ed.a.updateRunControls()
 }
 
+// markPause remembers where the transport stopped, so the next ▶ can tell
+// "carry on" from "start". Only ⏸ writes it; ⏹ throws it away (stop).
+func (ed *cutEditor) markPause() { ed.resumeT, ed.resumeOn = ed.playhead, true }
+
+// resumingHere is whether ▶ is the second half of a ⏸ ... ▶ pair. The line's
+// own position is the test: it is where the pause left it, so anything that
+// has moved it since is the hand asking to start somewhere else instead.
+func (ed *cutEditor) resumingHere() bool {
+	return ed.resumeOn && math.Abs(ed.playhead-ed.resumeT) < 1e-6
+}
+
 func (ed *cutEditor) stop() {
 	if ed.player != nil {
 		ed.player.Stop()
 	}
-	ed.started = false // ⏹ hands ▶ back to the step's own job, suggesting
+	ed.started = false  // ⏹ hands ▶ back to the step's own job, suggesting
+	ed.resumeOn = false // and there is nothing left to resume from
 }
 
 // ---- page ------------------------------------------------------------------
 
 func (a *App) buildCut() gtk.Widgetter {
 	ed := &cutEditor{a: a, pps: 4, thumbHt: 64, jumped: -1, rowHov: -1, fxKillHov: -1,
-		thumbs: map[string]*gdkpixbuf.Pixbuf{}}
+		bandKillHov: -1, thumbs: map[string]*gdkpixbuf.Pixbuf{}}
 	a.ed = ed
 	if p, err := NewPlayer(); err == nil {
 		ed.player = p // the preview above the tracks; independent of Review's
@@ -4417,6 +4480,10 @@ func (a *App) buildCut() gtk.Widgetter {
 	add := ed.addBtn
 	add.AddCSSClass("suggested-action")
 	add.ConnectClicked(func() { a.addSelClicked() })
+	// the same selection, cut out of what it lies in rather than kept or
+	// dropped: the third thing that can be done to a span (cut_split.go).
+	ed.splitBtn = gtk.NewButtonWithLabel("| Split")
+	ed.splitBtn.ConnectClicked(func() { a.splitSelRange() })
 	// the same selection, dropped instead of kept. Beside Add because they are
 	// one pair, and greyed by the same rule -- see cut_selrm.go for why a
 	// remove is back on the bar at all.
@@ -4668,7 +4735,7 @@ func (a *App) buildCut() gtk.Widgetter {
 	bar.Append(volumeCtl())
 	bar.Append(rule())
 	bar.Append(col(tgtBox, tgtLbl))
-	bar.Append(col(linked(add, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))
+	bar.Append(col(linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))
 	bar.Append(ed.aspectDD)
 	bar.Append(fxDD)
 	bar.Append(linked(ed.undoBtn, ed.redoBtn, ed.revertBtn))
@@ -4869,6 +4936,15 @@ func (a *App) buildCut() gtk.Widgetter {
 					return
 				}
 			}
+			// the same switch for the sound filmed with the pictures, on the
+			// paired strip under them: one per camera row, and asked here for
+			// the reason above
+			if area == ed.srcArea {
+				if bases := ed.pairSwitchAt(x, y); len(bases) > 0 {
+					ed.toggleLanesAll(bases, pairSwitchName(bases))
+					return
+				}
+			}
 			if base := ed.hearAt(x+ed.viewX, y, area == ed.srcArea); base != "" {
 				ed.toggleHear(base)
 				return
@@ -4997,9 +5073,17 @@ func (a *App) buildCut() gtk.Widgetter {
 			}
 			if moving {
 				moving = false
+				// dragged up against the clip beside it, the two are one clip
+				// again: the drop is the join (cut_split.go). Asked before the
+				// write, so what goes on disk is the merged cut, and it says
+				// its own sentence -- there is no held clip left to report on.
+				merged := ed.segDirty && ed.mergeDropped()
 				if ed.segDirty {
 					ed.persist()
 					ed.segDirty = false
+				}
+				if merged {
+					return
 				}
 				ed.showSeg(false)
 				ed.segStatus()
@@ -5830,6 +5914,16 @@ func (ed *cutEditor) syncSelBtns() {
 				"'s sound — press ▲ on the strip above the lanes to point it at the picture"
 		}
 		ed.addBtn.SetTooltipText(tip)
+	}
+	if ed.splitBtn != nil {
+		ed.splitBtn.SetSensitive(!snd)
+		tip := "cut the selected region free: a border at each end, nothing removed, " +
+			"so those seconds become a scene of their own (Undo takes it back)"
+		if snd {
+			tip = "| Split cuts footage, and this selection is " + ed.sel.aud +
+				"'s sound — press ▲ on the strip above the lanes to point it at the picture"
+		}
+		ed.splitBtn.SetTooltipText(tip)
 	}
 	if ed.remBtn != nil {
 		ed.remBtn.SetSensitive(!snd)

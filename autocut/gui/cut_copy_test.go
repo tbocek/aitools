@@ -197,7 +197,7 @@ func TestTheCopyIsWired(t *testing.T) {
 	for _, want := range []string{
 		`ed.copyBtn = gtk.NewButtonWithLabel("⧉ Copy")`,
 		`ed.copyBtn.ConnectClicked(func() { a.copyClicked() })`,
-		"bar.Append(col(linked(add, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))",
+		"bar.Append(col(linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))",
 		`ed.insBtn.SetLabel("⧉ Paste")`,
 		// Esc empties the hand along with every other hold
 		`(ed.edgeOn || ed.segOn || ed.fxOn || ed.selOn || ed.copyOn || ed.fxArm != "") && keyval == gdk.KEY_Escape:`,

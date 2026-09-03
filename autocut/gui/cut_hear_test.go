@@ -589,3 +589,162 @@ func TestTheLaneSwitchIsOnTheNamePlate(t *testing.T) {
 		t.Error("the scene badge and the lane switch no longer share hearPlate")
 	}
 }
+
+// ---- and the same switch for the footage's own sound -------------------------
+
+// The strip under a row of pictures wears one too. It did not at first, and the
+// gap was one-sided: a recorder beside the camera could be taken out of the
+// video in a press, while the camera's own sound could only be silenced scene
+// by scene. One question, one control, both bands.
+//
+// It is a switch per ROW, over every recording whose pictures are on it: a
+// camera stopped and started again is several files in a line, and "this
+// camera's sound, off" must not mean "off until it restarted".
+func TestTheFootagesOwnSoundHasAWholeCutSwitch(t *testing.T) {
+	ed := hearEd(t) // a1 and a2 share row 0; b is row 1; mic is a recorder
+	sw := ed.pairSwitches()
+	if len(sw) != 2 {
+		t.Fatalf("%d switches for two camera rows: %+v", len(sw), sw)
+	}
+	if got := sw[0].bases; len(got) != 2 || got[0] != "a1" || got[1] != "a2" {
+		t.Errorf("row 0's switch stands for %v, want both of its recordings", got)
+	}
+	if got := sw[1].bases; len(got) != 1 || got[0] != "b" {
+		t.Errorf("row 1's switch stands for %v, want b alone", got)
+	}
+	// on the strip, not on the pictures: under the row's thumbnails, inside
+	// the strip's own depth, and at the same x a recorded lane's sits at
+	for i, s := range sw {
+		top := ed.laneTop(i) + ed.laneH()
+		if s.cy <= top || s.cy >= top+ed.pairH(i) {
+			t.Errorf("row %d's switch is at y %g, outside its strip %g–%g",
+				i, s.cy, top, top+ed.pairH(i))
+		}
+		if s.cx != laneSwX {
+			t.Errorf("row %d's switch is at x %g, want the band's own %g", i, s.cx, laneSwX)
+		}
+		if !s.on {
+			t.Errorf("row %d reads off on a cut that silences nothing", i)
+		}
+	}
+	// a row whose footage filmed no sound has no strip and no switch
+	silent := axisEd(t, tlVideo{base: "q", path: "/f/q.mp4", start: 0, dur: 30})
+	if got := silent.pairSwitches(); len(got) != 0 {
+		t.Errorf("a silent camera grew %d switch(es)", len(got))
+	}
+
+	// the press lands on it, and misses cleanly beside it
+	if got := ed.pairSwitchAt(sw[0].cx, sw[0].cy); len(got) != 2 {
+		t.Errorf("a press on row 0's switch found %v", got)
+	}
+	if got := ed.pairSwitchAt(sw[0].cx+hearHit+1, sw[0].cy); got != nil {
+		t.Errorf("a press clear of every switch found %v", got)
+	}
+}
+
+// Pressing it takes the whole row out of the video: every scene, both of its
+// recordings, one undo step -- and back on the same way.
+func TestThePairSwitchTakesTheRowOutOfTheWholeCut(t *testing.T) {
+	ed := hearEd(t)
+	ed.segs = []cutSeg{{S: 20, E: 40}, {S: 60, E: 80},
+		{S: 85, E: 88, Ins: "card.svg"}}
+	bases := ed.pairSwitches()[0].bases
+	before := len(ed.undo)
+
+	ed.toggleLanesAll(bases, pairSwitchName(bases))
+	for i, s := range ed.segs {
+		if s.isInsert() {
+			if len(s.Quiet) != 0 {
+				t.Errorf("the insert was given a silence: %v", s.Quiet)
+			}
+			continue
+		}
+		for _, b := range bases {
+			if s.hears(b) {
+				t.Errorf("scene %d still hears %s after the row went off", i+1, b)
+			}
+		}
+	}
+	if got := len(ed.undo) - before; got != 1 {
+		t.Errorf("one press pushed %d undo entries, want 1", got)
+	}
+	if ed.pairSwitches()[0].on {
+		t.Error("the switch still reads on with every scene silencing the row")
+	}
+	// the recorder beside the camera was not touched
+	if !ed.segs[0].hears("mic") {
+		t.Errorf("switching the row took the mic with it: %v", ed.segs[0].Quiet)
+	}
+	// half a row silenced by hand still reads on, and the press finishes it
+	// rather than turning the rest off and this half back on
+	ed.undoLast()
+	ed.segs[0].Quiet = []string{"a1"}
+	if !ed.pairSwitches()[0].on {
+		t.Error("a row heard in one scene and not another reads off")
+	}
+	ed.toggleLanesAll(bases, pairSwitchName(bases))
+	for i, s := range ed.segs {
+		if !s.isInsert() && (s.hears("a1") || s.hears("a2")) {
+			t.Errorf("scene %d survived the press: %v", i+1, s.Quiet)
+		}
+	}
+	// and back on puts every scene back, the half-off one included
+	ed.toggleLanesAll(bases, pairSwitchName(bases))
+	for i, s := range ed.segs {
+		if !s.isInsert() && (!s.hears("a1") || !s.hears("a2")) {
+			t.Errorf("scene %d is still silent after the switch came back on: %v", i+1, s.Quiet)
+		}
+	}
+	// one lane's press is still the one-lane sentence: the row's name is only
+	// for a row of several
+	if got := pairSwitchName([]string{"b"}); got != "b" {
+		t.Errorf("a single recording's switch calls itself %q", got)
+	}
+}
+
+// On screen, and pressable, at the left of the strip: lit where the sound is
+// in the video, dark where no scene keeps it. The permanent control is drawn
+// over the per-scene badge and asked before it, because the two can want the
+// same pixels when a scene starts at the very left of the view.
+func TestThePairSwitchIsDrawnOnTheStrip(t *testing.T) {
+	ed := pairEd(t) // one stereo camera on row 0, one silent on row 1
+	ed.segs = []cutSeg{{S: 5, E: 40}, {S: 55, E: 90}}
+	ed.playhead, ed.hasPlay = 20, true
+	sw := ed.pairSwitches()[0]
+	const w, h = 620, 220
+
+	lit := func() (uint8, uint8, uint8) {
+		// off the centre of the plate: the speaker itself is white on both
+		return renderTrack(t, ed, w, h)(int(sw.cx), int(sw.cy)-5)
+	}
+	r, g, b := lit()
+	if !(int(g) > int(r)+40 && int(g) > int(b)+40) {
+		t.Errorf("the switch reads rgb(%d,%d,%d) on a cut that hears the camera, want the lit plate", r, g, b)
+	}
+	for i := range ed.segs {
+		ed.segs[i].Quiet = []string{"a"}
+	}
+	r, g, b = lit()
+	if int(g) > int(r)+40 {
+		t.Errorf("the switch is still lit at rgb(%d,%d,%d) with the camera silenced everywhere", r, g, b)
+	}
+
+	src := readSrc(t, "cut.go")
+	if !strings.Contains(src, "ed.drawPairSwitches(cr)") {
+		t.Error("the picture band does not draw the strip's switches")
+	}
+	i := strings.Index(src, "if bases := ed.pairSwitchAt(x, y); len(bases) > 0 {")
+	j := strings.Index(src, "if base := ed.hearAt(x+ed.viewX, y, area == ed.srcArea); base != \"\" {")
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("the strip's switch is not asked before the scene's badge (switch %d, badge %d)", i, j)
+	}
+	if !strings.Contains(src, "ed.toggleLanesAll(bases, pairSwitchName(bases))") {
+		t.Error("nothing presses the strip's switch")
+	}
+	// one plate for all three controls: a scene's badge, a lane's switch and
+	// a row's, or the mark would mean three things
+	hear := readSrc(t, "cut_hear.go")
+	if strings.Count(hear, "cr.Arc(cx, cy, hearR+hearPad") != 1 {
+		t.Error("the plate has been copied instead of shared")
+	}
+}

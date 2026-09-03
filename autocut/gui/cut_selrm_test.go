@@ -111,7 +111,7 @@ func TestTheRemoveButtonIsWired(t *testing.T) {
 	for _, want := range []string{
 		`ed.remBtn = gtk.NewButtonWithLabel("－ Remove")`,
 		"ed.remBtn.ConnectClicked(func() { a.removeSelRange() })",
-		"linked(add, ed.remBtn, ed.copyBtn, ins, ed.laneBtn)",
+		"linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ins, ed.laneBtn)",
 		"ed.remBtn.SetSensitive(!snd)",
 	} {
 		if !strings.Contains(cut, want) {

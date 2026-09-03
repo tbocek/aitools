@@ -477,16 +477,21 @@ func TestTheGreenBarsXLightsUnderThePointer(t *testing.T) {
 	kx := ed.xOf(60) - bandKillIn
 
 	ed.hoverTracks(kx-ed.viewX, y)
-	if !ed.bandKillHov {
-		t.Error("the pointer on the ✕ did not light it")
+	if ed.bandKillHov != 0 {
+		t.Errorf("the pointer on clip 1's ✕ lit bar %d", ed.bandKillHov)
 	}
 	if c := ed.wantCursor(kx-ed.viewX, y); c != "pointer" {
 		t.Errorf("the pointer on the ✕ asked for %q, want a pointer", c)
 	}
-	// the middle of the same bar holds the bar, and lights no ✕
+	// the ✕ on the OTHER bar lights that one, not this one: the mark is per
+	// bar, as the effects lane's are
+	if ed.hoverTracks(ed.xOf(140)-bandKillIn-ed.viewX, y); ed.bandKillHov != 1 {
+		t.Errorf("the pointer on clip 2's ✕ lit bar %d, want 1", ed.bandKillHov)
+	}
+	// the middle of a bar holds the bar, and lights no ✕
 	ed.hoverTracks(ed.xOf(30)-ed.viewX, y)
-	if ed.bandKillHov {
-		t.Error("the ✕ lit from the middle of the bar")
+	if ed.bandKillHov >= 0 {
+		t.Errorf("the middle of the bar lit bar %d's ✕", ed.bandKillHov)
 	}
 	if !ed.bandHov {
 		t.Error("the bar itself did not light under the pointer")
@@ -494,7 +499,7 @@ func TestTheGreenBarsXLightsUnderThePointer(t *testing.T) {
 	// and the pointer leaving puts it out
 	ed.hoverTracks(kx-ed.viewX, y)
 	ed.hoverTracks(-1, -1)
-	if ed.bandKillHov || ed.bandHov {
+	if ed.bandKillHov >= 0 || ed.bandHov {
 		t.Error("the pointer left the page and the bar stayed lit")
 	}
 
@@ -506,11 +511,11 @@ func TestTheGreenBarsXLightsUnderThePointer(t *testing.T) {
 		r, g, b := at(int(kx), int(y)-5)
 		return r > 150 && int(r) > int(g)+60 && int(r) > int(b)+60
 	}
-	ed.bandKillHov = false
+	ed.bandKillHov = -1
 	if red(renderTrack(t, ed, w, h)) {
 		t.Error("the ✕ is red with the pointer elsewhere — every remove on the page reads as pressed")
 	}
-	ed.bandKillHov = true
+	ed.bandKillHov = 0
 	if !red(renderTrack(t, ed, w, h)) {
 		t.Error("the ✕ under the pointer is not red")
 	}
@@ -540,5 +545,91 @@ func TestEveryKillBadgeIsTheSameBadge(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "ed.remBtn.ConnectClicked(func() { a.removeSelRange() })") {
 		t.Error("－ Remove is wired to something other than the selection's verb")
+	}
+}
+
+// Every bar wears a live ✕, not just the one the red line is in. A mark that
+// only works after you have clicked the clip is a control with a lock on it:
+// the press that puts the line in a clip exists only to make the next press
+// possible, and the effects lane has never asked for it (cut_fxkill.go). What
+// stays the tall bar's alone is trimming and moving, which are drags that need
+// to know which clip is anchored.
+func TestEveryGreenBarsXIsLiveWhereverTheLineIs(t *testing.T) {
+	ed := bandEd(t) // clips 20-60 and 100-140
+	ed.sel.active = false
+	ed.playhead, ed.hasPlay = 40, true // the line is in the FIRST clip
+
+	// the second clip's ✕ answers anyway, and takes the second clip
+	i, part := ed.bandClipPartAt(ed.xOf(140) - bandKillIn)
+	if i != 1 || part != selKill {
+		t.Fatalf("the ✕ on the bar the line is not in takes clip %d part %d, want 1/%d", i, part, selKill)
+	}
+	if got := ed.wantCursor(ed.xOf(140)-bandKillIn-ed.viewX, ed.selBandTop()+selBandH/2); got != "pointer" {
+		t.Errorf("over that ✕ the cursor is %q, want a pointer", got)
+	}
+	// ...and only its ✕: the rest of that bar is not the hand's, because the
+	// tall bar is the one with handles and there is only one of those
+	if _, part := ed.bandClipPartAt(ed.xOf(120)); part != selNone {
+		t.Errorf("the middle of a bar the line is not in takes part %d", part)
+	}
+	if _, part := ed.bandClipPartAt(ed.xOf(100)); part != selNone {
+		t.Errorf("the end of a bar the line is not in takes part %d", part)
+	}
+
+	// no line on the page at all and both are still live: "put the line
+	// somewhere first" is exactly the press this must not require
+	ed.hasPlay = false
+	if got := ed.bandKillAt(ed.xOf(60) - bandKillIn); got != 0 {
+		t.Errorf("with no playhead the first clip's ✕ answers %d, want 0", got)
+	}
+	if got := ed.bandKillAt(ed.xOf(140) - bandKillIn); got != 1 {
+		t.Errorf("with no playhead the second clip's ✕ answers %d, want 1", got)
+	}
+	ed.playhead, ed.hasPlay = 80, true // and in a stretch the cut dropped
+	if got := ed.bandKillAt(ed.xOf(140) - bandKillIn); got != 1 {
+		t.Errorf("with the line in a dropped stretch the ✕ answers %d, want 1", got)
+	}
+	// pressing it drops that clip, and it is the clip the mark was on
+	ed.killSeg(ed.bandKillAt(ed.xOf(140) - bandKillIn))
+	if len(ed.segs) != 1 || ed.segs[0].S != 20 {
+		t.Errorf("the ✕ on the second bar left %+v", ed.segs)
+	}
+}
+
+// And it is drawn on every bar, dim ones included -- a live control that is
+// only drawn on one of them is worse than one that is drawn nowhere.
+func TestEveryGreenBarWearsTheXOnScreen(t *testing.T) {
+	ed := bandEd(t) // clips 20-60 and 100-140
+	ed.sel.active = false
+	ed.playhead, ed.hasPlay = 40, true // clip 1 is the tall bar; clip 2 is dim
+	const w, h = 1300, 200
+	at := renderTrack(t, ed, w, h)
+	y := int(ed.selBandTop()) + selBandH/2
+	for _, c := range []struct {
+		end  float64
+		what string
+	}{{60, "the bar the line is in"}, {140, "a bar the line is not in"}} {
+		kx := int(ed.xOf(c.end) - bandKillIn)
+		white := false
+		for dx := -3; dx <= 3 && !white; dx++ {
+			for dy := -3; dy <= 3 && !white; dy++ {
+				if r, g, b := at(kx+dx, y+dy); r > 200 && g > 200 && b > 200 {
+					white = true
+				}
+			}
+		}
+		if !white {
+			t.Errorf("%s has no ✕ drawn on it", c.what)
+		}
+	}
+	// the dim bar is deep enough to hold the plate it now carries: its own
+	// fill, not the row's ground, under the badge's top and bottom edge
+	kx := int(ed.xOf(140) - bandKillIn)
+	for _, dy := range []int{-int(segKillR+segKillPad) + 1, int(segKillR+segKillPad) - 1} {
+		r, g, b := at(kx-int(segKillR+segKillPad)-1, y+dy)
+		if !(int(g) > int(r)+20 && int(g) > int(b)+20) {
+			t.Errorf("beside the badge at dy=%d the bar reads rgb(%d,%d,%d) — the plate hangs off it",
+				dy, r, g, b)
+		}
 	}
 }

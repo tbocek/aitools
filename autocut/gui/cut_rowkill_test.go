@@ -76,6 +76,23 @@ func TestTheXSitsAtTheEmptyRowsLeftEdge(t *testing.T) {
 	if r := ed.rowKillAt(ed.viewX+segKillIn, ed.laneTop(1)+segKillTop); r != 1 {
 		t.Errorf("the badge on the empty row answers %d, want 1", r)
 	}
+	// and it is DRAWN where it is pressed. It was not: the draw was handed
+	// drawTrack's culling edge, which sits a margin left of the view so a
+	// thumbnail reaching in still gets painted -- so the badge went 80 px off
+	// the side of the widget while the press worked at the edge you can see.
+	at := renderTrack(t, ed, 620, int(ed.picBottom())+8)
+	plate := false
+	for dx := -3; dx <= 3 && !plate; dx++ {
+		for dy := -3; dy <= 3 && !plate; dy++ {
+			r, g, b := at(int(ed.viewX)+segKillIn+dx, int(ed.laneTop(1)+segKillTop)+dy)
+			if r > 200 && g > 200 && b > 200 {
+				plate = true
+			}
+		}
+	}
+	if !plate {
+		t.Error("nothing is drawn at the empty row's ✕, where a press removes the row")
+	}
 	// the same spot on a row with footage offers nothing: that row's removal
 	// has to say what happens to the footage, and this ✕ has no answer
 	if r := ed.rowKillAt(ed.viewX+segKillIn, ed.laneTop(0)+segKillTop); r != -1 {
@@ -125,7 +142,7 @@ func TestTheEmptyRowsXIsWired(t *testing.T) {
 	src := readSrc(t, "cut.go")
 	for _, want := range []string{
 		"ed.killRow(r)",
-		"ed.drawRowKill(cr, vx0)",
+		"ed.drawRowKill(cr, ed.viewX)",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the empty row's ✕ came unwired: %q", want)

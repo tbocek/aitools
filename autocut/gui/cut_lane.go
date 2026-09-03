@@ -501,7 +501,10 @@ func (ed *cutEditor) rowKillAt(px, y float64) int {
 }
 
 // drawRowKill paints them, in drawTrack's own translation like drawLaneKill.
-func (ed *cutEditor) drawRowKill(cr *cairo.Context, vx0 float64) {
+// vx is the VIEW's left edge in timeline px, which is what these ride: the
+// badge stays at the left of the widget while the tape scrolls under it, so it
+// is the same number rowKillAt tests a press against.
+func (ed *cutEditor) drawRowKill(cr *cairo.Context, vx float64) {
 	if ed.laneN <= 1 {
 		return
 	}
@@ -509,7 +512,7 @@ func (ed *cutEditor) drawRowKill(cr *cairo.Context, vx0 float64) {
 		if !ed.rowEmpty(r) {
 			continue
 		}
-		cx, cy := vx0+segKillIn, ed.laneTop(r)+segKillTop
+		cx, cy := vx+segKillIn, ed.laneTop(r)+segKillTop
 		drawKillBadge(cr, cx, cy, ed.rowHov == r)
 	}
 }

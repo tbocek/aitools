@@ -113,3 +113,64 @@ func TestThePlaybackTickRepaintsTheLineNotTheBands(t *testing.T) {
 		}
 	}
 }
+
+// ⏸ then ▶ carries on from where it stopped.
+//
+// ▶ has starts that are not the line: with a clip edge held it plays from the
+// edge, with a clip held from the clip's own start -- both there so that
+// pressing play after a trim shows the trim rather than whatever second the
+// line was last left on. Resuming is not one of those. Pause halfway through
+// the clip you are working on, press ▶, and the old code read it as a fresh
+// start and took you back to the clip's first frame: the same seconds again,
+// every time, exactly where you had asked it to stop.
+func TestPauseThenPlayCarriesOnFromWhereItStopped(t *testing.T) {
+	ed := newTestEd(t)
+	ed.playhead = 42
+
+	if ed.resumingHere() {
+		t.Error("a page that has never played reads as resuming")
+	}
+	ed.markPause()
+	if !ed.resumingHere() {
+		t.Error("the line has not moved since the pause and it does not read as resuming")
+	}
+	// a hand on the line -- a click on a track, a frame step with nothing held
+	// -- is the hand choosing a new place, and ▶ after that is a start
+	ed.playhead = 42.5
+	if ed.resumingHere() {
+		t.Error("the line moved after the pause and ▶ still reads as a resume")
+	}
+	// ...and back on the paused second it resumes again: the test is where the
+	// line IS, not what has happened to it
+	ed.playhead = 42
+	if !ed.resumingHere() {
+		t.Error("the line is back where the pause left it and ▶ does not resume")
+	}
+	// ⏹ is not ⏸: it hands the transport back, and there is no position left
+	// to carry on from
+	ed.stop()
+	if ed.resumingHere() {
+		t.Error("⏹ left a resume point behind")
+	}
+
+	// the wiring: the resume is decided before the press is spent, it is one
+	// case of the same switch the held-edge and held-clip starts are in --
+	// ahead of both, or the hold would win the press it is meant to lose --
+	// and ⏸ is what writes the point
+	src := readSrc(t, "cut.go")
+	for _, want := range []string{
+		"resume := ed.resumingHere()",
+		"ed.markPause() // this press is the ⏸",
+		"case resume:",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut.go no longer contains %q", want)
+		}
+	}
+	i := strings.Index(src, "case resume:")
+	for _, later := range []string{"case ed.edgeOn:", "case s != nil:"} {
+		if j := strings.Index(src, later); j < 0 || j < i {
+			t.Errorf("%q is asked before the resume, so a held thing wins a press that meant carry on", later)
+		}
+	}
+}

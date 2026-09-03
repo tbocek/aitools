@@ -144,7 +144,9 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"is one Undo.\n\nA whole clip moves the same way, one level up: the right " +
 			"button pressed on a clip away from its borders picks up the CLIP — outlined " +
 			"in white — and a left drag then slides it with its length intact, snapping " +
-			"flush to the clip either side of it. ‹f and f› nudge it a frame, it never " +
+			"flush to the clip either side of it; dropped flush against a neighbour from " +
+			"the same camera the two become one clip again, which is how a | Split is " +
+			"taken back. ‹f and f› nudge it a frame, it never " +
 			"leaves the recording it was cut from or overlaps its neighbours, and the " +
 			"whole slide is one Undo. Picking anything up leaves the playhead where it " +
 			"is — a press near a border takes the border, one away from it takes the clip, " +

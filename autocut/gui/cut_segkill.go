@@ -90,7 +90,7 @@ func (ed *cutEditor) killSeg(i int) {
 	// whatever was in hand was holding an index, and the indices have moved
 	ed.dropSeg()
 	ed.dropEdge()
-	ed.bandKillHov = false
+	ed.bandKillHov = -1 // the indices moved; whatever was lit is not that clip now
 	ed.persist()
 	ed.a.setStatus(fmt.Sprintf("removed the scene at %s (%.0f s) — ↶ Undo takes it back",
 		mmss(s.S), s.E-s.S))
