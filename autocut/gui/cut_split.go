@@ -49,7 +49,7 @@ func (a *App) splitSelRange() {
 	}
 	if ed.sel.aud != "" {
 		a.setStatus(fmt.Sprintf("| Split cuts footage, and the selection is %s's sound — "+
-			"press ▲ on the strip above the lanes to point it at the picture", ed.sel.aud))
+			"drag on the pictures instead — a selection is of what it was drawn on", ed.sel.aud))
 		return
 	}
 	t0, t1 := math.Min(ed.sel.t0, ed.sel.t1), math.Max(ed.sel.t0, ed.sel.t1)

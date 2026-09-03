@@ -15,6 +15,8 @@ package main
 // on an empty answer now says it was empty.
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -159,6 +161,57 @@ func TestAnEmptyAnswerTurnsTheThinkingOffForTheNextTry(t *testing.T) {
 			if !strings.Contains(src, want) {
 				t.Errorf("%s no longer contains %q", f.file, want)
 			}
+		}
+	}
+}
+
+// An answer the token ceiling chopped in half.
+//
+// The server says so -- finish_reason "length" -- and nothing downstream could
+// see it: the text just ends mid-word, json says "unexpected end of JSON
+// input", and the reader goes looking for a fault in an answer that was never
+// finished. One run answered with four hundred segments marching past the end
+// of a 28-minute session and was chopped mid-number, three times over.
+func TestATruncatedReplyIsNamedAsOne(t *testing.T) {
+	a := &App{root: t.TempDir()}
+	sse := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"{\"segments\":[{\"start\":10,\"en"}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"length"}]}`,
+		"data: [DONE]",
+	}, "\n\n") + "\n\n"
+	rep, err := a.readChatStream(strings.NewReader(sse), func(string) {}, a.watchChat("suggest", true))
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if rep.Stop != "length" {
+		t.Errorf("the stream kept the stop reason as %q, so no one downstream can say why", rep.Stop)
+	}
+
+	// and the correction the model gets asks for a SHORTER answer: telling it
+	// to return corrected JSON invites the same too-long reply again
+	var out struct {
+		Segments []struct{ Start, End float64 }
+	}
+	jsonErr := json.Unmarshal([]byte(rep.Content), &out)
+	if jsonErr == nil {
+		t.Fatal("the truncated reply parsed, so this test proves nothing")
+	}
+	p := cutOff(rep.Content, jsonErr)
+	if !strings.Contains(p, "stopped in the middle") || !strings.Contains(p, "fewer") {
+		t.Errorf("a truncated answer is reported as %q", p)
+	}
+	// a malformed answer is not a truncated one: it wants care, not brevity
+	if p := cutOff("{\"segments\": nonsense}", errors.New("invalid character 'o'")); p != "" {
+		t.Errorf("a malformed answer was called truncated: %q", p)
+	}
+	if p := cutOff("", errors.New("unexpected end of JSON input")); p != "" {
+		t.Error("an empty answer was called truncated -- noAnswer is the one that names that")
+	}
+	// both loops ask before falling back to the parser's own words
+	for _, f := range []string{"cut_suggest.go", "narrate.go"} {
+		src := readSrc(t, f)
+		if !strings.Contains(src, "if problem = cutOff(reply, err); problem == \"\" {") {
+			t.Errorf("%s reports a truncated answer as an ordinary parse error", f)
 		}
 	}
 }

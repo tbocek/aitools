@@ -871,7 +871,7 @@ type prodClip struct {
 	// over a selection, a picture-alone paste). See clipMixes.
 	noLanes bool
 	// the one lane the clip's own sound stands in for: a sound laid over a
-	// selection scoped to a single recording (▼) replaces THAT recording and
+	// selection drawn in a single recording's lane replaces THAT recording and
 	// leaves the others playing, so it is dropped from the mix by name.
 	dropLane string
 	// the lanes this clip's scene does not hear (cutSeg.Quiet), carried through

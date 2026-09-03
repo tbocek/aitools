@@ -108,19 +108,19 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"green over it, and a waveform lane per sound below. The row above the pictures " +
 			"is the cut in bars: a green bar per kept stretch, the one the red line is in " +
 			"drawn tall with handles on its ends and an ✕ that drops it — ⌦ does the " +
-			"same to whatever is in hand, which is how the cards and the sounds go. On the " +
-			"seam between the pictures and the lanes a selection wears a ▲▼ handle saying " +
-			"what it is about: both arrows lit is picture and sound together, ▲ narrows it " +
-			"to the picture alone, and ▼ walks down through the recordings and back up. " +
-			"That is what the verbs read, and the rule they read it by is that an " +
-			"insert replaces what it brings and nothing else. A clip laid over a " +
-			"picture-alone selection brings frames, so it takes the frames and leaves " +
-			"every sound running underneath; laid over a ▼ recording it brings sound, so " +
-			"it takes that one recording and the picture and the other lanes carry on; " +
-			"laid over both it takes both. Spliced in it replaces nothing at all, because " +
-			"it is time added to the session rather than a stretch of it, and it goes " +
-			"silent. A file with no sound of its own laid over both is the one case the " +
-			"arrows cannot settle, and the insert form asks. ▶ below asks " +
+			"same to whatever is in hand, which is how the cards and the sounds go. A " +
+			"selection is OF what it was drawn on: dragged across the pictures it is " +
+			"footage, dragged across a waveform it is that recording's sound, and the " +
+			"verbs read that. Which rows a SCENE is made of is said on the scene itself " +
+			"— take one in hand and every row shows a mark at its left edge: a lens on " +
+			"each camera row, lit on the one the scene is shown from, and a speaker on " +
+			"each sound row, lit where the scene hears it. Press a lens to show that " +
+			"scene from that camera, a speaker to switch that sound off for it. The rule " +
+			"the inserts follow is that an insert replaces what it brings and nothing " +
+			"else: laid over footage a clip takes the frames, and its form asks what " +
+			"happens to the sound — its own, or the session's carrying on underneath. " +
+			"Spliced in it replaces nothing at all, because it is time added to the " +
+			"session rather than a stretch of it. ▶ below asks " +
 			"the model to fill the ▶ target length from what Describe found; from then " +
 			"on the cut is yours — drag to select, add, remove, and Revert goes back to " +
 			"the suggestion. Once you have edited by hand ▶ says so rather than throwing " +

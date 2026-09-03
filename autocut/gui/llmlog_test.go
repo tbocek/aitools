@@ -178,7 +178,7 @@ func TestEveryCallGoesThroughTheRecorder(t *testing.T) {
 	for file, wants := range map[string][]string{
 		"llm.go": {
 			"rec := a.recordChatStart(step, thinking, msgs)",
-			"rec.done(rep.recorded(), time.Since(t0), err)",
+			"rec.done(rep.recorded(), rep.Stop, time.Since(t0), err)",
 		},
 		"describe.go":    {"a.llmChat" + `Retry("describe", `},
 		"transcript.go":  {"a.llmChat" + `Retry("transcript", `},

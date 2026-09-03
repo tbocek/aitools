@@ -115,3 +115,82 @@ func TestSuggestReportsWhileItRunsInsteadOfOnlyPulsing(t *testing.T) {
 		t.Errorf("suggestChooseShare is %g -- one of the two calls owns none of the bar", suggestChooseShare)
 	}
 }
+
+// The target crosses the wire as a RANGE, not a number.
+//
+// The wording asks for a total near the target and suggestWindow is what the
+// gate actually accepts, and for a long time only the number was sent: a model
+// told "300 seconds" treats 300 as the answer and spends the call trying to
+// hit it exactly. One 11-minute call came back with 85 kB of arithmetic --
+// "Total 134!! Over 100 by 34. I keep ballooning." -- and no JSON at all. Both
+// numbers now come from the one function the gate uses, so the prompt and the
+// gate cannot drift apart again.
+func TestTheModelIsToldTheRangeItWillBeJudgedBy(t *testing.T) {
+	src := readSrc(t, "cut_suggest.go")
+	for _, want := range []string{
+		"lo, hi := a.suggestWindow(target)",
+		`"ACCEPTED: %.0f to %.0f seconds, and at most %d segments. Stop at the first set of "`,
+		"alo, ahi := a.suggestWindow(target)", // the audit is judged the same way
+		"total := cutLen(applyFx(segs, fx))",  // and measured the same way
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut_suggest.go no longer contains %q", want)
+		}
+	}
+	// the wording's own check counts what the video RUNS, effects included --
+	// the sum it used to ask for was raw seconds, which a speed effect makes a
+	// different number from the one the gate measures
+	cut := readSrc(t, "cut.go")
+	for _, want := range []string{
+		"add up how long your segments RUN",
+		"that divided by the rate wherever a speed effect covers them",
+		"the total is inside the accepted range you were given",
+		"One pass at the total.",
+	} {
+		if !strings.Contains(cut, want) {
+			t.Errorf("the cut wording no longer says %q", want)
+		}
+	}
+	if strings.Contains(cut, "within a tenth of the target length") {
+		t.Error("the wording asks for a tenth of the target again, which is tighter " +
+			"than the gate accepts — that difference is what the model spends the call on")
+	}
+	// and a retry stops searching: the moments are in the timeline it has
+	if !strings.Contains(src, "tools = nil") {
+		t.Error("a rejected attempt still has the web tools, and a retry that searches " +
+			"is a retry that does not answer")
+	}
+}
+
+// The other end of the same gate: an answer of hundreds of segments is not a
+// long cut, it is a model that stopped choosing moments and started counting.
+// One run answered with 548 of them -- five real, then a march of 24-second
+// blocks every 32 seconds running eleven times past the end of the session --
+// and nothing rejected it for its shape.
+func TestARunawayAnswerIsRejectedForItsShape(t *testing.T) {
+	if got := maxSuggestSegs(300); got < 3*(300/20) {
+		t.Errorf("the ceiling for a 300 s target is %d, tighter than the wording's own guide", got)
+	}
+	if maxSuggestSegs(20) < 40 {
+		t.Error("a Short's ceiling is under the floor, so a normal answer would be refused")
+	}
+	if maxSuggestSegs(3000) <= maxSuggestSegs(300) {
+		t.Error("a longer target does not get more room")
+	}
+	src := readSrc(t, "cut_suggest.go")
+	for _, want := range []string{
+		"} else if n := maxSuggestSegs(target); len(out.Segments) > n {",
+		`"%d segments, which is not a cut -- keep it under %d, "`,
+		"maxSuggestSegs(target), session)", // and the model is told the ceiling
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut_suggest.go no longer contains %q", want)
+		}
+	}
+	// and the wording says how a dull stretch is meant to be expressed, which
+	// is the thing the runaway was a broken attempt at
+	if !strings.Contains(readSrc(t, "cut.go"),
+		"ONE segment with a speed effect over it, never a row of small segments") {
+		t.Error("the effect rules no longer say how to show a stretch without watching it")
+	}
+}

@@ -1,20 +1,20 @@
 package main
 
-// The third rung: a selection scoped to the picture ALONE.
+// An insert that brings no sound of its own.
 //
-// For a long time the strip had two positions, on the argument that footage
-// already carries the sound filmed with it -- so "video" and "video and audio"
-// were the same seconds wearing two names. What broke the argument is that
-// ⧉ Insert can now put picture into the cut without its sound: a sting laid
-// over a picture-alone selection replaces the frames and leaves what is heard
-// running underneath, and the same sting spliced in goes silent.
+// ⧉ Insert can put picture into the cut without sound: a sting laid over
+// footage replaces the frames and leaves what is heard running underneath, and
+// the same sting spliced in goes silent.
 //
 // One flag on the segment (cutSeg.Mute) says the sentence both cases share --
 // this insert brings no sound of its own -- and the MODE decides which of the
 // two it comes out as, since the mode is already the thing that says whether
-// there is footage underneath. These tests hold that split, the path from the
-// strip to the flag, and the only witness that can settle what the render did:
-// the tones in the finished clip.
+// there is footage underneath. It used to be set before the chooser opened, by
+// a strip above the tracks that scoped the selection to "the picture alone";
+// it is the insert form's own tick now, asked of the file that came back
+// (soundOpen). These tests hold that split, the path from the tick to the
+// flag, and the only witness that can settle what the render did: the tones in
+// the finished clip.
 
 import (
 	"fmt"
@@ -57,48 +57,43 @@ func TestMuteReadsTwoWaysByMode(t *testing.T) {
 	}
 }
 
-// The path the hand takes: scope the selection to the picture alone, ⧉ Copy,
-// put the red line somewhere else, ⧉ Paste. What lands in the cut has to carry
-// the scope the copy was taken at -- and the copy remembers it rather than
-// reading the band again, because by paste time the band may say anything.
-func TestAPictureAloneCopyPastesSilent(t *testing.T) {
-	for _, c := range []struct {
-		what string
-		pic  bool
-	}{
-		{"picture and sound", false},
-		{"the picture alone", true},
-	} {
-		a, ed := selEd(t)
-		ed.sel.t0, ed.sel.t1, ed.sel.active = 10, 20, true
-		ed.setSelScope("", c.pic)
-		a.copyClicked()
-		if ed.copyPic != c.pic {
-			t.Fatalf("%s: the copy in hand says picture-alone %v", c.what, ed.copyPic)
-		}
-		// the band is cleared and pointed somewhere else entirely before the
-		// paste: the hand still holds what it took
-		ed.sel.active, ed.sel.pic = false, !c.pic
-		ed.playhead, ed.hasPlay = 100, true
-		a.pasteCopy()
+// The path the hand takes now: ⧉ Copy, put the red line somewhere else,
+// ⧉ Paste. The copy carries the footage it was taken from -- picture and what
+// was filmed with it, because that is what a selection drawn on the pictures
+// IS -- and the pasted clip is where "play it silent" is asked, of the clip
+// that exists rather than of a scope set before it did (soundOpen).
+func TestACopyPastesTheFootageItWasTakenFrom(t *testing.T) {
+	a, ed := selEd(t)
+	ed.sel.t0, ed.sel.t1, ed.sel.active = 10, 20, true
+	a.copyClicked()
+	// the band is cleared and pointed somewhere else entirely before the
+	// paste: the hand still holds what it took
+	ed.sel.active = false
+	ed.playhead, ed.hasPlay = 100, true
+	a.pasteCopy()
 
-		var pasted *cutSeg
-		for i := range ed.segs {
-			if ed.segs[i].isCopy() {
-				pasted = &ed.segs[i]
-			}
+	var pasted *cutSeg
+	for i := range ed.segs {
+		if ed.segs[i].isCopy() {
+			pasted = &ed.segs[i]
 		}
-		if pasted == nil {
-			t.Fatalf("%s: nothing was pasted into %+v", c.what, ed.segs)
-		}
-		if pasted.Mute != c.pic {
-			t.Errorf("%s: the pasted copy has Mute %v, want %v", c.what, pasted.Mute, c.pic)
-		}
-		// a paste is spliced, so a muted one is the silent reading and never
-		// the keeps-the-sound one -- there is no footage under an open cut
-		if c.pic && !pasted.playsSilent() {
-			t.Errorf("%s: the pasted copy is not the silent reading: %+v", c.what, *pasted)
-		}
+	}
+	if pasted == nil {
+		t.Fatalf("nothing was pasted into %+v", ed.segs)
+	}
+	if pasted.Mute {
+		t.Errorf("the pasted copy arrived silent: %+v", *pasted)
+	}
+	// ...and its form asks: a copy is footage, so it has a sound to decide
+	// about, and a splice has nothing underneath -- which is the silent
+	// reading of the one flag
+	m := insMode{splice: true, dur: pasted.length(), mute: pasted.Mute}
+	if !ed.soundOpen(pasted.Ins, pasted.S, m.dur, m) {
+		t.Error("the pasted copy's form does not ask whether it plays silent")
+	}
+	pasted.Mute = true
+	if !pasted.playsSilent() {
+		t.Errorf("a muted spliced copy is not the silent reading: %+v", *pasted)
 	}
 }
 
@@ -359,23 +354,23 @@ func TestThePreviewHushesTheSameSecondsTheRenderDoes(t *testing.T) {
 	}
 }
 
-// The seams: the strip's third rung reaching the flag, the flag reaching the
-// render, and the one place the scope is read -- before the chooser opens,
-// beside the seconds, because the chooser is a window the hand can reach
-// around.
-func TestThePictureAloneScopeIsWired(t *testing.T) {
+// The seams: the one flag reaching the render, and the one place the question
+// behind it is asked -- the insert's own form, of the file that came back.
+// It used to be the selection's scope, a strip above the tracks with a third
+// rung for "the picture alone"; the strip is gone and this is where the
+// question went (soundOpen, askInsertParams).
+func TestTheSilentInsertIsWired(t *testing.T) {
 	pins := map[string][]string{
-		"cut_scope.go": {
-			"func (ed *cutEditor) selPic() bool { return ed.sel.aud == \"\" && ed.sel.pic }",
-			"ed.setSelScope(\"\", ed.sel.aud == \"\" && !ed.sel.pic)", // ▲ climbs
-			"ed.sel.aud, ed.sel.pic = base, pic && base == \"\"",      // one answer at a time
-		},
 		"cut.go": {
-			"mute, lane := ed.sel.active && ed.selPic(), \"\"",
-			"case mute:",
-			"m := insMode{dur: want, splice: want < minSegLn, mute: mute, lane: lane}",
-			"ed.copyPic, ed.copyCam)",
+			"m.mute = !insHasSound(path)",
+			"m.askMute = ed.soundOpen(path, at, m.dur, m)",
+			"if m.askMute && !out.asLane {",
+			"out.mute = keep.Active()",
 			"func (s cutSeg) keepsSoundUnder() bool { return s.isInsert() && s.Mute && !s.spliced() }",
+		},
+		"cut_audio.go": {
+			"func (ed *cutEditor) soundOpen(path string, at, dur float64, m insMode) bool {",
+			"func insHasSound(path string) bool {",
 		},
 		"cut_insview.go": {
 			"ed.player.SetMuted(cardHush(s) || freezeHush(ed.fx, ed.playhead))",

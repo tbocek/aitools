@@ -297,7 +297,7 @@ func (ed *cutEditor) killLane(name string) {
 	}
 	ed.auds = auds
 	ed.fitAudio()
-	ed.fitScope()
+	ed.fitSelAud()
 	if row < 0 {
 		ed.relayout()
 		ed.persist()
@@ -571,7 +571,7 @@ func (ed *cutEditor) setLanes(lanes []cutLane) {
 	sortLanes(ed.auds)
 	ed.loadWaves() // a row added now would otherwise draw ground until a reload
 	ed.fitAudio()  // one more lane to make room for, or one fewer
-	ed.fitScope()  // and a selection that was on a lane just taken away
+	ed.fitSelAud() // and a selection that was on a lane just taken away
 }
 
 // sortVids puts the picture band back in timeline order. Stable, so two rows

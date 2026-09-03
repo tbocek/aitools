@@ -303,7 +303,7 @@ func TestTheSoundVerbsAreWired(t *testing.T) {
 		"cut.go": {
 			"Ss float64 `json:\"ss,omitempty\"`",
 			"ed.sel.aud = ed.audAtY(y)", // the press names the lane
-			"ed.copyAud, ed.copyPic, ed.copyCam = ed.sel.aud, ed.selPic(), ed.sel.lane",
+			"ed.copyAud, ed.copyCam = ed.sel.aud, ed.sel.lane",
 			"n := ed.addSound(a.relToRoot(au.path), at, ed.copyLen, ss, ed.copyAud)", // paste lays it over
 			"ss := au.at(math.Max(ed.copyFrom, au.start))",                           // never before the lane's top
 			"func (ed *cutEditor) layOver(s cutSeg) {",                               // one place, two ways in

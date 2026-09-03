@@ -3120,7 +3120,11 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 			// nothing to parse: say so rather than reporting the parser's
 			// bafflement at an empty string (llm.go)
 		} else if err := json.Unmarshal([]byte(clean), &out); err != nil {
-			problem = "not valid JSON: " + err.Error()
+			// a reply the token ceiling chopped in half wants a shorter
+			// answer, not a more careful one (cutOff, llm.go)
+			if problem = cutOff(reply, err); problem == "" {
+				problem = "not valid JSON: " + err.Error()
+			}
 		} else {
 			entries, p := bindEntries(segs, out.Entries)
 			if p == "" {

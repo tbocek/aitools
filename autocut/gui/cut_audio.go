@@ -114,29 +114,46 @@ func (ed *cutEditor) soundAt(t, dur float64) bool {
 	return false
 }
 
-// soundOpen is the whole condition for asking what an insert does to the sound,
-// gathered in one place because it is a conjunction of four things and every one
-// of them is a reason NOT to ask.
+// soundOpen is whether the insert form asks what this insert does to the sound.
 //
-// The scope answers this question wherever it can: ▲▲ says keep, ▼ says replace
-// that one, and ▲▼ says replace both -- which needs no asking either, so long as
-// the file has a sound to replace it with. The gap is a file that brings none.
-// Then "replace both" has nothing to put in the sound's place, and silence and
-// carry-on are equally honest readings of what the hand meant.
+// It used to be a narrow question, because a strip above the tracks answered
+// most of it before the chooser opened: a selection could be scoped to the
+// picture alone, or to one recording's sound, and the form only asked in the
+// one case that left open -- a file with no sound of its own laid over seconds
+// that have some. That strip is gone; which rows a SCENE is made of is said on
+// the scene now (cut_cam.go, cut_hear.go), and what an INSERT does to the
+// sound is asked here, of the file that actually came back.
 //
-// The rest are cases where no answer would change anything: a sound insert is
-// not a picture and settles this by being what it is, a copied stretch took its
-// answer when it was copied (cutEditor.copyPic), and seconds with nothing to
-// hear sound the same either way.
+// A picture insert only. A sound insert settles it by being one: it IS the
+// sound, and cutSeg.Lane says which recording it stands in for.
+//
+// Spliced BETWEEN the footage there is nothing underneath to keep, so the only
+// question is whether the insert plays its own sound or runs silent -- worth
+// asking of a file that has one, and nothing to ask of a card that has not.
+// Laid OVER the footage both readings are live: the file's own sound, or the
+// session's carrying on under the picture.
+//
+// A copied stretch of the session counts as having sound. It is footage, and
+// footage on this page is picture and what was recorded with it; a copy of a
+// silent capture answers the question with a tick that changes nothing, which
+// is a smaller wrong than not being asked at all.
 func (ed *cutEditor) soundOpen(path string, at, dur float64, m insMode) bool {
-	if ed == nil || m.mute || m.lane != "" || insKind(path) == "audio" {
+	if ed == nil || m.lane != "" || insKind(path) == "audio" {
 		return false
 	}
+	if m.splice {
+		return insHasSound(path)
+	}
+	return insHasSound(path) || ed.soundAt(at, dur)
+}
+
+// insHasSound is whether the insert brings a sound of its own to decide about.
+func insHasSound(path string) bool {
 	if _, ok := copySrc(path); ok {
-		return false
+		return true // a stretch of the session: picture and what was filmed with it
 	}
 	file, _ := insSplit(path)
-	return !hasAudioStream(file) && ed.soundAt(at, dur)
+	return hasAudioStream(file)
 }
 
 // loadWaves gets an envelope for every lane that has not got one, in the
@@ -986,4 +1003,23 @@ func (ed *cutEditor) drawWaveSpan(cr *cairo.Context, au tlAudio, v tlVideo, wf *
 // subtraction rather than an alignment problem.
 func (au tlAudio) timeAt(v tlVideo, pps, x float64) float64 {
 	return au.at(v.start + (x-v.pxOrigin)/pps)
+}
+
+// selSnd is the selection scoped to one recording's sound -- drawn in a lane,
+// or on the wave strip under a row's pictures, which is the only place that
+// choice is made now (the press that starts the drag says it, cut.go). The
+// strip that used to be able to change it afterwards is gone: what a
+// selection is OF is what it was drawn on, and which rows a SCENE is made of
+// is said on the scene itself (cut_cam.go, cut_hear.go).
+func (ed *cutEditor) selSnd() bool { return ed.sel.aud != "" }
+
+// fitSelAud keeps the selection's scope pointing at things the session still
+// has: the lanes are rebuilt from what is on disk, a recording can go away
+// between one reload and the next, and a selection pointing at one nobody has
+// is a selection whose every verb would miss. So it comes back to the footage.
+func (ed *cutEditor) fitSelAud() {
+	if ed.sel.aud != "" && ed.audByBase(ed.sel.aud) == nil {
+		ed.sel.aud = ""
+		ed.syncSelBtns()
+	}
 }

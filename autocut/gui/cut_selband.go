@@ -65,9 +65,9 @@ const (
 	bandKillMin = 2*(bandKillIn+segKillHit) + 6
 )
 
-// selBandTop is the band's y inside the source-track area: under the scope
-// strip, which sits under the ruler (scopeTop).
-func (ed *cutEditor) selBandTop() float64 { return float64(rulerH) + scopeH }
+// selBandTop is the band's y inside the source-track area: directly under the
+// ruler's clock.
+func (ed *cutEditor) selBandTop() float64 { return float64(rulerH) }
 
 // hitSelBand is whether a press in the source-track area lands in the band.
 func (ed *cutEditor) hitSelBand(y float64) bool {
@@ -399,7 +399,6 @@ func (ed *cutEditor) holdSel(part int) {
 func (ed *cutEditor) hoverTracks(x, y float64) {
 	ed.hoverFx(x, y)
 	ed.hoverFxKill(x, y)
-	ed.hoverScope(x, y) // the ▲▼ handle lives in this area now
 	on := x >= 0 && ed.hitSelBand(y) && ed.selPartAt(x+ed.viewX) != selNone
 	gOn, gKill := false, -1
 	if x >= 0 && !on && ed.hitSelBand(y) {
@@ -484,11 +483,6 @@ func (ed *cutEditor) wantCursor(x, y float64) string {
 		return ""
 	}
 	switch {
-	case ed.hitScope(y):
-		// the ▲▼ handle is two buttons; everywhere else the strip is inert
-		if ed.scopePartAt(x+ed.viewX, y-ed.scopeTop()) != scopeNone {
-			return "pointer"
-		}
 	case ed.hitSelBand(y):
 		switch ed.selPartAt(x + ed.viewX) {
 		case selStart, selEnd:

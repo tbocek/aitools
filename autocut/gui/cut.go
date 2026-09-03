@@ -335,6 +335,7 @@ Effects.
 
 - Few and deliberate: three or four across five minutes of finished video, each with a reason you could say out loud. Not one on every segment, and not none.
 - Pick the kind by what the moment needs, not by variety. Something important on screen and easy to miss -> zoom onto it. A viewer who would not know what is happening -> text saying it. A stretch that must be shown but not watched -> speed. The one beat worth landing on -> stop. Sound that does not sit right against the rest -> volume.
+- A stretch that has to be shown but not watched is ONE segment with a speed effect over it, never a row of small segments with the dull seconds left out. The cut is what the video contains; the effects are how it plays. Cutting between every line of speech to skip the pauses is how an answer turns into hundreds of segments and stops being a cut.
 - A zoom runs two to four seconds, onto the score, the face, the mistake, while the speech is about it. A caption is under about eight words -- the name of a thing as it is first shown, the number someone just said, what the footage does not say out loud -- and says something true, from the material or from a search. speed 2 rushes a few seconds of the walk back or the loading screen, 4 to 8 a whole minute of it; 0.5 savours one impact, once in a video. One stop per video, on the beat everything else was leading to. volume for a stretch recorded too quiet or too loud, for ducking a background under a line that matters, and for muting seconds the session says are not to be heard.`
 
 // cutReply is the end of every cut wording, Shorts included: where a segment
@@ -352,7 +353,9 @@ const cutReply = `
 
 Where a segment ends: on the payoff, never just before it. A moment that only makes sense because of something earlier needs that earlier thing in the cut too, or neither. Too long: shorten the weakest segments. Too short: extend to the payoff first, then add the next moment on your list.
 
-Answer in the cut's shape. Before you answer, add up end minus start across your segments and check: the sum is within a tenth of the target length; every segment has an EVENT line inside it; every start is later than the end before it; every effect lies inside one of your segments; everything the notes name is in.`
+Answer in the cut's shape. Before you answer, add up how long your segments RUN -- end minus start, and that divided by the rate wherever a speed effect covers them, because a stretch at 4 costs the video a quarter of its seconds -- and check: the total is inside the accepted range you were given; every segment has an EVENT line inside it; every start is later than the end before it; every effect lies inside one of your segments; everything the notes name is in.
+
+One pass at the total. Land inside the range and answer; do not trim and re-add to reach an exact number. If the total is outside it you will be told what it came to and given your answer back to correct, which costs one short reply -- where working it out to the second before answering costs the whole call.`
 
 // cutSeg is one piece of the finished video. Normally it is a stretch of the
 // session: S and E are session seconds and the footage under them is what plays.
@@ -403,8 +406,8 @@ type cutSeg struct {
 	// second for a stretch of a lane copied out of the session -- which is
 	// the whole of what makes a copy of sound different from a file.
 	Ss float64 `json:"ss,omitempty"`
-	// this insert brings no sound of its own -- what a selection scoped to the
-	// picture alone puts in the cut (▲▲ on the scope strip). The one flag reads
+	// this insert brings no sound of its own -- the one tick the insert form
+	// asks (askInsertParams). The one flag reads
 	// two ways, and which one is decided by the mode rather than by a second
 	// flag: SPLICED, the cut is open and there is nothing else in the slot, so
 	// the insert plays silent; OVERWRITING, the footage is still underneath and
@@ -424,7 +427,8 @@ type cutSeg struct {
 	// for a sound laid over the footage: which recording it was put in place
 	// OF. Empty is the answer a selection scoped to picture-and-sound gives --
 	// the file stands in for everything audible, which is what overwriting the
-	// sound has always meant. Named (▼), it stands in for that one recording
+	// sound has always meant. Named -- the selection was drawn in that lane --
+	// it stands in for that one recording
 	// and the rest keep playing under it. Meaningless on anything but a sound
 	// insert, and an ordinary cut.json is unchanged by it.
 	Lane string `json:"lane,omitempty"`
@@ -576,8 +580,8 @@ type cutEditor struct {
 		aud string
 		// ...and, when it was dragged on the pictures, whether it is about the
 		// picture ALONE: the frames without the sound filmed with them. Three
-		// scopes rather than two, because a selection can now say "these
-		// seconds of video, and leave what is heard alone" -- see cut_scope.go
+		// what a selection is OF is what it was drawn on: the pictures, or a
+		// lane's wave. See selSnd (cut_audio.go)
 		// for why that stopped being the same sentence as "these seconds".
 		// Meaningless while aud names a recording, and cleared with it.
 		pic bool
@@ -601,9 +605,6 @@ type cutEditor struct {
 	// same reason the seconds are: the band may have been cleared or redrawn
 	// somewhere else entirely by then, and the hand still holds what it took.
 	copyAud string
-	// ...and whether it is the picture ALONE, which pastes silent. Kept here
-	// for the same reason and read at exactly the same moment.
-	copyPic bool
 	// ...and which camera's row those seconds were taken off. A copy plays
 	// footage again, and with two cameras rolling "the footage at 4:10" is two
 	// different pictures: without this the paste would come out as whichever
@@ -691,7 +692,6 @@ type cutEditor struct {
 	// other thing on them the running clock alone can move
 	lineArea *gtk.DrawingArea
 	lineIdx  int
-	scopeHov int // which half of the ▲▼ handle the pointer is on; see cut_scope.go
 	total    *gtk.Label
 	clock    *gtk.Label // the red line's time in numbers, beside the transport
 	marks    *gtk.Label // the two marks in numbers, under the buttons that set them
@@ -1271,17 +1271,17 @@ func (ed *cutEditor) relayout() {
 		// camera and clock effects live (cut_fx.go).
 		ed.fitSrc()
 		ed.fitAudio()
-		ed.fitScope() // a reload may have taken the recording ▼ scoped to
+		ed.fitSelAud() // a reload may have taken the recording the selection was of
 		ed.syncScroll()
 		ed.redrawTracks()
 	}
 	ed.updateTotal()
 }
 
-// picTop is where the picture band starts: under the ruler's clock, the scope
-// strip and the selection band, in that order. With more than one camera it is
+// picTop is where the picture band starts: under the ruler's clock and the
+// selection band, in that order. With more than one camera it is
 // the top of the FIRST row; the rest are stacked under it (laneTop).
-func (ed *cutEditor) picTop() float64 { return float64(rulerH) + scopeH + float64(selBandH) }
+func (ed *cutEditor) picTop() float64 { return float64(rulerH) + float64(selBandH) }
 
 // laneH is one row of the picture band: a thumbnail and its border.
 func (ed *cutEditor) laneH() float64 { return float64(ed.thumbHt) + 4 }
@@ -2349,7 +2349,7 @@ func (ed *cutEditor) layOverSound(s cutSeg) int {
 		// is as far into it as the piece is into the span asked for, so two
 		// pieces either side of a hole are two parts of one sound and not the
 		// same opening seconds played twice. Lane does not walk -- every piece
-		// stands in for the same recording, because the scope was named once
+		// stands in for the same recording, because the lane was named once
 		// for the whole span and a hole in the footage is no reason to change
 		// its mind.
 		out = append(out, cutSeg{S: t0, E: t1, Ins: s.Ins, Ss: s.Ss + t0 - s.S, Lane: s.Lane})
@@ -2466,8 +2466,8 @@ func (ed *cutEditor) applyInsert(i int, ins string, m insMode) {
 	ed.pushUndo()
 	card := ed.segs[i]
 	card.Ins = ins
-	// the dialog asks this one only when the scope left it open (insMode.
-	// askMute); otherwise m.mute came back exactly as the card handed it over
+	// the dialog asks this one whenever it is a live question (insMode.askMute);
+	// otherwise m.mute came back exactly as the card handed it over
 	card.Mute = m.mute
 	if m.splice {
 		if !card.spliced() {
@@ -3426,7 +3426,7 @@ func (ed *cutEditor) syncInsertBtn() {
 	ed.insBtn.SetLabel("⧉ Insert")
 	ed.insBtn.SetTooltipText("put a file in the cut at the playhead — a video sting, a still, " +
 		"or an SVG that animates itself. A selected region gives it its length; " +
-		"otherwise the file's own. With the selection on ▼ (the strip above the lanes) " +
+		"otherwise the file's own. With the selection drawn in a lane's own wave " +
 		"it offers sounds instead, and lays one over those seconds without moving the " +
 		"picture. A card (tier.svg, s.svg … in assets) or any SVG " +
 		"with {{holes}} in it asks what to put on it first. Right-click a card on " +
@@ -3883,14 +3883,6 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 	cr.Rectangle(0, 0, float64(w), float64(h))
 	cr.Fill()
 
-	// the scope strip, under the ruler: the ▲▼ handle that says what the
-	// selection is OF (cut_scope.go). Drawn strip-local exactly as it was when
-	// it was a widget of its own, so nothing inside it knows it moved.
-	cr.Save()
-	cr.Translate(0, ed.scopeTop())
-	ed.drawScope(cr, w, int(scopeH))
-	cr.Restore()
-
 	// what is on screen, in timeline px. The margin is for the things that
 	// start left of the edge and reach into view: a thumbnail, a tick's label.
 	const margin = 80
@@ -3962,8 +3954,11 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 			ed.drawPairStrip(cr, v, *au, lt+ed.laneH(), vx0, vx1)
 		}
 	}
-	// whether the held scene hears the camera it is shown from, said on that
-	// camera's own strip and pressable there (cut_hear.go)
+	// which row the held scene is SHOWN from, said on the rows themselves
+	// (cut_cam.go) -- and under it, whether it hears the camera it is shown
+	// from, said on that camera's own strip (cut_hear.go). One column of
+	// marks, one question per row.
+	ed.drawCamBadges(cr, vx0, vx1)
 	ed.drawHearBadges(cr, ed.hearBadgesSrc(), vx0, vx1)
 	// and the switch for that sound in the whole cut, at the strip's left where
 	// a recorded lane's sits on its name plate
@@ -4215,9 +4210,9 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 		cr.Fill()
 	}
 
-	// which sound is in hand, said on the wave itself: a selection scoped to a
-	// row's own sound wears its second wash on that row's strip, exactly as
-	// one scoped to a separate recorder wears it in the band below (drawAudio)
+	// which sound is in hand, said on the wave itself: a selection drawn on a
+	// row's own strip wears its second wash there, exactly as one drawn in a
+	// separate recorder's lane wears it in the band below (drawAudio)
 	if ed.sel.active && ed.selSnd() {
 		for _, v := range ed.vids {
 			if v.base != ed.sel.aud {
@@ -4884,21 +4879,12 @@ func (a *App) buildCut() gtk.Widgetter {
 		var hadSel bool
 		var selT0, selT1 float64
 		var trimming, moving bool
-		var onScope bool   // the press was the scope strip's; the drag has no more to say
 		var selPart int    // which part of the selection band this drag has, if any
 		var fxPart int     // ...and which part of the effect's band
 		var grabAt float64 // where in the held clip the press landed
 		drag.ConnectDragBegin(func(x, y float64) {
 			area.GrabFocus()
 			dragStartX, dragStartY = x, y
-			// the scope strip answers on the press, exactly as it did when it
-			// was a widget of its own with a click gesture; nothing further in
-			// this drag -- or its release -- is about it
-			if area == ed.srcArea && ed.hitScope(y) {
-				onScope = true
-				ed.scopeClicked(x+ed.viewX, y-ed.scopeTop())
-				return
-			}
 			// a press in the effects lane is about the effect under it: it
 			// picks that effect up if it was not already in hand, and the
 			// drag then slides it -- the same deal a held clip gets one band
@@ -5007,6 +4993,16 @@ func (a *App) buildCut() gtk.Widgetter {
 				ed.toggleHear(base)
 				return
 			}
+			// the same column, on the picture rows: which camera the scene is
+			// shown from (cut_cam.go). Asked with the sound's badges and for
+			// the reason they are asked here -- while a scene is in hand,
+			// pressing one of its marks is the only thing the press can mean
+			if area == ed.srcArea {
+				if r := ed.camBadgeAt(x+ed.viewX, y); r >= 0 {
+					ed.setSegCam(r)
+					return
+				}
+			}
 			// the ✕ badges the picture band carries, asked before the borders
 			// they can overlap: a press on one would otherwise be read as
 			// taking hold of a clip edge to trim it. Dropping a SCENE is not
@@ -5072,9 +5068,6 @@ func (a *App) buildCut() gtk.Widgetter {
 			ed.syncSelBtns()
 		})
 		drag.ConnectDragUpdate(func(ox, oy float64) {
-			if onScope {
-				return
-			}
 			if trimming {
 				ed.moveEdgeTo(ed.tAtView(dragStartX+ox), true)
 				ed.showEdge(true) // the picture comes with it
@@ -5111,10 +5104,6 @@ func (a *App) buildCut() gtk.Widgetter {
 		})
 		drag.ConnectDragEnd(func(ox, oy float64) {
 			_, _, _ = hadSel, selT0, selT1
-			if onScope {
-				onScope = false
-				return
-			}
 			if trimming {
 				trimming = false
 				if ed.edgeDirty {
@@ -5563,7 +5552,7 @@ func (a *App) buildCut() gtk.Widgetter {
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
 	page.Append(inRow)
 	page.Append(pane)
-	// and the empty timeline is laid out from the start: the ruler, the scope
+	// and the empty timeline is laid out from the start: the ruler, the
 	// and an empty row are a page with no cut yet, which is a real state, and
 	// the band has no height until relayout gives it one (see clearTracks)
 	ed.relayout()
@@ -5700,7 +5689,7 @@ func (a *App) refreshCut() {
 // is nothing to clear. The band has no height of its own -- fitSrc gives it
 // one, and only relayout calls fitSrc -- so an editor that was never laid out
 // is a page with no tracks on it at all, not a page with empty tracks. That
-// was what a project with frames but no cut showed: the ruler, the scope and
+// was what a project with frames but no cut showed: the ruler and
 // the empty row are what "no cut yet" looks like, and they need the relayout
 // as much as a full cut does.
 func (ed *cutEditor) clearTracks() {
@@ -5734,7 +5723,7 @@ func (a *App) addSelClicked() {
 	// button is greyed for this; the guard is for every other way in.
 	if ed.sel.aud != "" {
 		a.setStatus(fmt.Sprintf("＋ Add keeps footage, and the selection is %s's sound — "+
-			"press ▲ on the strip above the lanes to point it at the picture", ed.sel.aud))
+			"drag on the pictures instead — a selection is of what it was drawn on", ed.sel.aud))
 		return
 	}
 	// a selection lying in the gap between two recordings, or one shorter than
@@ -5784,18 +5773,16 @@ func (a *App) copyClicked() {
 		return
 	}
 	ed.copyFrom, ed.copyLen, ed.copyOn = t0, ln, true
-	ed.copyAud, ed.copyPic, ed.copyCam = ed.sel.aud, ed.selPic(), ed.sel.lane
+	// what was drawn on is what is copied: a lane's sound from a lane, footage
+	// -- picture and what was filmed with it -- from the pictures. Silencing a
+	// pasted stretch is the pasted clip's own question, asked of it by its form
+	// (soundOpen), rather than a scope set before the copy was taken.
+	ed.copyAud, ed.copyCam = ed.sel.aud, ed.sel.lane
 	ed.syncInsertBtn()
 	if ed.copyAud != "" {
 		a.setStatus(fmt.Sprintf("copied %.1f s of sound from %s (%s – %s) — click the timeline "+
 			"where it goes, then ⧉ Paste lays it over the footage there. Esc drops the copy",
 			ln, ed.copyAud, mmss(t0), mmss(t0+ln)))
-		return
-	}
-	if ed.copyPic {
-		a.setStatus(fmt.Sprintf("copied the picture of %s – %s (%.1f s), without the sound "+
-			"filmed with it — click the timeline where it goes, then ⧉ Paste splices those "+
-			"frames in silent. Esc drops the copy", mmss(t0), mmss(t0+ln), ln))
 		return
 	}
 	a.setStatus(fmt.Sprintf("copied %s – %s (%.1f s) — click the timeline where it goes, "+
@@ -5821,18 +5808,12 @@ func (a *App) pasteCopy() {
 	}
 	was := ed.cutLen()
 	ed.addSplice(fmt.Sprintf("%s%.3f", copyScheme, ed.copyFrom), ed.playhead, ed.copyLen,
-		ed.copyPic, ed.copyCam)
+		false, ed.copyCam)
 	ed.copyOn = false
 	ed.syncInsertBtn()
-	what := "footage"
-	if ed.copyPic {
-		// a paste that came out silent and said nothing about it would read as
-		// a fault in the render rather than as the scope the copy was taken at
-		what = "silent picture"
-	}
-	a.setStatus(fmt.Sprintf("pasted %.1f s of %s from %s at %s — the cut is now %s (was %s) "+
-		"— ↶ Undo takes it back", ed.copyLen, what, mmss(ed.copyFrom), mmss(ed.playhead),
-		mmss(ed.cutLen()), mmss(was)))
+	a.setStatus(fmt.Sprintf("pasted %.1f s of footage from %s at %s — the cut is now %s "+
+		"(was %s). Right-click it to play it silent — ↶ Undo takes it back",
+		ed.copyLen, mmss(ed.copyFrom), mmss(ed.playhead), mmss(ed.cutLen()), mmss(was)))
 }
 
 // pasteLane is the other place a copy can go: not back into the cut in
@@ -5948,10 +5929,10 @@ func (ed *cutEditor) audByBase(base string) *tlAudio {
 // ＋ Add and － Remove are greyed while the selection is a sound's. They choose
 // which FOOTAGE the cut keeps, and footage here is picture and the sound filmed
 // with it in one piece: there is no way to keep the sound and drop the picture,
-// so on a ▼ selection they have nothing they could honestly do. Greyed rather
-// than left quietly cutting the picture, because the strip above the lanes has
-// just said this selection is about sound, and a button acting on the other
-// thing would make that a lie.
+// so on a selection drawn in a lane they have nothing they could honestly do.
+// Greyed rather than left quietly cutting the picture, because the wave it was
+// drawn on has just said this selection is about sound, and a button acting on
+// the other thing would make that a lie.
 //
 // Its tooltip is set here rather than where it is built, because a button whose
 // sensitivity changes has two things to say and only one of them is true at a
@@ -5969,7 +5950,7 @@ func (ed *cutEditor) syncSelBtns() {
 		tip := "keep the selected region (Undo takes it back)"
 		if snd {
 			tip = "＋ Add keeps footage, and this selection is " + ed.sel.aud +
-				"'s sound — press ▲ on the strip above the lanes to point it at the picture"
+				"'s sound — drag on the pictures instead — a selection is of what it was drawn on"
 		}
 		ed.addBtn.SetTooltipText(tip)
 	}
@@ -5979,7 +5960,7 @@ func (ed *cutEditor) syncSelBtns() {
 			"so those seconds become a scene of their own (Undo takes it back)"
 		if snd {
 			tip = "| Split cuts footage, and this selection is " + ed.sel.aud +
-				"'s sound — press ▲ on the strip above the lanes to point it at the picture"
+				"'s sound — drag on the pictures instead — a selection is of what it was drawn on"
 		}
 		ed.splitBtn.SetTooltipText(tip)
 	}
@@ -5989,7 +5970,7 @@ func (ed *cutEditor) syncSelBtns() {
 			"leaves two, one either side (Undo takes it back)"
 		if snd {
 			tip = "－ Remove drops footage, and this selection is " + ed.sel.aud +
-				"'s sound — press ▲ on the strip above the lanes to point it at the picture"
+				"'s sound — drag on the pictures instead — a selection is of what it was drawn on"
 		}
 		ed.remBtn.SetTooltipText(tip)
 	}
@@ -6029,31 +6010,27 @@ func (a *App) insertClicked() {
 		return
 	}
 	at, want := ed.playhead, 0.0
-	// the scope is read HERE and not in the callback, beside the seconds and for
-	// the same reason: the chooser is a window the hand can reach around, and
-	// the file that comes back has to be placed the way the selection read when
-	// the button was pressed.
-	mute, lane := ed.sel.active && ed.selPic(), ""
+	// the selection is read HERE and not in the callback, beside the seconds
+	// and for the same reason: the chooser is a window the hand can reach
+	// around, and the file that comes back has to be placed the way the
+	// selection read when the button was pressed.
+	lane := ""
 	if ed.sel.active {
 		at = math.Min(ed.sel.t0, ed.sel.t1)
 		want = math.Abs(ed.sel.t1 - ed.sel.t0)
 		lane = ed.sel.aud
 	}
 
-	// what the chooser admits follows the scope. A selection in a lane is about
-	// sound, and offering it a tier card there would be offering to put a
-	// picture where the hand pointed at a waveform; a selection scoped to the
-	// picture alone is the mirror, and a sound is the one thing that cannot be
-	// laid over frames while leaving the sound under them alone. Footage in one
-	// piece, and no selection at all, are offered everything.
+	// what the chooser admits follows what the selection was drawn on. A
+	// selection in a lane is about sound, and offering it a tier card there
+	// would be offering to put a picture where the hand pointed at a waveform.
+	// Footage, and no selection at all, are offered everything -- what an
+	// insert does to the sound is the form's question now, asked of the file
+	// that actually comes back (soundOpen).
 	title, name, exts := "Insert a clip, image, animation or sound",
 		"Video, image, SVG or audio", insExts
-	switch {
-	case ed.sel.active && ed.selSnd():
+	if ed.sel.active && ed.selSnd() {
 		title, name, exts = "Insert a sound over the selected seconds", "Audio", audExts
-	case mute:
-		title, name, exts = "Insert a clip or image over the selected picture",
-			"Video, image or SVG", picExts
 	}
 	d := gtk.NewFileDialog()
 	d.SetTitle(title)
@@ -6079,10 +6056,15 @@ func (a *App) insertClicked() {
 		// marking seconds and then putting a card there is a sentence that
 		// says what those seconds are for -- and it is the selection that gave
 		// it its length, so the two answers stay together.
-		m := insMode{dur: want, splice: want < minSegLn, mute: mute, lane: lane}
+		m := insMode{dur: want, splice: want < minSegLn, lane: lane}
 		if m.dur < minSegLn {
 			m.dur = a.insertLength(path)
 		}
+		// what the tick opens on: a file with no sound of its own replaces no
+		// sound, so the session carries on under it -- which is the rule the
+		// page has always followed ("an insert replaces what it brings, and
+		// nothing else"). A file that brought sound arrives bringing it.
+		m.mute = !insHasSound(path)
 		m.askMute = ed.soundOpen(path, at, m.dur, m)
 		// a card is a picture with holes in it, and the holes are the whole
 		// point of one: ask before placing it rather than dropping an empty
@@ -6118,13 +6100,14 @@ var insExts = append(append([]string{}, picExts...), audExts...)
 type insMode struct {
 	splice bool
 	dur    float64
-	// whether it brings its own sound. Not asked in the dialog: it is the
-	// selection's scope, decided before the chooser opened (▲▲ picture alone),
-	// and asking it twice would let the two answers disagree. See cutSeg.Mute
-	// for the two things it means, which mode already says which of.
+	// whether it brings its own sound. The dialog's one tick, in whichever of
+	// its two readings the mode is in (askInsertParams): silent when the
+	// footage is cut open for it, the session carrying on underneath when it
+	// is laid over. See cutSeg.Mute, which is the field it becomes.
 	mute bool
-	// which recording a sound is being put in place of, read from the same
-	// scope and for the same reason (▼). See cutSeg.Lane.
+	// which recording a sound is being put in place of: the lane the selection
+	// was drawn in, read before the chooser opened. Not a dialog question --
+	// the hand said it by pointing at that waveform. See cutSeg.Lane.
 	lane string
 	// a third way for it to sit in the cut, and the only one that adds a ROW
 	// rather than a scene: the file goes on a band of its own and the cut
@@ -6132,12 +6115,11 @@ type insMode struct {
 	// (cut_lane.go). Video only -- a row is footage, and a still on one would
 	// be a card wearing a camera's clothes.
 	asLane bool
-	// the one case the scope does NOT settle mute, so the dialog has to ask:
-	// picture-and-sound (▲▼), over footage that has something to hear, with a
-	// file that brings no sound of its own. "Replace both" is what ▲▼ means,
-	// but there is nothing to replace the sound WITH -- silence and carry-on
-	// are both honest readings and only the hand knows which was meant. See
-	// cutEditor.soundOpen, which is the whole of the condition.
+	// whether mute is a live question for this insert at all, which is what
+	// decides if the dialog shows the tick: a picture insert that either
+	// brings a sound of its own or lands over seconds that have one. Both
+	// answers are then honest readings and only the hand knows which was
+	// meant. See cutEditor.soundOpen, which is the whole of the condition.
 	askMute bool
 }
 
@@ -6343,27 +6325,39 @@ func (a *App) askInsertParams(verb, path string, fields []svgField, m insMode, o
 		"line, as though a camera nobody set up had been rolling there. Nothing is added to " +
 		"the cut by this: select on the new row and press ＋ Add to cut to it, the same way " +
 		"you would cut between two cameras. Its ✕ takes the row away again.")
-	// the one question the scope could not settle, asked here and only here:
-	// this file has no sound and there IS something to hear under the seconds
-	// it is about. Default kept rather than silent, for the same reason the
-	// rule reads "an insert replaces what it brings, and nothing else" -- a
-	// file with no sound replaces no sound. A tick and not a pair of lines,
-	// because unlike over-versus-between this genuinely is a preference: both
-	// answers are ordinary, and neither eats a stretch of the session.
-	keep := gtk.NewCheckButtonWithLabel(
-		"Keep the sound running under it — only the picture is replaced")
-	keep.SetActive(true)
-	keep.SetTooltipText("This file brings no sound of its own. Ticked, the picture is " +
-		"replaced and everything that was audible in those seconds — the capture's own " +
-		"track and every separate recording — carries on underneath. Unticked, the " +
-		"seconds go quiet.")
+	// what this insert does to the sound. One flag on the segment (cutSeg.Mute)
+	// and one tick here, and the MODE decides which of its two readings is
+	// being asked about -- the same split the flag itself has, so the tick
+	// says the sentence the mode makes true rather than a general one that is
+	// true in neither. This is where the question lives now: it used to be the
+	// selection's scope, which is gone.
+	//
+	// A tick and not a pair of lines, because unlike over-versus-between this
+	// genuinely is a preference: both answers are ordinary, and neither eats a
+	// stretch of the session.
+	keep := gtk.NewCheckButtonWithLabel("")
+	keep.SetActive(m.mute)
 	keep.SetVisible(m.askMute)
-	// nothing is underneath a card the footage was cut open for, so there is
-	// nothing for it to keep: the question is dead the moment BETWEEN is picked
-	// nothing is underneath a row either: a lane brings its own picture and its
-	// own sound and covers nothing until the cut says so
-	syncKeep := func() { keep.SetSensitive(!between.Active() && !own.Active()) }
+	// nothing is underneath a row: a lane brings its own picture and its own
+	// sound and covers nothing until the cut says so
+	syncKeep := func() {
+		keep.SetSensitive(!own.Active())
+		if between.Active() {
+			keep.SetLabel("Play it SILENT — the insert's own sound is not used")
+			keep.SetTooltipText("The footage is cut open for this insert, so there is " +
+				"nothing underneath it to hear. Ticked, it runs silent; unticked, it " +
+				"brings whatever sound it has of its own.")
+			return
+		}
+		keep.SetLabel("Keep the sound running under it — only the picture is replaced")
+		keep.SetTooltipText("Ticked, the picture is replaced and everything that was " +
+			"audible in those seconds — the capture's own track, every separate " +
+			"recording, and this file's own sound if it has one — is decided in " +
+			"favour of the session: what was playing carries on underneath. " +
+			"Unticked, the insert brings its own sound, or silence if it has none.")
+	}
 	between.ConnectToggled(syncKeep)
+	over.ConnectToggled(syncKeep)
 	own.ConnectToggled(syncKeep)
 	syncKeep()
 
@@ -6384,16 +6378,16 @@ func (a *App) askInsertParams(verb, path string, fields []svgField, m insMode, o
 	// what the two controls say now, with a length that is never zero: a card of
 	// no seconds is not a shorter card, it is one nobody ever sees
 	mode := func() insMode {
-		// mute and lane are the SCOPE's answers and ride through untouched --
-		// they were settled before the chooser opened and nothing in this
-		// window asks about them again. The one exception is the tick above,
-		// which exists precisely because the scope had no answer to give.
+		// lane rides through untouched: which recording a sound insert stands
+		// in for is said by the lane the selection was drawn in, before the
+		// chooser opened, and nothing in this window asks it again. mute is
+		// the tick above, in whichever of its two readings the mode is in.
 		out := insMode{splice: between.Active(), asLane: own.Active(), dur: m.dur,
 			mute: m.mute, lane: m.lane, askMute: m.askMute}
 		if v, err := strconv.ParseFloat(strings.TrimSpace(secs.Text()), 64); err == nil && v >= minSegLn {
 			out.dur = v
 		}
-		if m.askMute && !out.splice && !out.asLane {
+		if m.askMute && !out.asLane {
 			out.mute = keep.Active()
 		}
 		return out
@@ -6587,7 +6581,7 @@ func (a *App) removeSelClicked() {
 		// "the scene under the playhead" would be worse than refusing: it
 		// would remove something nobody pointed at.
 		a.setStatus(fmt.Sprintf("⌦ drops footage, and the selection is %s's sound "+
-			"— press ▲ on the strip above the lanes to point it at the picture",
+			"— drag on the pictures instead — a selection is of what it was drawn on",
 			ed.sel.aud))
 	case ed.sel.active:
 		before := len(ed.segs)

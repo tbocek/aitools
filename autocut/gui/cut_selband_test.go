@@ -29,15 +29,15 @@ func bandEd(t *testing.T) *cutEditor {
 
 // Under the ruler's clock and over the pictures, which is where it was asked
 // for and also the only place it can go: the clock has to stay legible and the
-// band has to be next to the frames it is over. Between the two sits the ▲▼
-// scope strip -- the one row that reads across the whole page, over the bands
-// it scopes.
+// band has to be next to the frames it is over. It sits directly under the
+// clock now -- the ▲▼ scope strip that used to divide them is gone, and what
+// a selection is OF is what it was drawn on (cut_cam.go).
 func TestTheBandSitsBetweenTheClockAndThePictures(t *testing.T) {
 	ed := bandEd(t)
-	if got, want := ed.selBandTop(), float64(rulerH)+scopeH; got != want {
-		t.Errorf("the band starts at %g, want it under the ▲▼ strip at %g", got, want)
+	if got, want := ed.selBandTop(), float64(rulerH); got != want {
+		t.Errorf("the band starts at %g, want it under the clock at %g", got, want)
 	}
-	if got, want := ed.picTop(), float64(rulerH)+scopeH+float64(selBandH); got != want {
+	if got, want := ed.picTop(), float64(rulerH)+float64(selBandH); got != want {
 		t.Errorf("the pictures start at %g, want %g — the band has no room", got, want)
 	}
 	for _, c := range []struct {
@@ -46,7 +46,6 @@ func TestTheBandSitsBetweenTheClockAndThePictures(t *testing.T) {
 		what string
 	}{
 		{float64(rulerH) - 1, false, "in the ruler"},
-		{float64(rulerH) + 1, false, "in the ▲▼ strip"},
 		{ed.selBandTop() + 1, true, "the top of the band"},
 		{ed.picTop() - 1, true, "the bottom of the band"},
 		{ed.picTop() + 1, false, "on the pictures"},

@@ -251,7 +251,7 @@ func TestACardAtThePlayheadIsInsertedAndOneOverASelectionCovers(t *testing.T) {
 	src := string(b)
 	for _, want := range []string{
 		// the length and the mode are one answer: the selection gave it both
-		"m := insMode{dur: want, splice: want < minSegLn, mute: mute, lane: lane}",
+		"m := insMode{dur: want, splice: want < minSegLn, lane: lane}",
 		// and the dialog says which it is doing, as a pair of radio buttons
 		"between := gtk.NewCheckButtonWithLabel(",
 		"over.SetGroup(between)",

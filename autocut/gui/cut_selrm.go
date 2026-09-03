@@ -64,7 +64,7 @@ func (a *App) removeSelRange() {
 	// button is greyed for this; the guard is for every other way in.
 	if ed.sel.aud != "" {
 		a.setStatus(fmt.Sprintf("－ Remove drops footage, and the selection is %s's sound — "+
-			"press ▲ on the strip above the lanes to point it at the picture", ed.sel.aud))
+			"drag on the pictures instead — a selection is of what it was drawn on", ed.sel.aud))
 		return
 	}
 	if !ed.spanTouches(ed.sel.t0, ed.sel.t1) {

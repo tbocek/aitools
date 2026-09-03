@@ -5,7 +5,8 @@ package main
 // A session has more than one thing to hear at any second: the sound that came
 // glued to the picture, and every separately-recorded file that was rolling at
 // the same time -- a mic on the table, the room. The cut page draws them as
-// lanes and the ▲▼ strip lets a selection name one, but for a long time the
+// lanes and a selection drawn in one is about that recording, but for a long
+// time the
 // render had no such idea. It had "the bed" and "not the bed", and any insert
 // at all emptied it: lay a two-second card over the footage and the voice that
 // was talking underneath went with it.
@@ -14,9 +15,10 @@ package main
 //
 //	an insert replaces what it BRINGS, and nothing else
 //
-// ▲▲ brings a picture, so the picture goes and every lane plays on. ▼ brings a
-// sound for one named recording, so that recording goes and the others -- and
-// the capture's own track -- play on. ▲▼ brings both and replaces both. And
+// A picture-only insert brings a picture, so the picture goes and every lane
+// plays on. A sound laid in one recording's lane brings a sound for that
+// recording, so that one goes and the others -- and the capture's own track --
+// play on. A clip that brings both replaces both. And
 // anything SPLICED in replaces nothing at all, because it is time added to the
 // session rather than a stretch of it, and nothing was ever recorded under it.
 
@@ -57,10 +59,10 @@ func TestAnInsertReplacesWhatItBringsAndNothingElse(t *testing.T) {
 		{"plain footage",
 			prodClip{video: &vids[0], local: 10, sessS: 10, length: 2, rate: 1, tempo: 1},
 			[]string{"mic", "room"}},
-		{"a card over the picture alone (▲▲)",
+		{"a card that keeps the sound under it",
 			first(insClip(0, over(true), "/x/sting.mp4", vids)),
 			[]string{"mic", "room"}},
-		{"a card over the footage (▲▼)",
+		{"a card that brings its own sound",
 			first(insClip(0, over(false), "/x/sting.mp4", vids)),
 			nil},
 		{"a card spliced in silent",
@@ -78,7 +80,7 @@ func TestAnInsertReplacesWhatItBringsAndNothingElse(t *testing.T) {
 		{"a re-record over the mic alone (▼)",
 			withSess(sndClip(0, cutSeg{S: 10, E: 12, Ins: "redo.wav", Lane: "mic"}, "/x/redo.wav", &vids[0], recs), 10),
 			[]string{"redo", "room"}},
-		{"a re-record over everything audible (▲▼)",
+		{"a re-record over everything audible",
 			withSess(sndClip(0, cutSeg{S: 10, E: 12, Ins: "redo.wav"}, "/x/redo.wav", &vids[0], recs), 10),
 			nil},
 		{"a re-record over the capture's own track (▼ on the top lane)",
@@ -102,7 +104,7 @@ func TestAnInsertReplacesWhatItBringsAndNothingElse(t *testing.T) {
 func first(c prodClip, _ string) prodClip { return c }
 
 // ▼ is the other half of the rule, and the one that needs a name to do it: a
-// sound laid over a selection scoped to ONE recording stands in for that
+// sound laid over a selection drawn in ONE recording's lane stands in for that
 // recording, in the mix, where it was -- rather than in the capture's slot,
 // which is what "these seconds sound like the file" has always meant.
 func TestASoundOverOneLaneLeavesTheOthersPlaying(t *testing.T) {
@@ -184,9 +186,9 @@ func TestTheLanesAreStillThereUnderTheFinishedClip(t *testing.T) {
 			prodClip{video: &vids[0], local: 2, sessS: 2, length: 2, rate: 1, tempo: 1},
 			true, true, false},
 		// the whole point: the card takes the picture and NOTHING else
-		{"a silent card over the picture alone (▲▲)",
+		{"a silent card that keeps the sound under it",
 			withSess(first(insClip(0, muted, card, vids)), 2), true, true, false},
-		{"the same card over the footage (▲▼)",
+		{"the same card bringing its own silence",
 			withSess(first(insClip(0, seg, card, vids)), 2), false, false, false},
 		{"a re-record over the mic's lane (▼)",
 			withSess(sndClip(0, cutSeg{S: 2, E: 4, Ins: "redo.wav", Lane: "mic"}, redo, &vids[0], recs), 2),
@@ -297,14 +299,17 @@ func TestTheDialogAsksOnlyWhenTheScopeCouldNotAnswer(t *testing.T) {
 		want bool
 	}{
 		{"a silent file over seconds with something to hear", silent, 10, insMode{}, true},
-		{"the file brings its own sound, so ▲▼ has something to replace it with",
-			loud, 10, insMode{}, false},
-		{"▲▲ already said keep", silent, 10, insMode{mute: true}, false},
-		{"▼ already said which one to replace", silent, 10, insMode{lane: "mic"}, false},
+		{"a file with sound of its own, laid over footage: its own, or the session's",
+			loud, 10, insMode{}, true},
+		{"a silent card the footage is cut open for -- nothing under it, nothing of its own",
+			silent, 10, insMode{splice: true}, false},
+		{"a sting spliced in: silent, or its own sound", loud, 10, insMode{splice: true}, true},
+		{"the lane it stands in for was named by the drag", silent, 10, insMode{lane: "mic"}, false},
 		{"a sound insert settles it by being one", filepath.Join(dir, "x.wav"), 10, insMode{}, false},
-		{"a copied stretch took its answer when it was copied",
-			copyScheme + "12.000", 10, insMode{}, false},
-		{"nothing to hear in those seconds either way", silent, 900, insMode{}, false},
+		{"a copied stretch of the session is footage, and footage has sound",
+			copyScheme + "12.000", 10, insMode{}, true},
+		{"nothing to hear in those seconds, and nothing of its own either",
+			silent, 900, insMode{}, false},
 	} {
 		if got := ed.soundOpen(c.path, c.at, 2, c.m); got != c.want {
 			t.Errorf("%s: the dialog asks=%v, want %v", c.why, got, c.want)

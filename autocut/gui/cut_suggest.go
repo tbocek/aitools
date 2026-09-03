@@ -202,7 +202,7 @@ Then for the whole cut.
 5. Every moment the ABOUT THIS SESSION notes name must be in the cut. Add it if missing; fix a segment that stops short of it.
 6. The first segment must establish what the session is.
 7. After your corrections the segments must still be in order and must not overlap. If extending one runs into the next, extend it and drop the next, saying so.
-8. Keep the total near the target: pay for additions by dropping the weakest segments.
+8. Keep the total inside the accepted range you were given: pay for additions by dropping the weakest segments. Inside it, leave the total alone -- a cut that is already accepted does not need trimming towards the middle of the range.
 
 When a segment is right, say ok. A change for its own sake is worse than no check at all.`
 
@@ -247,8 +247,11 @@ func (a *App) auditCut(session string, target float64, segs []cutSeg, fx []cutFx
 		}
 		fxBlock = "PROPOSED EFFECTS:\n" + b.String() + "\n"
 	}
-	user := a.ctxBlock() + fmt.Sprintf("THE BRIEF THE CUT WAS MADE FROM:\n%s\n\nTARGET LENGTH: %.0f seconds.\n\n"+
-		"PROPOSED SEGMENTS:\n%s\n%sSESSION TIMELINE:\n%s", a.prompt("cut"), target, props.String(), fxBlock, session)
+	alo, ahi := a.suggestWindow(target)
+	user := a.ctxBlock() + fmt.Sprintf("THE BRIEF THE CUT WAS MADE FROM:\n%s\n\n"+
+		"TARGET LENGTH: %.0f seconds of finished video. ACCEPTED: %.0f to %.0f seconds.\n\n"+
+		"PROPOSED SEGMENTS:\n%s\n%sSESSION TIMELINE:\n%s",
+		a.prompt("cut"), target, alo, ahi, props.String(), fxBlock, session)
 	msgs := []map[string]any{msg("system", a.sysPrompt("audit")), msg("user", user)}
 
 	if err := a.checkpoint(); err != nil {
@@ -464,6 +467,26 @@ func minSuggestSegs(target float64) int {
 	return 4
 }
 
+// maxSuggestSegs is the other end of the same question, and it exists because
+// of one failure: an answer of 548 segments, the first five real moments and
+// the rest a mechanical march of 24-second blocks every 32 seconds, running
+// eleven times past the end of the session until the token ceiling chopped it
+// mid-number. Nothing rejected it for its SHAPE -- the segments past the end
+// were dropped for having no footage, the total then failed the length gate,
+// and the reason the model was told was arithmetic when the reason was that it
+// had stopped cutting and started counting.
+//
+// Generous: the wordings ask for about one segment per 20 seconds of target,
+// and this is four times that with a floor, so a cut that really is made of
+// many short moments is not refused. What it catches is the runaway, which
+// misses by an order of magnitude and not by a few.
+func maxSuggestSegs(target float64) int {
+	if n := int(target / 5); n > 40 {
+		return n
+	}
+	return 40
+}
+
 // suggestWindow is how far a suggestion's total may drift from the target
 // before it is rejected -- by the suggest loop and by the audit alike. The
 // wide band exists because a highlight cut is a wish, not a contract:
@@ -596,7 +619,20 @@ func fxFromReply(in []sugFx) []cutFx {
 
 func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutFx, error) {
 	system := a.sysPrompt("cut")
-	user := a.ctxBlock() + fmt.Sprintf("TARGET LENGTH: %.0f seconds.\n\nSESSION TIMELINE:\n%s", target, session)
+	// The range, not just the number. The wording asks for a total near the
+	// target and the validator accepts a window around it (suggestWindow), and
+	// for a long time only the number crossed the wire: a model told "300
+	// seconds" and nothing else treats 300 as the answer, and one told to hit
+	// it exactly will spend the whole call trying -- adding a segment, dropping
+	// another, adding up again -- and run out of room to write the answer in.
+	// That is not a hypothetical: an 11-minute call once came back with 85 kB
+	// of arithmetic and no JSON at all. The two numbers come from the same
+	// function the validator uses, so the prompt and the gate cannot drift.
+	lo, hi := a.suggestWindow(target)
+	user := a.ctxBlock() + fmt.Sprintf("TARGET LENGTH: %.0f seconds of finished video. "+
+		"ACCEPTED: %.0f to %.0f seconds, and at most %d segments. Stop at the first set of "+
+		"moments that lands in that range.\n\nSESSION TIMELINE:\n%s",
+		target, lo, hi, maxSuggestSegs(target), session)
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
 	// the web, for a caption that names a thing the timeline does not explain
 	tools, ffx := a.webToolsFor("suggest")
@@ -653,9 +689,19 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 			// nothing to parse: say so rather than reporting the parser's
 			// bafflement at an empty string (llm.go)
 		} else if err := json.Unmarshal([]byte(clean), &out); err != nil {
-			problem = "not valid JSON: " + err.Error()
+			// a reply the token ceiling chopped in half wants a shorter
+			// answer, not a more careful one (cutOff, llm.go)
+			if problem = cutOff(reply, err); problem == "" {
+				problem = "not valid JSON: " + err.Error()
+			}
 		} else if len(out.Segments) < minSuggestSegs(target) {
 			problem = fmt.Sprintf("fewer than %d segments", minSuggestSegs(target))
+		} else if n := maxSuggestSegs(target); len(out.Segments) > n {
+			// said as a shape problem, because that is what it is: an answer
+			// this long is a model that stopped choosing moments
+			problem = fmt.Sprintf("%d segments, which is not a cut -- keep it under %d, "+
+				"and use a speed effect over one long segment where a stretch has to be "+
+				"shown but not watched", len(out.Segments), n)
 		} else {
 			var segs []cutSeg
 			for _, s := range out.Segments {
@@ -689,6 +735,16 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 			}
 		}
 		a.logfIdle(">>> suggest attempt %d rejected: %s", try+1, problem)
+		// the search goes with the first refusal. The tools are there for a
+		// caption that names something the timeline does not explain, which is
+		// a detail of an answer -- and a model that has just failed to write
+		// the answer spends the retry searching instead: one run went eight
+		// rounds deep into a wiki and ran out of rounds without ever proposing
+		// a segment. Everything the cut needs is in the timeline it was given.
+		if tools != nil {
+			a.logfIdle(">>> suggest: asking again without the web tools")
+			tools = nil
+		}
 		if next := thinkAgain(think, reply); next != think {
 			think = next
 			a.logfIdle(">>> suggest: the model spent the whole call thinking and wrote " +

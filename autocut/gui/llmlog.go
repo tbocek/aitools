@@ -86,7 +86,7 @@ func (a *App) recordChatStart(step string, thinking bool, msgs []map[string]any)
 		a.logfIdle(">>>   could not keep the exchange: %v", err)
 		return c
 	}
-	if _, err := f.Write(chatHTML(step, a.readConf().Model, thinking, msgs, "", 0, nil, true)); err != nil {
+	if _, err := f.Write(chatHTML(step, a.readConf().Model, thinking, msgs, "", "", 0, nil, true)); err != nil {
 		a.logfIdle(">>>   could not keep the exchange: %v", err)
 		f.Close()
 		return c
@@ -135,7 +135,7 @@ func splitThink(reply string) (think, answer string) {
 // spends four minutes reasoning and writes nothing has an answer of 0 B, and a
 // log line calling that "31 kB came back" sends the next reader hunting for a
 // parser bug in a reply that was never written.
-func (c *chatRec) done(reply string, took time.Duration, callErr error) {
+func (c *chatRec) done(reply, stop string, took time.Duration, callErr error) {
 	if c == nil {
 		return
 	}
@@ -148,7 +148,13 @@ func (c *chatRec) done(reply string, took time.Duration, callErr error) {
 	if think != "" {
 		verdict += fmt.Sprintf(", after %s of thinking", sizeOf(len(think)))
 	}
-	if strings.TrimSpace(answer) == "" && callErr == nil {
+	switch {
+	case callErr != nil:
+	case stop == "length":
+		// the server stopped it, not the model: the answer ends mid-word and
+		// everything downstream would report it as a parse error
+		verdict += " — cut off at the model's token limit"
+	case strings.TrimSpace(answer) == "":
 		verdict += " — the model answered nothing at all"
 	}
 	if callErr != nil {
@@ -158,19 +164,19 @@ func (c *chatRec) done(reply string, took time.Duration, callErr error) {
 	if p := chatPreview(reply); p != "" {
 		c.a.logfIdle(">>>   the reply begins: %s", p)
 	}
-	if err := c.write(reply, took, callErr, false); err != nil {
+	if err := c.write(reply, stop, took, callErr, false); err != nil {
 		c.a.logfIdle(">>>   could not keep the exchange: %v", err)
 	}
 }
 
 // write puts the page down as it stands. Both moments come through here, so
 // the pending page and the finished one are the same file by construction.
-func (c *chatRec) write(reply string, took time.Duration, callErr error, pending bool) error {
+func (c *chatRec) write(reply, stop string, took time.Duration, callErr error, pending bool) error {
 	if err := os.MkdirAll(c.a.llmDir(), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(c.a.llmDir(), c.name),
-		chatHTML(c.step, c.a.readConf().Model, c.thinking, c.msgs, reply, took, callErr, pending), 0o644)
+		chatHTML(c.step, c.a.readConf().Model, c.thinking, c.msgs, reply, stop, took, callErr, pending), 0o644)
 }
 
 // chatSent measures a request the way the preview reports it: how much text,
@@ -243,7 +249,7 @@ details summary{color:#666;cursor:pointer}
 // chatHTML renders the exchange as one page that needs nothing else: the
 // images ride along as the data URLs they were sent as, and the thinking sits
 // behind a fold so the answer is what the eye lands on.
-func chatHTML(step, model string, thinking bool, msgs []map[string]any, reply string, took time.Duration, callErr error, pending bool) []byte {
+func chatHTML(step, model string, thinking bool, msgs []map[string]any, reply, stop string, took time.Duration, callErr error, pending bool) []byte {
 	esc := html.EscapeString
 	var b strings.Builder
 	fmt.Fprintf(&b, "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>%s -- Autocut LLM exchange</title>\n<style>%s</style></head><body>\n",
@@ -297,6 +303,13 @@ func chatHTML(step, model string, thinking bool, msgs []map[string]any, reply st
 	}
 	if strings.TrimSpace(answer) != "" {
 		b.WriteString("<pre>" + esc(answer) + "</pre>\n")
+		if stop == "length" {
+			// the answer above ends mid-word, and nothing in the text says so:
+			// every reader downstream sees a parse error and goes looking for
+			// a fault in an answer the server stopped before it was finished
+			b.WriteString("<p class=\"err\">the reply was cut off at the model's " +
+				"token limit — the answer above is unfinished</p>\n")
+		}
 	} else if callErr == nil {
 		// the page has to say WHICH nothing this is. An empty answer under a
 		// fold full of reasoning is a model that thought and never wrote; an

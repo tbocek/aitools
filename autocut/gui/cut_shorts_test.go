@@ -232,7 +232,7 @@ func TestTheShortsWiringIsInPlace(t *testing.T) {
 			// notes' parts, then trade seconds -- a directed plan, not a vibe
 			"Divide the target length by the number of beats",
 			"trade seconds between beats, keeping the same total",
-			"add up end minus start across your segments",
+			"add up how long your segments RUN",
 			// generic over the notes: the beat count is whatever the editor
 			// wrote -- one part or five -- and the segment count follows the
 			// beats rather than a fixed 1-to-3

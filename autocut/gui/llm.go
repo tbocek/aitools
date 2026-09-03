@@ -70,6 +70,27 @@ type chatReply struct {
 	// down as a blank page, which is the one case the pages are read for.
 	Think string
 	Calls []toolCall
+	// why the server stopped writing, as it says it: "stop" for an answer that
+	// ended, "length" for one that ran into the token ceiling and was cut off
+	// mid-word. The difference is invisible in the text -- a truncated JSON
+	// reply is just a parse error, and "unexpected end of JSON input" sends
+	// the reader looking for a bug in an answer that was never finished.
+	Stop string
+}
+
+// callSummary is a round's calls as one short phrase for the log: the tool and
+// what it was pointed at, so two rounds asking the same thing read the same and
+// two asking different things do not.
+func callSummary(calls []toolCall) string {
+	var out []string
+	for _, c := range calls {
+		arg := strings.TrimSpace(c.Function.Arguments)
+		if len(arg) > 60 {
+			arg = arg[:60] + "…"
+		}
+		out = append(out, c.Function.Name+arg)
+	}
+	return strings.Join(out, ", ")
 }
 
 // toolRunner answers one call by name; what it returns is what the model
@@ -121,6 +142,7 @@ func (a *App) llmChatTools(step string, msgs []map[string]any, thinking bool,
 		return a.llmChatOn(step, msgs, thinking, onText)
 	}
 	msgs = append([]map[string]any(nil), msgs...)
+	last := "" // what the round before asked for, to catch a model going in circles
 	for round := 0; round < toolRounds; round++ {
 		rep, err := a.chatRound(step, msgs, thinking, tools, onText)
 		if err != nil && round == 0 && !errors.Is(err, errStopped) {
@@ -136,12 +158,32 @@ func (a *App) llmChatTools(step string, msgs []map[string]any, thinking bool,
 		if len(rep.Calls) == 0 {
 			return rep.Content, nil
 		}
+		// the round itself, in the log. The tools log what they DID -- what was
+		// searched, what was read -- and that was the whole of it: a step six
+		// minutes into a tool loop showed a handful of search lines with
+		// nothing tying them to the call they belong to, no count of how many
+		// rounds were left, and no sign at all when the loop ran out. The
+		// round is the fact; the searches under it are the detail.
+		asked := callSummary(rep.Calls)
+		if asked == last {
+			// the tell for a model going in circles: the identical call again,
+			// which is what eight rounds of one wiki page looked like from the
+			// outside -- nothing, until the step failed
+			a.logfIdle(">>> %s: round %d of %d asks for the same thing again — %s",
+				step, round+1, toolRounds, asked)
+		} else {
+			a.logfIdle(">>> %s: round %d of %d — the model asked for %s",
+				step, round+1, toolRounds, asked)
+		}
+		last = asked
 		msgs = append(msgs, map[string]any{"role": "assistant", "content": rep.Content, "tool_calls": rep.Calls})
 		for _, c := range rep.Calls {
 			msgs = append(msgs, map[string]any{"role": "tool", "tool_call_id": c.ID,
 				"content": run(c.Function.Name, json.RawMessage(c.Function.Arguments))})
 		}
 	}
+	a.logfIdle("!!! %s: still calling tools after %d rounds — the step gets no answer from this call",
+		step, toolRounds)
 	return "", fmt.Errorf("the model was still calling tools after %d rounds", toolRounds)
 }
 
@@ -157,7 +199,7 @@ func (a *App) chatRound(step string, msgs []map[string]any, thinking bool,
 	}
 	t0 := time.Now()
 	rep, err := a.llmChatPost(step, msgs, thinking, tools, onText)
-	rec.done(rep.recorded(), time.Since(t0), err)
+	rec.done(rep.recorded(), rep.Stop, time.Since(t0), err)
 	return rep, err
 }
 
@@ -268,6 +310,7 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool,
 				Reasoning string     `json:"reasoning_content"`
 				ToolCalls []toolCall `json:"tool_calls"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Error any `json:"error"`
 	}
@@ -278,7 +321,8 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool,
 		return chatReply{}, fmt.Errorf("no choices (%s): %v", resp.Status, out.Error)
 	}
 	return chatReply{Content: out.Choices[0].Message.Content,
-		Think: out.Choices[0].Message.Reasoning, Calls: out.Choices[0].Message.ToolCalls}, nil
+		Think: out.Choices[0].Message.Reasoning, Calls: out.Choices[0].Message.ToolCalls,
+		Stop: out.Choices[0].FinishReason}, nil
 }
 
 // readChatStream assembles a server-sent-event reply, handing the caller the
@@ -293,12 +337,13 @@ func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (ch
 	br := bufio.NewReader(r)
 	var b, think strings.Builder
 	var calls []toolCall
+	stop := "" // the reason the LAST chunk gives for stopping; see chatReply.Stop
 	for {
 		line, err := br.ReadString('\n')
 		if s := strings.TrimSpace(line); strings.HasPrefix(s, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(s, "data:"))
 			if payload == "[DONE]" {
-				return chatReply{Content: b.String(), Think: think.String(), Calls: calls}, nil
+				return chatReply{Content: b.String(), Think: think.String(), Calls: calls, Stop: stop}, nil
 			}
 			var ch struct {
 				Choices []struct {
@@ -324,10 +369,14 @@ func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (ch
 							} `json:"function"`
 						} `json:"tool_calls"`
 					} `json:"delta"`
+					FinishReason string `json:"finish_reason"`
 				} `json:"choices"`
 			}
 			// a chunk that will not parse is a chunk, not the reply: keep reading
 			if json.Unmarshal([]byte(payload), &ch) == nil && len(ch.Choices) > 0 {
+				if r := ch.Choices[0].FinishReason; r != "" {
+					stop = r
+				}
 				d := ch.Choices[0].Delta
 				if d.Reasoning != "" {
 					w.wrote(d.Reasoning, true)
@@ -360,7 +409,7 @@ func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (ch
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				// a stream that ends without [DONE] still said what it said
-				return chatReply{Content: b.String(), Think: think.String(), Calls: calls}, nil
+				return chatReply{Content: b.String(), Think: think.String(), Calls: calls, Stop: stop}, nil
 			}
 			if a.stopFlag.Load() {
 				return chatReply{}, errStopped
@@ -485,6 +534,28 @@ func noAnswer(reply string) string {
 // wrong shape is a model that is writing and getting it wrong, and taking its
 // reasoning away would not help it get it right.
 func thinkAgain(think bool, reply string) bool { return think && noAnswer(reply) == "" }
+
+// cutOff names the other failure a JSON parser cannot: an answer that stopped
+// in the middle because the model ran into its token ceiling.
+//
+// json says "unexpected end of JSON input" either way, so a reply that was cut
+// off reads exactly like one that was malformed -- and the correction the
+// model gets back matters, because the two want opposite fixes. A malformed
+// answer wants care; a truncated one wants a SHORTER answer, and telling it to
+// "return corrected strict JSON" invites it to write the same too-long reply
+// again. One run answered with four hundred segments marching past the end of
+// the session and was chopped mid-number three times over.
+func cutOff(reply string, err error) string {
+	if strings.TrimSpace(reply) == "" || err == nil {
+		return ""
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) &&
+		!strings.Contains(err.Error(), "unexpected end of JSON input") {
+		return ""
+	}
+	return "your answer stopped in the middle -- it was too long to finish. " +
+		"Answer again with far fewer items"
+}
 
 // retryTurn puts a rejected answer and its correction into the history.
 //
