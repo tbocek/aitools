@@ -219,7 +219,7 @@ func TestTheShortsWiringIsInPlace(t *testing.T) {
 			"if lo, hi := a.suggestWindow(target); total < lo || total > hi {",
 			"return segs, fx, nil",
 			// the audit gets the effects with the segments and hands both back
-			"segs, fx = a.auditCut(session, target, segs, fx)",
+			"segs, fx = a.auditCut(session, target, span, segs, fx)",
 			// the clamp runs against the segments as applied, snapEdge and
 			// coalesce included, which is the guarantee the prompts cannot give
 			"kept := clampFxToSegs(fx, a.ed.segs)",

@@ -116,7 +116,7 @@ func (a *App) suggestClicked() {
 			a.qJob(trackSTT, "suggest", 2, 2)
 			a.prog(trackSTT, suggestChooseShare, "reading the cut back")
 			a.logfIdle(">>> audit: %d segments and %d effect(s) read back against the brief", len(segs), len(fx))
-			segs, fx = a.auditCut(session, target, segs, fx)
+			segs, fx = a.auditCut(session, target, span, segs, fx)
 		}
 		glib.IdleAdd(func() {
 			a.running = false
@@ -219,7 +219,7 @@ When a segment is right, say ok. A change for its own sake is worse than no chec
 // a corrected cut that no longer passes the arithmetic -- leaves the original
 // suggestion standing and says so in the log. A second opinion that can lose
 // you the first one is not worth having.
-func (a *App) auditCut(session string, target float64, segs []cutSeg, fx []cutFx) ([]cutSeg, []cutFx) {
+func (a *App) auditCut(session string, target, span float64, segs []cutSeg, fx []cutFx) ([]cutSeg, []cutFx) {
 	var props strings.Builder
 	for i, s := range segs {
 		fmt.Fprintf(&props, "#%d  [%s] to [%s]  (%.0f s)\n", i+1, mmss(s.S), mmss(s.E), s.E-s.S)
@@ -249,9 +249,10 @@ func (a *App) auditCut(session string, target float64, segs []cutSeg, fx []cutFx
 	}
 	alo, ahi := a.suggestWindow(target)
 	user := a.ctxBlock() + fmt.Sprintf("THE BRIEF THE CUT WAS MADE FROM:\n%s\n\n"+
+		"SESSION LENGTH: %.0f seconds (%s). Every second you name is inside it.\n\n"+
 		"TARGET LENGTH: %.0f seconds of finished video. ACCEPTED: %.0f to %.0f seconds.\n\n"+
 		"PROPOSED SEGMENTS:\n%s\n%sSESSION TIMELINE:\n%s",
-		a.prompt("cut"), target, alo, ahi, props.String(), fxBlock, session)
+		a.prompt("cut"), span, mmss(span), target, alo, ahi, props.String(), fxBlock, session)
 	msgs := []map[string]any{msg("system", a.sysPrompt("audit")), msg("user", user)}
 
 	if err := a.checkpoint(); err != nil {
@@ -629,10 +630,19 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 	// of arithmetic and no JSON at all. The two numbers come from the same
 	// function the validator uses, so the prompt and the gate cannot drift.
 	lo, hi := a.suggestWindow(target)
-	user := a.ctxBlock() + fmt.Sprintf("TARGET LENGTH: %.0f seconds of finished video. "+
+	// ...and how long the session it is choosing from actually runs. The
+	// timeline is written in mm:ss and the answer is in seconds, and nothing
+	// used to state where the session ENDS: three attempts in a row once came
+	// back with segments marching to 28999 -- eight hours of a 28-minute
+	// recording -- because a model that has lost its place has nothing in the
+	// request to lose its place against. Both spellings, since the conversion
+	// between them is where a run of plausible numbers turns into nonsense.
+	user := a.ctxBlock() + fmt.Sprintf("SESSION LENGTH: %.0f seconds, which the timeline "+
+		"writes as %s. Every start and end you give is a number of SECONDS between 0 and "+
+		"%.0f.\n\nTARGET LENGTH: %.0f seconds of finished video. "+
 		"ACCEPTED: %.0f to %.0f seconds, and at most %d segments. Stop at the first set of "+
 		"moments that lands in that range.\n\nSESSION TIMELINE:\n%s",
-		target, lo, hi, maxSuggestSegs(target), session)
+		span, mmss(span), span, target, lo, hi, maxSuggestSegs(target), session)
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
 	// the web, for a caption that names a thing the timeline does not explain
 	tools, ffx := a.webToolsFor("suggest")
@@ -704,12 +714,25 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 				"shown but not watched", len(out.Segments), n)
 		} else {
 			var segs []cutSeg
+			past := 0
 			for _, s := range out.Segments {
 				if s.End <= s.Start {
 					problem = "segment with end before start"
 					break
 				}
+				if span > 0 && s.Start >= span {
+					past++ // a second the session never reached
+				}
 				segs = append(segs, cutSeg{S: s.Start, E: s.End})
+			}
+			// said before anything about the total, because it is the fault
+			// underneath it: a cut whose segments run past the end of the
+			// recording fails the length gate too, and being told the total
+			// sends the next attempt to rebalance an answer whose real problem
+			// is that it stopped reading the timeline.
+			if problem == "" && past > 0 {
+				problem = fmt.Sprintf("%d of your %d segments start after the session ends "+
+					"at %.0f s -- nothing was recorded there", past, len(out.Segments), span)
 			}
 			// only video-backed time counts, and it is counted after the drop:
 			// a suggestion that spent half its length on stretches nobody

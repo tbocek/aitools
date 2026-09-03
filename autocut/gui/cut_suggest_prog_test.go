@@ -194,3 +194,30 @@ func TestARunawayAnswerIsRejectedForItsShape(t *testing.T) {
 		t.Error("the effect rules no longer say how to show a stretch without watching it")
 	}
 }
+
+// A segment under a speed effect is allowed to be long, because that is what
+// makes a dull stretch affordable: it costs the video its seconds divided by
+// the rate, so two minutes at 4 spends thirty of the target. Without that the
+// only way to show half a session inside a five-minute target is to cut
+// between every line of speech, which is the answer that ran to 548 segments.
+func TestTheWordingsAllowALongSegmentUnderSpeed(t *testing.T) {
+	src := readSrc(t, "cut.go")
+	if !strings.Contains(src, "two to four times the ordinary length") ||
+		!strings.Contains(src, "DIVIDED by the rate") {
+		t.Error("the effect rules no longer say how long a sped-up segment may run")
+	}
+	// the lengths are guides and say so: a model told 45 seconds as a limit
+	// packs a long stretch into a row of small segments instead
+	if strings.Contains(src, "8 to 45 seconds") {
+		t.Error("a wording still states the old fixed 8-to-45-second segment")
+	}
+	for _, want := range []string{
+		"8 seconds to about a minute",
+		"These are rough guides, not limits.",
+		"Roughly 8 seconds to a minute each, longer under a speed effect",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("no wording says %q", want)
+		}
+	}
+}

@@ -135,7 +135,7 @@ Work in this order.
 
 4. Shape the whole. The first segment establishes what this is: wherever the speakers say what they are doing or what they are after. Set busy stretches (EVENT says hectic) against calm ones. Finish on something that reads as an ending -- the result, the verdict, the last word.
 
-Each segment starts a beat before the first word you want and ends after the reaction to it: 8 to 45 seconds, longer when a moment needs its whole build-up and payoff. How many: about one segment per 20 seconds of target length, never fewer than two.` + fxRules + cutReply
+Each segment starts a beat before the first word you want and ends after the reaction to it: 8 seconds to about a minute, longer when a moment needs its whole build-up and payoff, and longer again under a speed effect (see below). These are rough guides, not limits. How many: about one segment per 20 seconds of target length, never fewer than two.` + fxRules + cutReply
 
 const suggestSystem = `You choose the moments for a highlight video of a gaming session, cut for YouTube. Someone who was not there should enjoy it from start to finish.
 
@@ -147,7 +147,7 @@ Work in this order.
 
 3. Pick from that list until the target length is spent, in this order: the first segment, wherever the speakers say what they are doing or what they are after; then the peaks with the loudest reaction; then enough calm stretches to set the loud ones against, because all peaks is as tiring as none. Split the session into four equal quarters and take at least one segment from each. The last segment is something that feels like an ending.
 
-Each segment starts a beat before the first word you want and ends after the reaction to it: 8 to 45 seconds, longer when a moment needs its whole build-up and payoff, and a joke gets its setup. How many: about one segment per 20 seconds of target length, never fewer than two.` + fxRules + cutReply
+Each segment starts a beat before the first word you want and ends after the reaction to it: 8 seconds to about a minute, longer when a moment needs its whole build-up and payoff, longer again under a speed effect (see below), and a joke gets its setup. These are rough guides, not limits. How many: about one segment per 20 seconds of target length, never fewer than two.` + fxRules + cutReply
 
 // ratingSystem is the cut for a session whose shape is a verdict: a group plays
 // several things and ranks them. suggestSystem cuts for the best moments, which
@@ -180,7 +180,7 @@ Work in this order.
 
 5. Spend what is still left, in this order: what this is, where the speakers say what they are doing and how the scoring works; the line-up, where the session shows the items before playing them -- a menu, a list, the names read out; then the items the group argued about or changed their mind on, and funny lines that land on items already covered.
 
-You cannot gather the items into a montage: cover each one where it happens on the timeline. 8 to 45 seconds each; a verdict or a reveal runs as long as it needs. End a segment on the judgement -- someone saying what they think -- not the moment the action stops. If the timeline does not show where an item was rated, take the nearest stretch where it is discussed.` + fxRules + cutReply
+You cannot gather the items into a montage: cover each one where it happens on the timeline. Roughly 8 seconds to a minute each, longer under a speed effect (see below); a verdict or a reveal runs as long as it needs. End a segment on the judgement -- someone saying what they think -- not the moment the action stops. If the timeline does not show where an item was rated, take the nearest stretch where it is discussed.` + fxRules + cutReply
 
 // showcaseSystem is the cut for a session whose subject is a THING rather than
 // a stretch of time: an unboxing, a paint job, a new unit, a printed model, a
@@ -219,7 +219,7 @@ Work in this order.
 
 5. Check every segment against the EVENT lines: the thing must be on screen. A stretch where it is out of frame is not a showcase segment however good the line over it is. Then drop repeats: two segments of the same view of the same part is one segment -- every segment shows something the viewer has not seen yet. Skip the box, the packaging and the setting-up unless something in it is worth seeing.
 
-8 to 45 seconds each; a pan as long as it takes.` + fxRules + cutReply
+Roughly 8 seconds to a minute each, longer under a speed effect (see below); a pan as long as it takes.` + fxRules + cutReply
 
 // shortsStyleName is how the Shorts wording is picked and stored; the style
 // clamp in suggestClicked reads the same name, so the two cannot drift apart.
@@ -336,6 +336,7 @@ Effects.
 - Few and deliberate: three or four across five minutes of finished video, each with a reason you could say out loud. Not one on every segment, and not none.
 - Pick the kind by what the moment needs, not by variety. Something important on screen and easy to miss -> zoom onto it. A viewer who would not know what is happening -> text saying it. A stretch that must be shown but not watched -> speed. The one beat worth landing on -> stop. Sound that does not sit right against the rest -> volume.
 - A stretch that has to be shown but not watched is ONE segment with a speed effect over it, never a row of small segments with the dull seconds left out. The cut is what the video contains; the effects are how it plays. Cutting between every line of speech to skip the pauses is how an answer turns into hundreds of segments and stops being a cut.
+- A segment under a speed effect may be two to four times the ordinary length -- minutes rather than a minute -- because it costs the finished video its seconds DIVIDED by the rate: two minutes at 4 spends thirty seconds of the target. That is what makes showing a long dull stretch affordable, and it is a rough guide like the others, not a limit.
 - A zoom runs two to four seconds, onto the score, the face, the mistake, while the speech is about it. A caption is under about eight words -- the name of a thing as it is first shown, the number someone just said, what the footage does not say out loud -- and says something true, from the material or from a search. speed 2 rushes a few seconds of the walk back or the loading screen, 4 to 8 a whole minute of it; 0.5 savours one impact, once in a video. One stop per video, on the beat everything else was leading to. volume for a stretch recorded too quiet or too loud, for ducking a background under a line that matters, and for muting seconds the session says are not to be heard.`
 
 // cutReply is the end of every cut wording, Shorts included: where a segment
@@ -5106,14 +5107,27 @@ func (a *App) buildCut() gtk.Widgetter {
 			_, _, _ = hadSel, selT0, selT1
 			if trimming {
 				trimming = false
+				// a border trimmed out until it meets the next clip closes the
+				// gap between them, and two kept stretches with nothing
+				// between them are one stretch: the same join a clip dragged
+				// against its neighbour gets (cut_split.go). This is the
+				// commoner way to ask for it -- the gap is closed by extending
+				// what is kept, where sliding a clip moves the footage.
+				merged := ed.edgeDirty && ed.mergeTouching(ed.edgeSeg)
 				if ed.edgeDirty {
 					ed.persist() // the drag is over: this is the cut that goes on disk
-					// the picture lands exactly where the edge did, throttling or
-					// no throttling, so what you trimmed to is what is on screen
-					// and the next ‹f is judged against it. Only when something
-					// actually moved: a press that merely picked the border up is
-					// a choice, and a choice does not move the red line (pickAt).
-					ed.showEdge(false)
+					if !merged {
+						// the picture lands exactly where the edge did,
+						// throttling or no throttling, so what you trimmed to
+						// is what is on screen and the next ‹f is judged
+						// against it. Only when something actually moved: a
+						// press that merely picked the border up is a choice,
+						// and a choice does not move the red line (pickAt).
+						ed.showEdge(false)
+					}
+				}
+				if merged {
+					return // the border is gone, and the join said so
 				}
 				ed.edgeStatus()
 				return
@@ -5128,11 +5142,18 @@ func (a *App) buildCut() gtk.Widgetter {
 				if ed.segDirty {
 					ed.persist()
 					ed.segDirty = false
+					// the picture lands where the clip did, so what you moved
+					// it to is what is on screen. Only when it actually MOVED,
+					// the rule the held edge above already keeps: the second
+					// press of a double click lands on a clip that is already
+					// in hand and ends a drag that went nowhere, and putting
+					// the line on the clip's start there is the page yanking
+					// the picture away from the frame that was clicked.
+					ed.showSeg(false)
 				}
 				if merged {
 					return
 				}
-				ed.showSeg(false)
 				ed.segStatus()
 				return
 			}
@@ -5957,7 +5978,8 @@ func (ed *cutEditor) syncSelBtns() {
 	if ed.splitBtn != nil {
 		ed.splitBtn.SetSensitive(!snd)
 		tip := "cut the selected region free: a border at each end, nothing removed, " +
-			"so those seconds become a scene of their own (Undo takes it back)"
+			"so those seconds become a scene of their own. With nothing selected it " +
+			"cuts once, at the red line (Undo takes it back)"
 		if snd {
 			tip = "| Split cuts footage, and this selection is " + ed.sel.aud +
 				"'s sound — drag on the pictures instead — a selection is of what it was drawn on"

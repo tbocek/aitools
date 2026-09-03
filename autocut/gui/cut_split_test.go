@@ -190,3 +190,107 @@ func TestTheSplitButtonIsWired(t *testing.T) {
 		t.Error("a deliberate border is not stored, so it lasts until the project is reopened")
 	}
 }
+
+// The other way to close a gap, and the commoner one: drag a clip's BORDER out
+// until it meets the next clip. Sliding a whole clip against its neighbour
+// moves the footage with it; extending the border keeps what is between, which
+// is what "join these two" means when the cut has dropped the seconds in the
+// middle.
+func TestTrimmingABorderOntoTheNextClipJoinsThem(t *testing.T) {
+	a, ed := splitEd(t)
+	_ = a
+	ed.segs = []cutSeg{{S: 0, E: 20}, {S: 30, E: 60}}
+
+	// the first clip's end, taken in hand and dragged out to the second's start
+	ed.edgeOn, ed.edgeSeg, ed.edgeEnd = true, 0, true
+	ed.moveEdgeTo(30, false)
+	if ed.segs[0].E != 30 {
+		t.Fatalf("the border stopped at %g, so it never met the next clip", ed.segs[0].E)
+	}
+	if !ed.mergeTouching(0) {
+		t.Fatal("a border trimmed onto the next clip did not join them")
+	}
+	segsEqual(t, ed.segs, []cutSeg{{S: 0, E: 60}})
+
+	// a border that stops short of the next clip joins nothing: the gap is
+	// still a gap, and closing it is what the gesture was for
+	ed.segs = []cutSeg{{S: 0, E: 20}, {S: 30, E: 60}}
+	ed.edgeOn, ed.edgeSeg, ed.edgeEnd = true, 0, true
+	ed.moveEdgeTo(28, false)
+	if ed.mergeTouching(0) {
+		t.Errorf("a border two seconds short joined anyway: %+v", ed.segs)
+	}
+	// and the drop asks for it, before the cut is written
+	src := readSrc(t, "cut.go")
+	if !strings.Contains(src, "merged := ed.edgeDirty && ed.mergeTouching(ed.edgeSeg)") {
+		t.Error("a trimmed border no longer asks whether it closed a gap")
+	}
+}
+
+// | Split with nothing selected is a razor at the red line.
+//
+// A region has two ends and gets two borders; a line names one place and gets
+// one. Refusing the second gesture because no region was drawn is the page
+// insisting on a drag for a cut that needs one number -- and "Split" on a
+// toolbar reads as a razor to every hand that has used an editor before.
+func TestSplitWithNothingSelectedCutsAtTheLine(t *testing.T) {
+	a, ed := splitEd(t)
+	ed.sel.active = false
+	ed.playhead, ed.hasPlay = 25, true
+	a.splitSelRange()
+
+	segsEqual(t, ed.segs, []cutSeg{{S: 0, E: 25}, {S: 25, E: 60}})
+	if !ed.segs[1].Split {
+		t.Error("the border it drew is not marked deliberate, so the next edit will swallow it")
+	}
+	if len(ed.undo) != 1 {
+		t.Errorf("the split left %d undo step(s), want 1", len(ed.undo))
+	}
+	// the new right-hand clip is in hand: two touching scenes are one stretch
+	// of green with one more line on it, and the outline is what says a press
+	// did something
+	if !ed.segOn || ed.segSel != 1 {
+		t.Errorf("after the cut the held clip is on=%v i=%d, want clip 2", ed.segOn, ed.segSel)
+	}
+	ed.undoLast()
+	segsEqual(t, ed.segs, []cutSeg{{S: 0, E: 60}})
+
+	// with no line either, it says what it needs rather than doing nothing
+	ed.undo, ed.hasPlay = nil, false
+	a.splitSelRange()
+	segsEqual(t, ed.segs, []cutSeg{{S: 0, E: 60}})
+	if len(ed.undo) != 0 {
+		t.Error("a press with nothing to cut at left an undo step")
+	}
+	// nor in a stretch the cut does not keep
+	ed.segs = []cutSeg{{S: 0, E: 20}}
+	ed.playhead, ed.hasPlay = 40, true
+	a.splitSelRange()
+	segsEqual(t, ed.segs, []cutSeg{{S: 0, E: 20}})
+	if len(ed.undo) != 0 {
+		t.Error("a press where the cut keeps nothing left an undo step")
+	}
+}
+
+// A click that takes a clip in hand does not move the picture. The second
+// press of a double click lands on a clip that is already held and ends a drag
+// that went nowhere: putting the line on the clip's start there yanks the
+// picture away from the frame the hand just clicked.
+func TestPickingUpAClipLeavesTheLineWhereItIs(t *testing.T) {
+	src := readSrc(t, "cut.go")
+	i := strings.Index(src, "merged := ed.segDirty && ed.mergeDropped()")
+	if i < 0 {
+		t.Fatal("the clip drop no longer asks about the join")
+	}
+	tail := src[i:min(len(src), i+900)]
+	j, k := strings.Index(tail, "ed.segDirty = false"), strings.Index(tail, "ed.showSeg(false)")
+	if j < 0 || k < 0 || k < j {
+		t.Fatal("the drop no longer cues the picture after a move")
+	}
+	// the cue is INSIDE the "it actually moved" branch, the same rule the held
+	// edge above keeps
+	if end := strings.Index(tail, "if merged {"); end < 0 || k > end {
+		t.Error("the picture is cued after every drop, moved or not — a press that " +
+			"only picked the clip up moves the red line")
+	}
+}

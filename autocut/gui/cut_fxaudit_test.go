@@ -90,7 +90,7 @@ func TestAFixedSpeedKeepsARateTheRenderCanBuild(t *testing.T) {
 func TestTheAuditIsAskedAboutTheEffects(t *testing.T) {
 	src := readSrc(t, "cut_suggest.go")
 	for _, want := range []string{
-		"segs, fx = a.auditCut(session, target, segs, fx)",
+		"segs, fx = a.auditCut(session, target, span, segs, fx)",
 		`fxBlock = "PROPOSED EFFECTS:\n" + b.String() + "\n"`,
 		"fxOut, fxChanged := a.applyFxChecks(fx, out.FxChecks)",
 		"fixed+dropped+len(out.Add)+fxChanged == 0",

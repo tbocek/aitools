@@ -44,7 +44,11 @@ import (
 func (a *App) splitSelRange() {
 	ed := a.ed
 	if !ed.sel.active {
-		a.setStatus("drag a region on a track first")
+		// no band drawn: the red line is the border. A clip in hand and a
+		// press on Split is a razor, which is what the button looks like it
+		// is -- and refusing because no REGION was drawn is the page insisting
+		// on a gesture for a cut that needs one number, not two.
+		a.splitAtLine()
 		return
 	}
 	if ed.sel.aud != "" {
@@ -88,6 +92,40 @@ func (a *App) splitSelRange() {
 	// camera, a lane switched off -- which wants that span still in hand.
 	a.setStatus(fmt.Sprintf("split at %s — %d scene(s), was %d; the footage is untouched "+
 		"(↶ Undo takes it back)", strings.Join(at, " and "), len(ed.segs), before))
+	ed.syncSelBtns()
+}
+
+// splitAtLine is | Split with nothing selected: one border, where the red line
+// is. The selection's version draws two because a region has two ends; this
+// draws the one the line names, which is how a razor works everywhere else and
+// what a hand that has just put the line somewhere is asking for.
+func (a *App) splitAtLine() {
+	ed := a.ed
+	if !ed.hasPlay {
+		a.setStatus("| Split cuts where the red line is — click a track to put it " +
+			"somewhere, or drag a region to cut that free instead")
+		return
+	}
+	t := ed.playhead
+	if ed.splitIdx(t) < 0 {
+		a.setStatus(fmt.Sprintf("nothing to split at %s: the cut keeps nothing there, "+
+			"or the pieces would be under %.0f s", mmss(t), minSegLn))
+		return
+	}
+	before := len(ed.segs)
+	ed.pushUndo()
+	ed.splitBorder(t)
+	ed.persist()
+	ed.redrawTracks()
+	// the right-hand half in hand, outlined: two scenes that touch are one
+	// stretch of green with one more line drawn on it, and the white outline
+	// is what says a press just made a scene rather than doing nothing
+	if i := ed.segAt(t); i >= 0 {
+		ed.segOn, ed.segSel, ed.segDirty = true, i, false
+		ed.edgeOn, ed.fxOn = false, false
+	}
+	a.setStatus(fmt.Sprintf("split at %s — %d scene(s), was %d; the footage is untouched "+
+		"(↶ Undo takes it back)", mmss(t), len(ed.segs), before))
 	ed.syncSelBtns()
 }
 
@@ -149,11 +187,29 @@ func (ed *cutEditor) splitIdx(t float64) int {
 // would throw the switch out and keep the seconds; that rule is coalesce's and
 // this asks the same question before handing over to it.
 func (ed *cutEditor) mergeDropped() bool {
-	s := ed.heldSeg()
-	if s == nil || s.isInsert() {
+	if !ed.segOn {
 		return false
 	}
-	held := ed.segSel
+	return ed.mergeTouching(ed.segSel)
+}
+
+// mergeTouching is the same join asked about a clip by index, which is how the
+// other gesture that can close a gap reaches it.
+//
+// Dragging a clip against its neighbour is one way to say "these are one
+// stretch"; dragging a clip's BORDER out to meet the next clip is the other,
+// and it is the commoner one -- a gap between two kept stretches is closed by
+// extending one of them over it, not by sliding a clip along the recording,
+// which would move the footage rather than keep what is between. Both drops
+// end here.
+func (ed *cutEditor) mergeTouching(held int) bool {
+	if held < 0 || held >= len(ed.segs) {
+		return false
+	}
+	s := &ed.segs[held]
+	if s.isInsert() {
+		return false
+	}
 	for i := range ed.segs {
 		n := &ed.segs[i]
 		if i == held || n.isInsert() || n.Cam != s.Cam {
