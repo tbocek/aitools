@@ -115,6 +115,140 @@ func (ed *cutEditor) hearBadgesAud() []hearBadge {
 	return out
 }
 
+// ---- the whole lane -----------------------------------------------------
+//
+// The badges above answer "does THIS scene hear this lane", which is the
+// question once you are working inside a scene. Before that there is a
+// coarser one -- "is this recording in the video at all" -- and answering it
+// with the badges meant taking every scene in hand in turn and pressing the
+// same plate on each. A session of forty scenes is forty presses to say one
+// thing.
+//
+// So each recording in the band wears one more speaker, on its name plate at
+// the left of the widget: the lane's own switch. Off means every scene
+// silences it; on means none does. It is not a new thing the project stores
+// -- there is nothing to migrate and nothing that can disagree with the
+// badges, because it IS the badges, written to every scene at once.
+//
+// The footage's own sound has no switch: its strip under the pictures is
+// drawn plateless on purpose (drawPairStrip), it is the row's shadow rather
+// than a mixer strip, and a scene shown from a camera is heard from it unless
+// that scene says otherwise -- which is the per-scene badge's question.
+
+const (
+	// the switch's centre, in from the widget's left edge, and where a name
+	// starts beside it. Same plate and same speaker as a scene's badge
+	// (hearPlate): one mark to learn, in the two places sound is switched.
+	laneSwX   = 12.0
+	laneNameX = 26.0
+)
+
+// laneSwitch is one recording's whole-lane switch: where it is drawn in the
+// recorders' band, in WIDGET coordinates -- the band scrolls under it and the
+// switch does not, like the name it sits beside -- and whether the cut hears
+// the lane anywhere.
+type laneSwitch struct {
+	base   string
+	cx, cy float64
+	on     bool
+}
+
+// laneHeard is whether the cut hears a lane in any scene at all. That is what
+// the switch shows: a lane no scene keeps reads off, and one kept in a single
+// scene reads on, because that scene is what pressing it would take away.
+//
+// An empty cut has no scene to hear anything, and the switch reads off --
+// which is honest, and is why pressing it then says so rather than doing
+// nothing quietly.
+func (ed *cutEditor) laneHeard(base string) bool {
+	for i := range ed.segs {
+		if !ed.segs[i].isInsert() && ed.segs[i].hears(base) {
+			return true
+		}
+	}
+	return false
+}
+
+// laneSwitches is one per recording in the band, walking the same layout
+// drawAudio draws so the hand lands where the eye is pointing. Centred on the
+// recording's whole depth, exactly as its badge is: a stereo lane is one
+// recording and gets one switch, not one per channel.
+func (ed *cutEditor) laneSwitches() []laneSwitch {
+	var out []laneSwitch
+	y := wavePad
+	for _, au := range ed.sepAuds() {
+		h := float64(ed.lanes(au)) * waveLaneH
+		out = append(out, laneSwitch{au.base, laneSwX, y + h/2, ed.laneHeard(au.base)})
+		y += h + waveGap
+	}
+	return out
+}
+
+// laneSwitchAt is the switch under a press, or "". x is the WIDGET x: the
+// switch does not scroll with the tape.
+func (ed *cutEditor) laneSwitchAt(x, y float64) string {
+	for _, s := range ed.laneSwitches() {
+		if math.Abs(x-s.cx) <= hearHit && math.Abs(y-s.cy) <= hearHit {
+			return s.base
+		}
+	}
+	return ""
+}
+
+// toggleLaneAll turns one lane off, or on, for the whole cut: every scene's
+// answer rewritten to the same one. Off if any scene still hears it -- the
+// press means "stop hearing this" while any of it is left -- and on only from
+// a lane that is silent everywhere.
+//
+// A FRESH list per scene, never an append into the one that is there, for the
+// reason toggleHear gives: an undo snapshot copies the slice of segments but
+// not the strings inside it, and growing a list in place rewrites every
+// snapshot holding the same one.
+//
+// One pushUndo for the lot. It is one act -- one press, one sentence about
+// the video -- and forty entries to undo it one scene at a time is not an
+// edit history, it is a punishment.
+func (ed *cutEditor) toggleLaneAll(base string) {
+	if base == "" {
+		return
+	}
+	if len(ed.segs) == 0 {
+		ed.a.setStatus(base + " has no scenes to be heard in yet — a lane is switched " +
+			"where the cut keeps it, so cut something first")
+		return
+	}
+	on := !ed.laneHeard(base)
+	ed.pushUndo()
+	n := 0
+	for i := range ed.segs {
+		s := &ed.segs[i]
+		if s.isInsert() {
+			continue // an insert brings its own sound; no scene silences it
+		}
+		var next []string
+		for _, q := range s.Quiet {
+			if q != base {
+				next = append(next, q)
+			}
+		}
+		if !on {
+			next = append(next, base)
+		}
+		if len(next) != len(s.Quiet) {
+			n++
+		}
+		s.Quiet = next
+	}
+	ed.persist()
+	ed.redrawTracks()
+	if on {
+		ed.a.setStatus(fmt.Sprintf("%s is on for the whole cut — every scene hears it (%d changed)", base, n))
+		return
+	}
+	ed.a.setStatus(fmt.Sprintf("%s is off for the whole cut — every scene silences it, and the "+
+		"switch on its name plate brings it back (%d changed)", base, n))
+}
+
 // hearBadgesSrc is the badges on the paired strips, in the picture band. Only
 // the camera the scene is SHOWN from wears one: the render takes a clip's own
 // sound off the recording it is cut from (pickVideoOn), so silencing another
@@ -212,15 +346,32 @@ func (ed *cutEditor) drawHearBadges(cr *cairo.Context, badges []hearBadge, vx0, 
 		if b.cx < vx0-hearHit || b.cx > vx1+hearHit {
 			continue
 		}
-		if b.on {
-			cr.SetSourceRGBA(0.15, 0.65, 0.3, 0.95)
-		} else {
-			cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.62)
-		}
-		cr.Arc(b.cx, b.cy, hearR+hearPad, 0, 2*math.Pi)
-		cr.Fill()
-		drawSpeaker(cr, b.cx, b.cy, b.on)
+		hearPlate(cr, b.cx, b.cy, b.on)
 	}
+}
+
+// drawLaneSwitches paints the whole-lane switches on the band's name plates.
+// Un-translated, from drawAudio's label pass: the switch belongs beside the
+// name, and both stay put while the tape scrolls past.
+func (ed *cutEditor) drawLaneSwitches(cr *cairo.Context) {
+	for _, s := range ed.laneSwitches() {
+		hearPlate(cr, s.cx, s.cy, s.on)
+	}
+}
+
+// hearPlate is the round plate a speaker is drawn on: lit where the sound is
+// heard, dark where it is not. Both controls draw it, so the mark means one
+// thing in both places -- a scene's badge and a lane's switch are the same
+// question asked at two sizes.
+func hearPlate(cr *cairo.Context, cx, cy float64, on bool) {
+	if on {
+		cr.SetSourceRGBA(0.15, 0.65, 0.3, 0.95)
+	} else {
+		cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.62)
+	}
+	cr.Arc(cx, cy, hearR+hearPad, 0, 2*math.Pi)
+	cr.Fill()
+	drawSpeaker(cr, cx, cy, on)
 }
 
 // drawSpeaker is the mark on the plate: a cone, with two arcs coming off it

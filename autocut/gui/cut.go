@@ -4853,6 +4853,18 @@ func (a *App) buildCut() gtk.Widgetter {
 			// could claim the same ground: they only exist while a scene is in
 			// hand, and while one is, pressing one is the only thing that
 			// press can have meant (cut_hear.go)
+			// the whole-lane switch, on the band's name plates: it is at a
+			// fixed x and is always there, where a scene's badge is in
+			// timeline coordinates and comes and goes with the scene in
+			// hand -- so where the two can claim the same press (a scene
+			// beginning at the very left of the view) the permanent one
+			// wins, and the scene's badge is a hair's scroll away
+			if area == ed.audArea {
+				if base := ed.laneSwitchAt(x, y); base != "" {
+					ed.toggleLaneAll(base)
+					return
+				}
+			}
 			if base := ed.hearAt(x+ed.viewX, y, area == ed.srcArea); base != "" {
 				ed.toggleHear(base)
 				return

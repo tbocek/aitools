@@ -352,7 +352,7 @@ func (a *App) separateOne(src string, base, unit float64) (sepResult, error) {
 // sepLoudness is a file's mean level, as ffmpeg's volumedetect reports it, or
 // "" when it cannot be measured -- a line of the log, not a step of the run.
 func sepLoudness(path string) string {
-	out, err := exec.Command(ffTool("ffmpeg"), "-v", "info", "-i", path, "-vn",
+	out, err := exec.Command(ffTool("ffmpeg"), "-v", "info", "-t", "600", "-i", path, "-vn",
 		"-af", "volumedetect", "-f", "null", "-").CombinedOutput()
 	if err != nil {
 		return ""

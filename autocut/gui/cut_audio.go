@@ -794,6 +794,9 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 	// are while the tape moves past, and a lane scrolled far from the start of
 	// its recording would otherwise be an anonymous blue smear
 	cr.SetFontSize(9)
+	// the switches first, so a name can never be drawn over one: they are at
+	// a fixed x and the names are indented past them (laneNameX)
+	ed.drawLaneSwitches(cr)
 	y = wavePad
 	for _, au := range auds {
 		n := ed.lanes(au)
@@ -806,7 +809,7 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 				// "this is where the file says it starts"
 				name += fmt.Sprintf(" · %+.2f s", d)
 			}
-			plateText(cr, 4, y+12, name)
+			plateText(cr, laneNameX, y+12, name)
 			y += waveLaneH
 		}
 		y += waveGap

@@ -116,6 +116,13 @@ func (a *App) llmChatTools(step string, msgs []map[string]any, thinking bool,
 	msgs = append([]map[string]any(nil), msgs...)
 	for round := 0; round < toolRounds; round++ {
 		rep, err := a.chatRound(step, msgs, thinking, tools, onText)
+		if err != nil && round == 0 && !errors.Is(err, errStopped) {
+			// a server that will not take a tools field answers the first
+			// round with an error and nothing else; the job is worth more
+			// than the search, so it is asked again plainly
+			a.logfIdle(">>> %s: the server refused the request with tools (%v) -- asked again without them", step, err)
+			return a.llmChatOn(step, msgs, thinking, onText)
+		}
 		if err != nil {
 			return "", err
 		}

@@ -209,7 +209,7 @@ func TestGreenIsHeardAndGreyIsNot(t *testing.T) {
 	src := readSrc(t, "cut_hear.go")
 	for _, w := range []string{
 		"if b.on {\n\t\t\tcr.SetSourceRGBA(0.2, 0.85, 0.35, 0.22)", // the wash over the scene
-		"if b.on {\n\t\t\tcr.SetSourceRGBA(0.15, 0.65, 0.3, 0.95)", // and the plate
+		"if on {\n\t\tcr.SetSourceRGBA(0.15, 0.65, 0.3, 0.95)",     // and the plate both controls share
 	} {
 		if !strings.Contains(src, w) {
 			t.Errorf("heard is no longer the green branch:\n%s", w)
@@ -430,5 +430,162 @@ func TestTheOldChoiceIsReadOnceAndNeverWritten(t *testing.T) {
 				t.Errorf("%s still writes the whole-project choice (%s)", f.name, m)
 			}
 		}
+	}
+}
+
+// ---- the whole lane ---------------------------------------------------------
+
+// The switch on a lane's name plate is the badges written to every scene at
+// once. It shows on while any scene still hears the lane, because that scene
+// is what pressing it would take away, and off only when none does.
+func TestALanesSwitchIsWhetherTheCutHearsItAnywhere(t *testing.T) {
+	ed := hearEd(t)
+	ed.segs = []cutSeg{{S: 20, E: 40}, {S: 50, E: 70}, {S: 80, E: 90}}
+	if !ed.laneHeard("mic") {
+		t.Error("a cut that silences nothing does not hear the mic")
+	}
+	ed.segs[0].Quiet = []string{"mic"}
+	ed.segs[1].Quiet = []string{"mic"}
+	if !ed.laneHeard("mic") {
+		t.Error("one scene out of three still hearing it reads as off")
+	}
+	ed.segs[2].Quiet = []string{"mic"}
+	if ed.laneHeard("mic") {
+		t.Error("every scene silences it and the switch still reads on")
+	}
+	// an insert has no say either way: it brings its own sound
+	ed.segs = append(ed.segs, cutSeg{S: 95, E: 99, Ins: "card.svg"})
+	if ed.laneHeard("mic") {
+		t.Error("an insert was read as a scene that hears the lane")
+	}
+	// and an empty cut hears nothing, which is what the switch shows
+	ed.segs = nil
+	if ed.laneHeard("mic") {
+		t.Error("a cut with no scenes hears a lane")
+	}
+}
+
+// Pressing it rewrites every scene, in one undo step, with a fresh list each
+// -- the snapshot shares the strings, so growing one in place would rewrite
+// the history it was taken from.
+func TestTheLaneSwitchTurnsEverySceneAtOnce(t *testing.T) {
+	ed := hearEd(t)
+	ed.segs = []cutSeg{{S: 20, E: 40}, {S: 50, E: 70},
+		{S: 75, E: 78, Ins: "card.svg"}, {S: 80, E: 90}}
+	ed.segs[1].Quiet = []string{"mic"} // one already off: the press still means off
+	before := len(ed.undo)
+
+	ed.toggleLaneAll("mic")
+	for i, s := range ed.segs {
+		if s.isInsert() {
+			if len(s.Quiet) != 0 {
+				t.Errorf("the insert was given a silence: %v", s.Quiet)
+			}
+			continue
+		}
+		if s.hears("mic") {
+			t.Errorf("scene %d still hears the mic after the switch went off", i+1)
+		}
+	}
+	if got := len(ed.undo) - before; got != 1 {
+		t.Errorf("one press pushed %d undo entries, want 1", got)
+	}
+	// ...and back on, every scene, including the one that was off to start
+	ed.toggleLaneAll("mic")
+	for i, s := range ed.segs {
+		if !s.isInsert() && !s.hears("mic") {
+			t.Errorf("scene %d is still silent after the switch came back on", i+1)
+		}
+	}
+	// the other lane was never touched
+	ed.segs[0].Quiet = append(ed.segs[0].Quiet, "a1")
+	ed.toggleLaneAll("mic")
+	if ed.segs[0].hears("a1") {
+		t.Errorf("switching the mic took another lane with it: %v", ed.segs[0].Quiet)
+	}
+
+	// undo puts the whole press back, which is what one entry for it means
+	ed = hearEd(t)
+	ed.segs = []cutSeg{{S: 20, E: 40}, {S: 50, E: 70}}
+	ed.toggleLaneAll("mic")
+	ed.undoLast()
+	for i, s := range ed.segs {
+		if !s.hears("mic") {
+			t.Errorf("after undo scene %d is still silent: %v", i+1, s.Quiet)
+		}
+	}
+
+	// an empty cut has nothing to switch, and says so rather than doing
+	// nothing quietly
+	ed.segs = nil
+	ed.toggleLaneAll("mic")
+	if len(ed.undo) != 0 {
+		t.Error("an empty cut pushed an undo entry for a switch that changed nothing")
+	}
+}
+
+// It sits on the name plate, one per recording, in widget coordinates -- the
+// band scrolls under it and the switch does not -- centred on the recording's
+// whole depth exactly as its badge is.
+func TestTheLaneSwitchIsOnTheNamePlate(t *testing.T) {
+	ed := hearEd(t)
+	ed.auds[3].chans = 2 // the mic in stereo: two waveforms, one switch
+	ed.auds = append(ed.auds, tlAudio{base: "room", path: "/f/room.wav", start: 0, dur: 120, chans: 1})
+
+	sw := ed.laneSwitches()
+	if len(sw) != 2 {
+		t.Fatalf("%d switches for two recordings: %+v", len(sw), sw)
+	}
+	if sw[0].base != "mic" || sw[1].base != "room" {
+		t.Errorf("the switches are %q and %q", sw[0].base, sw[1].base)
+	}
+	// the mic's two lanes, then the gap, then the room's one
+	if want := wavePad + waveLaneH; sw[0].cy != want {
+		t.Errorf("the stereo mic's switch is at y %g, want %g -- the middle of both its lanes", sw[0].cy, want)
+	}
+	if want := wavePad + 2*waveLaneH + waveGap + waveLaneH/2; sw[1].cy != want {
+		t.Errorf("the room's switch is at y %g, want %g", sw[1].cy, want)
+	}
+	for _, s := range sw {
+		if s.cx != laneSwX {
+			t.Errorf("%s's switch is at x %g, want the plate's %g", s.base, s.cx, laneSwX)
+		}
+		if !s.on {
+			t.Errorf("%s reads off on a cut that silences nothing", s.base)
+		}
+	}
+	// the press lands on it, and misses cleanly beside it
+	if got := ed.laneSwitchAt(sw[0].cx, sw[0].cy); got != "mic" {
+		t.Errorf("a press on the mic's switch found %q", got)
+	}
+	if got := ed.laneSwitchAt(sw[0].cx+hearHit+1, sw[0].cy); got != "" {
+		t.Errorf("a press clear of every switch found %q", got)
+	}
+	// the names are indented past it, or one would be drawn over the other
+	if laneNameX <= laneSwX+hearR+hearPad {
+		t.Errorf("a lane's name starts at %g, over its switch at %g", laneNameX, laneSwX)
+	}
+	src := readSrc(t, "cut_audio.go")
+	if !strings.Contains(src, "ed.drawLaneSwitches(cr)") {
+		t.Error("the band does not draw the switches")
+	}
+	if !strings.Contains(src, "plateText(cr, laneNameX, y+12, name)") {
+		t.Error("a lane's name is not indented past its switch")
+	}
+	// and the press asks for it in the band, before the scene badge that can
+	// share the same pixels at the left of the view
+	cut := readSrc(t, "cut.go")
+	i := strings.Index(cut, "if base := ed.laneSwitchAt(x, y); base != \"\" {")
+	j := strings.Index(cut, "if base := ed.hearAt(x+ed.viewX, y, area == ed.srcArea); base != \"\" {")
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("the whole-lane switch is not asked in the band before the scene's badge (switch %d, badge %d)", i, j)
+	}
+	if !strings.Contains(cut, "ed.toggleLaneAll(base)") {
+		t.Error("nothing presses the switch")
+	}
+	// both controls draw the one plate, so the mark cannot mean two things
+	hear := readSrc(t, "cut_hear.go")
+	if strings.Count(hear, "cr.Arc(cx, cy, hearR+hearPad") != 1 || !strings.Contains(hear, "hearPlate(cr, b.cx, b.cy, b.on)") {
+		t.Error("the scene badge and the lane switch no longer share hearPlate")
 	}
 }

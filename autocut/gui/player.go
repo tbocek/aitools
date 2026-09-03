@@ -488,7 +488,7 @@ func newAux(name string, t mixTrack, vol float64, onErr func(string)) *auxAudio 
 		switch msg.Type() {
 		case gst.MessageError:
 			e, _ := msg.ParseError()
-			a.pend = -1
+			a.pend, a.live = -1, false
 			if onErr != nil {
 				onErr(fmt.Sprint(e))
 			}
@@ -761,10 +761,14 @@ func (p *Player) applyMute() {
 		m := p.hushes(a.base, false)
 		if m == a.mute {
 			// a lane whose running seek has reached its stop is standing
-			// silent at the boundary it was told about; if the scene now
-			// under the line still hears it, it is placed again, with the
-			// next stop
-			if !m && a.live && a.stopAt > 0 {
+			// silent at the boundary it was told about; once the scene under
+			// the line has moved on and still hears it, it is placed again,
+			// with the next stop. Not before: while the line is still read as
+			// the old scene's the stop is the same second, and a seek whose
+			// stop is already behind it is a seek with no stop -- the lane
+			// would run on past the boundary, which is the bleed this exists
+			// to end.
+			if !m && a.live && a.stopAt > 0 && p.stopFor(a) > a.stopAt {
 				if pos, ok := where(); ok && pos+a.delta >= a.stopAt-0.05 {
 					p.place(a, pos, p.playing)
 				}
@@ -832,8 +836,8 @@ func (p *Player) dropCard() {
 
 // cue puts this recording at the master's time t and either holds it there or
 // lets it run. A time this recording was not running at is silence, and silence
-// is a pipeline left in PAUSED rather than one seeked to its own edge, which
-// would play the wrong minute quietly under the picture.
+// is a pipeline taken to READY -- no stream at all -- rather than one seeked to
+// its own edge, which would play the wrong minute quietly under the picture.
 //
 // stop is the second of this file to stop at, or 0 (Player.stopFor).
 //
@@ -974,8 +978,8 @@ func (p *Player) syncMix(play bool) {
 // place puts one recording at the master's time t and either lets it run or
 // holds it there. The one place a mix pipeline is started, so it is the one
 // place that has to know a lane with nothing to play here and a lane the scene
-// does not hear are the same thing to it (audible): both are a pipeline left
-// standing in PAUSED.
+// does not hear are the same thing to it (audible): both are a pipeline taken
+// to READY.
 //
 // It goes through cue rather than seeking outright: a lane that was hushed
 // is in READY with no stream (applyMute), and a seek on that is a no-op

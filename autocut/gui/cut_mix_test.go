@@ -13,6 +13,7 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/diamondburned/gotk4/pkg/cairo"
@@ -243,5 +244,21 @@ func TestEveryLaneTheBadgeShowsIsInThePreviewMix(t *testing.T) {
 		if m.path == v.path && m.track == 0 {
 			t.Errorf("the master track is in the mix as %+v", m)
 		}
+	}
+}
+
+// A lane standing at its stop is placed again only once the scene under the
+// line has moved on -- the new stop is ahead of the old one -- and never while
+// the line still reads as the old scene: a seek whose stop is already behind
+// it is a seek with no stop, and the lane would run on past the boundary.
+func TestALaneAtItsStopWaitsForTheNextScene(t *testing.T) {
+	body := funcBody(t, "player.go", `func \(p \*Player\) applyMute\(\) \{`)
+	if !strings.Contains(body, "p.stopFor(a) > a.stopAt") {
+		t.Errorf("applyMute re-places a stopped lane under the same stop:\n%s", body)
+	}
+	// and the stop itself is GStreamer's: a seek with a stop position
+	seek := funcBody(t, "player.go", `func \(a \*auxAudio\) seekTo\(`)
+	if !strings.Contains(seek, "gst.SeekTypeSet, int64(a.stopAt*1e9)") {
+		t.Errorf("seekTo no longer hands the stop to the seek:\n%s", seek)
 	}
 }

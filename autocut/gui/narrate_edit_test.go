@@ -936,3 +936,42 @@ func TestASilencedLaneStaysSilentPastTheClipsEnd(t *testing.T) {
 		t.Error("the preview's sound is back on the playhead's own scene, so a gap hears everything")
 	}
 }
+
+// The narration column wraps when the window narrows; it does not scroll
+// sideways. Left on GtkScrolledWindow's default the rows kept the width their
+// longest line wanted and grew a horizontal scrollbar under them, so making
+// the window smaller hid the words instead of re-wrapping them -- and the
+// text boxes, which are the thing being read, never changed width at all.
+//
+// The two halves have to hold together: the policy is what hands the rows a
+// narrower width, and the ellipsize is what lets them take it. A label with
+// neither wrap nor ellipsize has a minimum width of its whole text, and this
+// page's stamp line holds whole sentences -- so with the policy set and the
+// label unbounded, the column would simply refuse to shrink instead.
+func TestTheNarrationColumnWrapsRatherThanScrollingSideways(t *testing.T) {
+	src := readSrc(t, "narrate.go")
+	for _, want := range []string{
+		"left.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)",    // the column
+		"tScroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)", // and each box in it
+		"tl.SetEllipsize(pango.EllipsizeEnd)",                     // the stamp line is not a floor
+		"n.inputs.SetEllipsize(pango.EllipsizeEnd)",               // nor is the Inputs line
+		"text.SetWrapMode(gtk.WrapWord)",                          // and the words themselves wrap
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("narrate.go no longer contains %q -- the column stops shrinking with the window", want)
+		}
+	}
+	// the floor is the size request and nothing else: a column that cannot go
+	// under 360 px is a decision, one that cannot go under its longest
+	// sentence is an accident
+	if !strings.Contains(src, "left.SetSizeRequest(360, -1)") {
+		t.Error("the narration column lost its deliberate minimum width")
+	}
+	// every other scrolling column in the app already says it, which is what
+	// made this one the exception rather than the rule
+	for _, f := range []string{"cut_form.go", "improve.go", "publish.go"} {
+		if !strings.Contains(readSrc(t, f), "SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)") {
+			t.Errorf("%s no longer wraps its column, so narrate.go is not following a rule any more", f)
+		}
+	}
+}

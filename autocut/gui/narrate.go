@@ -513,6 +513,14 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	left := gtk.NewScrolledWindow()
 	left.SetChild(n.list)
 	left.SetVExpand(true)
+	// The rows wrap; they do not scroll sideways. Left on the default the
+	// column scrolled horizontally instead, which is not a narrower column at
+	// all: the rows keep the width their longest line wants, the text boxes
+	// stay exactly as wide as they were, and a scrollbar appears under them --
+	// so making the window smaller hid the words rather than re-wrapping them.
+	// Every other scrolling column in the app says this (cut_form.go,
+	// improve.go, publish.go); this one had been the exception.
+	left.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	// a floor, not the width: the divider opens this column at 790, which is
 	// wide enough that a narration line wraps into about three. As a minimum
 	// 780 was the widest thing in the app, and every other page inherited it --
@@ -802,6 +810,13 @@ func (n *narrator) rebuildRows() {
 			"refused and the box goes back to where the line really is")
 		tl := gtk.NewLabel("")
 		tl.AddCSSClass("dim-label")
+		// ...and never a floor under the window, the way the Inputs line is
+		// not one. Now that the column no longer scrolls sideways, a label's
+		// minimum width IS the row's, and this one holds sentences: "⚠ this
+		// clip's lines run 3.4 s past it — the render will have them moved
+		// earlier and sped up" is half a screen that nothing could shrink
+		// past. It is a summary of what the row below already says.
+		tl.SetEllipsize(pango.EllipsizeEnd)
 		// an empty box is now an answer and not a failure -- the narration is
 		// asked to leave clips alone -- so the row says which it is, or a page
 		// with three blank lines on it reads as a run that half worked
