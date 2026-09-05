@@ -119,14 +119,44 @@ func TestEverySettingsSectionSaysWhichAPIItExpects(t *testing.T) {
 	}
 	s := string(b)
 
-	// the heading is a title and an ⓘ, and the words live in its popover
+	// the heading is a title and an ⓘ, and the words are the ⓘ's tooltip --
+	// the same way every other explanation in the app is read. It was a button
+	// with a popover: a thing to click, that stayed up, with selectable text
+	// in it, so the one mark on this page that looks like every other ⓘ
+	// behaved like none of them
 	for _, want := range []string{
 		"head := func(title, why string) *gtk.Box {",
-		"info.SetIconName(\"help-about-symbolic\")",
-		"info.SetPopover(pop)",
+		`info := gtk.NewImageFromIconName("help-about-symbolic")`,
+		"info.SetTooltipText(why)",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the section heading no longer builds %q", want)
+		}
+	}
+	for _, gone := range []string{"gtk.NewPopover()", "SetSelectable(true)"} {
+		if strings.Contains(s, gone) {
+			t.Errorf("the settings page still explains itself with %q", gone)
+		}
+	}
+	// a heading shares its line with the section's first row: it is a column
+	// of the grid, not a row spanning it
+	for _, want := range []string{
+		`grid.Attach(head("Writing", `, // ...at column 0
+		`), 0, 0, 1, 1)`,               // ...one cell wide, on the Server row
+		`grid.Attach(lbl("Server:"), 1, 0, 1, 1)`,
+		`grid.Attach(server, 2, 0, 1, 1)`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the settings grid no longer puts a heading beside its first row: %q", want)
+		}
+	}
+	// and every box is one cell in one column, keys included -- those used to
+	// run wide across the columns the Tests are in, so they were the only rows
+	// whose right edge was somewhere else
+	for _, want := range []string{"grid.Attach(key, 2, 1, 1, 1)",
+		"grid.Attach(ttsKey, 2, 5, 1, 1)", "grid.Attach(sdKey, 2, 13, 1, 1)"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("a key box is not in the value column: %q", want)
 		}
 	}
 	// five sections, five titles, and nothing longer than a word or two on

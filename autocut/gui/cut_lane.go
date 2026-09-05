@@ -339,7 +339,7 @@ func (ed *cutEditor) isCutLane(base string) bool { return cutLaneIdx(ed.cutLanes
 
 // laneKillCentre is where the ✕ for a cut lane sits: timeline x, area y.
 func (ed *cutEditor) laneKillCentre(v *tlVideo) (float64, float64) {
-	return v.pxOrigin + segKillIn, ed.laneTop(v.lane) + segKillTop
+	return v.pxOrigin + killIn, ed.laneTop(v.lane) + segKillTop
 }
 
 // laneKillAt is the cut lane whose ✕ is under a press, or "".
@@ -492,7 +492,7 @@ func (ed *cutEditor) rowKillAt(px, y float64) int {
 		if !ed.rowEmpty(r) {
 			continue
 		}
-		cx, cy := ed.viewX+segKillIn, ed.laneTop(r)+segKillTop
+		cx, cy := ed.viewX+killIn, ed.laneTop(r)+segKillTop
 		if math.Abs(px-cx) <= segKillHit && math.Abs(y-cy) <= segKillHit {
 			return r
 		}
@@ -512,7 +512,7 @@ func (ed *cutEditor) drawRowKill(cr *cairo.Context, vx float64) {
 		if !ed.rowEmpty(r) {
 			continue
 		}
-		cx, cy := vx+segKillIn, ed.laneTop(r)+segKillTop
+		cx, cy := vx+killIn, ed.laneTop(r)+segKillTop
 		drawKillBadge(cr, cx, cy, ed.rowHov == r)
 	}
 }

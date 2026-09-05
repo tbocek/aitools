@@ -15,7 +15,7 @@ package main
 // through byte-identical, enforced; a block that fails validation twice keeps
 // its original lines and says so.
 //
-// understand/transcript/
+// prepare/transcript/
 //   <video>/transcript.fixed.tsv + subtitles.srt   per video, video timeline
 //   <audio>/commentary.fixed.tsv                   per voice recording
 //   offsets.tsv                                    video, audio, offset seconds

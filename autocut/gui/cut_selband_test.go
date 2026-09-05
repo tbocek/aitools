@@ -37,8 +37,8 @@ func TestTheBandSitsBetweenTheClockAndThePictures(t *testing.T) {
 	if got, want := ed.selBandTop(), float64(rulerH); got != want {
 		t.Errorf("the band starts at %g, want it under the clock at %g", got, want)
 	}
-	if got, want := ed.picTop(), float64(rulerH)+float64(selBandH); got != want {
-		t.Errorf("the pictures start at %g, want %g — the band has no room", got, want)
+	if got, want := ed.fxLaneTop(), float64(rulerH)+float64(selBandH); got != want {
+		t.Errorf("the effects lane starts at %g, want %g — the band has no room", got, want)
 	}
 	for _, c := range []struct {
 		y    float64
@@ -47,18 +47,23 @@ func TestTheBandSitsBetweenTheClockAndThePictures(t *testing.T) {
 	}{
 		{float64(rulerH) - 1, false, "in the ruler"},
 		{ed.selBandTop() + 1, true, "the top of the band"},
-		{ed.picTop() - 1, true, "the bottom of the band"},
+		{ed.fxLaneTop() - 1, true, "the bottom of the band"},
+		{ed.fxLaneTop() + 1, false, "on the effects lane"},
 		{ed.picTop() + 1, false, "on the pictures"},
 	} {
 		if got := ed.hitSelBand(c.y); got != c.want {
 			t.Errorf("y %g (%s) hits the band = %v, want %v", c.y, c.what, got, c.want)
 		}
 	}
-	// and the effects lane moved down with everything else rather than staying
-	// where it was and being drawn over
-	if ed.fxLaneTop() < ed.picTop()+float64(ed.thumbHt) {
-		t.Errorf("the effects lane starts at %g, inside the pictures that end at %g",
-			ed.fxLaneTop(), ed.picTop()+float64(ed.thumbHt))
+	// and the effects lane is the band under it, with the pictures under both:
+	// the two rows that speak for the whole cut are together, above the
+	// material (cut_fx.go)
+	if ed.fxLaneTop() < ed.selBandTop() || ed.picTop() <= ed.fxLaneTop() {
+		t.Errorf("the rows come out clock %g, band %g, effects %g, pictures %g",
+			float64(rulerH), ed.selBandTop(), ed.fxLaneTop(), ed.picTop())
+	}
+	if !ed.fxHitLane(ed.picTop()-1) || ed.fxHitLane(ed.picTop()+1) {
+		t.Error("the effects lane has no bottom: a press on the pictures lands in it")
 	}
 }
 
@@ -77,7 +82,7 @@ func TestTheEndsOfTheBandAreItsHandles(t *testing.T) {
 		{x1, selEnd, "on the right end"},
 		{x1 - selGripPx + 1, selEnd, "just inside the right end"},
 		{(x0 + x1) / 2, selWhole, "in the middle"},
-		{x1 - bandKillIn, selKill, "on the ✕"},
+		{x1 - killIn, selKill, "on the ✕"},
 		{x0 - 20, selNone, "clear of it on the left"},
 		{x1 + 20, selNone, "clear of it on the right"},
 	} {
@@ -368,7 +373,7 @@ func TestTheGreenBarsXRemovesThatClip(t *testing.T) {
 		want int
 		what string
 	}{
-		{x1 - bandKillIn, selKill, "on the ✕"},
+		{x1 - killIn, selKill, "on the ✕"},
 		{(x0 + x1) / 2, selWhole, "in the middle"},
 		{x0, selStart, "on the left end"},
 		{x1, selEnd, "on the right end"},
@@ -400,14 +405,14 @@ func TestTheGreenBarsXRemovesThatClip(t *testing.T) {
 // TestTheGreenBarWearsItsXOnScreen: a verb the hand cannot see is a verb
 // nobody uses, so the mark is drawn always -- plate under arms, so it survives
 // whatever the bar is drawn over -- and only on a bar with the room to hold it
-// clear of its own middle (bandKillMin).
+// clear of its own middle (killMin).
 func TestTheGreenBarWearsItsXOnScreen(t *testing.T) {
 	ed := bandEd(t)
 	ed.sel.active = false
 	ed.playhead, ed.hasPlay = 40, true
 	const w, h = 1300, 200
 	y := int(ed.selBandTop()) + selBandH/2
-	kx := int(ed.xOf(60) - bandKillIn)
+	kx := int(ed.xOf(60) - killIn)
 	whitish := func(at func(x, y int) (uint8, uint8, uint8)) bool {
 		for dx := -3; dx <= 3; dx++ {
 			for dy := -3; dy <= 3; dy++ {
@@ -426,12 +431,12 @@ func TestTheGreenBarWearsItsXOnScreen(t *testing.T) {
 	// like anything else too small to hit. The playhead moves inside the
 	// shrunken clip -- outside it there would be no bar at all, and no bar
 	// draws no ✕ for the wrong reason.
-	ed.segs[0].E = ed.segs[0].S + (bandKillMin-4)/ed.pps
+	ed.segs[0].E = ed.segs[0].S + (killMin-4)/ed.pps
 	ed.playhead = (ed.segs[0].S + ed.segs[0].E) / 2
 	if got := ed.bandClipIdx(); got != 0 {
 		t.Fatalf("the shrunken clip is not the bar (idx %d) -- the check below would pass for nothing", got)
 	}
-	kx = int(ed.xOf(ed.segs[0].E) - bandKillIn)
+	kx = int(ed.xOf(ed.segs[0].E) - killIn)
 	if whitish(renderTrack(t, ed, w, h)) {
 		t.Error("a bar under the width floor still drew a ✕")
 	}
@@ -447,21 +452,21 @@ func TestTheGreenBarsXIsEasierToHitThanToSeeAndClearOfTheGrip(t *testing.T) {
 	}
 	// the plate stops before the grip does: drawn over it, the mark would sit
 	// on pixels that resize the clip
-	if bandKillIn-(segKillR+segKillPad) <= selGripPx {
+	if killIn-(segKillR+segKillPad) <= selGripPx {
 		t.Errorf("the plate reaches %.1f px in from the end, inside the %.1f px grip",
-			bandKillIn-(segKillR+segKillPad), selGripPx)
+			killIn-(segKillR+segKillPad), selGripPx)
 	}
 	ed := bandEd(t)
 	ed.sel.active = false
 	ed.playhead, ed.hasPlay = 40, true
 	x1 := ed.xOf(60)
 	for _, dx := range []float64{-(segKillR + segKillPad), segKillR + segKillPad} {
-		if _, part := ed.bandClipPartAt(x1 - bandKillIn + dx); part != selKill {
+		if _, part := ed.bandClipPartAt(x1 - killIn + dx); part != selKill {
 			t.Errorf("the plate's %+.0f px edge takes part %d, not the ✕", dx, part)
 		}
 	}
 	// and it stops: the bar is not a remove button
-	if _, part := ed.bandClipPartAt(x1 - bandKillIn - 3*segKillHit); part == selKill {
+	if _, part := ed.bandClipPartAt(x1 - killIn - 3*segKillHit); part == selKill {
 		t.Error("the ✕ answers from most of the way along the bar")
 	}
 }
@@ -473,7 +478,7 @@ func TestTheGreenBarsXLightsUnderThePointer(t *testing.T) {
 	ed.sel.active = false
 	ed.playhead, ed.hasPlay = 40, true
 	y := ed.selBandTop() + selBandH/2
-	kx := ed.xOf(60) - bandKillIn
+	kx := ed.xOf(60) - killIn
 
 	ed.hoverTracks(kx-ed.viewX, y)
 	if ed.bandKillHov != 0 {
@@ -484,7 +489,7 @@ func TestTheGreenBarsXLightsUnderThePointer(t *testing.T) {
 	}
 	// the ✕ on the OTHER bar lights that one, not this one: the mark is per
 	// bar, as the effects lane's are
-	if ed.hoverTracks(ed.xOf(140)-bandKillIn-ed.viewX, y); ed.bandKillHov != 1 {
+	if ed.hoverTracks(ed.xOf(140)-killIn-ed.viewX, y); ed.bandKillHov != 1 {
 		t.Errorf("the pointer on clip 2's ✕ lit bar %d, want 1", ed.bandKillHov)
 	}
 	// the middle of a bar holds the bar, and lights no ✕
@@ -547,49 +552,52 @@ func TestEveryKillBadgeIsTheSameBadge(t *testing.T) {
 	}
 }
 
-// Every bar wears a live ✕, not just the one the red line is in. A mark that
-// only works after you have clicked the clip is a control with a lock on it:
-// the press that puts the line in a clip exists only to make the next press
-// possible, and the effects lane has never asked for it (cut_fxkill.go). What
-// stays the tall bar's alone is trimming and moving, which are drags that need
-// to know which clip is anchored.
+// Every bar is live, not just the one the red line is in -- its ✕, its ends and
+// its middle alike. A control that only works after you have clicked the clip
+// is a control with a lock on it: the press that puts the line in a clip exists
+// only to make the next press possible, and the effects lane has never asked
+// for it (cut_fxkill.go). The picture band draws and answers every kept
+// stretch; this row does too.
 func TestEveryGreenBarsXIsLiveWhereverTheLineIs(t *testing.T) {
 	ed := bandEd(t) // clips 20-60 and 100-140
 	ed.sel.active = false
 	ed.playhead, ed.hasPlay = 40, true // the line is in the FIRST clip
 
 	// the second clip's ✕ answers anyway, and takes the second clip
-	i, part := ed.bandClipPartAt(ed.xOf(140) - bandKillIn)
+	i, part := ed.bandClipPartAt(ed.xOf(140) - killIn)
 	if i != 1 || part != selKill {
 		t.Fatalf("the ✕ on the bar the line is not in takes clip %d part %d, want 1/%d", i, part, selKill)
 	}
-	if got := ed.wantCursor(ed.xOf(140)-bandKillIn-ed.viewX, ed.selBandTop()+selBandH/2); got != "pointer" {
+	if got := ed.wantCursor(ed.xOf(140)-killIn-ed.viewX, ed.selBandTop()+selBandH/2); got != "pointer" {
 		t.Errorf("over that ✕ the cursor is %q, want a pointer", got)
 	}
-	// ...and only its ✕: the rest of that bar is not the hand's, because the
-	// tall bar is the one with handles and there is only one of those
-	if _, part := ed.bandClipPartAt(ed.xOf(120)); part != selNone {
-		t.Errorf("the middle of a bar the line is not in takes part %d", part)
+	// ...and so is the rest of that bar: its middle takes the clip and its
+	// ends take that clip's borders, wherever the line happens to be
+	if i, part := ed.bandClipPartAt(ed.xOf(120)); i != 1 || part != selWhole {
+		t.Errorf("the middle of a bar the line is not in takes clip %d part %d, want 1/%d", i, part, selWhole)
 	}
-	if _, part := ed.bandClipPartAt(ed.xOf(100)); part != selNone {
-		t.Errorf("the end of a bar the line is not in takes part %d", part)
+	if i, part := ed.bandClipPartAt(ed.xOf(100)); i != 1 || part != selStart {
+		t.Errorf("the start of a bar the line is not in takes clip %d part %d, want 1/%d", i, part, selStart)
+	}
+	if i, part := ed.bandClipPartAt(ed.xOf(140) - selGripPx/2); i != 1 || part != selEnd {
+		t.Errorf("the end of a bar the line is not in takes clip %d part %d, want 1/%d", i, part, selEnd)
 	}
 
 	// no line on the page at all and both are still live: "put the line
 	// somewhere first" is exactly the press this must not require
 	ed.hasPlay = false
-	if got := ed.bandKillAt(ed.xOf(60) - bandKillIn); got != 0 {
+	if got := ed.bandKillAt(ed.xOf(60) - killIn); got != 0 {
 		t.Errorf("with no playhead the first clip's ✕ answers %d, want 0", got)
 	}
-	if got := ed.bandKillAt(ed.xOf(140) - bandKillIn); got != 1 {
+	if got := ed.bandKillAt(ed.xOf(140) - killIn); got != 1 {
 		t.Errorf("with no playhead the second clip's ✕ answers %d, want 1", got)
 	}
 	ed.playhead, ed.hasPlay = 80, true // and in a stretch the cut dropped
-	if got := ed.bandKillAt(ed.xOf(140) - bandKillIn); got != 1 {
+	if got := ed.bandKillAt(ed.xOf(140) - killIn); got != 1 {
 		t.Errorf("with the line in a dropped stretch the ✕ answers %d, want 1", got)
 	}
 	// pressing it drops that clip, and it is the clip the mark was on
-	ed.killSeg(ed.bandKillAt(ed.xOf(140) - bandKillIn))
+	ed.killSeg(ed.bandKillAt(ed.xOf(140) - killIn))
 	if len(ed.segs) != 1 || ed.segs[0].S != 20 {
 		t.Errorf("the ✕ on the second bar left %+v", ed.segs)
 	}
@@ -608,7 +616,7 @@ func TestEveryGreenBarWearsTheXOnScreen(t *testing.T) {
 		end  float64
 		what string
 	}{{60, "the bar the line is in"}, {140, "a bar the line is not in"}} {
-		kx := int(ed.xOf(c.end) - bandKillIn)
+		kx := int(ed.xOf(c.end) - killIn)
 		white := false
 		for dx := -3; dx <= 3 && !white; dx++ {
 			for dy := -3; dy <= 3 && !white; dy++ {
@@ -623,12 +631,127 @@ func TestEveryGreenBarWearsTheXOnScreen(t *testing.T) {
 	}
 	// the dim bar is deep enough to hold the plate it now carries: its own
 	// fill, not the row's ground, under the badge's top and bottom edge
-	kx := int(ed.xOf(140) - bandKillIn)
+	kx := int(ed.xOf(140) - killIn)
 	for _, dy := range []int{-int(segKillR+segKillPad) + 1, int(segKillR+segKillPad) - 1} {
 		r, g, b := at(kx-int(segKillR+segKillPad)-1, y+dy)
 		if !(int(g) > int(r)+20 && int(g) > int(b)+20) {
 			t.Errorf("beside the badge at dy=%d the bar reads rgb(%d,%d,%d) — the plate hangs off it",
 				dy, r, g, b)
 		}
+	}
+}
+
+// The page in two halves.
+//
+// The rows that speak for the WHOLE CUT -- which seconds are in the video, and
+// what is done to them -- used to sit either side of the rows that are one
+// camera's material: green bar, pictures, wave strip, effects. So the effects
+// lane read as belonging to the pictures it was tucked under, and it separated
+// the two bands you compare when choosing which sound goes with which camera.
+//
+// Now: clock, green bar, effects, then everything that was recorded. One
+// sentence for the order, one ground under the two top bands, and a hairline
+// where the claims stop and the material starts.
+func TestTheCutsOwnRowsSitAboveTheMaterial(t *testing.T) {
+	ed := bandEd(t)
+	ed.fx = []cutFx{{Kind: "text", T: 205, Dur: 4, Text: "hi"}}
+	// the order, top to bottom
+	tops := []struct {
+		what string
+		y    float64
+	}{
+		{"the clock", 0},
+		{"the green bar", ed.selBandTop()},
+		{"the effects", ed.fxLaneTop()},
+		{"the pictures", ed.picTop()},
+		{"the bottom", ed.picBottom()},
+	}
+	for i := 1; i < len(tops); i++ {
+		if tops[i].y <= tops[i-1].y {
+			t.Errorf("%s starts at %g, at or above %s at %g",
+				tops[i].what, tops[i].y, tops[i-1].what, tops[i-1].y)
+		}
+	}
+	// each band answers for its own rows and no others
+	for _, c := range []struct {
+		y              float64
+		band, fx, pics bool
+		what           string
+	}{
+		{ed.selBandTop() + 1, true, false, false, "the green bar"},
+		{ed.fxLaneTop() + 1, false, true, false, "the effects lane"},
+		{ed.picTop() + 1, false, false, true, "the pictures"},
+	} {
+		if ed.hitSelBand(c.y) != c.band || ed.fxHitLane(c.y) != c.fx || ed.hitPics(c.y) != c.pics {
+			t.Errorf("y %g (%s) reads band=%v fx=%v pics=%v", c.y, c.what,
+				ed.hitSelBand(c.y), ed.fxHitLane(c.y), ed.hitPics(c.y))
+		}
+	}
+	// a second row of effects pushes the material down, and nothing else: the
+	// two top bands are anchored to the clock (fxLaneTop)
+	was := ed.picTop()
+	ed.fx = append(ed.fx, cutFx{Kind: "zoom", T: 206, Dur: 4})
+	if _, n := fxRows(ed.fx); n != 2 {
+		t.Fatalf("two overlapping effects pack into %d row(s), want 2", n)
+	}
+	if ed.selBandTop() != float64(rulerH) || ed.fxLaneTop() != float64(rulerH)+float64(selBandH) {
+		t.Error("a second row of effects moved the rows above it")
+	}
+	if got, want := ed.picTop()-was, float64(fxLaneH); got != want {
+		t.Errorf("a second row of effects moved the pictures %g px, want %g", got, want)
+	}
+	// the area asks for the height of the whole stack, effects included --
+	// which picBottom now measures, because the lane is inside it
+	if !strings.Contains(readSrc(t, "cut.go"), "h := int(ed.picBottom()) + 4\n") {
+		t.Error("the area's height is measured some other way than from the stack")
+	}
+}
+
+// Every ✕ on the page sits the same distance in from the edge it is drawn
+// against, and that distance is not a taste.
+//
+// The edges these badges sit against can all be GRABBED -- a clip border, a
+// bar's end, an effect's end -- and the grab reaches edgeGrab px either side.
+// A badge closer in than edgeGrab+its own reach shares pixels with the handle:
+// the press asking for "a bit shorter" finds "gone". The green bar had worked
+// this out (16 px); the effects lane, the cut lanes and the emptied rows were
+// still on a number that predated it (11), so an effect's ✕ swallowed the whole
+// of its own right-hand grip and the two marks sat visibly out of line.
+func TestEveryKillBadgeKeepsTheSameRoomForTheHandle(t *testing.T) {
+	if killIn < edgeGrab+segKillHit {
+		t.Errorf("a ✕ at %g px in overlaps a border grabbed at ±%g", killIn, edgeGrab)
+	}
+	if killIn < selGripPx+segKillHit {
+		t.Errorf("a ✕ at %g px in overlaps a bar end gripped at ±%g", killIn, selGripPx)
+	}
+	// the four that wear the plate all measure from the same constant
+	for _, c := range []struct{ file, want string }{
+		{"cut_selband.go", "drawKillBadge(cr, gx1-killIn, y+selBandH/2, ed.bandKillHov == i)"},
+		{"cut_fxkill.go", "return x1 - killIn, ed.fxLaneTop()"},
+		{"cut_lane.go", "return v.pxOrigin + killIn, ed.laneTop(v.lane) + segKillTop"},
+		{"cut_lane.go", "cx, cy := ed.viewX+killIn, ed.laneTop(r)+segKillTop"},
+	} {
+		if !strings.Contains(readSrc(t, c.file), c.want) {
+			t.Errorf("%s no longer places its ✕ at killIn: %q", c.file, c.want)
+		}
+	}
+	// ...and so does the blue band's, which is a different MARK for a
+	// different verb but sits in the same column
+	sb := readSrc(t, "cut_selband.go")
+	for _, want := range []string{
+		"math.Abs(px-(x1-killIn)) <= selKillW/2",
+		"kx := x1 - killIn",
+	} {
+		if !strings.Contains(sb, want) {
+			t.Errorf("the blue band's ✕ is out of the column: %q", want)
+		}
+	}
+	// a thing too narrow to hold one keeps its middle: the floor is twice the
+	// badge's reach, for both kinds of mark
+	if killMin < 2*(killIn+segKillHit) {
+		t.Errorf("a bar of %g px has its middle inside its own ✕", killMin)
+	}
+	if selMinBand < 2*(killIn+selKillW/2) {
+		t.Errorf("a band of %g px has its middle inside its own ✕", selMinBand)
 	}
 }

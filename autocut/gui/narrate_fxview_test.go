@@ -64,12 +64,12 @@ func TestNarrateShowsTheSceneSCameraNotTheWatchedRow(t *testing.T) {
 func TestTheNarratePreviewIsMixedLikeTheRender(t *testing.T) {
 	sound := funcBody(t, "narrate.go", `func \(n \*narrator\) syncFxSound\(\)`)
 	for _, want := range []string{
-		"p.SetFxGain(n.gameGain(n.pos))",      // a volume effect, and the render's duck
-		"p.SetMuted(freezeHush(ed.fx, n.pos)", // a stop that silences
-		"ed.cutVideoAt(n.pos)",                // asked about the scene's camera, not the watched row
-		"s := n.heardScene(n.pos)",            // ...and about the scene whose sound is sounding
-		"p.Hush(own, quiet, until)",           // a lane that scene silences
-		"cardHush(overInsert(",                // and a card that has taken these seconds' sound
+		"p.SetFxGain(n.gameGain(n.pos))",  // a volume effect, and the render's duck
+		"p.SetMuted(fxHush(ed.fx, n.pos)", // a stop that silences
+		"ed.cutVideoAt(n.pos)",            // asked about the scene's camera, not the watched row
+		"s := n.heardScene(n.pos)",        // ...and about the scene whose sound is sounding
+		"p.Hush(own, quiet, until)",       // a lane that scene silences
+		"cardHush(overInsert(",            // and a card that has taken these seconds' sound
 	} {
 		if !strings.Contains(sound, want) {
 			t.Errorf("the Narrate preview's sound no longer does %q", want)

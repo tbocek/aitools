@@ -286,7 +286,7 @@ func TestTheBackdropToggleIsWired(t *testing.T) {
 	for _, want := range []string{
 		`p.blur = gtk.NewCheckButtonWithLabel("Blurred backdrop")`,
 		`p.blur.SetActive(true)`,
-		`at(0, 5, "Frame edges:", p.blur)`,
+		"check(0, 4, p.blur)", // a tick needs no leading label
 		`Bare:      !p.blur.Active(),`,
 		`p.blur.SetActive(!st.Bare)`,
 	} {

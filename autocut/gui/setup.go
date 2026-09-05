@@ -202,10 +202,11 @@ type globalConf struct {
 	// that comes back after a month is exactly the case worth remembering.
 	Projects map[string]string
 
-	// Which wording each prompt is set to. The wordings themselves are files
-	// under prompts/ (globalPrompts); this is only the choice, which is one
-	// short name per job and belongs with the other short answers.
-	PromptPick map[string]string
+	// PROMPT_* lines were here: which of a job's several wordings this
+	// machine had picked, back when a Style dropdown chose between them.
+	// There is one wording per job now (prompts.go), so there is nothing to
+	// pick; a settings file written then keeps the lines and nothing reads
+	// them.
 }
 
 // readGlobal parses the file. Every blank is filled by the built-in, so a
@@ -215,7 +216,7 @@ type globalConf struct {
 // sharing mutable state, which is also why a settings change takes effect on
 // the next step without a restart.
 func (a *App) readGlobal() globalConf {
-	g := globalConf{Projects: map[string]string{}, PromptPick: map[string]string{}}
+	g := globalConf{Projects: map[string]string{}}
 	b, err := os.ReadFile(confPath())
 	if err != nil {
 		b, err = os.ReadFile(a.legacyConfPath())
@@ -246,8 +247,7 @@ func (a *App) readGlobal() globalConf {
 			files[strings.TrimSuffix(strings.TrimPrefix(k, "PROJECT_"), "_FILE")] = v
 			continue
 		case strings.HasPrefix(k, "PROMPT_"):
-			g.PromptPick[strings.ToLower(strings.TrimPrefix(k, "PROMPT_"))] = v
-			continue
+			continue // which wording a job was picked to; there is one now
 		}
 		switch k {
 		case "LLM_SERVER":
@@ -426,17 +426,6 @@ func rememberedBody(g globalConf) string {
 `)
 		for i, root := range sortedKeys(g.Projects) {
 			fmt.Fprintf(&b, "PROJECT_%d_ROOT=%q\nPROJECT_%d_FILE=%q\n", i+1, root, i+1, g.Projects[root])
-		}
-	}
-	if len(g.PromptPick) > 0 {
-		b.WriteString(`
-# Which wording each prompt is set to. The wordings themselves are text files
-# in prompts/ beside this one -- only the ones edited here, since an untouched
-# prompt is the one in the binary. Delete a line to go back to the built-in
-# default for that job.
-`)
-		for _, k := range sortedKeys(g.PromptPick) {
-			fmt.Fprintf(&b, "PROMPT_%s=%q\n", strings.ToUpper(k), g.PromptPick[k])
 		}
 	}
 	return b.String()
@@ -1236,58 +1225,63 @@ func (a *App) setupDialog() {
 	// which API a box is expected to speak is not guessable from the box --
 	// but they are read once, when something is wrong, and a page of prose
 	// above every row is in the way on all the other openings. So the title
-	// stays on the page and the words go behind the button.
+	// stays on the page and the words are on the mark beside it.
+	//
+	// A TOOLTIP, like every other explanation in this app. It was a button
+	// with a popover: a thing to click, that stayed up until it was dismissed,
+	// with selectable text in it -- so the one mark on this page that looks
+	// like every other ⓘ behaved like none of them, and reading it left a blue
+	// smear across the paragraph. The cost is that the endpoints in it can no
+	// longer be dragged out with the mouse; they are in this file and in the
+	// log, and everything else about it is better.
 	head := func(title, why string) *gtk.Box {
 		l := gtk.NewLabel(title)
 		l.SetXAlign(0)
 		l.AddCSSClass("heading")
-		body := gtk.NewLabel(why)
-		body.SetXAlign(0)
-		body.SetWrap(true)
-		body.SetMaxWidthChars(64) // wrapping needs a width to wrap at
-		body.SetSelectable(true)  // endpoints are for copying into a terminal
-		body.SetMarginTop(4)
-		body.SetMarginBottom(4)
-		body.SetMarginStart(4)
-		body.SetMarginEnd(4)
-		pop := gtk.NewPopover()
-		pop.SetChild(body)
-		info := gtk.NewMenuButton()
-		info.SetIconName("help-about-symbolic")
-		info.SetTooltipText("What this is, and which API it expects")
-		info.AddCSSClass("flat")
-		info.SetPopover(pop)
+		info := gtk.NewImageFromIconName("help-about-symbolic")
+		info.SetTooltipText(why)
 		box := gtk.NewBox(gtk.OrientationHorizontal, 6)
-		box.SetMarginTop(6)
+		box.SetVAlign(gtk.AlignCenter) // it shares a line with the first row now
 		box.Append(l)
 		box.Append(info)
 		return box
 	}
-	// four columns: what it is, the value, the verdict, its Test -- the check
-	// lands beside the box it judges, before the button that made it. Every
-	// server section reads the same way: Server, API key, then whatever that
-	// server is asked for -- the same words for the same things.
+	// Five columns: the section, what it is, the value, the verdict, its Test.
+	// The check lands beside the box it judges, before the button that made
+	// it, and every server section reads the same way -- Server, API key, then
+	// whatever that server is asked for, the same words for the same things.
+	//
+	// The section is a COLUMN, so a heading shares the line with the first row
+	// under it. It used to be a row of its own spanning the whole grid: five
+	// lines of the dialog spent on five short words, each with the rest of its
+	// line empty, on a dialog already taller than some of the screens it opens
+	// on. And every box then lines up with every other box by construction --
+	// they are one column of the same grid, including the key rows, which used
+	// to run wide across the columns the Test buttons are in.
 	grid.Attach(head("Writing", "The model that describes the footage, proposes the cut and "+
 		"writes the narration.\n\nExpects an OpenAI-compatible chat API: POST /v1/chat/completions, "+
 		"and GET /v1/models for the Fetch models button. The key is sent as "+
 		"Authorization: Bearer …; leave it empty for a server that wants none. "+
 		"Test asks for one short completion; the Test beside Model shows it a small "+
-		"picture, because describing footage needs a model that can see."), 0, 0, 4, 1)
-	grid.Attach(lbl("Server:"), 0, 1, 1, 1)
-	grid.Attach(server, 1, 1, 1, 1)
-	grid.Attach(llmBadge.stack, 2, 1, 1, 1)
-	grid.Attach(testLLMBtn, 3, 1, 1, 1)
-	grid.Attach(lbl("API key:"), 0, 2, 1, 1)
-	grid.Attach(key, 1, 2, 3, 1)
+		"picture, because describing footage needs a model that can see."), 0, 0, 1, 1)
+	grid.Attach(lbl("Server:"), 1, 0, 1, 1)
+	grid.Attach(server, 2, 0, 1, 1)
+	grid.Attach(llmBadge.stack, 3, 0, 1, 1)
+	grid.Attach(testLLMBtn, 4, 0, 1, 1)
+	grid.Attach(lbl("API key:"), 1, 1, 1, 1)
+	grid.Attach(key, 2, 1, 1, 1)
 	// the model's own Test is the vision one: the server round trip is the row
 	// above, and what is left to prove about the MODEL is that it can see
-	grid.Attach(lbl("Model:"), 0, 3, 1, 1)
-	grid.Attach(model, 1, 3, 1, 1)
-	grid.Attach(visBadge.stack, 2, 3, 1, 1)
-	grid.Attach(testVisBtn, 3, 3, 1, 1)
-	grid.Attach(fetch, 0, 4, 1, 1)
-	grid.Attach(pick, 1, 4, 2, 1)
-	grid.Attach(use, 3, 4, 1, 1)
+	grid.Attach(lbl("Model:"), 1, 2, 1, 1)
+	grid.Attach(model, 2, 2, 1, 1)
+	grid.Attach(visBadge.stack, 3, 2, 1, 1)
+	grid.Attach(testVisBtn, 4, 2, 1, 1)
+	// the list the server offers, in the columns the box and its button are
+	// in: Fetch where a label goes, the list where the value goes, Use where
+	// the Tests are
+	grid.Attach(fetch, 1, 3, 1, 1)
+	grid.Attach(pick, 2, 3, 1, 1)
+	grid.Attach(use, 4, 3, 1, 1)
 
 	// one server, two sections: the same server does the listening below
 	grid.Attach(head("Speaking", "The audio.cpp server that speaks the narration.\n\n"+
@@ -1295,17 +1289,17 @@ func (a *App) setupDialog() {
 		"to check the model id. Empty means the compose service on loopback. Autocut only "+
 		"ever talks to this server over HTTP -- starting it is the job of whoever runs the "+
 		"stack.\n\nThe TTS model is the id the server lists, not a file: which weights they "+
-		"are, and on which backend, is set in audiocpp-server.json."), 0, 5, 4, 1)
-	grid.Attach(lbl("Server:"), 0, 6, 1, 1)
-	grid.Attach(tts, 1, 6, 1, 1)
-	grid.Attach(ttsBadge.stack, 2, 6, 1, 1)
-	grid.Attach(testTTSBtn, 3, 6, 1, 1)
-	grid.Attach(lbl("API key:"), 0, 7, 1, 1)
-	grid.Attach(ttsKey, 1, 7, 3, 1)
-	grid.Attach(lbl("TTS model:"), 0, 8, 1, 1)
-	grid.Attach(ttsm, 1, 8, 1, 1)
-	grid.Attach(ttsmBadge.stack, 2, 8, 1, 1)
-	grid.Attach(testTTSMBtn, 3, 8, 1, 1)
+		"are, and on which backend, is set in audiocpp-server.json."), 0, 4, 1, 1)
+	grid.Attach(lbl("Server:"), 1, 4, 1, 1)
+	grid.Attach(tts, 2, 4, 1, 1)
+	grid.Attach(ttsBadge.stack, 3, 4, 1, 1)
+	grid.Attach(testTTSBtn, 4, 4, 1, 1)
+	grid.Attach(lbl("API key:"), 1, 5, 1, 1)
+	grid.Attach(ttsKey, 2, 5, 1, 1)
+	grid.Attach(lbl("TTS model:"), 1, 6, 1, 1)
+	grid.Attach(ttsm, 2, 6, 1, 1)
+	grid.Attach(ttsmBadge.stack, 3, 6, 1, 1)
+	grid.Attach(testTTSMBtn, 4, 6, 1, 1)
 
 	// the one local tool here: no API, a binary. Which ffmpeg answers, and what
 	// it was built with, decides whether the render works at all
@@ -1317,11 +1311,15 @@ func (a *App) setupDialog() {
 		"Test runs it and checks this build has the filters and encoders the pipeline "+
 		"uses: rubberband, subtitles, loudnorm, atempo, amix, adelay, alimiter, libx264, libx265, "+
 		"aac, libopus. A build missing one works perfectly until the step that needs it, "+
-		"which is minutes into a render."), 0, 9, 4, 1)
-	grid.Attach(lbl("ffmpeg:"), 0, 10, 1, 1)
-	grid.Attach(ff, 1, 10, 1, 1)
-	grid.Attach(ffBadge.stack, 2, 10, 1, 1)
-	grid.Attach(testFFBtn, 3, 10, 1, 1)
+		"which is minutes into a render."), 0, 7, 1, 1)
+	grid.Attach(lbl("ffmpeg:"), 1, 7, 1, 1)
+	grid.Attach(ff, 2, 7, 1, 1)
+	grid.Attach(ffBadge.stack, 3, 7, 1, 1)
+	grid.Attach(testFFBtn, 4, 7, 1, 1)
+	grid.Attach(lbl("firefox:"), 1, 8, 1, 1)
+	grid.Attach(fx, 2, 8, 1, 1)
+	grid.Attach(fxBadge.stack, 3, 8, 1, 1)
+	grid.Attach(testFxBtn, 4, 8, 1, 1)
 
 	// no server of its own: Prepare talks to the one named above. What is left
 	// is which of its models to ask -- what language to ask them in is the
@@ -1333,7 +1331,7 @@ func (a *App) setupDialog() {
 		"ids.\n\nThese are model ids as the server lists them, not files: which weights they "+
 		"are, and on which backend, is set in audiocpp-server.json. Blank means the built-in "+
 		"default. The server opens the project folder itself, so it has to see it at this "+
-		"same path."), 0, 11, 4, 1)
+		"same path."), 0, 9, 1, 1)
 	for i, row := range []struct {
 		name  string
 		w     *gtk.Entry
@@ -1344,10 +1342,10 @@ func (a *App) setupDialog() {
 		{"Diarization model:", diarModel, testDiarBtn, diarBadge},
 		{"Voice split model:", sepModel, testSepBtn, sepBadge},
 	} {
-		grid.Attach(lbl(row.name), 0, 12+i, 1, 1)
-		grid.Attach(row.w, 1, 12+i, 1, 1)
-		grid.Attach(row.badge.stack, 2, 12+i, 1, 1)
-		grid.Attach(row.btn, 3, 12+i, 1, 1)
+		grid.Attach(lbl(row.name), 1, 9+i, 1, 1)
+		grid.Attach(row.w, 2, 9+i, 1, 1)
+		grid.Attach(row.badge.stack, 3, 9+i, 1, 1)
+		grid.Attach(row.btn, 4, 9+i, 1, 1)
 	}
 
 	// the last step's server. No model row: unlike audio.cpp above, there is
@@ -1359,13 +1357,13 @@ func (a *App) setupDialog() {
 		"/sdcpp/v1/img_gen for a job id, then GET /sdcpp/v1/jobs/{id} until the picture "+
 		"arrives.\n\nThere is no model box: sd-server loads one model when it starts and "+
 		"nothing Autocut sends can switch it, so Test reports which weights it found "+
-		"instead of holding it to a name."), 0, 15, 4, 1)
-	grid.Attach(lbl("Server:"), 0, 16, 1, 1)
-	grid.Attach(sd, 1, 16, 1, 1)
-	grid.Attach(sdBadge.stack, 2, 16, 1, 1)
-	grid.Attach(testSDBtn, 3, 16, 1, 1)
-	grid.Attach(lbl("API key:"), 0, 17, 1, 1)
-	grid.Attach(sdKey, 1, 17, 3, 1)
+		"instead of holding it to a name."), 0, 12, 1, 1)
+	grid.Attach(lbl("Server:"), 1, 12, 1, 1)
+	grid.Attach(sd, 2, 12, 1, 1)
+	grid.Attach(sdBadge.stack, 3, 12, 1, 1)
+	grid.Attach(testSDBtn, 4, 12, 1, 1)
+	grid.Attach(lbl("API key:"), 1, 13, 1, 1)
+	grid.Attach(sdKey, 2, 13, 1, 1)
 
 	// the dialog's one verb, at the right where a dialog keeps its buttons --
 	// Save and Cancel used to be there and the settings save themselves now,
@@ -1383,18 +1381,12 @@ func (a *App) setupDialog() {
 	spring.SetHExpand(true)
 	btns.Append(spring)
 	btns.Append(testAll)
-	grid.Attach(btns, 0, 18, 4, 1)
+	grid.Attach(btns, 0, 14, 5, 1)
 
 	// the log is the LAST row, below even the verbs: expanded it grows downward
 	// into space the dialog adds, instead of shoving the buttons off the bottom
 	// of the screen while a failure is being read
-	grid.Attach(logExp, 0, 19, 4, 1)
-	// under ffmpeg, once every row below is placed: InsertRow moves them down
-	grid.InsertRow(11)
-	grid.Attach(lbl("firefox:"), 0, 11, 1, 1)
-	grid.Attach(fx, 1, 11, 1, 1)
-	grid.Attach(fxBadge.stack, 2, 11, 1, 1)
-	grid.Attach(testFxBtn, 3, 11, 1, 1)
+	grid.Attach(logExp, 0, 15, 5, 1)
 
 	win.SetChild(grid)
 	win.SetVisible(true)

@@ -470,7 +470,7 @@ func TestTheEffectsLaneIsWired(t *testing.T) {
 		// the effects are one dropdown of verbs -- and only five, because a
 		// stop is a speed of x0 rather than an entry of its own
 		"fxDD := gtk.NewDropDownFromStrings(fxKinds)",
-		`fxKinds := []string{"✚ Effect", "⊕ Zoom", "❝ Text", "▨ SVG", "⏩ Speed", "🔊 Volume"}`,
+		`fxKinds := []string{"✚ Effect", "⊕ Zoom", "❝ Text", "▨ SVG", "⏩ Speed", "🔊 Volume", "🏷 Label"}`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the cut page no longer contains %q", want)
@@ -750,5 +750,44 @@ func TestThePreviewRunsASpeedFlatAndNotByItsStairs(t *testing.T) {
 	body := funcBody(t, "player.go", `func \(p \*Player\) SetRateNow\(`)
 	if !strings.Contains(body, "time.Since(p.rateSeekAt) < rateSeekGap") || !strings.Contains(body, "p.rate = was") {
 		t.Errorf("SetRateNow no longer holds its flushing seeks to rateSeekGap:\n%s", body)
+	}
+}
+
+// What a pick-up says is what is in hand.
+//
+// It used to say what could be done with it too: drag it along the lane, nudge
+// it with the frame keys, ⌦ to remove it, a click elsewhere to put it down,
+// and — for the kinds with a box on the picture — the whole gesture vocabulary
+// of that box. Three lines of it, on a status bar that is one line, so
+// everything past the first clause was truncated at the window's edge: the
+// part meant to teach was the part nobody could read. And it was printed on
+// every press, long after there was anything left to learn.
+//
+// The gestures are learnt from the page instead — the pointer changes shape
+// over a border, the box on the video has handles, a bar's ends are drawn as
+// ends. The one exception is which BUTTON moves a thing, which nothing on the
+// page can show, so the two pick-ups that have one say it in four words.
+func TestAPickUpSaysWhatIsInHandAndLittleElse(t *testing.T) {
+	body := funcBody(t, "cut_fx.go", `func \(ed \*cutEditor\) fxStatus\(\) \{`)
+	if !strings.Contains(body, `ed.a.setStatus(f.fxLabel() + " picked up")`) {
+		t.Errorf("an effect's pick-up says more than what it picked up:\n%s", body)
+	}
+	for _, gone := range []string{"nudge", "puts it down", "re-fitted", "⌦"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the pick-up line still explains %q, on a line that cannot hold it", gone)
+		}
+	}
+	// the clip and the border say the one thing the page cannot show them
+	src := readSrc(t, "cut.go")
+	for _, want := range []string{
+		`picked up at %s — right-drag to trim`,
+		`" picked up — right-drag to move"`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("a pick-up no longer names the button that moves it: %q", want)
+		}
+	}
+	if strings.Contains(src, "a click clear of it puts it down") {
+		t.Error("the pick-up lines are back to a paragraph each")
 	}
 }

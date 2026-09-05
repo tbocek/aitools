@@ -127,24 +127,17 @@ const (
 // tested by the session rather than by the example.
 const narrSystem = `You are the voice-over on a video of one session -- a game, a build, a lesson, a drive. What it is, is in the user context and in the EVENT lines: read it first and talk about what is happening on screen and what we are doing about it.` + narrCraft
 
-// narrShowcaseSystem is the narration for a session whose subject is a THING
-// rather than a stretch of time, and it is picked by the same Style that picks
-// the showcase cut: a video that spends four minutes on one model wants a
-// voice that is about the model, not one looking for the next disaster.
-//
-// The craft below it is the same craft. What differs is one paragraph -- what
-// every line is ABOUT -- which is the whole of what a style is.
-const narrShowcaseSystem = `You are the voice-over on a showcase: someone is showing a thing -- a model, a figure, a tower, a machine, a build, a piece of kit -- to a viewer who wants to see it. The thing is the subject of every line. Name it, say what it is and what it does, point at what the camera is on, and react to how it looks: the finish, the size, the part that is clever, the part that is wrong. A clip where it is on screen is a clip about it.` + narrCraft
-
-// narrCraft is everything both narrations share: the premise, how a line is
-// written and placed, how a pause is made, and the worked examples. Appended
-// rather than written twice, for the reason the cut's tails are (cutReply):
-// two copies of one craft is one place to fix a rule and one place to forget.
+// narrCraft is the craft: the premise, how a line is written and placed, how a
+// pause is made, and the worked examples. It was appended to two openings --
+// one for a session, one for a showcase, picked by the Style dropdown -- and
+// the openings differed by one paragraph, what every line is ABOUT. There is
+// one now, and what this session is comes from the user context like every
+// other fact about it (prompts.go).
 const narrCraft = `
 
 You are the only voice in the video. The clips keep their own sound -- the game, the room -- but nothing anybody said is played, so every spoken line in a clip's block is material nobody will ever hear unless you use it.
 
-Your voice: present tense, contractions, short sentences. Funny, off-hand, happy to be the idiot on screen. Say "we" and "look at this". Most lines are a full thought -- what is happening and what we are doing about it -- but two words are a whole line when they are the funny ones: "Well. Great." after a disaster beats a sentence explaining it.
+Your voice: present tense, contractions, short sentences, and whoever the user context says you are. With nothing said about it, be the person behind the camera -- off-hand, saying "we" and "look at this". Most lines are a full thought, what is happening and what we are doing about it, but two words are a whole line when they are the right two: "Well. Great." after a disaster beats a sentence explaining it.
 
 For each clip, in order:
 1. Say what was said, better. Take the spoken lines over that clip and give them in your voice: the same meaning and the same facts, sharper and shorter. A line that reads like broken speech-to-text is one to say properly, never to quote as it stands. Where nothing was said, write from the EVENT lines instead.
@@ -155,7 +148,7 @@ For each clip, in order:
 
 Every line has an emotion, and it moves: the setup calm, the reaction surprised, the verdict flat. Weight it where the reading has to be exact.
 
-Never report your own body or your feelings -- no "I'm spinning", no "my hands". You are behind the camera talking about what is in front of it. Start in the middle: never "In this clip", and never open two clips the same way. The last clip signs off -- thanks, like and subscribe -- with its "at" near that clip's end, so the video ends when you stop talking.
+Never report your own body or your feelings -- no "I'm spinning", no "my hands". You are behind the camera talking about what is in front of it. Start in the middle: never "In this clip", and never open two clips the same way. The last clip ends the video: a sign-off if the user context wants one, otherwise the last thing worth saying, with its "at" near that clip's end so the video ends when you stop talking.
 
 Three clip blocks and the lines they should get:
   [+2s] EVENT: Four players push on a vault door that does not move.
@@ -1340,7 +1333,7 @@ func (n *narrator) syncFxSound() {
 	}
 	p.SetFxGain(n.gameGain(n.pos))
 	s := n.heardScene(n.pos)
-	// Two silences, and this page owes both. freezeHush is a stop that asked
+	// Two silences, and this page owes both. fxHush is a speed effect that asked
 	// for its seconds to be taken out of the sound; cardHush is a card laid
 	// over the footage, which takes those seconds' audio with the picture
 	// unless it was put there for the picture alone (keepsSoundUnder).
@@ -1350,7 +1343,7 @@ func (n *narrator) syncFxSound() {
 	// leaves the previous file running. The picture being wrong is a known
 	// hole; the SOUND being wrong is not survivable here, because the whole of
 	// this page is judging a line against the audio it has to fit between.
-	p.SetMuted(freezeHush(ed.fx, n.pos) || cardHush(overInsert(ed.segs, n.pos)))
+	p.SetMuted(fxHush(ed.fx, n.pos) || cardHush(overInsert(ed.segs, n.pos)))
 	base, until := "", 0.0
 	if v := ed.cutVideoAt(n.pos); v != nil {
 		base = v.base
@@ -2396,7 +2389,7 @@ func (n *narrator) updateInputs() {
 	}
 	if rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv")); len(rows) > 0 {
 		line += fmt.Sprintf(" · timeline %d lines", len(rows))
-		detail += fmt.Sprintf("\n\nunderstand/transcript/session.tsv — %d lines; the ones falling inside a clip (±4 s) go with that clip", len(rows))
+		detail += fmt.Sprintf("\n\nprepare/transcript/session.tsv — %d lines; the ones falling inside a clip (±4 s) go with that clip", len(rows))
 	} else {
 		line += " · no session timeline — run Describe"
 	}
@@ -3043,8 +3036,8 @@ func narrBudget(dur float64) int {
 // recording are the narrator's own and get his name, every other line is one
 // the video plays out loud. Blank means nobody is exempt, which is the
 // assumption that cannot embarrass the narration.
-func clipBriefs(segs []cutSeg, rows []tsvRow, narr string) string {
-	return clipBriefsWith(segs, rows, narr, func(i int, s cutSeg) string {
+func clipBriefs(segs []cutSeg, rows []tsvRow, fx []cutFx, narr string) string {
+	return clipBriefsWith(segs, rows, fx, narr, func(i int, s cutSeg) string {
 		return fmt.Sprintf("CLIP %d: %.1f–%.1f (%.0f s, at most %d words -- fewer is better, none is fine)",
 			i+1, s.S, s.E, s.length(), narrBudget(s.length()))
 	})
@@ -3056,7 +3049,7 @@ func clipBriefs(segs []cutSeg, rows []tsvRow, narr string) string {
 // use. A heading is read as an instruction as much as a label -- "at most 30
 // words" over a clip in the upload brief is a limit a small model will obey on
 // the description -- so each job writes its own.
-func clipBriefsWith(segs []cutSeg, rows []tsvRow, narr string, head func(i int, s cutSeg) string) string {
+func clipBriefsWith(segs []cutSeg, rows []tsvRow, fx []cutFx, narr string, head func(i int, s cutSeg) string) string {
 	var b strings.Builder
 	for i, s := range segs {
 		fmt.Fprintf(&b, "\n%s\n", head(i, s))
@@ -3089,6 +3082,19 @@ func clipBriefsWith(segs []cutSeg, rows []tsvRow, narr string, head func(i int, 
 		}
 		if n == 0 {
 			b.WriteString("  (nothing recorded over this clip -- say something general, and invent nothing)\n")
+		}
+		// and the moments somebody marked. A label effect changes nothing in
+		// the video -- it exists only to be read here: it is the editor's own
+		// word for a moment ("the reveal", "boss fight"), the one thing in
+		// this brief that no transcript row can contain, at the second they
+		// say it happens. In the same column as the lines, so a note in the
+		// user context can say what to do when one arrives.
+		for _, f := range fx {
+			t0, t1 := f.fxSpan()
+			if f.Kind != "label" || strings.TrimSpace(f.Text) == "" || t1 <= s.S || t0 >= s.E {
+				continue
+			}
+			fmt.Fprintf(&b, "  [%+.0fs] MARKED: %s\n", t0-s.S, strings.TrimSpace(f.Text))
 		}
 	}
 	return b.String()
@@ -3153,7 +3159,7 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 		system += "\n\n" + narrCaptionsAddendum
 	}
 	user := a.ctxBlockFor("narrate") + "THE CLIPS AND WHAT IS KNOWN ABOUT EACH:" +
-		clipBriefs(segs, rows, a.narratorMic())
+		clipBriefs(segs, rows, a.produceCut().Fx, a.narratorMic())
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
 	// the web, for a line about a thing the clip's block only names
 	tools, ffx := a.webToolsFor("narrate")

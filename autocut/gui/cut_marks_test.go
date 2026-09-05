@@ -228,7 +228,8 @@ func TestTheTimelineDrawsItsMarksRatherThanWritingThem(t *testing.T) {
 	}
 	pins := map[string][]string{
 		"cut_fx.go": {
-			"mark, label := laneLabel(f, 0)",
+			// every kind passes the room its bar has, because any of them can
+			// carry a name the user typed (cutFx.Label)
 			"mark, label := laneLabel(f, int((x1-x0-16)/5))",
 			"markPlate(cr, x0+3, y+fxLaneH-4, mark, label)",
 		},
@@ -244,6 +245,47 @@ func TestTheTimelineDrawsItsMarksRatherThanWritingThem(t *testing.T) {
 			if !strings.Contains(string(b), want) {
 				t.Errorf("%s does not contain %q", file, want)
 			}
+		}
+	}
+}
+
+// The plates are rounded; the bands are not, and that is not a taste.
+//
+// A band is a MEASUREMENT: you aim at its ends with a few px of tolerance and
+// trim to the frame, so a corner radius blurs the one edge the control is
+// about -- and at 4 px per second a kept clip can be three pixels wide, which
+// is narrower than any radius worth drawing. A plate is a label: nobody aims
+// at one, none of them is ever three pixels wide, and rounded they read as
+// chips laid on the footage rather than as holes cut out of it.
+func TestThePlatesAreRoundedAndTheBandsAreNot(t *testing.T) {
+	// both plate painters lay the same path, so there is one radius in the app
+	for _, c := range []struct{ file, head string }{
+		{"cut.go", `func plateText\(`},
+		{"cut_marks.go", `func markPlate\(`},
+	} {
+		body := funcBody(t, c.file, c.head)
+		if !strings.Contains(body, "platePath(cr, ") {
+			t.Errorf("%s draws its own plate instead of the one shape", c.head)
+		}
+		if strings.Contains(body, "cr.Rectangle(") {
+			t.Errorf("%s is back to a square plate", c.head)
+		}
+	}
+	// the radius gives way on a plate too small to hold it, so what is drawn
+	// is always a plate and never a lozenge
+	if !strings.Contains(funcBody(t, "cut.go", `func platePath\(`),
+		"r := math.Min(plateR, math.Min(w, h)/2)") {
+		t.Error("a plate narrower than its own corners comes out a lozenge")
+	}
+	// and the bands stay square: the green over the pictures, the bar in the
+	// band, an effect's own bar
+	for _, c := range []struct{ file, want string }{
+		{"cut.go", "cr.Rectangle(x0, st, x1-x0, lh)"},
+		{"cut_selband.go", "cr.Rectangle(gx0, y+2, gx1-gx0, selBandH-4)"},
+		{"cut_fx.go", "cr.Rectangle(x0, y+2, x1-x0, fxLaneH-4)"},
+	} {
+		if !strings.Contains(readSrc(t, c.file), c.want) {
+			t.Errorf("%s no longer draws a square band (%s)", c.file, c.want)
 		}
 	}
 }

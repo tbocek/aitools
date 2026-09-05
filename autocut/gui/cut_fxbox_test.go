@@ -56,10 +56,10 @@ func TestABoxDraggedWhileTheFormIsOpenSurvivesTheSave(t *testing.T) {
 
 // and the rule written down where it is applied
 func TestTheSaveTakesTheBoxFromTheCutAndNotTheForm(t *testing.T) {
-	body := funcBody(t, "cut_fx.go", `func \(ed \*cutEditor\) updateFx\(`)
+	body := funcBody(t, "cut_fx.go", `func \(ed \*cutEditor\) writeFx\(`)
 	pin := "nf.Cx, nf.Cy, nf.Wf, nf.Hf = ed.fx[i].Cx, ed.fx[i].Cy, ed.fx[i].Wf, ed.fx[i].Hf"
 	if !strings.Contains(body, pin) {
-		t.Errorf("updateFx no longer carries the live box forward:\n%s", body)
+		t.Errorf("writeFx no longer carries the live box forward:\n%s", body)
 	}
 	if strings.Index(body, pin) > strings.Index(body, "ed.fx[i] = nf") {
 		t.Error("the box is carried over after the effect has already been overwritten")

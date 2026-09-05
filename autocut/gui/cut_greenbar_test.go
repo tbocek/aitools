@@ -85,7 +85,7 @@ func TestTheBarHasEndsAMiddleAndAKill(t *testing.T) {
 		{ed.xOf(140), 1, selEnd, "the right end"},
 		{ed.xOf(120), 1, selWhole, "the middle"},
 		// the ✕, on its own badge-shaped target inboard of the right grip
-		{ed.xOf(140) - bandKillIn, 1, selKill, "the ✕"},
+		{ed.xOf(140) - killIn, 1, selKill, "the ✕"},
 		{ed.xOf(80), -1, selNone, "clear of it"},
 	} {
 		seg, part := ed.bandClipPartAt(c.px)
@@ -94,9 +94,12 @@ func TestTheBarHasEndsAMiddleAndAKill(t *testing.T) {
 				c.what, seg, part, c.seg, c.part)
 		}
 	}
+	// and with no red line on the page at all the bars still answer: which
+	// clip the line is in decides which bar is drawn tallest, not which of
+	// them the hand may take
 	ed.hasPlay = false
-	if _, part := ed.bandClipPartAt(ed.xOf(120)); part != selNone {
-		t.Errorf("no bar on the page and a press still landed on part %d", part)
+	if i, part := ed.bandClipPartAt(ed.xOf(120)); i != 1 || part != selWhole {
+		t.Errorf("with no line the bar's middle lands on clip %d part %d, want 1/%d", i, part, selWhole)
 	}
 }
 
@@ -174,7 +177,7 @@ func TestTheCursorSpeaksForTheGreenBar(t *testing.T) {
 	}
 	// a blue selection over the same clip: its ✕ wins over the green middle
 	ed.sel.t0, ed.sel.t1, ed.sel.active = 100, 130, true
-	kx := ed.xOf(130) - selKillIn - selKillW/2
+	kx := ed.xOf(130) - killIn // every ✕ on the page is that far in
 	if got := ed.wantCursor(kx, y); got != "pointer" {
 		t.Errorf("over the blue's ✕ the cursor is %q — the green middle answered first", got)
 	}
@@ -207,35 +210,51 @@ func TestTheBarWearsItsVerbs(t *testing.T) {
 	}
 }
 
-// The wiring: the press lands in the selection-band branch of the one drag
-// gesture, after the blue has had its say, and what it starts is the picture
-// band's own trimming and moving -- not a third copy of either.
+// The wiring, on two buttons. The left press answers the bar's ✕ and nothing
+// else -- everywhere on this page the left button draws selections -- and the
+// right press takes the clip the bar stands for: its ends are that clip's
+// borders and its middle is the clip, run through the picture band's own
+// trimming and moving rather than a third copy of either.
 func TestTheGreenBarIsWired(t *testing.T) {
 	b, err := os.ReadFile("cut.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(b)
-	grab := strings.Index(src, "if i, part := ed.bandClipPartAt(x + ed.viewX); part != selNone {")
-	if grab < 0 {
-		t.Fatal("the drag gesture no longer asks the green bar")
+	// the left button: the ✕, before the press falls through to a new selection
+	kill := strings.Index(src, "if i := ed.bandKillAt(x + ed.viewX); i >= 0 {")
+	if kill < 0 {
+		t.Fatal("the left press no longer answers the bar's ✕")
 	}
-	if blue := strings.Index(src, "ed.holdSel(selPart)"); blue < 0 || blue > grab {
+	if blue := strings.Index(src, "ed.holdSel(selPart)"); blue < 0 || blue > kill {
 		t.Error("the green bar is asked before the blue selection — the bar on top answers second")
 	}
 	fall := strings.Index(src, "ed.dropSel() // clear of it: this is a new selection")
-	if fall < grab {
+	if fall < kill {
 		t.Fatal("the green branch does not sit before the new-selection fall-through")
 	}
-	branch := src[grab:fall]
+	if strings.Contains(src[kill:fall], "holdBandClip") {
+		t.Error("the left press takes the clip again, so a selection drawn on the bar trims instead")
+	}
+	// the right button: the bar's parts, and the picture band's own verbs
+	grab := strings.Index(src, "i, part := ed.bandClipPartAt(px)")
+	if grab < 0 {
+		t.Fatal("the right press no longer asks the green bar")
+	}
+	branch := src[grab : grab+900]
 	for _, want := range []string{
 		"ed.holdBandClip(i, part)",
-		"trimming = true", // an end press is the picture band's own trim...
-		"moving = true",   // ...and a middle press its own clip move
+		"trimming = true",           // an end press is the picture band's own trim...
+		"moving, slideGrab = true,", // ...and a middle press its own clip move
 	} {
 		if !strings.Contains(branch, want) {
 			t.Errorf("the green-bar branch no longer contains %q", want)
 		}
+	}
+	// a click on the bar that goes nowhere still takes the clip, as the same
+	// click on the green over the thumbnails does
+	if !strings.Contains(src, "ed.holdBandClip(i, selWhole)") {
+		t.Error("a click on the bar no longer takes the clip it stands for")
 	}
 	// hovering it says so before the press: the row's motion handler feeds
 	// bandHov, and the drawing wears it

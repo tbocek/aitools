@@ -46,9 +46,19 @@ func TestCaptionsFromWhatWasSaidLandInTheClipsOwnSeconds(t *testing.T) {
 	if err := st.UnmarshalJSON([]byte(`{"subs":"burn"}`)); err != nil || st.SubsFrom != "" {
 		t.Errorf("an older project's settings read as subs_from %q, want the narration", st.SubsFrom)
 	}
-	// both subtitle writers read the track through captionLines
+	// both subtitle writers read the track through captionLines, and both read
+	// the window the SOUND covers -- which on a clip whose sound has come away
+	// from the picture is not the seconds the picture shows (cut_fxsound.go)
 	src := readSrc(t, "produce.go")
-	if strings.Count(src, "captionLines(c, c.sessS, c.sessS+c.length*c.speed(), spoken, st.SubsFrom)") != 2 {
-		t.Error("the sidecar and the burn-in do not both read their cues through captionLines")
+	if n := strings.Count(src, "captionLines(c, "); n != 2 {
+		t.Errorf("%d subtitle writers read their cues through captionLines, want 2", n)
+	}
+	if n := strings.Count(src, "c.audSess, c.audSess+c.length"); n < 2 {
+		t.Error("a subtitle writer still takes its window off the picture's clock")
+	}
+	// and the placement inside the clip is on the sound's clock too
+	body := funcBody(t, "produce.go", `func captionLines\(`)
+	if !strings.Contains(body, "if c.audOwn {\n\t\t\trate = 1") {
+		t.Error("captions on a shifted clip are still divided by the picture's rate")
 	}
 }

@@ -38,129 +38,54 @@ import (
 // video out of the same hour than a raid night does, and no single wording is
 // even nearly right for both. So the cut ships several, the box picks between
 // them, and a project that needs a shape nobody shipped adds its own.
-type promptStyle struct {
-	Name string `json:"name"`
-	Text string `json:"text"`
-}
-
-// promptRow is the widgets above one prompt box: the label that says what this
-// machine is holding for the shown wording, and the button that lets go of it.
-// The wording itself is not picked here any more -- the Style dropdown on
-// Prepare's bottom row turns every job at once (applyStyle).
+// promptRow is the widgets above one prompt box: the label that says whether
+// this machine is holding an edit of the shipped wording, and the button that
+// puts the built-in back.
 type promptRow struct {
 	mark *gtk.Label
 	drop *gtk.Button
 }
 
-// promptDef is one editable prompt. A blurb explaining what changing it would
-// do used to sit between the heading and the box; the prompt itself says that
-// better than a paragraph above it can, and the paragraph was what made these
-// pages a wall of prose.
-type promptDef struct {
-	key, def string
-	// the other wordings shipped for the same job; def is the one called
-	// defStyle. Style names are stored on disk and in project.json exactly as
-	// they read here, so renaming one orphans an edit of it the same way
-	// renaming a key would -- add a style, do not rename one. legacyDefStyle is
-	// what undoing that costs, for the one rename there has been.
-	alts []promptStyle
-	// solo is a prompt that has no wordings at all: one text, the same under
-	// every style. The system context is the only one -- it is the formats the
-	// material and the answers are in, which a style has no opinion about --
-	// and being solo is what keeps a wording name off its bench row, a ＋ off
-	// its heading and a style pick off its store.
-	solo bool
-}
-
-// defStyle names the wording a job ships with when it ships only one. It is the
-// cut's generic wording by the same name on purpose: the Style beside Language
-// turns every job to the wording called what it is set to, and a job that has
-// only its shipped one is still the general answer to that job. A bench reading
-// "Cut (General), Describe (Default)" made the one state look like two, which is
-// the whole thing the parentheticals are there to say.
-const defStyle = "General"
-
-// legacyDefStyle is what defStyle was called before that. It is still on disk
-// wherever a machine edited the shipped wording of a job -- prompts/fix/
-// Default.txt -- and still in any project written then, and it means what
-// defStyle means now, so both are read as it (styleAlias). Left unhandled the
-// edit comes back as a second wording nothing picks, sitting in the dropdown
-// under the old name.
-const legacyDefStyle = "Default"
-
-// styleName is what a job's shipped wording is called in the dropdown, and it
-// is defStyle for every job: the wording you get before you have picked a shape
-// is the general one, whether or not the job ships any other. A job could name
-// its own -- the cut did, spelling "General" out a second time -- and two copies
-// of the fallback's name is exactly the drift that put "Cut (General)" beside
-// "Describe (Default)". There is one copy now.
-func (promptDef) styleName() string { return defStyle }
-
-// styleAlias reads a name that came from outside -- a file on disk, a name in a
-// project -- as one of this job's own. Only the rename above is undone, and only
-// where the job does not ship a wording that really is called that; anything
-// else is a wording somebody invented and keeps the name they gave it.
-func (d promptDef) styleAlias(name string) string {
-	if name != legacyDefStyle {
-		return name
-	}
-	for _, s := range d.builtins() {
-		if s.Name == legacyDefStyle {
-			return name
-		}
-	}
-	return d.styleName()
-}
-
-// builtins is every wording shipped for this job, the default first -- which is
-// also the order the dropdown lists them in, and which style a project that has
-// never picked one gets.
-func (d promptDef) builtins() []promptStyle {
-	return append([]promptStyle{{d.styleName(), d.def}}, d.alts...)
-}
+// promptDef is one editable prompt: the job it is for, and the wording this
+// build ships for it.
+//
+// There used to be several wordings per job -- a Style dropdown on Prepare
+// turned every prompt at once to "Highlights", "Showcase", "Rating / tier
+// list" or "YouTube Shorts", each a paragraph that already believed it knew
+// what the footage was. It is one wording per job now, written to be true of
+// any session, and what KIND of video this is goes in the user context, where
+// the rest of the facts about the session are. That is the same information in
+// one place instead of two, and the place it is in is the one that is read
+// with every request and outranks the wordings (ctxRule).
+//
+// A blurb explaining what changing a prompt would do used to sit between the
+// heading and the box; the prompt itself says that better than a paragraph
+// above it can, and the paragraph was what made these pages a wall of prose.
+type promptDef struct{ key, def string }
 
 // Keys name the prompt in project.json and are therefore permanent -- renaming
 // one silently drops what a user wrote under the old name.
 var promptDefs = []promptDef{
 	// first, because it goes in front of every one of the others: the formats
-	// and the house rules they all work to (syscontext.go). Solo: there is one
-	// of it, and picking Highlights or Showcase does not change how a stamp
-	// reads.
-	{key: "system", def: strings.TrimSpace(sysSystem), solo: true},
+	// and the house rules they all work to (syscontext.go).
+	{key: "system", def: strings.TrimSpace(sysSystem)},
 	{key: "describe", def: strings.TrimSpace(describeSystem)},
 	{key: "fix", def: strings.TrimSpace(fixSystem)},
-	// five wordings, the generic one first: def, so it is called defStyle like
-	// every other job's, it is what a project that has never picked gets, and it
-	// is the only one that does not already believe it knows what the footage is
-	// (see genericSystem). The four after it are what the Style dropdown offers
-	// beyond it, since the dropdown's list is this job's (styleBar).
-	{key: "cut", def: strings.TrimSpace(genericSystem),
-		alts: []promptStyle{{"Highlights", strings.TrimSpace(suggestSystem)},
-			{"Rating / tier list", strings.TrimSpace(ratingSystem)},
-			{"Showcase", strings.TrimSpace(showcaseSystem)},
-			{shortsStyleName, strings.TrimSpace(shortsSystem)}}},
-	// the two passes that follow the cut, clip by clip: what was said, on
-	// screen; and the zooms, stops and volume. They were one reply with the
-	// segments, and the one reply is what kept failing (cut_suggest.go).
+	// the cut, and the three passes that follow it clip by clip: what was
+	// said, how fast each clip runs, and the decorations. They were one reply
+	// with the segments, and the one reply is what kept failing
+	// (cut_suggest.go).
 	//
 	// "audit" was here: a second long call that read the suggestion back
 	// against the same brief and moved its boundaries. It was worth having
 	// when the cut was one reply doing three jobs; against a cut that is only
-	// segments it spent ten minutes to move a border a few seconds, and its
-	// own schema could not say the one thing it kept noticing. Removed, not
-	// renamed -- a project's edited copy is a dead key nobody reads.
+	// segments it spent ten minutes to move a border a few seconds. Removed,
+	// not renamed -- a project's edited copy is a dead key nobody reads.
+	{key: "cut", def: strings.TrimSpace(cutSystem)},
 	{key: "captions", def: strings.TrimSpace(captionSystem)},
 	{key: "speed", def: strings.TrimSpace(speedSystem)},
 	{key: "effects", def: strings.TrimSpace(effectsSystem)},
-	// "effects" was here: the third call that decorated the audited cut. The
-	// effects ride the cut reply again -- every style's, see fxRules -- and
-	// the audit checks them, so the key is gone the way "thumbnail" below
-	// went: a project's edited copy is a dead key nobody reads.
-	// two wordings, and the second is the same craft about a different
-	// subject: a showcase wants a voice about the thing on the table, where
-	// the default wants one about what is happening (see narrShowcaseSystem).
-	{key: "narrate", def: strings.TrimSpace(narrSystem),
-		alts: []promptStyle{{"Showcase", strings.TrimSpace(narrShowcaseSystem)}}},
+	{key: "narrate", def: strings.TrimSpace(narrSystem)},
 	// "thumbnail" was here: a second Publish prompt that picked which frame to
 	// edit and wrote the instruction for it. Removed, not renamed -- the key is
 	// gone from the registry, so a project that saved an edited copy of it just
@@ -182,10 +107,10 @@ func promptDefFor(key string) promptDef {
 	return promptDef{key: key}
 }
 
-// prompt returns the system prompt for key: what the user has in the box, or
-// the wording the picked style ships with. Callable from a step runner's
-// goroutine -- it reads a cached string, never the GtkTextBuffer, which belongs
-// to the GUI thread.
+// prompt returns the system prompt for key: what this machine has of its own,
+// or the wording the build ships. Callable from a step runner's goroutine --
+// it reads a cached string, never the GtkTextBuffer, which belongs to the GUI
+// thread.
 func (a *App) prompt(key string) string {
 	a.promptMu.Lock()
 	s := strings.TrimSpace(a.promptTxt[key])
@@ -193,13 +118,12 @@ func (a *App) prompt(key string) string {
 	if s != "" {
 		return s
 	}
-	return a.promptStyleText(key, a.promptPickName(key))
+	return promptDefFor(key).def
 }
 
-// setPrompt records what is in the box. It writes twice on purpose: promptTxt
-// is what a runner reads, and the style list is what the dropdown offers and
-// what the project stores. Typing into the box IS editing the picked style, so
-// switching wording and switching back cannot lose what was typed.
+// setPrompt records what is in the box. Kept per machine and written to disk
+// on the autosave tick (flushPrompts): how you like to be edited for is the
+// same in January's raid as in March's.
 func (a *App) setPrompt(key, text string) {
 	a.promptMu.Lock()
 	if a.promptTxt == nil {
@@ -207,285 +131,108 @@ func (a *App) setPrompt(key, text string) {
 	}
 	a.promptTxt[key] = text
 	a.promptMu.Unlock()
-	a.savePromptStyle(key, a.promptPickName(key), text)
+	a.markPromptRow(key)
 }
 
-// promptPickName is which wording this project uses for the job -- the shipped
-// default until something picks another.
-func (a *App) promptPickName(key string) string {
+// promptOwned is whether what the model reads is not what shipped. It is the
+// one thing worth a permanent mark wherever a prompt is named (the ✎ in the
+// bench's menu), and it is exact rather than a flag: typing an edit and typing
+// it back is not an edit.
+func (a *App) promptOwned(key string) bool {
 	a.promptMu.Lock()
-	defer a.promptMu.Unlock()
-	if n := a.promptPick[key]; n != "" {
-		return n
-	}
-	return promptDefFor(key).styleName()
-}
-
-// promptStyleList is what the dropdown offers for a job: every shipped wording,
-// each replaced by the project's edit of it where there is one, then whatever
-// the project added of its own. Shipped first and in table order, so the menu
-// does not reshuffle itself as styles are added.
-func (a *App) promptStyleList(key string) []promptStyle {
-	a.promptMu.Lock()
-	own := append([]promptStyle(nil), a.promptSty[key]...)
+	s := strings.TrimSpace(a.promptTxt[key])
 	a.promptMu.Unlock()
-	byName := map[string]string{}
-	for _, s := range own {
-		byName[s.Name] = s.Text
-	}
-	var out []promptStyle
-	shipped := map[string]bool{}
-	for _, s := range promptDefFor(key).builtins() {
-		shipped[s.Name] = true
-		if t, ok := byName[s.Name]; ok {
-			s.Text = t
-		}
-		out = append(out, s)
-	}
-	for _, s := range own {
-		if !shipped[s.Name] {
-			out = append(out, s)
-		}
-	}
-	return out
+	return s != "" && s != promptDefFor(key).def
 }
 
-// promptStyleText is the wording behind a name: the project's if it has one,
-// the shipped one otherwise. A name that is neither -- a style deleted while it
-// was picked -- falls back to the default rather than to an empty prompt, which
-// would silently send the model nothing.
-func (a *App) promptStyleText(key, name string) string {
-	for _, s := range a.promptStyleList(key) {
-		if s.Name == name {
-			return s.Text
-		}
-	}
-	return promptDefFor(key).def
-}
-
-// savePromptStyle stores a wording under a name, and is also how an edit is
-// undone: text equal to what that name ships with drops the override instead of
-// storing a copy of it. That is the same rule the old single-prompt storage
-// had, and it is what lets an untouched project keep tracking a newer build's
-// wording rather than freezing today's.
-func (a *App) savePromptStyle(key, name, text string) {
-	text = strings.TrimSpace(text)
-	shipped := ""
-	for _, s := range promptDefFor(key).builtins() {
-		if s.Name == name {
-			shipped = s.Text
-		}
-	}
+// resetPrompt puts the built-in back: the box, the mark, and -- on the next
+// flush -- the file on disk, which is what makes Reset a delete.
+func (a *App) resetPrompt(key string) {
 	a.promptMu.Lock()
-	defer a.promptMu.Unlock()
-	if a.promptSty == nil {
-		a.promptSty = map[string][]promptStyle{}
-	}
-	list := a.promptSty[key]
-	for i, s := range list {
-		if s.Name != name {
-			continue
-		}
-		if text == shipped { // back to the shipped wording: stop storing it
-			a.promptSty[key] = append(list[:i:i], list[i+1:]...)
-			return
-		}
-		list[i].Text = text
-		return
-	}
-	if text == shipped || text == "" {
-		return
-	}
-	a.promptSty[key] = append(list, promptStyle{Name: name, Text: text})
+	delete(a.promptTxt, key)
+	a.promptMu.Unlock()
+	a.showPrompt(key)
 }
 
-// dropPromptStyle forgets what the project says about a name. For a wording
-// the project invented that is a delete; for an edited built-in it is a revert,
-// since the shipped one is still under the same name.
-func (a *App) dropPromptStyle(key, name string) {
-	a.promptMu.Lock()
-	defer a.promptMu.Unlock()
-	list := a.promptSty[key]
-	for i, s := range list {
-		if s.Name == name {
-			a.promptSty[key] = append(list[:i:i], list[i+1:]...)
-			return
-		}
+// showPrompt fills the box for a job and settles the row above it. Safe before
+// the widgets exist, so a project load does not have to care whether a page
+// has been built yet.
+//
+// promptQuiet is what keeps it from being a loop: filling the box fires
+// "changed", whose handler would otherwise write the wording straight back
+// out. GUI thread only, which is why a plain bool is enough.
+func (a *App) showPrompt(key string) {
+	if tv, ok := a.promptViews[key]; ok {
+		a.promptQuiet = true
+		tv.Buffer().SetText(a.prompt(key))
+		a.promptQuiet = false
 	}
+	a.markPromptRow(key)
 }
 
-// applyPromptStyles takes in what a project has to say about the prompts --
+// adoptProjectPrompts takes in what a project has to say about the prompts --
 // which, now that they are the machine's (promptstore.go), is only ever what a
 // project written before that has to say. It ADOPTS rather than replaces: a
-// wording lands only where this machine has nothing of its own for the job,
-// and a pick only where the job is still on the shipped default.
+// wording lands only where this machine has nothing of its own for the job.
 //
 // It used to be a full switch, everything the project did not mention going
 // back to the built-in, because the prompts were the project's and leaving the
 // last project's wording in a box would have been the worst kind of bug --
 // invisible, and it changes what the model writes. With the prompts kept per
 // machine the bug is the other way round: an old project opened for five
-// minutes must not overwrite the wording four videos were tuned with. On the
-// launch that first opens a pre-merge project this machine has nothing to say
-// about any job, so that project's wordings are adopted whole and nothing is
-// lost either.
-//
-// legacy is the pre-styles storage, where a project held one edited prompt per
-// key and no name for it. Those belong to whichever style was default at the
-// time, which is the default now: the shipped wording of a job did not move,
-// it only gained company.
-func (a *App) applyPromptStyles(styles map[string][]promptStyle, pick map[string]string, legacy map[string]string) {
+// minutes must not overwrite the wording four videos were tuned with.
+func (a *App) adoptProjectPrompts(legacy map[string]string) {
 	for _, d := range promptDefs {
-		if a.promptStored(d.key) {
+		if a.promptOwned(d.key) {
 			continue // this machine's own wording; a project does not overwrite it
 		}
-		for _, s := range styles[d.key] {
-			a.savePromptStyle(d.key, d.styleAlias(s.Name), s.Text)
-		}
-		if s := strings.TrimSpace(legacy[d.key]); s != "" && len(styles[d.key]) == 0 {
-			a.savePromptStyle(d.key, d.styleName(), s)
-		}
-		if n := pick[d.key]; n != "" {
-			a.pickPromptStyle(d.key, d.styleAlias(n))
+		if s := strings.TrimSpace(legacy[d.key]); s != "" {
+			a.setPrompt(d.key, s)
 		}
 	}
-	// the box and the dropdown last, once the state they draw from is settled
 	for _, d := range promptDefs {
-		a.showPromptStyle(d.key, a.promptPickName(d.key))
+		a.showPrompt(d.key)
 	}
 }
 
-// shippedPromptStyle says whether a name is one of the built-ins for a job --
-// which decides whether the button beside the dropdown reverts or deletes.
-func (a *App) shippedPromptStyle(key, name string) bool {
-	for _, s := range promptDefFor(key).builtins() {
-		if s.Name == name {
-			return true
-		}
-	}
-	return false
-}
+// markPromptRow says whether this machine is holding an edit, and whether the
+// button that lets go of it has anything to do.
+func (a *App) markPromptRow(key string) {
+	// the ✎ in the bench's menu first, and unconditionally: it says the same
+	// thing this row does -- "what the model reads is not what shipped" -- and
+	// it is the only place that says it once the boxes are behind a button
+	// (prepedit.go), so it cannot depend on a box being open.
+	a.syncPromptMarks()
 
-// pickPromptStyle records a wording as this project's choice for the job and
-// puts it in the box. It deliberately does not touch the dropdown's model --
-// see showPromptStyle for why that matters, and why this is the half that runs
-// when the dropdown itself is what changed.
-//
-// promptQuiet is what keeps it from being a loop: filling the box fires
-// "changed", whose handler would otherwise save the incoming wording straight
-// back out under the same name. GUI thread only, which is why a plain bool is
-// enough.
-func (a *App) pickPromptStyle(key, name string) {
-	a.promptMu.Lock()
-	if a.promptPick == nil {
-		a.promptPick = map[string]string{}
-	}
-	a.promptPick[key] = name
-	delete(a.promptTxt, key) // the box is about to say it; prompt() reads the style
-	a.promptMu.Unlock()
-	a.rememberPromptPick(key, name) // one short name: straight to the file, no tick
-
-	if tv, ok := a.promptViews[key]; ok {
-		a.promptQuiet = true
-		tv.Buffer().SetText(a.promptStyleText(key, name))
-		a.promptQuiet = false
-	}
-	a.markPromptRow(key)
-	a.syncStylePicks(key, name)
-}
-
-// applyStyle makes name the whole project's style. One dropdown, beside
-// Language: picking "Highlights" there turns every job to the wording called
-// Highlights where it has one -- shipped, or saved on this machine under that
-// name -- and to its shipped default where it does not. The User Context is
-// not in promptDefs and is not touched: it is this session's facts, not a
-// wording.
-//
-// Selection-only underneath (pickPromptStyle), so it is safe from the Style
-// dropdown's own notify::selected.
-func (a *App) applyStyle(name string) {
-	for _, d := range promptDefs {
-		if d.solo {
-			continue // one wording, and no style has anything to say about it
-		}
-		target := d.styleName()
-		for _, s := range a.promptStyleList(d.key) {
-			if s.Name == name {
-				target = name
-				break
-			}
-		}
-		a.pickPromptStyle(d.key, target)
-	}
-}
-
-// syncStylePicks lands a pick in the dropdown that surfaces this key's wording
-// on a page (styleBar). Selection only, never the list: this runs inside that
-// dropdown's own notify::selected handler, where replacing the model hangs the
-// view drawing the closing popup (see showPromptStyle), and setting a
-// selection that is already set is a no-op.
-func (a *App) syncStylePicks(key, name string) {
-	bar, ok := a.styleDrops[key]
+	row, ok := a.promptRows[key]
 	if !ok {
 		return
 	}
-	for i := uint(0); i < bar.names.NItems(); i++ {
-		if bar.names.String(i) != name {
-			continue
-		}
-		if bar.pick.Selected() != i {
-			a.promptQuiet = true
-			bar.pick.SetSelected(i)
-			a.promptQuiet = false
-		}
+	if a.promptOwned(key) {
+		row.mark.SetText("edited — kept in your settings")
+		row.drop.SetSensitive(true)
+		row.drop.SetTooltipText("Put the built-in wording back")
 		return
+	}
+	row.mark.SetText("")
+	// nothing to undo: a live button here reads as "there is something
+	// stored", which is exactly what the empty mark is denying
+	row.drop.SetSensitive(false)
+	row.drop.SetTooltipText("This is the built-in wording, unchanged")
+}
+
+// syncPromptMarks redraws the bench's menu, where the ✎ on a row is the only
+// thing that says a prompt has been reworded once the boxes are behind a
+// button (prepedit.go).
+func (a *App) syncPromptMarks() {
+	if a.prepSync != nil {
+		a.prepSync()
 	}
 }
 
-// showPromptStyle is pickPromptStyle plus the menu itself, for the places where
-// the list of wordings may have changed under it: a project load, an added
-// wording, a deleted one. Safe before the widgets exist, so applyPromptStyles
-// does not have to care whether a page has been built yet.
-//
-// It must not be called from notify::selected. That signal is emitted from
-// inside GtkDropDown while its popup is still closing, and replacing the model
-// there leaves the list view drawing a list that no longer exists -- the app
-// stops answering, with the wording already switched and the popup already
-// gone, which is exactly what it looks like: a freeze on choosing a wording
-// rather than on anything the choice did. Hence the split, and hence one
-// Splice instead of a Remove-then-Append loop, which was N items-changed
-// emissions where one will do.
-func (a *App) showPromptStyle(key, name string) {
-	a.pickPromptStyle(key, name)
-
-	bar, ok := a.styleDrops[key]
-	if !ok {
-		return
-	}
-	list := a.promptStyleList(key)
-	sel := 0
-	fresh := make([]string, len(list))
-	for i, s := range list {
-		fresh[i] = s.Name
-		if s.Name == name {
-			sel = i
-		}
-	}
-	a.promptQuiet = true
-	// only when the names really moved: a plain switch does not change them,
-	// and a model replaced for nothing is a menu that flickers and a selection
-	// that bounces through every index on the way
-	if !sameStrings(bar.names, fresh) {
-		bar.names.Splice(0, bar.names.NItems(), fresh)
-	}
-	if bar.pick.Selected() != uint(sel) {
-		bar.pick.SetSelected(uint(sel))
-	}
-	a.promptQuiet = false
-	// no markPromptRow here: pickPromptStyle already did it, and nothing the
-	// menu does changes what that row says
-}
-
+// sameStrings is whether a menu already holds exactly these rows. Splicing a
+// model that did not change is a menu that flickers and a selection that
+// bounces through every index on the way.
 func sameStrings(model *gtk.StringList, want []string) bool {
 	if int(model.NItems()) != len(want) {
 		return false
@@ -496,54 +243,6 @@ func sameStrings(model *gtk.StringList, want []string) bool {
 		}
 	}
 	return true
-}
-
-// markPromptRow says what the project is holding on to for the picked wording,
-// and relabels the button that lets go of it.
-func (a *App) markPromptRow(key string) {
-	// the ✎ in every picker's menu first, and unconditionally: it says the same
-	// thing this row does -- "the project is holding something here" -- and it
-	// is the only place that says it once the boxes are behind a button, so it
-	// cannot depend on a box being open (prepedit.go).
-	a.syncPromptMarks()
-
-	row, ok := a.promptRows[key]
-	if !ok {
-		return
-	}
-	name := a.promptPickName(key)
-	shipped := a.shippedPromptStyle(key, name)
-	edited := false
-	a.promptMu.Lock()
-	for _, s := range a.promptSty[key] {
-		if s.Name == name {
-			edited = true
-		}
-	}
-	a.promptMu.Unlock()
-
-	switch {
-	case !shipped:
-		row.mark.SetText("added here")
-		row.drop.SetLabel("Remove")
-		row.drop.AddCSSClass("destructive-action")
-		row.drop.SetSensitive(true)
-		row.drop.SetTooltipText("Delete this wording from this machine")
-	case edited:
-		row.mark.SetText("edited — kept in your settings")
-		row.drop.SetLabel("Reset")
-		row.drop.RemoveCSSClass("destructive-action")
-		row.drop.SetSensitive(true)
-		row.drop.SetTooltipText("Put the built-in wording back")
-	default:
-		row.mark.SetText("")
-		row.drop.SetLabel("Reset")
-		row.drop.RemoveCSSClass("destructive-action")
-		// nothing to undo: a live button here reads as "there is something
-		// stored", which is exactly what the empty mark is denying
-		row.drop.SetSensitive(false)
-		row.drop.SetTooltipText("This is the built-in wording, unchanged")
-	}
 }
 
 // askName is a modal one-line prompt. Same hand-rolled shape as confirm, and

@@ -50,11 +50,16 @@ func TestEveryJobIsToldTheFormatsOnce(t *testing.T) {
 			t.Errorf("the edited system context is not what the %s job is sent", key)
 		}
 	}
-	// emptied, it takes itself away rather than sending a blank run-up
+	// emptied, it is the built-in again -- the same answer every other prompt
+	// gives to an empty box, and the same one the store gives to an empty file
+	// (promptstore.go). It used to depend on whether the box had been edited
+	// before it was cleared: a blank typed into an untouched box read as the
+	// built-in and a blank typed over an edit read as "send nothing", and the
+	// second of those did not survive a restart. Reset is how the built-in
+	// comes back on purpose.
 	a.setPrompt("system", "   ")
-	if got := a.sysPrompt("cut"); got != a.prompt("cut") {
-		t.Errorf("an emptied system context still sends something in front of the job: %q",
-			got[:min(80, len(got))])
+	if got := a.prompt("system"); got != strings.TrimSpace(sysSystem) {
+		t.Errorf("an emptied system context reads as %q, want the built-in", short(got))
 	}
 }
 
@@ -85,29 +90,16 @@ func TestNoJobAssemblesItsOwnSystemMessage(t *testing.T) {
 
 // The wordings stop repeating what the context now says. Leaving both in is not
 // wrong to read, but it is what the change was for: the sentences drifted apart
-// precisely because they were written four times.
-func TestTheCutWordingsDoNotRepeatTheSystemContext(t *testing.T) {
-	for _, p := range []struct{ name, text string }{
-		{"general", genericSystem},
-		{"highlights", suggestSystem},
-		{"rating", ratingSystem},
-		{"showcase", showcaseSystem},
-		{"shorts", shortsSystem},
-	} {
-		for _, gone := range []string{"[12:04] EVENT", "counting past 59", "4350 seconds"} {
-			if strings.Contains(p.text, gone) {
-				t.Errorf("the %s wording still explains %q itself, which the system "+
-					"context says to every job already", p.name, gone)
-			}
+// precisely because they were written several times over.
+func TestTheCutWordingDoesNotRepeatTheSystemContext(t *testing.T) {
+	for _, gone := range []string{"[12:04] EVENT", "counting past 59", "4350 seconds"} {
+		if strings.Contains(cutSystem, gone) {
+			t.Errorf("the cut wording still explains %q itself, which the system "+
+				"context says to every job already", gone)
 		}
 	}
-	// what a style is for stays in the style: this took the facts out, not the
-	// judgement
-	if !strings.Contains(shortsSystem, "20 to 30 seconds") {
-		t.Error("the Shorts wording lost the length that makes it Shorts")
-	}
 	if !strings.Contains(sysSystem, `{"segments":`) {
-		t.Error("the system context lost the cut's reply shape, which the wordings no longer spell")
+		t.Error("the system context lost the cut's reply shape, which the wording no longer spells")
 	}
 }
 
@@ -118,11 +110,7 @@ func shippedPrompts() []struct{ name, text string } {
 	return []struct{ name, text string }{
 		{"describe", describeSystem},
 		{"fix", fixSystem},
-		{"cut (general)", genericSystem},
-		{"cut (highlights)", suggestSystem},
-		{"cut (rating)", ratingSystem},
-		{"cut (showcase)", showcaseSystem},
-		{"cut (shorts)", shortsSystem},
+		{"cut", cutSystem},
 		{"speed", speedSystem},
 		{"captions", captionSystem},
 		{"effects", fxRules},
@@ -199,42 +187,28 @@ func TestTheSystemContextNamesTheWholePipeline(t *testing.T) {
 	}
 }
 
-// TestTheSystemContextHasNoWordings: the formats are the formats -- a session
-// stamp reads the same whether the video is cut for Highlights or for Showcase
-// -- so this one prompt is outside the wording machinery. That is one flag
-// (promptDef.solo) read in three places, and all three are checked here:
-// picking a style must not touch its text, the bench row must not name a
-// wording it does not have, and the ＋ that saves a new wording must not be
-// offered.
-func TestTheSystemContextHasNoWordings(t *testing.T) {
+// The system context is the formats, and the formats are the formats: it is
+// what every job is told before its own wording, and nothing about a session
+// changes how a stamp reads. It is one prompt like every other now -- the
+// wording machinery it was kept out of is gone (prompts.go) -- so what is left
+// to hold is that it is on the bench, editable, and named without ceremony.
+func TestTheSystemContextIsOnTheBenchLikeTheRest(t *testing.T) {
 	ownConfig(t)
-	d := promptDefFor("system")
-	if !d.solo {
-		t.Fatal("the system context is back in the wording machinery, and the rest of this test says why it is not")
-	}
-	if len(d.alts) != 0 {
-		t.Errorf("the system context has %d alternative wordings, which no style has anything to say about", len(d.alts))
-	}
 	a := &App{}
-	before := a.prompt("system")
-	for _, style := range []string{"Highlights", "Rating / tier list", "Showcase", shortsStyleName} {
-		a.applyStyle(style)
-		if got := a.prompt("system"); got != before {
-			t.Fatalf("style %q rewrote the system context, so a job's formats depend on how the video is cut:\n%s", style, short(got))
-		}
+	if got := a.prompt("system"); got != strings.TrimSpace(sysSystem) {
+		t.Errorf("the system context is not what a job is sent: %s", short(got))
 	}
-	// the cut did move, or applyStyle was doing nothing at all and the check
-	// above passes for the wrong reason
-	if a.prompt("cut") == strings.TrimSpace(genericSystem) {
-		t.Error("applyStyle left the cut prompt on the default too, so nothing above was actually exercised")
-	}
+	found := false
 	for _, name := range a.prepEditNames() {
-		if strings.HasPrefix(name, "System context") && strings.Contains(name, "(") {
-			t.Errorf("the bench row reads %q, naming a wording the system context does not have", name)
+		if name == "System context" {
+			found = true
+		}
+		if strings.Contains(name, "(") {
+			t.Errorf("a bench row reads %q, naming a wording nothing can pick", name)
 		}
 	}
-	if src := readSrc(t, "prepedit.go"); !strings.Contains(src, "add.SetVisible(prompt && !promptDefFor(r.key).solo)") {
-		t.Error("the ＋ is offered on the system context row, and there is nowhere for a second wording to go")
+	if !found {
+		t.Errorf("the system context is not on the bench: %v", a.prepEditNames())
 	}
 }
 

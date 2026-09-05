@@ -214,9 +214,11 @@ func TestTheLaneDrawsWhatTheEffectDoes(t *testing.T) {
 	// -- and all four dialogs in this file name them the same, in the same
 	// order, with the length between them: a zoom, a text, a speed and a
 	// volume differ in what they do, not in what their transitions are called
-	for _, row := range []string{"Fade in seconds", "Length seconds", "Fade out seconds"} {
-		if n := strings.Count(s, `fxNumRow("`+row+`"`); n != 4 {
-			t.Errorf("%d dialogs ask for %q, want all 4", n, row)
+	// the label asks for a length too, and for nothing else: it has no fades
+	// to arrive or leave on (cut_fxlabel_test.go)
+	for row, n0 := range map[string]int{"Fade in (s)": 4, "Length (s)": 5, "Fade out (s)": 4} {
+		if n := strings.Count(s, `fxNumRow("`+row+`"`); n != n0 {
+			t.Errorf("%d dialogs ask for %q, want %d", n, row, n0)
 		}
 	}
 	for _, gone := range []string{"Ramp in seconds", "Ramp out seconds", "Glide in seconds",
@@ -322,34 +324,43 @@ func TestAStopChoosesWhatItsSoundDoes(t *testing.T) {
 	}
 
 	// and the preview: the same seconds, muted the way a card is
-	fx := []cutFx{{Kind: "speed", T: 100, Dur: 2, Rate: 0, Mute: true}}
+	fx := []cutFx{{Kind: "speed", T: 100, Dur: 2, Rate: 0, Snd: sndMute}}
 	for _, c := range []struct {
 		t    float64
 		want bool
 	}{{99.9, false}, {100, true}, {101.9, true}, {102, false}} {
-		if got := freezeHush(fx, c.t); got != c.want {
+		if got := fxHush(fx, c.t); got != c.want {
 			t.Errorf("at %gs the preview reads hush=%v, wanted %v", c.t, got, c.want)
 		}
 	}
-	if freezeHush([]cutFx{{Kind: "speed", T: 100, Dur: 2, Rate: 0}}, 101) {
+	if fxHush([]cutFx{{Kind: "speed", T: 100, Dur: 2, Rate: 0}}, 101) {
 		t.Error("a stop that keeps its sound muted the preview")
+	}
+	// a cut written before the answer was a word still reads: the old tick is
+	// the silent answer (migrateFx does it once on load, and sound() reads it
+	// either way)
+	if !fxHush([]cutFx{{Kind: "speed", T: 100, Dur: 2, Rate: 0, Mute: true}}, 101) {
+		t.Error("an older cut's silent stop is heard again")
 	}
 }
 
 // The wiring for the choice, on the live player and the real ffmpeg.
 func TestTheSilentStopWiringIsInPlace(t *testing.T) {
 	pins := map[string][]string{
-		// the dialog asks, greying the row out when the rate is not a stop --
-		// on every way the rate can change, which since the rate became a
-		// list with a typed box under it is two ways (newRatePick)
-		"cut_fx.go": {`gtk.NewCheckButtonWithLabel("Keep playing the sound underneath")`,
-			"snd.SetSensitive(rp.rate(f.Rate) <= 0)", "rp := newRatePick(f.Rate, func() { sync() })",
-			"f.Rate, f.Dur, f.Mute = 0, math.Max(0.5, dur), !snd.Active()"},
+		// the dialog asks it of every rate now, as one of five answers about
+		// the sound (cut_fxsound.go) -- the stop's tick was two of them --
+		// and the line under it reads the rate on every way the rate can
+		// change, which since the rate became a list with a typed box under
+		// it is two ways (newRatePick)
+		"cut_fx.go": {`sd := gtk.NewDropDownFromStrings(sndNames)`,
+			"sd.SetSelected(sndIndex(f.sound()))", "rp := newRatePick(f.Rate, func() {",
+			"f.Snd, f.Mute = sndKindOf(sd.Selected()), false",
+			"msg := sndNote(sndKindOf(sd.Selected()), rp.rate(f.Rate), fxNumOf(l, f.Dur))"},
 		// the render silences the window with a volume filter on the clip's
 		// own sound, before the mix and after the atempo
-		"produce.go": {`volume=0:enable='%s'[hush];`, "mute: cue.fx.Mute"},
+		"produce.go": {`volume=0:enable='%s'[hush];`, "mute: cue.fx.sound() == sndMute"},
 		// the preview mutes the session the way a card does
-		"cut_insview.go": {"ed.player.SetMuted(cardHush(s) || freezeHush(ed.fx, ed.playhead))"},
+		"cut_insview.go": {"ed.player.SetMuted(cardHush(s) || fxHush(ed.fx, ed.playhead))"},
 	}
 	for file, want := range pins {
 		b, err := os.ReadFile(file)

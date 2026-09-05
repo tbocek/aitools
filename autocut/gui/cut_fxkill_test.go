@@ -71,9 +71,9 @@ func TestTheXSitsAtTheBandsRightEndOnItsOwnRow(t *testing.T) {
 	ed := fxKillEd(t)
 	_, x1 := ed.fxSpanPx(ed.fx[1])
 	cx, cy, ok := ed.fxKillCentre(1)
-	if !ok || cx != x1-segKillIn || cy != ed.fxLaneTop()+1.5*fxLaneH {
+	if !ok || cx != x1-killIn || cy != ed.fxLaneTop()+1.5*fxLaneH {
 		t.Errorf("the zoom's ✕ is at (%.0f, %.0f) ok=%v, want (%.0f, %.0f) on row 1",
-			cx, cy, ok, x1-segKillIn, ed.fxLaneTop()+1.5*fxLaneH)
+			cx, cy, ok, x1-killIn, ed.fxLaneTop()+1.5*fxLaneH)
 	}
 	if i := ed.fxKillAt(cx, cy); i != 1 {
 		t.Errorf("a press on that spot answers effect %d, want 1", i)
@@ -90,13 +90,13 @@ func TestTheXSitsAtTheBandsRightEndOnItsOwnRow(t *testing.T) {
 func TestABandTooNarrowForTheXKeepsItsCorner(t *testing.T) {
 	ed := fxKillEd(t)
 	// the sliver: 5 s at 4 px/s is 20 px, and the ✕'s target alone reaches
-	// segKillIn+segKillHit in from the right -- a badge there would cover the
+	// killIn+segKillHit in from the right -- a badge there would cover the
 	// band's middle, so a press meant to slide it would remove it
 	if _, _, ok := ed.fxKillCentre(2); ok {
 		t.Error("a 20 px band was given a ✕ wider than its own middle")
 	}
 	_, x1 := ed.fxSpanPx(ed.fx[2])
-	if i := ed.fxKillAt(x1-segKillIn, ed.fxLaneTop()+0.5*fxLaneH); i != -1 {
+	if i := ed.fxKillAt(x1-killIn, ed.fxLaneTop()+0.5*fxLaneH); i != -1 {
 		t.Errorf("a press on the sliver's corner answers %d, want -1 (it holds instead)", i)
 	}
 }

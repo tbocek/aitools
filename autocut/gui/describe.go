@@ -5,7 +5,7 @@ package main
 // those seconds and a little either side of them, marked as context; a rolling
 // "state of the game" plus the last events make each batch a description of
 // what is HAPPENING, not stills.
-// Output: understand/describe/<video>/events.tsv, resumable per chunk.
+// Output: prepare/describe/<video>/events.tsv, resumable per chunk.
 //
 // The page is prep.go -- this half and the fixer (transcript.go) share it.
 
@@ -260,7 +260,7 @@ func loadTSVRows(path string) []tsvRow {
 type videoPlan struct {
 	base     string
 	video    string // absolute path
-	dir      string // understand/describe/<base>
+	dir      string // prepare/describe/<base>
 	frames   []string
 	interval float64
 	scale    string
@@ -390,10 +390,10 @@ func (a *App) describeAll(videos, audios []string, span float64) error {
 // What it does NOT touch is .llmframes beside them. Those are scaled pixels,
 // not results -- keeping them means starting over costs the vision model again
 // but not the minutes of ffmpeg that scaling an hour of frames takes. Nor does
-// it touch understand/transcript: the fixer never resumes, so every run of it
+// it touch prepare/transcript: the fixer never resumes, so every run of it
 // already starts from the first block.
 //
-// Every folder under understand/describe/ is cleared, not just the sources selected
+// Every folder under prepare/describe/ is cleared, not just the sources selected
 // now: "start from the start" is about the step, and a log left behind by a
 // recording that has since been deselected is exactly the stale half-run this
 // is here to get rid of.

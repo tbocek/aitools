@@ -39,7 +39,7 @@ func TestOneRowIsLabelledTheSameEverywhere(t *testing.T) {
 	const narr = "his-own-mic"
 
 	timeline := sessionText(rows, narr)
-	brief := clipBriefs([]cutSeg{{S: 10, E: 20}}, rows, narr)
+	brief := clipBriefs([]cutSeg{{S: 10, E: 20}}, rows, nil, narr)
 	var speech []speechSrc
 	for _, src := range []string{"capture-0", "his-own-mic"} {
 		var mine []tsvRow
@@ -95,11 +95,7 @@ func TestEveryPromptDescribesTheSameThreeLabels(t *testing.T) {
 		{"system context", sysSystem},
 		{"describe", describeSystem},
 		{"fix", fixSystem},
-		{"cut (general)", genericSystem},
-		{"cut (highlights)", suggestSystem},
-		{"cut (rating)", ratingSystem},
-		{"cut (showcase)", showcaseSystem},
-		{"cut (shorts)", shortsSystem},
+		{"cut", cutSystem},
 		{"narrate", narrSystem},
 	} {
 		sent := strings.TrimSpace(sysSystem) + "\n\n" + p.text

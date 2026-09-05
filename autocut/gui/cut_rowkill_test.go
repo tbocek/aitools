@@ -73,7 +73,7 @@ func TestTheXRefusesARowWithFootageOnIt(t *testing.T) {
 
 func TestTheXSitsAtTheEmptyRowsLeftEdge(t *testing.T) {
 	ed := gapEd(t)
-	if r := ed.rowKillAt(ed.viewX+segKillIn, ed.laneTop(1)+segKillTop); r != 1 {
+	if r := ed.rowKillAt(ed.viewX+killIn, ed.laneTop(1)+segKillTop); r != 1 {
 		t.Errorf("the badge on the empty row answers %d, want 1", r)
 	}
 	// and it is DRAWN where it is pressed. It was not: the draw was handed
@@ -84,7 +84,7 @@ func TestTheXSitsAtTheEmptyRowsLeftEdge(t *testing.T) {
 	plate := false
 	for dx := -3; dx <= 3 && !plate; dx++ {
 		for dy := -3; dy <= 3 && !plate; dy++ {
-			r, g, b := at(int(ed.viewX)+segKillIn+dx, int(ed.laneTop(1)+segKillTop)+dy)
+			r, g, b := at(int(ed.viewX)+killIn+dx, int(ed.laneTop(1)+segKillTop)+dy)
 			if r > 200 && g > 200 && b > 200 {
 				plate = true
 			}
@@ -95,7 +95,7 @@ func TestTheXSitsAtTheEmptyRowsLeftEdge(t *testing.T) {
 	}
 	// the same spot on a row with footage offers nothing: that row's removal
 	// has to say what happens to the footage, and this ✕ has no answer
-	if r := ed.rowKillAt(ed.viewX+segKillIn, ed.laneTop(0)+segKillTop); r != -1 {
+	if r := ed.rowKillAt(ed.viewX+killIn, ed.laneTop(0)+segKillTop); r != -1 {
 		t.Errorf("a full row grew a removal badge: %d", r)
 	}
 }

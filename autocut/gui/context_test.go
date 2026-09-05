@@ -62,11 +62,9 @@ func TestEveryPromptNamesTheContextHeading(t *testing.T) {
 		if d.key == "system" {
 			continue
 		}
-		for _, p := range d.builtins() {
-			if strings.Contains(p.Text, "block headed "+head) {
-				t.Errorf("%q (%s) introduces the %q block again, which the system context already did",
-					d.key, p.Name, head)
-			}
+		if strings.Contains(d.def, "block headed "+head) {
+			t.Errorf("the %s wording introduces the %q block again, which the "+
+				"system context already did", d.key, head)
 		}
 	}
 }

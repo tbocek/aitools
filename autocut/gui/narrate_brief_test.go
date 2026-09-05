@@ -77,7 +77,7 @@ func TestClipBriefsCarryTheWordsTheKindAndTheTiming(t *testing.T) {
 		{s: 900, e: 904, spk: "EVENT", text: "Everyone regroups on the dock."},
 	}
 	segs := []cutSeg{{S: 751, E: 800}, {S: 880, E: 890}}
-	got := clipBriefs(segs, rows, "")
+	got := clipBriefs(segs, rows, nil, "")
 
 	for _, want := range []string{
 		"CLIP 1: 751.0–800.0 (49 s, at most 30 words -- fewer is better, none is fine)",
@@ -531,9 +531,9 @@ func TestTheLineLandsWhereTheWriterPutIt(t *testing.T) {
 	for _, want := range []string{
 		`"at" the second the line starts`, // the field, defined where the model reads it
 		"react to the vault after we have seen the vault",
-		`"at":<sec>`,           // ...and in the JSON it returns
-		"like and subscribe",   // the sign-off exists
-		"near that clip's end", // ...and sits at the end, not the head, of the last clip
+		`"at":<sec>`, // ...and in the JSON it returns
+		"a sign-off if the user context wants one", // the sign-off, on request
+		"near that clip's end",                     // ...and sits at the end, not the head, of the last clip
 	} {
 		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+narrSystem, want) {
 			t.Errorf("the prompt no longer says %q", want)
@@ -640,7 +640,7 @@ func TestTheNarratePromptDescribesTheBriefItGets(t *testing.T) {
 		{s: 1, e: 2, spk: "EVENT", text: "x"},
 		{s: 3, e: 4, spk: "SPEAKER_01", text: "y", src: "capture"},
 		{s: 5, e: 6, spk: "SPEAKER_00", text: "z", src: "his-own-mic"},
-	}, "his-own-mic")
+	}, nil, "his-own-mic")
 	for _, want := range []string{"EVENT:", "SPEAKER_01:", "NARRATOR:"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("the brief no longer marks %q, which the prompt says it will:\n%s", want, brief)
@@ -688,7 +688,7 @@ func TestOnlyWhatTheVideoCarriesIsOffLimits(t *testing.T) {
 		t.Errorf("a footage-only session exempts %q, which the video plays out loud", got)
 	}
 
-	brief := clipBriefs([]cutSeg{{S: 640, E: 660}}, rows, a.narratorMic())
+	brief := clipBriefs([]cutSeg{{S: 640, E: 660}}, rows, nil, a.narratorMic())
 	if !strings.Contains(brief, "NARRATOR: Open up, FBI.") {
 		t.Errorf("the joke is not marked quotable:\n%s", brief)
 	}
@@ -785,7 +785,7 @@ func TestAPauseIsAnEntryAndNotPunctuation(t *testing.T) {
 	if strings.Contains(narrSystem, "never a two-word caption") {
 		t.Error("the prompt still bans a two-word line outright")
 	}
-	if !strings.Contains(narrSystem, "two words are a whole line when they are the funny ones") {
+	if !strings.Contains(narrSystem, "two words are a whole line when they are the right two") {
 		t.Error("the prompt no longer allows the short funny line")
 	}
 }

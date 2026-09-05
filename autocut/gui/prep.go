@@ -20,10 +20,10 @@ package main
 // page room all session for a control used in the first ten minutes. Here they
 // cost nothing and gain something: reading down the menu is reading the run.
 //
-// The jobs stay separate on disk -- inputs/, understand/describe/ and
-// understand/transcript/ -- because the describer resumes per chunk and the fixer
-// does not, and because a folder layout that changes with the tabs orphans
-// every project made before the change.
+// The jobs stay separate on disk -- prepare/inputs/, prepare/describe/ and
+// prepare/transcript/ -- because the describer resumes per chunk and the fixer
+// does not. They are under one folder because they are one step: the page has
+// one output button, and what it opens is the step's own folder.
 //
 // The context is the box's first row and it is not a prompt: it is what the
 // editor knows about THIS session, and every step's requests carry it
@@ -50,10 +50,8 @@ import (
 type preproc struct {
 	a *App
 
-	inputs        *gtk.Label // one line: what the sources are, and what they become
-	inputsOut     *gtk.Label // how much is already in each of the three output folders
-	describeOut   *gtk.Label
-	transcriptOut *gtk.Label
+	inputs  *gtk.Label // one line: what the sources are, and what they become
+	prepOut *gtk.Label // how much is already in prepare/, the step's own folder
 }
 
 // ---- page ------------------------------------------------------------------
@@ -125,39 +123,30 @@ func (a *App) buildPrep() gtk.Widgetter {
 	// output folder is set once, in the row under the list, and repeating it
 	// here would be a line of chrome for something that changes once a project.
 	//
-	// What was written is in the log, by name, so these are not a listing --
-	// they are the open-folder symbol under the name each half of the run calls
-	// its output, with how much is in it. The question they get asked before a
-	// run is whether this already happened and to which part; the age of the
-	// newest file answers "is that from today?" and is one hover away. The
-	// group rides the shared bottom bar (outStack in main.go), like every
-	// step's, so this page holds only the three triples, not the heading.
+	// What was written is in the log, by name, so this is not a listing -- it
+	// is the open-folder symbol beside the step's own folder, with how much is
+	// in it. The question it gets asked before a run is whether this already
+	// happened; the age of the newest file answers "is that from today?" and
+	// is one hover away.
+	//
+	// One button, where there were three: inputs/, describe/ and transcript/
+	// each had their own, because the step's work was in two places on disk
+	// and three counts made that look deliberate. They are prepare/'s three
+	// subfolders now (migrateFolders), so the row says what every other step's
+	// says -- here is the folder, here is how much is in it -- and which of
+	// the three a file is in is a question the folder answers better than a
+	// label can. The group rides the shared bottom bar (outStack in main.go).
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	for i, o := range []struct {
-		name, tip string
-		dir       func() string
-		into      **gtk.Label
-	}{
-		{"Inputs", "inputs/ — the transcripts, the frames, and who spoke when",
-			a.inputsDir, &p.inputsOut},
-		{"Describe", "understand/describe/ — the event logs, one per video",
-			a.describeDir, &p.describeOut},
-		{"Transcript", "understand/transcript/ — the fixed transcripts, the subtitles and the session timeline",
-			a.transcriptDir, &p.transcriptOut},
-	} {
-		dir := o.dir
-		btn := gtk.NewButtonFromIconName("folder-open-symbolic")
-		btn.SetTooltipText(o.tip)
-		btn.ConnectClicked(func() { a.openFolder(dir()) })
-		if i > 0 {
-			btn.SetMarginStart(12) // the triples read as triples; even spacing reads as nine things
-		}
-		lbl := gtk.NewLabel("")
-		*o.into = lbl
-		outRow.Append(btn)
-		outRow.Append(gtk.NewLabel(o.name + ":"))
-		outRow.Append(lbl)
-	}
+	outBtn := gtk.NewButtonFromIconName("folder-open-symbolic")
+	outBtn.SetTooltipText("prepare/ — this step's three folders:\n" +
+		"inputs/ — the frames, the per-source transcripts and who spoke when\n" +
+		"describe/ — the event logs, one per video\n" +
+		"transcript/ — the fixed transcripts, the subtitles and the session timeline")
+	outBtn.ConnectClicked(func() { a.openFolder(a.prepareDir()) })
+	p.prepOut = gtk.NewLabel("")
+	outRow.Append(outBtn)
+	outRow.Append(gtk.NewLabel("Prepare:"))
+	outRow.Append(p.prepOut)
 	a.outStack.AddNamed(outRow, "prep")
 
 	// Inputs at the top and the work below -- no prompt row at the bottom any
@@ -233,39 +222,39 @@ func (a *App) buildSources() *gtk.Box {
 	addDirBtn := gtk.NewButtonWithLabel("Add source folder…")
 	addDirBtn.SetTooltipText("Add everything playable in a folder")
 	addDirBtn.ConnectClicked(a.addFolderDialog)
-	// what the symbols on a row mean, once, above the rows -- a tooltip answers
-	// that only after you already suspect the answer. The same icons the rows
-	// use, because a legend drawn in anything else is a second thing to learn.
-	// The warning is NOT here: a permanent yellow triangle in the legend read
-	// as an active warning about the files below it. It explains itself on the
-	// row it appears on.
-	legend := gtk.NewBox(gtk.OrientationHorizontal, 4)
-	legend.SetHExpand(true)
-	legend.SetHAlign(gtk.AlignEnd)
-	for _, l := range []struct{ icon, text string }{
-		{"camera-video-symbolic", "footage"},
-		{"audio-input-microphone-symbolic", "narrator"},
-		{"edit-cut-symbolic", "split voice off"},
-		{"user-trash-symbolic", "remove"},
-	} {
-		lbl := gtk.NewLabel(l.text)
-		lbl.AddCSSClass("dim-label")
-		lbl.SetMarginEnd(6)
-		legend.Append(gtk.NewImageFromIconName(l.icon))
-		legend.Append(lbl)
-	}
+	// The legend was here: the four row icons with their words, once, along
+	// the top of the list. It cost a line of the page permanently to answer a
+	// question asked twice -- and it answered it a hand's width away from the
+	// buttons it was about, which is the one place the eye is not while it is
+	// deciding what a symbol does. The words are on the buttons themselves
+	// now: every one of them ends its tooltip with the whole row (srcRowKey),
+	// so hovering any symbol says what all four are.
+
 	addRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	addRow.Append(addBtn)
 	addRow.Append(addDirBtn)
-	addRow.Append(legend)
 
 	listScroll := gtk.NewScrolledWindow()
 	listScroll.SetChild(a.srcList.box)
 	listScroll.SetVExpand(true)
 	// what the heading used to say, kept on the thing it was about
 	listScroll.SetTooltipText("Every file here is transcribed, and placed on the session clock by the timestamp in its name")
+	// this row is this side's heading, and it joins the size group every
+	// editor's heading is in (editorBody): the two sides of the divider are
+	// read against each other, so a button row a few px taller than the label
+	// row opposite it starts the list a few px above the box it is beside.
+	// The same group is why the Publish page's fields line up with the prompts
+	// (publisher.heading).
+	if a.headGroup == nil {
+		a.headGroup = gtk.NewSizeGroup(gtk.SizeGroupVertical)
+	}
+	a.headGroup.AddWidget(addRow)
+
 	sources := gtk.NewBox(gtk.OrientationVertical, 4)
 	sources.SetVExpand(true)
+	// the same 4 px the editor's own box stands off the top with, so the two
+	// frames begin on one line (editorFrame)
+	sources.SetMarginTop(4)
 	sources.Append(addRow)
 	sources.Append(listScroll)
 
@@ -280,15 +269,13 @@ func (a *App) buildSources() *gtk.Box {
 	bottom.Append(a.scalePick)
 	bottom.Append(gtk.NewLabel("Language:"))
 	bottom.Append(a.langEntry)
-	// Which kind of video ▶ Suggest builds -- highlights, a rating, a Short.
-	// One choice for the whole project: every prompt follows it (applyStyle),
-	// which is why it is picked here where the project is set up, beside the
-	// bench its wordings are edited in (prepedit.go) -- see styleBar.
-	bottom.Append(a.styleBar("cut", "Style",
-		"Which kind of cut ▶ Suggest builds. Every prompt follows it: a job with "+
-			"a wording named after the style sends that wording, the rest stay "+
-			"on their defaults — the prompt menu on the right names what each "+
-			"one sends."))
+	// The Style dropdown was here, after Language: which kind of video ▶
+	// Suggest built -- highlights, a rating, a Short -- turning every prompt
+	// at once to a wording of that name. It is gone. What kind of video this
+	// is, is a fact about the session like everything else on this page, and
+	// the box beside these controls is where the session's facts go: said
+	// there it reaches every step, it outranks the wordings (ctxRule), and
+	// there is one place to say it instead of two that can disagree.
 
 	// No margins of its own: it is one side of the page's divider now, and the
 	// page keeps its columns 12 from the window's edges as Cut and Narrate do.
@@ -312,9 +299,7 @@ func (p *preproc) refresh() {
 	line, detail := p.a.inputsSummary()
 	p.inputs.SetText(line)
 	p.inputs.SetTooltipText(detail) // the per-file arithmetic, on hover
-	setOutCount(p.inputsOut, p.a.inputsDir())
-	setOutCount(p.describeOut, p.a.describeDir())
-	setOutCount(p.transcriptOut, p.a.transcriptDir())
+	setOutCount(p.prepOut, p.a.prepareDir())
 
 	if p.a.progress == nil || p.a.running {
 		return // the runner owns the bar's text while it is going
@@ -395,8 +380,12 @@ func (a *App) inputsSummary() (line, detail string) {
 		count(base)
 		b.WriteString(fixerLine(a.transcriptPath(base)))
 	}
+	// no "names in the log" on the end of it. The per-file arithmetic is the
+	// detail beside this line -- it is the tooltip ON it (refresh) and it is
+	// written to the log when ▶ starts (prepRun) -- so before a run the
+	// sentence pointed at the one of those two places that was still empty.
 	line = fmt.Sprintf("%d input files loaded (%d footage, %d voice) · %d frames → %d vision requests · "+
-		"%d transcript lines → %d fixer requests · names in the log",
+		"%d transcript lines → %d fixer requests",
 		len(vids)+len(auds), len(vids), len(auds), frames, vision, lines, fixes)
 	return line, strings.TrimRight(b.String(), "\n")
 }

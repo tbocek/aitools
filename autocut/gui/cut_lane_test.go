@@ -707,10 +707,14 @@ func TestTheLaneControlsAreWired(t *testing.T) {
 			t.Errorf("cut.go no longer contains %q", want)
 		}
 	}
+	// the ✕ is the left button's and the border is the right button's, so
+	// they cannot race each other for a press at all any more -- what has to
+	// hold is that the ✕ is still asked before anything else the left press
+	// could mean on the pictures
 	i := strings.Index(src, "ed.laneKillAt(x+ed.viewX, y); name != \"\"")
-	j := strings.Index(src, "if trimming = ed.pickAt(x+ed.viewX, false) == pickEdge; trimming {")
+	j := strings.Index(src, "ed.dropEdge() // any other left click puts a held edge or clip down")
 	if i < 0 || j < 0 || i > j {
-		t.Error("a clip border is taken before the lane's ✕, so a lane badge over one cannot be pressed")
+		t.Error("the lane's ✕ is no longer asked before the press falls through to a selection")
 	}
 }
 

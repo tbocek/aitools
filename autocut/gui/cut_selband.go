@@ -43,27 +43,32 @@ const (
 
 const (
 	selGripPx = 6.0  // px either side of an end that grabs that end
-	selKillW  = 12.0 // the blue band's ✕ target, inset from the right end
-	selKillIn = 8.0
-	// under this the band has no middle worth aiming at, so it is all grips and
-	// the ✕ is not drawn: a selection of a few frames is moved by its ends or
-	// thrown away with Esc.
-	selMinBand = 40.0
+	selKillW  = 12.0 // the blue band's ✕ target, narrower than a plated one's
+	// ...and centred at killIn from the right end, which is where every other
+	// ✕ on the page sits (cut_segkill.go). The mark itself stays the blue's
+	// own -- two flat strokes, no plate -- because it throws away a SELECTION
+	// and the plated ones remove footage, and the two must not be the same
+	// button. Where it sits is not part of that difference: two ✕ in one row
+	// at two distances from their edges is the row looking untidy for no
+	// reason anybody can read.
+	//
+	// under selMinBand the band has no middle worth aiming at, so it is all
+	// grips and the ✕ is not drawn: a selection of a few frames is moved by
+	// its ends or thrown away with Esc. The floor is the badges' own rule --
+	// twice the reach of the target, so the band's middle is never inside it.
+	selMinBand = 2*(killIn+selKillW/2) + 6
 	// the GREEN bar's ✕ is the plated badge the lanes and the effects wear
 	// (drawKillBadge), because it is the same verb they answer -- and it sits
-	// far enough in that its TARGET begins where the end grip's stops. Set by
-	// the plate alone it cleared the grip to the eye and still shared pixels
-	// with it: the hand aiming at the badge's outer edge got the border, and
-	// the hand aiming at the border got a mark that looked like it was part of
-	// the handle. One press, one verb, no shared pixels.
-	bandKillIn = selGripPx + segKillHit
-	// and it is only offered on a bar with the room, by segKillMin's rule: the
-	// target reaches bandKillIn+segKillHit in from the right end, so a bar
-	// narrower than twice that would have its middle -- the part a press picks
-	// the clip UP by -- inside a button that throws the clip away. It costs a
-	// few px of floor to move the mark inboard; short clips go with ⌦.
-	bandKillMin = 2*(bandKillIn+segKillHit) + 6
+	// at the same distance from its edge as every other one of them, for the
+	// reason killIn gives: the badge's target begins where the end grip's
+	// stops, so one press means one thing (cut_segkill.go).
 )
+
+// bandGround is the shade the two bands that speak for the whole cut are drawn
+// on: this row, and the effects lane under it. One ground for the pair, one
+// step up from the page, so the group reads as a group -- above it the clock,
+// below it a hairline and then the recordings (fxLaneTop).
+const bandGround = 0.16
 
 // selBandTop is the band's y inside the source-track area: directly under the
 // ruler's clock.
@@ -71,7 +76,7 @@ func (ed *cutEditor) selBandTop() float64 { return float64(rulerH) }
 
 // hitSelBand is whether a press in the source-track area lands in the band.
 func (ed *cutEditor) hitSelBand(y float64) bool {
-	return y >= ed.selBandTop() && y < ed.picTop()
+	return y >= ed.selBandTop() && y < ed.fxLaneTop()
 }
 
 // selSpan is the selection in session time, low end first. The stored pair is
@@ -108,7 +113,7 @@ func (ed *cutEditor) selPartAt(px float64) int {
 		return selStart
 	case math.Abs(px-x1) <= selGripPx:
 		return selEnd
-	case x1-x0 >= selMinBand && px >= x1-selKillIn-selKillW && px <= x1-selKillIn:
+	case x1-x0 >= selMinBand && math.Abs(px-(x1-killIn)) <= selKillW/2:
 		return selKill
 	case px > x0 && px < x1:
 		return selWhole
@@ -173,12 +178,12 @@ func (ed *cutEditor) bandBars() []int {
 // Removing needs no anchor: the thing pressed is the thing that goes.
 //
 // The target is the badge's own, a square around the plate segKillHit either
-// side, and only on a bar with the room for it (bandKillMin).
+// side, and only on a bar with the room for it (killMin).
 func (ed *cutEditor) bandKillAt(px float64) int {
 	for _, i := range ed.bandBars() {
 		s := ed.segs[i]
 		x0, x1 := ed.xOf(s.S), ed.xOf(s.E)
-		if x1-x0 >= bandKillMin && math.Abs(px-(x1-bandKillIn)) <= segKillHit {
+		if x1-x0 >= killMin && math.Abs(px-(x1-killIn)) <= segKillHit {
 			return i
 		}
 	}
@@ -200,15 +205,29 @@ func (ed *cutEditor) bandKillAt(px float64) int {
 // alone. The badge over the pictures is gone and this is the survivor
 // (cut_segkill.go): same undo, same sentence in the status.
 //
-// The ✕ is any bar's (bandKillAt); the ends and the middle are the bar in
-// reach's. Asked in that order the outer few px of a bar stay the grip that
-// trims it -- a hand aiming at "a bit shorter" must not find "gone" -- and
-// everything else the row answers, it answers wherever the line happens to be.
+// EVERY bar answers, not just the one the red line is in.
+//
+// It used to be that one alone: its ends were drawn as handles and the rest
+// were flat stripes, so trimming the third clip of a cut meant first putting
+// the line inside it -- a press whose only purpose was to make the next press
+// possible. The ✕ stopped working that way long ago (bandKillAt) for exactly
+// that reason, and the picture band never worked that way at all: every kept
+// stretch there is drawn with its two borders and either can be taken. This is
+// the same rule in the row above, and the drawing says so -- every bar wears
+// its handles (drawSelBand).
+//
+// The ends come first, over all the bars, and the bar in reach first among
+// them: two scenes that touch share a border to the pixel, and the one being
+// worked on is the one the hand means. Then the ✕, then the middles -- in that
+// order the outer few px of a bar stay the grip that trims it, and a hand
+// aiming at "a bit shorter" cannot find "gone".
 func (ed *cutEditor) bandClipPartAt(px float64) (int, int) {
-	i := ed.bandClipIdx()
-	x0, x1 := 0.0, 0.0
-	if i >= 0 {
-		x0, x1 = ed.xOf(ed.segs[i].S), ed.xOf(ed.segs[i].E)
+	bars := ed.bandBars()
+	if cur := ed.bandClipIdx(); cur >= 0 {
+		bars = append([]int{cur}, bars...)
+	}
+	for _, i := range bars {
+		x0, x1 := ed.xOf(ed.segs[i].S), ed.xOf(ed.segs[i].E)
 		switch {
 		case math.Abs(px-x0) <= selGripPx:
 			return i, selStart
@@ -219,8 +238,10 @@ func (ed *cutEditor) bandClipPartAt(px float64) (int, int) {
 	if k := ed.bandKillAt(px); k >= 0 {
 		return k, selKill
 	}
-	if i >= 0 && px > x0 && px < x1 {
-		return i, selWhole
+	for _, i := range bars {
+		if x0, x1 := ed.xOf(ed.segs[i].S), ed.xOf(ed.segs[i].E); px > x0 && px < x1 {
+			return i, selWhole
+		}
 	}
 	return -1, selNone
 }
@@ -504,6 +525,13 @@ func (ed *cutEditor) wantCursor(x, y float64) string {
 			return "pointer"
 		}
 	case ed.fxHitLane(y):
+		// the band's own ✕ first, exactly as the press asks it first
+		// (cut_fxkill.go): it sits ON the band, so without this the pointer
+		// over a button that removes the effect was the open hand that means
+		// "this whole thing moves" -- the one promise it must not make
+		if ed.fxKillAt(x+ed.viewX, y) >= 0 {
+			return "pointer"
+		}
 		i := ed.fxIndexAt(x+ed.viewX, y)
 		if i < 0 {
 			return ""
@@ -516,6 +544,10 @@ func (ed *cutEditor) wantCursor(x, y float64) string {
 		// a lane's ✕ first, for the reason the press asks it first: it can
 		// overlap a clip border, and a resize arrow over a button is a lie
 		if ed.laneKillAt(x+ed.viewX, y) != "" {
+			return "pointer"
+		}
+		// ...and an emptied row's, which the press asks in the same breath
+		if ed.rowKillAt(x+ed.viewX, y) >= 0 {
 			return "pointer"
 		}
 		if _, _, ok := ed.edgeAt(x + ed.viewX); ok {
@@ -555,7 +587,7 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 	y := ed.selBandTop()
 	// the row itself, as wide as the recordings, so that an empty band is
 	// visibly a place a selection could go rather than a gap in the page
-	cr.SetSourceRGB(0.155, 0.155, 0.165)
+	cr.SetSourceRGB(bandGround, bandGround, bandGround+0.01)
 	for _, v := range ed.vids {
 		cr.Rectangle(v.pxOrigin, y, v.dur*ed.pps, selBandH)
 	}
@@ -568,6 +600,7 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 	// first, so an actual selection lands on top of it. And it answers the
 	// blue's verbs (bandClipPartAt), so it wears the blue's clothes: end
 	// handles, and the same rings for held and hovered.
+	//
 	// Every kept scene, in the band, always. The green tint that says "kept"
 	// is drawn over the thumbnails, which means it is green over whatever the
 	// footage happens to be -- and on a dark game capture that is green on
@@ -576,70 +609,66 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 	// "what does the cut keep" for the WHOLE timeline at a glance, which is
 	// the question this row is read for.
 	//
-	// Shorter and dimmer than the bar for the scene the hand can reach, and a
-	// pixel short of its own right edge so two scenes that touch read as two.
-	// Only one scene answers the hand here (bandClipPartAt), and two bars
-	// drawn alike where one has handles and the other has none would be a
-	// promise the row does not keep.
+	// Dimmer than the bar for the scene the hand can reach, and a pixel short
+	// of its own right edge so two scenes that touch read as two. Dimmer and
+	// not plainer: every bar answers the hand (bandClipPartAt), so every bar
+	// wears the handles that say so, and what the brighter one says is which
+	// scene the arrow keys and the toolbar are about.
 	cur := ed.bandClipIdx()
 	// A pixel short of its own right edge so two clips that touch read as two,
 	// and deep enough to hold a badge: every bar carries the ✕, so no bar can
 	// be a stripe the plate hangs off either side of.
-	cr.SetSourceRGBA(0.2, 0.8, 0.3, 0.4)
+	//
+	// And every bar wears its END HANDLES. They used to be the reachable bar's
+	// alone, drawn to say "these two borders can be dragged" -- which was true
+	// of every bar in the row and offered on one, so a clip you could trim
+	// looked like a clip you could not until the red line was put inside it
+	// first. The picture band draws every kept stretch's borders; this is the
+	// same sentence in the row above, and bandClipPartAt answers for every bar
+	// to match.
 	for _, i := range ed.bandBars() {
-		if i == cur {
-			continue
-		}
-		s := ed.segs[i]
-		if gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E); gx1 >= vx0 && gx0 <= vx1 {
-			cr.Rectangle(gx0, y+4, math.Max(1, gx1-gx0-1), selBandH-8)
-		}
-	}
-	cr.Fill()
-	// their ✕, drawn with the bars rather than with the one in reach: the mark
-	// is the same mark on every bar, and the bar under it is what differs
-	for _, i := range ed.bandBars() {
-		if i == cur {
-			continue
-		}
 		s := ed.segs[i]
 		gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E)
-		if gx1 < vx0 || gx0 > vx1 || gx1-gx0 < bandKillMin {
+		if gx1 < vx0 || gx0 > vx1 {
 			continue
 		}
-		drawKillBadge(cr, gx1-bandKillIn, y+selBandH/2, ed.bandKillHov == i)
-	}
-	if i := cur; i >= 0 {
-		s := ed.segs[i]
-		if gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E); gx1 >= vx0 && gx0 <= vx1 {
+		// the bar in reach is a shade stronger and a touch deeper: it is the
+		// one the arrow keys and the toolbar are about, and the row still says
+		// which that is
+		if i == cur {
 			cr.SetSourceRGBA(0.2, 0.8, 0.3, 0.5)
 			cr.Rectangle(gx0, y+2, gx1-gx0, selBandH-4)
-			cr.Fill()
-			cr.SetSourceRGB(0.5, 0.92, 0.58)
-			for _, hx := range []float64{gx0, gx1} {
-				cr.Rectangle(hx-1.5, y, 3, selBandH)
-			}
-			cr.Fill()
-			// and this bar's ✕, the same badge the others just got: drawn
-			// always and red under the pointer, because this is the page's
-			// one "remove that" and it says so the same way everywhere
-			// (drawKillBadge). Not the blue's flat mark -- the blue's ✕
-			// throws away a selection and leaves the footage alone.
-			if gx1-gx0 >= bandKillMin {
-				drawKillBadge(cr, gx1-bandKillIn, y+selBandH/2, ed.bandKillHov == i)
-			}
-			switch {
-			case (ed.segOn && ed.segSel == i) || (ed.edgeOn && ed.edgeSeg == i):
-				cr.SetSourceRGBA(1, 1, 1, 0.9)
-				cr.SetLineWidth(2)
-				cr.Rectangle(gx0-1, y+1, gx1-gx0+2, selBandH-2)
-				cr.Stroke()
-			case ed.bandHov:
-				cr.SetSourceRGBA(1, 1, 1, 0.4)
-				cr.SetLineWidth(1.5)
-				cr.Rectangle(gx0-1, y+1.25, gx1-gx0+2, selBandH-2.5)
-				cr.Stroke()
-			}
+		} else {
+			cr.SetSourceRGBA(0.2, 0.8, 0.3, 0.4)
+			cr.Rectangle(gx0, y+4, math.Max(1, gx1-gx0-1), selBandH-8)
+		}
+		cr.Fill()
+		cr.SetSourceRGB(0.5, 0.92, 0.58)
+		for _, hx := range []float64{gx0, gx1} {
+			cr.Rectangle(hx-1.5, y, 3, selBandH)
+		}
+		cr.Fill()
+		// the ✕, the same badge on every bar and red under the pointer,
+		// because this is the page's one "remove that" and it says so the
+		// same way everywhere (drawKillBadge). Not the blue's flat mark --
+		// the blue's ✕ throws away a selection and leaves the footage alone.
+		if gx1-gx0 >= killMin {
+			drawKillBadge(cr, gx1-killIn, y+selBandH/2, ed.bandKillHov == i)
+		}
+		if i != cur {
+			continue
+		}
+		switch {
+		case (ed.segOn && ed.segSel == i) || (ed.edgeOn && ed.edgeSeg == i):
+			cr.SetSourceRGBA(1, 1, 1, 0.9)
+			cr.SetLineWidth(2)
+			cr.Rectangle(gx0-1, y+1, gx1-gx0+2, selBandH-2)
+			cr.Stroke()
+		case ed.bandHov:
+			cr.SetSourceRGBA(1, 1, 1, 0.4)
+			cr.SetLineWidth(1.5)
+			cr.Rectangle(gx0-1, y+1.25, gx1-gx0+2, selBandH-2.5)
+			cr.Stroke()
 		}
 	}
 	if !ed.sel.active {
@@ -665,8 +694,9 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 
 	cr.SetFontSize(9)
 	if x1-x0 >= selMinBand {
-		// the ✕, inboard of the right handle
-		kx := x1 - selKillIn - selKillW/2
+		// the ✕, inboard of the right handle and in the same column as every
+		// other one on the page
+		kx := x1 - killIn
 		cr.SetSourceRGBA(1, 1, 1, 0.85)
 		cr.SetLineWidth(1.6)
 		for _, d := range [][2]float64{{-1, -1}, {-1, 1}} {
@@ -683,7 +713,7 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 	// truncated to "0:20 – 0:5" it would say nothing and cost the band its
 	// colour.
 	lbl := fmt.Sprintf("%s – %s  %.1fs", mmss(a), mmss(b), b-a)
-	if e := cr.TextExtents(lbl); x0+6+e.Width < x1-selKillIn-selKillW-4 {
+	if e := cr.TextExtents(lbl); x0+6+e.Width < x1-killIn-selKillW/2-4 {
 		cr.SetSourceRGB(1, 1, 1)
 		cr.MoveTo(x0+6, y+selBandH-5)
 		cr.ShowText(lbl)

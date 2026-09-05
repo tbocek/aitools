@@ -135,8 +135,16 @@ func captionLines(c prodClip, sessS, sessE float64, spoken []tsvRow, from string
 			continue
 		}
 		s0, e0 := math.Max(r.s, sessS), math.Min(r.e, sessE)
-		at := (s0 - sessS) / c.speed()
-		dur := (e0 - s0) / c.speed()
+		// the clock the words are placed on is the SOUND's: with the sound on
+		// the picture's clock that is the clip's rate, and with it on its own
+		// it is 1× (cut_fxsound.go) -- either way it is the rate at which
+		// what is written is being said.
+		rate := c.speed()
+		if c.audOwn {
+			rate = 1
+		}
+		at := (s0 - sessS) / rate
+		dur := (e0 - s0) / rate
 		if dur < 0.3 {
 			continue // a flash nobody can read, cut off by the clip's edge
 		}
@@ -421,6 +429,12 @@ func (a *App) buildProduce() gtk.Widgetter {
 		grid.Attach(w, col*2+1, row, 1, 1)
 		return l
 	}
+	// a tick says what it is on itself: "Frame timing: [x] Peak frame rate
+	// (VFR)" is the same sentence twice, and the leading word was there only
+	// to fill the label column. It goes in the control column all the same, so
+	// the ticks line up with the dropdowns above them rather than starting a
+	// finger's width to their left.
+	check := func(col, row int, w gtk.Widgetter) { grid.Attach(w, col*2+1, row, 1, 1) }
 	dd := func(list []string, sel int, tip string) *gtk.DropDown {
 		d := gtk.NewDropDownFromStrings(list)
 		d.SetSelected(uint(sel))
@@ -494,19 +508,27 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.gvol.SetSizeRequest(200, -1)
 	p.gvol.SetTooltipText("how loud the original game audio sits under the narration")
 
+	// Three columns, one subject each: how it is encoded, what shape it comes
+	// out, what is heard and read over it. Two columns and seven rows put the
+	// sound settings under the picture settings and left the page's whole
+	// right-hand half empty, on the one page that has room to spare.
 	at(0, 0, "Container:", p.container)
 	at(0, 1, "Video codec:", p.codec)
 	at(0, 2, "Encoder preset:", p.preset)
 	at(0, 3, "Quality (CRF):", p.crf)
+	check(0, 4, p.blur)
+
 	at(1, 0, "Resolution:", p.height)
 	at(1, 1, "Frame rate:", p.fps)
 	at(1, 2, "Audio bitrate:", p.abr)
-	p.gvolLbl = at(1, 3, "Game audio:", p.gvol)
-	p.subsLbl = at(0, 4, "Subtitles:", p.subs)
-	p.subsFromLbl = at(0, 6, "Subtitles say:", p.subsFrom)
-	at(1, 4, "Frame timing:", p.vfr)
-	at(1, 5, "Audio channels:", p.mono)
-	at(0, 5, "Frame edges:", p.blur)
+	// beside the rate it qualifies: VFR is what the number above it MEANS, a
+	// ceiling rather than a rate held, and it sat two rows under it
+	check(1, 3, p.vfr)
+
+	p.subsLbl = at(2, 0, "Subtitles:", p.subs)
+	p.subsFromLbl = at(2, 1, "Subtitles say:", p.subsFrom)
+	p.gvolLbl = at(2, 2, "Game audio:", p.gvol)
+	check(2, 3, p.mono)
 
 	// Where the video is written. This is a setting, not the Outputs line: it
 	// says where the file WILL go, and the row at the foot of the page says
@@ -763,7 +785,15 @@ func subsIndex(key string) int {
 // the narration is written against and the one that gets rendered.
 func (a *App) produceSegs() []cutSeg {
 	c := a.produceCut()
-	return applyFx(splitSpliced(c.Segs), c.Fx)
+	// every piece remembers the scene it was cut from, before anything cuts
+	// it: splitSpliced opens scenes for cards and applyFx cuts them again at
+	// every rate boundary, and both copy the segment whole, so the stamp
+	// travels with the pieces (cutSeg.Scene).
+	segs := splitSpliced(c.Segs)
+	for i := range segs {
+		segs[i].Scene = i
+	}
+	return applyFx(segs, c.Fx)
 }
 
 // produceCut is the whole cut file the render works from -- the live editor
@@ -1007,6 +1037,38 @@ type prodClip struct {
 	// output seconds. The only effect that reaches the sound and nothing else,
 	// so it is the only one resolved here that the picture never sees.
 	gains []textCue
+	// the seconds of this clip nothing is heard over: a speed effect whose
+	// sound is Silent (hushCues). A window rather than a flag on the clip,
+	// because a stop and a ×1 do not cut the segment list at all -- their
+	// bands lie inside a clip that is longer than they are.
+	hushes []textCue
+
+	// ---- the sound off the picture's clock (cut_fxsound.go) ----------------
+	//
+	// audOwn is the two answers that let the sound keep its own speed while
+	// the picture runs off without it. The sound is then a second input of
+	// the same recording, read from audAt at 1x, and the separate recordings
+	// under it are re-based onto audSess the same way (laneOverlap) -- they
+	// are the same moment and they travel together.
+	audOwn  bool
+	audPath string  // the recording the sound is read from
+	audAt   float64 // ...and where in it, in that file's own seconds
+	audSess float64 // the session second the sound starts at
+	audRun  int     // which run of shifted clips this belongs to; 0 is none
+	// audPitch is the other kind of answer: the sound goes with the picture,
+	// but by tape speed rather than by time-stretching, so the pitch rides
+	// the rate.
+	audPitch bool
+	// the splice where a shifted run closes is dipped rather than cut: the
+	// tail of one clip fades down and the head of the next fades up. Nothing
+	// can cross the join between two clips -- they are separate encodes,
+	// concatenated with a stream copy -- so a crossfade is not available and
+	// two half-fades are.
+	audIn  bool
+	audOut bool
+	// which SCENE of the cut this clip was cut from (cutSeg.Scene): the
+	// question "is the sound still in the scene it came adrift in".
+	scene int
 }
 
 // stillCue is one stop effect inside one clip: a textCue's window and fades --
@@ -1490,6 +1552,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			continue
 		}
 		c.sessS = s.S
+		c.scene = s.Scene // which scene of the cut this piece is part of
 		c.quiet = s.Quiet // every clip kind, so one scene answers one way
 		if from, ok := copySrc(s.Ins); ok {
 			// its text cues are the copied footage's, not the paste point's:
@@ -1580,6 +1643,13 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 	if len(clips) == 0 {
 		return fmt.Errorf("no clip could be placed on a recording")
 	}
+	// what the sound does, before the recordings are placed: a clip whose
+	// sound has come away from the picture hears the lanes from the same
+	// second the capture is read from, and clipMixes below asks it
+	// (laneOverlap). After the lengths are settled, because the sound
+	// advances by however long the clip is on SCREEN -- a slot grown for its
+	// narration is more seconds of sound too.
+	audioPlan(clips, a.produceCut().Fx)
 	// the separate recordings, now that every clip's length is settled: growing
 	// a slot for its narration lengthens what was heard under it too
 	for i := range clips {
@@ -1661,6 +1731,19 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		c.gains = gainCues(fx, c.sessS, span, c.speed(), c.length)
 	}
 
+	// the seconds nothing is heard over: a speed effect whose sound is Silent,
+	// at any rate. Mapped exactly as the volume effects above are, and for the
+	// same reason -- a stop and a ×1 leave the segment list alone, so their
+	// bands lie inside a clip rather than being one.
+	for i := range clips {
+		c := &clips[i]
+		span := c.length * c.speed()
+		if c.freeze || c.ins != "" {
+			span = 0
+		}
+		c.hushes = hushCues(fx, c.sessS, span, c.speed(), c.length)
+	}
+
 	// the stop effects: the same mapping once more, but the overlay is a frame
 	// of a recording rather than a drawn card, resolved here where the
 	// recordings are known -- a stop's bar can hang into a clip cut from a
@@ -1682,7 +1765,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			}
 			sc := stillCue{s: cue.s, e: cue.e, fin: cue.fin,
 				fout: cue.fout, path: v.path, at: v.at(cue.fx.T),
-				mute: cue.fx.Mute}
+				mute: cue.fx.sound() == sndMute}
 			sc.w, sc.h = stillSize(v, c.video)
 			c.stills = append(c.stills, sc)
 		}
@@ -1698,7 +1781,16 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		st.Subs, spoken = "none", nil // no lines, no track (produceEntries)
 	}
 	for _, c := range clips {
-		caps := captionLines(c, c.sessS, c.sessS+c.length*c.speed(), spoken, st.SubsFrom)
+		// the window the captions are cut from is the SOUND's, not the
+		// picture's. They transcribe what is heard, and on a clip whose sound
+		// has come away from the picture (cut_fxsound.go) those are different
+		// seconds of the session -- subtitles taken off the picture's clock
+		// would print one sentence over another being spoken.
+		from, to := c.sessS, c.sessS+c.length*c.speed()
+		if c.audOwn {
+			from, to = c.audSess, c.audSess+c.length
+		}
+		caps := captionLines(c, from, to, spoken, st.SubsFrom)
 		for k, ln := range caps {
 			end := cum + ln.delay + ln.dur/c.tempo
 			if ln.dur == 0 { // unspoken: hold the caption until the next line, or the clip's end
@@ -1742,7 +1834,13 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		}
 		name := stem + ext
 		var cueFile string
-		caps := captionLines(c, c.sessS, c.sessS+c.length*c.speed(), spoken, st.SubsFrom)
+		// the burned-in captions read the same window the track above does:
+		// the sound's, which on a shifted clip is not the picture's
+		capS, capE := c.sessS, c.sessS+c.length*c.speed()
+		if c.audOwn {
+			capS, capE = c.audSess, c.audSess+c.length
+		}
+		caps := captionLines(c, capS, capE, spoken, st.SubsFrom)
 		if st.Subs == "burn" && len(caps) > 0 {
 			cueFile = filepath.Join(clipDir, stem+".srt")
 			one := ""
@@ -2061,8 +2159,12 @@ func clipMixes(c prodClip, recs []tlAudio) []prodMix {
 		if t1-t0 < laneMinMix { // nothing worth an input, and a 0 s one ffmpeg refuses
 			continue
 		}
+		at := (t0 - c.sessS) / c.speed()
+		if c.audOwn {
+			at = t0 - c.audSess // 1x, from the second the sound starts at
+		}
 		out = append(out, prodMix{base: au.base, path: au.path, track: au.track,
-			at: (t0 - c.sessS) / c.speed(), ss: t0 - au.start, dur: t1 - t0})
+			at: at, ss: t0 - au.start, dur: t1 - t0})
 	}
 	return out
 }
@@ -2138,6 +2240,13 @@ func laneOverlap(c prodClip, au tlAudio) (float64, float64) {
 	}
 	s0 := c.sessS
 	s1 := s0 + c.length*c.speed()
+	if c.audOwn {
+		// the sound is off the picture's clock: the lanes are the same moment
+		// as the capture's own track and are read from the same second, at 1x
+		// for exactly as long as the clip is on screen (cut_fxsound.go)
+		s0 = c.audSess
+		s1 = s0 + c.length
+	}
 	return math.Max(s0, au.start), math.Min(s1, au.start+au.dur)
 }
 
@@ -2211,6 +2320,15 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 		// decoded and dropped, which costs nothing worth a branch.
 		args = append(args, "-t", fmt.Sprintf("%.3f", c.length*math.Max(1, c.speed())),
 			"-i", c.snd)
+		game = "1:a"
+	case c.audOwn && srcSound:
+		// the sound has come away from the picture (cut_fxsound.go): it is a
+		// second read of the same recording, from the second the plan says
+		// and at 1×, for exactly as long as this clip is on screen. -ss
+		// before -i, like every other seek here: the trim is the input's, so
+		// this decodes the seconds it uses rather than the file.
+		args = append(args, "-ss", fmt.Sprintf("%.3f", math.Max(0, c.audAt)),
+			"-t", fmt.Sprintf("%.3f", c.length), "-i", c.audPath)
 		game = "1:a"
 	case !srcSound:
 		args = append(args, "-f", "lavfi", "-t", fmt.Sprintf("%.3f", c.length),
@@ -2435,8 +2553,13 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 	// it, pitch held (atempoChain) -- the capture's own sound here, each
 	// separate recording where it is prepared below
 	slow := ""
-	if c.ins == "" && !c.freeze && c.speed() != 1 {
+	if c.ins == "" && !c.freeze && c.speed() != 1 && !c.audOwn {
+		// ...or by tape speed, pitch and all, when that is the answer. A clip
+		// whose sound is on its own clock takes neither: it is already at 1×.
 		slow = atempoChain(c.speed())
+		if c.audPitch {
+			slow = asetrateChain(c.speed())
+		}
 		if srcSound {
 			fc += fmt.Sprintf("[%s]%s%s[slowgm];", game, audFmt(st), slow)
 			game = "slowgm"
@@ -2446,15 +2569,20 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 	// output seconds, which is what the still overlay above is enabled on and
 	// what the sound reads as too once the atempo above has run, so the
 	// silence lands exactly under the held frame.
-	if mute := stillMute(c.stills); mute != "" {
+	if mute := hushExpr(c.hushes, c.stills); mute != "" {
 		fc += fmt.Sprintf("[%s]%svolume=0:enable='%s'[hush];", game, audFmt(st), mute)
 		game = "hush"
 	}
-	if c.snd != "" {
+	if c.snd != "" || c.audOwn {
 		// a file shorter than its slot must not end the clip's sound early --
 		// the join is a stream copy, and a short audio track in one clip puts
 		// every clip after it out of step with its picture. Padded with silence
 		// out past the slot; the output -t below is what makes the length exact.
+		//
+		// The sound off the picture's clock needs it for the same reason from
+		// the other end: under slow motion it reads AHEAD of the picture, so
+		// near the end of a recording it asks for seconds the file has not
+		// got (cut_fxsound.go).
 		fc += fmt.Sprintf("[%s]%s,apad[snd];", game, audFmt(st))
 		game = "snd"
 	}
@@ -2490,6 +2618,15 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 	// would, and before the narration, which is written on this page and has
 	// its own level (GameVol) rather than a cut effect's say over it.
 	if fx, lab := gainChain(c.gains, game); fx != "" {
+		fc += fx
+		game = lab
+	}
+	// the seam where the sound goes back in sync with the picture: half a dip
+	// here, half at the head of the clip that follows (audDipChain). On the
+	// bed, so the lanes dip with the capture -- they came adrift together --
+	// and before the narration, which is written on this page and has nothing
+	// to do with where the footage's own sound is up to.
+	if fx, lab := audDipChain(c, game); fx != "" {
 		fc += fx
 		game = lab
 	}

@@ -97,7 +97,7 @@ const (
 //
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 
-const youtubeSystem = `You write the upload text for a finished gaming video on YouTube: its title, and the description that sits under it.
+const youtubeSystem = `You write the upload text for a finished video on YouTube: its title, and the description that sits under it.
 
 You are given what the video is made of -- its clips, what was seen and said in each, and the narration that was written over it. That is the video.
 
@@ -106,13 +106,13 @@ What the user context singles out is what the description should lead with. Answ
 The title.
 
 - Four to seven words. It is the YouTube title, and it is also printed across the upper part of the thumbnail afterwards, read at the size of a phone's sidebar -- every extra word costs one that mattered.
-- Say the specific thing that happens in THIS video: the moment, the mistake, the win, the thing nobody expected. A title that would fit any session of this game is a wasted title.
+- Say the specific thing that happens in THIS video: the moment, the mistake, the win, the thing nobody expected. A title that would fit any session like it is a wasted title.
 - Plain words people say out loud. No colons splitting a subtitle off, no clickbait punctuation, no ALL CAPS -- it is drawn in large letters already.
 - Never promise something the clips do not contain: a title is a claim about the video, and this one is the claim most people will only ever read.
 
 The thumbnail instruction.
 
-- One or two sentences telling the image model how to compose ONE picture out of the frames: what this video is about, the game it is, the moment it shows.
+- One or two sentences telling the image model how to compose ONE picture out of the frames: what this video is about, and the moment it shows.
 - It is an instruction, not a description. Anything you do not mention is left alone, so describing the whole scene gets a picture of something else instead of the moment that was filmed. Say what to combine, brighten, push forward, or clear out of the way.
 - Name only things the clips contain. "Add the dragon" to a video with no dragon in it is a thumbnail that lies about the video.
 
@@ -121,7 +121,7 @@ The description.
 - Open with one or two sentences that say what happens in this video, in plain language, and make someone want to watch it. This first line is the only part shown before "...more", so it has to work alone.
 - Then a short paragraph, three or four sentences, on what the session actually was: where it is set, who is in it, what went right and wrong.
 - Then a chapter list if the video has distinct beats -- one line per beat, "0:00 What this is", at the time the clip list gives for that clip ("at 1:23 in the video"), never a session time. Only if the beats are real; a made-up timestamp is worse than no chapter list.
-- Finish with a line of five to eight hashtags, lower case, naming the game, the genre and the kind of moment. No hashtag salad.
+- Finish with a line of five to eight hashtags, lower case, naming what this is, where it is set and the kind of moment. No hashtag salad.
 
 Voice.
 
@@ -499,8 +499,18 @@ func (p *publisher) heading(title, tip string, extra ...gtk.Widgetter) *gtk.Box 
 }
 
 // textBox is one of the editable result fields, floored at lines of text.
+//
+// Monospace, like every editable box in the app -- the prompts, the context,
+// the narration lines, the log. These three were the exception, in the
+// proportional font, so the one page that shows a prompt's ANSWER beside the
+// prompts themselves showed them in two different typefaces.
+//
+// The floor is measured in monospace lines for the same reason: it is a few
+// pixels taller per line than the other font, so a box floored at eight of
+// them in the old arithmetic came out short of eight.
 func (p *publisher) textBox(lines int, tip string) (*gtk.TextView, *gtk.ScrolledWindow) {
 	tv := gtk.NewTextView()
+	tv.SetMonospace(true)
 	tv.SetWrapMode(gtk.WrapWord)
 	tv.SetTopMargin(4)
 	tv.SetBottomMargin(4)
@@ -510,10 +520,16 @@ func (p *publisher) textBox(lines int, tip string) (*gtk.TextView, *gtk.Scrolled
 	sc := gtk.NewScrolledWindow()
 	sc.SetChild(tv)
 	sc.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
-	sc.SetSizeRequest(-1, lines*18+8)
+	sc.SetSizeRequest(-1, lines*monoLineH+8)
 	sc.AddCSSClass("frame")
 	return tv, sc
 }
+
+// monoLineH is a monospace line's height at the app's font size, near enough
+// for a size REQUEST: the box scrolls, so being a pixel out costs nothing, and
+// measuring it properly means building a widget to ask (narrate.go does, for a
+// number that has to be exact).
+const monoLineH = 20
 
 // setFrames replaces the row. Everything that changes the list goes through
 // here -- a user gesture and apply alike -- so one place keeps the widgets,
@@ -1014,7 +1030,7 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 	// and writes session times instead
 	b.WriteString("\nWHAT IS IN EACH CLIP:\n")
 	pos := 0.0
-	b.WriteString(clipBriefsWith(segs, rows, a.narratorMic(), func(i int, s cutSeg) string {
+	b.WriteString(clipBriefsWith(segs, rows, nil, a.narratorMic(), func(i int, s cutSeg) string {
 		h := fmt.Sprintf("CLIP %d (at %d:%02d in the video, %.0f s): session %.1f–%.1f",
 			i+1, int(pos)/60, int(pos)%60, s.length(), s.S, s.E)
 		pos += s.length()

@@ -90,6 +90,12 @@ func TestEverySegmentFieldCountsAsAChange(t *testing.T) {
 			t.Fatalf("%s is a %s and this test does not know how to change one",
 				f.Name, f.Type.Kind())
 		}
+		if f.Tag.Get("json") == "-" {
+			// a field the cut does not store is not part of what the cut IS:
+			// Scene is stamped by the render's own planning, on a copy, and
+			// two scenes that differ only by it are the same scene
+			continue
+		}
 		if sameSeg(base, other) {
 			t.Errorf("changing %s left the two scenes reading as the same one — "+
 				"sameSeg does not look at it, so Revert will not notice it", f.Name)

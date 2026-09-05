@@ -78,16 +78,12 @@ func TestEveryPromptIsExposed(t *testing.T) {
 	// Improve button. Every prompt the binary declares is a step of an edit and
 	// is on the bench.
 	//
-	// counted across the wordings, not the jobs: a job can ship several, so what
-	// has to match is how many prompts exist against how many the dropdowns offer
-	exposed := 0
-	for _, d := range promptDefs {
-		exposed += len(d.builtins())
-	}
-	if len(declared) != exposed {
-		t.Errorf("%d system prompts declared %v, but %d are exposed in promptDefs -- "+
-			"a new one needs a promptDef (or an alts entry) and an editor on its step",
-			len(declared), keysOf(declared), exposed)
+	// one prompt per job, so the two counts are the same count: a const that
+	// nothing registers is a prompt the tool sends and nobody can fix
+	if len(declared) != len(promptDefs) {
+		t.Errorf("%d system prompts declared %v, but %d jobs are on the bench -- "+
+			"a new one needs a promptDef and a row in prepRows",
+			len(declared), keysOf(declared), len(promptDefs))
 	}
 }
 
@@ -183,13 +179,11 @@ func keysOf(m map[string]bool) []string {
 // held is what the store is holding of its own -- the wordings that will be
 // written to ~/.config/autocut/prompts on the next flush, and nothing else.
 // Nil when there is nothing, which is the state an untouched machine is in.
-func held(a *App) map[string][]promptStyle {
-	a.promptMu.Lock()
-	defer a.promptMu.Unlock()
-	out := map[string][]promptStyle{}
-	for k, list := range a.promptSty {
-		if len(list) > 0 {
-			out[k] = append([]promptStyle(nil), list...)
+func held(a *App) map[string]string {
+	out := map[string]string{}
+	for _, d := range promptDefs {
+		if a.promptOwned(d.key) {
+			out[d.key] = a.prompt(d.key)
 		}
 	}
 	if len(out) == 0 {
@@ -216,11 +210,8 @@ func TestOnlyEditsAreStored(t *testing.T) {
 
 	a.setPrompt("narrate", "Say nothing at all.")
 	got := held(a)
-	if len(got) != 1 || len(got["narrate"]) != 1 || got["narrate"][0].Text != "Say nothing at all." {
+	if len(got) != 1 || got["narrate"] != "Say nothing at all." {
 		t.Fatalf("the store holds %v, want only the edited one", got)
-	}
-	if n := got["narrate"][0].Name; n != defStyle {
-		t.Errorf("the edit was stored under %q, want the picked style %q", n, defStyle)
 	}
 	// and the project file is out of it entirely: the prompts are the
 	// machine's, and a project that carried a copy would put it back on every
@@ -252,9 +243,9 @@ func TestAProjectDoesNotOverwriteThisMachinesWording(t *testing.T) {
 	a := &App{}
 	a.setPrompt("cut", "what this machine was tuned to")
 
-	a.applyPromptStyles(map[string][]promptStyle{
-		"cut":     {{defStyle, "an old project's idea of a highlight"}},
-		"narrate": {{defStyle, "and its idea of a voice"}}}, nil, nil)
+	a.adoptProjectPrompts(map[string]string{
+		"cut":     "an old project's idea of a cut",
+		"narrate": "and its idea of a voice"})
 
 	if got := a.prompt("cut"); got != "what this machine was tuned to" {
 		t.Errorf("opening a project replaced the machine's wording with %q", short(got))
@@ -265,162 +256,87 @@ func TestAProjectDoesNotOverwriteThisMachinesWording(t *testing.T) {
 		t.Errorf("narrate = %q, want the old project's, adopted", short(got))
 	}
 	// and having adopted it, it is ours: the next project does not get it back
-	a.applyPromptStyles(map[string][]promptStyle{
-		"narrate": {{defStyle, "a second project's voice"}}}, nil, nil)
+	a.adoptProjectPrompts(map[string]string{"narrate": "a second project's voice"})
 	if got := a.prompt("narrate"); got != "and its idea of a voice" {
 		t.Errorf("a second project overwrote the adopted wording with %q", short(got))
 	}
 	// a project that says nothing changes nothing, which is every project
 	// saved from this build on
-	a.applyPromptStyles(nil, nil, nil)
+	a.adoptProjectPrompts(nil)
 	if got := a.prompt("cut"); got != "what this machine was tuned to" {
 		t.Errorf("a prompt-less project cleared the machine's wording: %q", short(got))
 	}
 }
 
-// A project written before a job could have more than one wording stored one
-// string per key and no name for it. That is the default style's text -- the
-// shipped wording of a job did not move, it only gained company -- and dropping
-// it on load would silently hand the model the built-in instead of what the
-// user wrote.
-func TestALegacyPromptLoadsAsAnEditOfTheDefaultStyle(t *testing.T) {
+// A project written before the prompts were the machine's stored one string
+// per key. That is exactly the shape they have again, and dropping it on load
+// would silently hand the model the built-in instead of what the user wrote.
+func TestALegacyProjectPromptIsAdopted(t *testing.T) {
 	ownConfig(t)
 	a := &App{}
-	a.applyPromptStyles(nil, nil, map[string]string{"cut": "the old project's idea of a cut"})
+	a.adoptProjectPrompts(map[string]string{"cut": "the old project's idea of a cut"})
 
 	if got := a.prompt("cut"); got != "the old project's idea of a cut" {
-		t.Errorf("cut = %q, want what the pre-styles project stored", short(got))
+		t.Errorf("cut = %q, want what the old project stored", short(got))
 	}
-	if got := a.promptPickName("cut"); got != promptDefFor("cut").styleName() {
-		t.Errorf("it landed on style %q, want the default %q", got, promptDefFor("cut").styleName())
-	}
-	// and it is stored the new way, so the legacy key can go
-	got := held(a)
-	if len(got["cut"]) != 1 || got["cut"][0].Text != "the old project's idea of a cut" {
-		t.Errorf("the migrated prompt is not stored as a style: %v", got)
-	}
-	// switching away and back must still find it: the migration put it in the
-	// style list, not just in the box
-	a.showPromptStyle("cut", "Rating / tier list")
-	if got := a.prompt("cut"); got != strings.TrimSpace(ratingSystem) {
-		t.Errorf("picking the other wording gave %q", short(got))
-	}
-	a.showPromptStyle("cut", promptDefFor("cut").styleName())
-	if got := a.prompt("cut"); got != "the old project's idea of a cut" {
-		t.Errorf("switching back lost the edit: %q", short(got))
+	// and it is this machine's from then on, which is what makes it survive
+	// the next project and reach the disk (flushPrompts)
+	if got := held(a); len(got) != 1 || got["cut"] == "" {
+		t.Errorf("the adopted prompt is not held as this machine's: %v", got)
 	}
 }
 
-// The cut is the one job that ships more than one wording, because what makes a
-// good segment is a property of the footage and not of this tool: a generic
-// one, and three shapes to pick once you know which one you have.
-func TestTheCutShipsMoreThanOneWording(t *testing.T) {
-	got := promptDefFor("cut").builtins()
-	if len(got) < 2 {
-		t.Fatalf("the cut ships %d wording(s), want the generic one and the shapes", len(got))
-	}
-	if got[0].Text != promptDefFor("cut").def {
-		t.Error("the default is not first -- a project that never picked would open on the wrong one")
-	}
-	seen := map[string]bool{}
-	for _, s := range got {
-		if s.Name == "" {
-			t.Error("a wording with no name can never be picked back")
-		}
-		if seen[s.Name] {
-			t.Errorf("two wordings both called %q", s.Name)
-		}
-		seen[s.Name] = true
-	}
-	// the rating cut exists to cover every item and to land the ranking whole;
-	// a wording that forgot either is the bug it was written to fix
-	rating := strings.ToLower(strings.TrimSpace(sysSystem) + "\n\n" + ratingSystem)
-	for _, want := range []string{"chronological", "ranking", "every item"} {
-		if !strings.Contains(rating, want) {
-			t.Errorf("the rating cut never mentions %q", want)
+// One wording per job, and the cut's assumes nothing about the footage.
+//
+// It shipped five for a while -- a generic one and four shapes, picked by a
+// Style dropdown on Prepare. A shape cut better when the footage was that
+// shape and worse when it was not, and which shape a session is, is a fact
+// about the session: it belongs in the user context with the rest of them,
+// where every step reads it and it outranks the wording (ctxRule).
+func TestOneWordingPerJobAndTheCutGuessesNothing(t *testing.T) {
+	for _, d := range promptDefs {
+		if strings.TrimSpace(d.def) == "" {
+			t.Errorf("the %s job ships no wording", d.key)
 		}
 	}
-}
-
-// The wording a project gets before anyone chooses one has to be the wording
-// that assumes least. Highlights was the default and says "gaming session" in
-// its first sentence: point it at a woodworking video and it goes looking for
-// wins and disasters, and it finds some, and they are the wrong sixty seconds.
-// A shape is worth picking once you know you have one -- it is not worth
-// guessing on a project's first run.
-func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
-	d := promptDefFor("cut")
-	def := strings.TrimSpace(d.def)
-	if def != strings.TrimSpace(genericSystem) {
-		t.Fatalf("the cut ships %q as its default, want the generic wording", d.styleName())
-	}
-
-	// no genre in it. The wording may READ the kind of video off the notes -- it
-	// has to, since the notes say "showcase" far more often than the Style
-	// dropdown does -- but nothing in it assumes one, and the shapes it names
-	// are named as things the notes might say, not as what the footage is
-	low := strings.ToLower(def)
-	for _, guess := range []string{"gaming", "game session", "tier list", "youtube short"} {
-		if strings.Contains(low, guess) {
-			t.Errorf("the default cut wording says %q -- it is a shape, and the "+
-				"default is the one that has not decided on a shape yet", guess)
+	// the shapes are gone from the binary, not merely unlisted: a wording
+	// nothing can pick is a wording nobody can fix
+	src := readSrc(t, "cut.go") + readSrc(t, "narrate.go")
+	for _, gone := range []string{
+		"suggestSystem", "ratingSystem", "showcaseSystem", "shortsSystem",
+		"narrShowcaseSystem", "shortsStyleName",
+	} {
+		if strings.Contains(src, gone) {
+			t.Errorf("%s is still in the binary -- the styles are gone", gone)
 		}
 	}
-	// it asks what the session is instead of assuming, and the user context is
-	// where the answer comes from when there is one
+	def := strings.ToLower(strings.TrimSpace(promptDefFor("cut").def))
+	for _, guess := range []string{"gaming", "game session", "tier list", "youtube short", "showcase"} {
+		if strings.Contains(def, guess) {
+			t.Errorf("the cut wording says %q -- it is a shape, and a shape is "+
+				"something the user context says, not something the prompt assumes", guess)
+		}
+	}
+	// it asks what the session is instead, and the user context is where the
+	// answer comes from when there is one
 	for _, want := range []string{"say what this session is", "user context", "work it out"} {
-		if !strings.Contains(low, want) {
-			t.Errorf("the default cut wording never says %q -- with no genre to fall "+
-				"back on, reading the session first is the whole method", want)
+		if !strings.Contains(def, want) {
+			t.Errorf("the cut wording never says %q -- with no genre to fall back "+
+				"on, reading the session first is the whole method", want)
 		}
 	}
-	// and it reads the kind of video off the user context rather than off the
-	// Style dropdown: a project whose context opens "this is a showcase of the towers"
-	// is cut as a showcase with the Style still on General
-	for _, want := range []string{"a showcase of things", "a rating or a verdict"} {
-		if !strings.Contains(low, want) {
-			t.Errorf("the default cut wording never says %q -- with the Style on General, "+
-				"the notes are the only place the kind of video is said", want)
-		}
-	}
-
-	// the shaped wordings stay reachable and stay themselves: this adds a
-	// wording, it does not replace one
-	names := map[string]bool{}
-	for _, st := range d.builtins() {
-		names[st.Name] = true
-	}
-	for _, want := range []string{"Highlights", "Rating / tier list", "Showcase", shortsStyleName} {
-		if !names[want] {
-			t.Errorf("the %q wording is gone -- moving the default is not the same as "+
-				"dropping the one it replaced", want)
-		}
-	}
-	// and Highlights is still the gaming one, so a project that had picked it
-	// gets what it had
-	if !strings.Contains(strings.ToLower(suggestSystem), "gaming session") {
-		t.Error("the Highlights wording is no longer the gaming one; a project that " +
-			"picked it by name would silently get something else")
-	}
-
-	// the contract every cut wording shares, because the parser and the audit
-	// read the same reply whichever one wrote it. Half of it is the wording's
-	// own -- the shape of the reply, the length to hit -- and half is the same
-	// sentence for every job in the app, which is why it is said once in the
-	// system context instead of in each wording (syscontext.go).
+	// the contract the parser reads, half of it here and half said once in the
+	// system context for every job (syscontext.go)
 	for _, want := range []string{
-		`{"segments":[{"start":0,"end":28},{"start":104,"end":232},{"start":232,"end":301}]}`, // what suggestParse reads
-		"target length", // the length the run checks
+		`{"segments":[{"start":0,"end":28},{"start":104,"end":232},{"start":232,"end":301}]}`,
+		"target length",
 	} {
 		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+def, want) {
-			t.Errorf("the default cut wording never says %q -- the reply is read by the "+
-				"same code whichever wording asked for it", want)
+			t.Errorf("the cut wording never says %q -- the reply is read by the same "+
+				"code whatever asked for it", want)
 		}
 	}
-	for _, want := range []string{
-		"session seconds", // on which clock
-		"EVENT lines",     // a span without them has no footage
-	} {
+	for _, want := range []string{"session seconds", "EVENT lines"} {
 		if !strings.Contains(sysSystem, want) {
 			t.Errorf("the system context never says %q -- it was taken out of the "+
 				"wordings on the promise that every job is told it once", want)
@@ -428,194 +344,25 @@ func TestTheDefaultCutWordingDoesNotGuessWhatTheFootageIs(t *testing.T) {
 	}
 }
 
-// Picking is what the box shows, and every keystroke is stored under the name
-// that was picked when it was typed -- so a wording cannot be lost by looking
-// at another one.
-func TestSwitchingWordingKeepsBothEdits(t *testing.T) {
-	ownConfig(t)
-	a := &App{}
-	def := promptDefFor("cut").styleName()
-
-	a.setPrompt("cut", "my highlights wording")
-	a.showPromptStyle("cut", "Rating / tier list")
-	a.setPrompt("cut", "my rating wording")
-
-	a.showPromptStyle("cut", def)
-	if got := a.prompt("cut"); got != "my highlights wording" {
-		t.Errorf("going back to %q gave %q", def, short(got))
-	}
-	a.showPromptStyle("cut", "Rating / tier list")
-	if got := a.prompt("cut"); got != "my rating wording" {
-		t.Errorf("the other wording came back as %q", short(got))
-	}
-	// and the pick is stored, since it decides what the next run sends. On
-	// disk, in llm.conf beside the endpoints: it is one short name per job.
-	if got := a.readGlobal().PromptPick; got["cut"] != "Rating / tier list" {
-		t.Errorf("the file stores pick %v, want the rating cut", got)
-	}
-	if got := a.readGlobal().PromptPick; len(got) != 1 {
-		t.Errorf("a job nobody switched is stored anyway: %v", got)
-	}
-	// and switching back to the shipped default takes the line out again,
-	// rather than freezing today's default under its own name
-	a.showPromptStyle("cut", def)
-	if got := a.readGlobal().PromptPick; len(got) != 0 {
-		t.Errorf("after going back to the default the file still says %v", got)
-	}
-}
-
-// A wording the project invented has to survive the file and come back
-// pickable; removing it falls back to the default rather than to an empty box,
-// which would silently send the model nothing.
-func TestAnAddedWordingRoundTrips(t *testing.T) {
-	ownConfig(t)
-	a := &App{}
-	a.savePromptStyle("cut", "Speedrun", "Cut for splits and route.")
-	a.showPromptStyle("cut", "Speedrun")
-
-	a.flushPrompts()
-	b := &App{}
-	b.loadGlobalPrompts()
-	if got := b.prompt("cut"); got != "Cut for splits and route." {
-		t.Errorf("after a save and a load the added wording is %q", short(got))
-	}
-	names := []string{}
-	for _, s := range b.promptStyleList("cut") {
-		names = append(names, s.Name)
-	}
-	if len(names) != len(promptDefFor("cut").builtins())+1 {
-		t.Errorf("the dropdown offers %v, want the built-ins plus Speedrun", names)
-	}
-
-	b.dropPromptStyle("cut", "Speedrun")
-	b.showPromptStyle("cut", promptDefFor("cut").styleName())
-	if got := b.prompt("cut"); got != promptDefFor("cut").def {
-		t.Errorf("after removing it the box holds %q, want the built-in", short(got))
-	}
-	if got := held(b); got != nil {
-		t.Errorf("the removed wording is still held: %v", got)
-	}
-	// and gone from disk, or the next launch would offer it again
-	b.flushPrompts()
-	c := &App{}
-	c.loadGlobalPrompts()
-	if got := held(c); got != nil {
-		t.Errorf("a removed wording came back from disk: %v", got)
-	}
-}
-
-// A style deleted while it was picked -- by hand in project.json, or by a build
-// that stopped shipping it -- must not leave the runner with an empty prompt.
-func TestAPickedWordingThatIsGoneFallsBackToTheBuiltIn(t *testing.T) {
-	ownConfig(t)
-	a := &App{}
-	a.applyPromptStyles(nil, map[string]string{"cut": "a wording nobody has"}, nil)
-	if got := a.prompt("cut"); got != promptDefFor("cut").def {
-		t.Errorf("a missing wording sent %q, want the built-in", short(got))
-	}
-}
-
-// What the Style dropdown is for: a pick reaches every job, and a job that has
-// no wording under that name answers generally rather than being left on
-// whatever the last pick gave it. Nothing about a job's own name for its
-// shipped wording enters into it -- there is one fallback name, defStyle, and
-// this is the rule that spends it.
-func TestAStylePickReachesEveryJobAndFallsBackToTheGeneralWording(t *testing.T) {
-	ownConfig(t)
-	a := &App{}
-	// a wording only the cut ships, so every other job has to fall back
-	a.applyStyle("Highlights")
-	for _, d := range promptDefs {
-		if d.solo {
-			continue
-		}
-		want := defStyle
-		for _, s := range d.builtins() {
-			if s.Name == "Highlights" {
-				want = "Highlights"
-			}
-		}
-		if got := a.promptPickName(d.key); got != want {
-			t.Errorf("under Highlights the %s job is on %q, want %q", d.key, got, want)
+// The bench is one box per job now: no wording to name on a row, no ＋ to save
+// a second one under a name, and Reset is the only thing beside the menu.
+func TestTheBenchHasNoWordingsToChooseBetween(t *testing.T) {
+	src := readSrc(t, "prepedit.go")
+	for _, gone := range []string{"askName", "applyStyle", "promptPickName", "add.SetVisible"} {
+		if strings.Contains(src, gone) {
+			t.Errorf("the bench still offers wordings: %q", gone)
 		}
 	}
-	// and a job picked away from the general wording comes back to it, rather
-	// than staying where an earlier pick left it
-	a.applyStyle("a style nothing ships")
-	for _, d := range promptDefs {
-		if d.solo {
-			continue
-		}
-		if got := a.promptPickName(d.key); got != defStyle {
-			t.Errorf("with nothing to match, the %s job is on %q, want %q", d.key, got, defStyle)
-		}
+	if !strings.Contains(src, "a.resetPrompt(r.key)") {
+		t.Error("Reset no longer puts the built-in back")
 	}
-}
-
-// The name of that fallback is one string. A job that spelled its own out --
-// the cut shipped `style: "General"` beside a defStyle that said "Default" --
-// is how the bench came to read "Cut (General)" next to "Describe (Default)"
-// for what is one state.
-func TestEveryJobCallsItsShippedWordingTheSameThing(t *testing.T) {
-	for _, d := range promptDefs {
-		if got := d.styleName(); got != defStyle {
-			t.Errorf("the %s job calls its shipped wording %q, want %q", d.key, got, defStyle)
-		}
-		if d.solo {
-			continue
-		}
-		if got := d.builtins()[0].Name; got != defStyle {
-			t.Errorf("the %s job's first wording is %q, want %q", d.key, got, defStyle)
-		}
+	// and the Style dropdown is off Prepare's bottom row
+	if p := readSrc(t, "prep.go"); strings.Contains(p, "styleBar(") {
+		t.Error("the Style dropdown is back on Prepare")
 	}
-}
-
-// The wording every job ships with was called "Default" before it was called
-// "General", and a machine that had edited one has it on disk under the old
-// name. It is the same wording, so it has to come back as the picked one rather
-// than as a second row in the dropdown that nothing reads -- and the stale file
-// has to go, or every launch reads a wording the app can no longer write to.
-func TestAnEditSavedUnderTheOldDefaultNameIsReadAsTheNewOne(t *testing.T) {
-	ownConfig(t)
-	dir := filepath.Join(promptsDir(), "narrate")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	old := filepath.Join(dir, legacyDefStyle+promptExt)
-	if err := os.WriteFile(old, []byte("say it the way I said it\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	a := &App{}
-	a.loadGlobalPrompts()
-	if got := a.promptPickName("narrate"); got != defStyle {
-		t.Errorf("the job is picked to %q, want %q", got, defStyle)
-	}
-	if got := a.prompt("narrate"); got != "say it the way I said it" {
-		t.Errorf("the old file's wording is not what the runner reads: %q", short(got))
-	}
-	var names []string
-	for _, s := range a.promptStyleList("narrate") {
-		names = append(names, s.Name)
-	}
-	for _, n := range names {
-		if n == legacyDefStyle {
-			t.Errorf("the dropdown offers %v, want no row under the old name", names)
-		}
-	}
-	if len(names) != len(promptDefFor("narrate").builtins()) {
-		t.Errorf("the dropdown offers %v, want only the built-ins", names)
-	}
-
-	// and the file moves, once, on the launch that read it
-	a.flushPrompts()
-	if _, err := os.Stat(old); !os.IsNotExist(err) {
-		t.Errorf("the file under the old name is still there: %v", err)
-	}
-	b := &App{}
-	b.loadGlobalPrompts()
-	if got := b.prompt("narrate"); got != "say it the way I said it" {
-		t.Errorf("after the move the wording is %q", short(got))
+	// the ✎ stays: what the model reads is not what shipped is worth a mark
+	if !strings.Contains(src, "a.promptOwned(r.key)") {
+		t.Error("the bench no longer marks a prompt this machine edited")
 	}
 }
 
@@ -627,7 +374,7 @@ func TestAnEditSavedUnderTheOldDefaultNameIsReadAsTheNewOne(t *testing.T) {
 func TestMigrateHintsFoldsNotesIntoThePrompt(t *testing.T) {
 	ownConfig(t)
 	a := &App{}
-	a.applyPromptStyles(nil, nil, nil)
+	a.adoptProjectPrompts(nil)
 	p := Project{
 		DescribeHints:   "the HUD number top left is ammo",
 		TranscriptHints: "SPEAKER_00 is Jan",
@@ -659,13 +406,13 @@ func TestMigrateHintsFoldsNotesIntoThePrompt(t *testing.T) {
 	}
 	got := held(a)
 	for _, key := range []string{"describe", "fix", "cut", "narrate"} {
-		if len(got[key]) != 1 {
-			t.Errorf("%s's folded-in notes are not stored as an edit of a wording: %v", key, got[key])
+		if got[key] == "" {
+			t.Errorf("%s's folded-in notes are not held as this machine's edit", key)
 		}
 	}
 	// nothing to fold is the common case and must leave the built-ins alone
 	b := &App{}
-	b.applyPromptStyles(nil, nil, nil)
+	b.adoptProjectPrompts(nil)
 	b.migrateHints(Project{})
 	if got := held(b); got != nil {
 		t.Errorf("a project without notes wants to store %v, want nothing", got)
@@ -679,121 +426,25 @@ func short(s string) string {
 	return s
 }
 
-// Choosing a wording froze the app.
+// The bench's own menu is replaced in one emission rather than an item at a
+// time, and only when the rows actually changed.
 //
-// The dropdown's notify::selected is emitted from inside GtkDropDown, with the
-// popup still closing, and the handler rebuilt the dropdown's own list model
-// from there -- so the list view was left drawing a list that no longer
-// existed. It hung after the switch had visibly worked: the box already showed
-// the new wording and Reset had already dimmed, which is why it read as "the
-// app freezes when I pick Highlights" rather than as anything the pick did.
-//
-// So the two jobs are split. pickPromptStyle records the choice and fills the
-// box and is the only one the signal may call; showPromptStyle also rebuilds
-// the menu and belongs to the places where the list of wordings really changed
-// -- a load, an add, a delete -- none of which are inside that emission.
-//
-// Source-level, because reproducing it needs a display, a main loop and a real
-// popup. What can be checked without one is that the handler stays on its side
-// of the split.
-func TestChoosingAWordingDoesNotRebuildTheMenuUnderItself(t *testing.T) {
-	ownConfig(t)
-	b, err := os.ReadFile("stylebar.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(b)
-
-	m := regexp.MustCompile(`(?s)d\.pick\.NotifyProperty\("selected".*?\n\t\}\)`).FindString(src)
-	if m == "" {
-		t.Fatal("the Style dropdown no longer connects notify::selected — find where a pick lands now")
-	}
-	if strings.Contains(m, "showPromptStyle") {
-		t.Errorf("the pick handler rebuilds the menu it was called from:\n%s", m)
-	}
-	if !strings.Contains(m, "a.applyStyle(") {
-		t.Errorf("the pick handler no longer turns every prompt to the picked style:\n%s", m)
-	}
-	// ...and applyStyle itself stays on the safe half: it runs inside that
-	// same emission, so the wording it lands per job must go through
-	// pickPromptStyle, never through the model-splicing showPromptStyle
-	apply := funcBody(t, "prompts.go", `func \(a \*App\) applyStyle\(`)
-	if strings.Contains(apply, "showPromptStyle") || !strings.Contains(apply, "a.pickPromptStyle(d.key, target)") {
-		t.Errorf("applyStyle left the safe half of the split:\n%s", apply)
-	}
-	// the half that may touch the model has to still exist as its own function,
-	// or the split is only a rename away from being undone
-	store := readSrc(t, "prompts.go")
-	for _, want := range []string{
-		"func (a *App) pickPromptStyle(key, name string)",
-		"func (a *App) showPromptStyle(key, name string)",
-	} {
-		if !strings.Contains(store, want) {
-			t.Errorf("%s is gone — the two jobs are one again", want)
-		}
-	}
-	// and the rebuild that does happen is one emission, not one per item: a
-	// Remove loop empties the model an item at a time, and an empty model is a
-	// selection GTK moves for you at every step
-	if strings.Contains(store, ".names.Remove(") {
-		t.Error("the menu is rebuilt by removing items one at a time; Splice replaces it in one go")
-	}
-	if !strings.Contains(store, ".names.Splice(") {
-		t.Error("the menu is no longer replaced in a single items-changed")
-	}
-	// the prep menu itself is spliced for the same reason: syncPromptMarks
-	// redraws it on every project load
-	if !strings.Contains(readSrc(t, "prepedit.go"), "menu.Splice(") {
+// A Remove loop empties the model an item at a time, and an empty model is a
+// selection GTK moves for you at every step -- which is read as the user
+// switching rows. The wordings dropdown that taught us this is gone; the rule
+// is the bench's now, where syncPromptMarks redraws the rows on every project
+// load and every edit.
+func TestTheBenchMenuIsSplicedAndOnlyWhenItMoved(t *testing.T) {
+	ed := readSrc(t, "prepedit.go")
+	if !strings.Contains(ed, "menu.Splice(") {
 		t.Error("the row menu is no longer replaced in a single items-changed")
 	}
-}
-
-// ...and the rebuild is skipped entirely when the names did not move, which is
-// every plain switch between wordings. Cheap to check and it is what keeps the
-// dangerous path from running at all on the common one.
-func TestTheMenuIsOnlyRebuiltWhenTheNamesChange(t *testing.T) {
-	ownConfig(t)
-	a := &App{}
-	if !sameStringsSlice(namesOfStyles(a.promptStyleList("cut")), namesOfStyles(a.promptStyleList("cut"))) {
-		t.Fatal("the shipped wordings for the cut are not stable between calls")
+	if !strings.Contains(ed, "if sameStrings(menu, fresh) {") {
+		t.Error("the menu is rebuilt even when the rows did not move")
 	}
-	// switching wording does not add or remove one
-	before := namesOfStyles(a.promptStyleList("cut"))
-	a.promptPick = map[string]string{"cut": "Rating / tier list"}
-	if after := namesOfStyles(a.promptStyleList("cut")); !sameStringsSlice(before, after) {
-		t.Errorf("picking a wording changed the menu from %v to %v", before, after)
+	if !strings.Contains(ed, "a.promptQuiet = true") {
+		t.Error("the splice is not quiet, so the selection it resets reads as a row switch")
 	}
-	// editing one does not either -- it replaces the text under the same name
-	a.setPrompt("cut", "Rank them, shortest first.")
-	if after := namesOfStyles(a.promptStyleList("cut")); !sameStringsSlice(before, after) {
-		t.Errorf("editing a wording changed the menu from %v to %v", before, after)
-	}
-	// adding one does, and that is the case showPromptStyle is for
-	a.savePromptStyle("cut", "Speedrun", "One clip per split.")
-	after := namesOfStyles(a.promptStyleList("cut"))
-	if len(after) != len(before)+1 || after[len(after)-1] != "Speedrun" {
-		t.Errorf("an added wording gave %v, want %v plus Speedrun at the end", after, before)
-	}
-}
-
-func namesOfStyles(list []promptStyle) []string {
-	out := make([]string, len(list))
-	for i, s := range list {
-		out[i] = s.Name
-	}
-	return out
-}
-
-func sameStringsSlice(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestTheEditorRegistriesInitIndependently: promptViews and promptRows used to
@@ -818,72 +469,154 @@ func TestTheEditorRegistriesInitIndependently(t *testing.T) {
 	}
 }
 
-// A wording's name is prose and a file name is not: the shipped cut styles
-// already include "Rating / tier list", and writing that to disk under its own
-// name would put the file in a folder called "Rating " -- or, for a name of
-// "..", outside the prompts folder altogether. So the file name is flattened,
-// and reading it back has to undo the flattening: a file matched by the name it
-// WOULD have belongs to the built-in it was edited from, not to a fourth style
-// spelled with a dash that nobody could tell apart in the dropdown.
-func TestAWordingNamedWithASlashSurvivesTheFolder(t *testing.T) {
-	ownConfig(t)
-	a := &App{}
-	a.showPromptStyle("cut", "Rating / tier list")
-	a.setPrompt("cut", "rank them, worst first")
-	a.flushPrompts()
-
-	p := filepath.Join(promptsDir(), "cut", "Rating - tier list.txt")
-	if !exists(p) {
-		ents, _ := os.ReadDir(filepath.Join(promptsDir(), "cut"))
-		var got []string
-		for _, e := range ents {
-			got = append(got, e.Name())
+// What the styles used to say, said once, in the one place that is about this
+// session: the user context.
+//
+// The wordings are written to be true of any session, so nothing in them may
+// name a shape of video -- and the context has to be where the shape is asked
+// for, or the information the styles carried has nowhere to go.
+func TestTheShapeOfTheVideoIsTheContextsToSay(t *testing.T) {
+	shapes := []string{"gaming", "tier list", "youtube short", "showcase", "highlight reel"}
+	for _, d := range promptDefs {
+		low := strings.ToLower(d.def)
+		for _, shape := range shapes {
+			if strings.Contains(low, shape) {
+				t.Errorf("the %s wording says %q -- a shape is what the user context "+
+					"says, not what a prompt assumes", d.key, shape)
+			}
 		}
-		t.Fatalf("the cut folder holds %v, want the slash flattened into %s", got, filepath.Base(p))
 	}
-
-	b := &App{}
-	b.loadGlobalPrompts()
-	if got := b.prompt("cut"); got != "rank them, worst first" {
-		t.Errorf("the edited wording came back as %q", short(got))
+	// the upload text was the last one that assumed: it wrote "for a finished
+	// gaming video" and asked for hashtags naming the game
+	if strings.Contains(strings.ToLower(youtubeSystem), "game") {
+		t.Error("the upload text still assumes the video is of a game")
 	}
-	// under its own name, and as an edit of the shipped style rather than as a
-	// new one sitting next to it
-	if got := b.promptPickName("cut"); got != "Rating / tier list" {
-		t.Errorf("the picked wording came back as %q, want the name that was typed", got)
+	// and the box that has to carry it says so, on the row that is that box
+	ctx := prepRows()[0]
+	if ctx.key != "" {
+		t.Fatal("the first bench row is no longer the user context")
 	}
-	if got := len(b.promptStyleList("cut")); got != len(promptDefFor("cut").builtins()) {
-		var names []string
-		for _, s := range b.promptStyleList("cut") {
-			names = append(names, s.Name)
+	for _, want := range []string{"What kind of video this is", "outranks the prompts"} {
+		if !strings.Contains(ctx.tip, want) {
+			t.Errorf("the context row never says %q, so nothing tells you where the "+
+				"shape of the video goes now", want)
 		}
-		t.Errorf("the dropdown offers %v -- the flattened file was read as a style of its own", names)
+	}
+	// the rule that makes it outrank them is sent with every request that has
+	// a context at all (sysPrompt), so this is not only a promise in a tooltip
+	if !strings.Contains(ctxRule, "user context") {
+		t.Error("the precedence rule no longer names the user context")
 	}
 }
 
-// Switching the dropdown is a decision too, even with nothing typed. A machine
-// set to Highlights that opens a project saved when the default was picked must
-// stay on Highlights: the project's prompts are adopted only where this machine
-// has said nothing at all.
-func TestAPickedWordingIsThisMachinesAnswerToo(t *testing.T) {
+// One wording per job, one file per job, and the folder-per-wording layout
+// read once so an edit made under the old build is not lost.
+func TestAnEditKeptUnderTheOldLayoutIsAdopted(t *testing.T) {
 	ownConfig(t)
-	a := &App{}
-	a.showPromptStyle("cut", "Highlights")
-
-	a.applyPromptStyles(map[string][]promptStyle{
-		"cut": {{defStyle, "an old project's idea of a highlight"}}},
-		map[string]string{"cut": defStyle}, nil)
-
-	if got := a.promptPickName("cut"); got != "Highlights" {
-		t.Errorf("a project moved the dropdown to %q", got)
+	dir := promptsDir()
+	if err := os.MkdirAll(filepath.Join(dir, "cut"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	var want string
-	for _, s := range promptDefFor("cut").builtins() {
-		if s.Name == "Highlights" {
-			want = s.Text
+	if err := os.WriteFile(filepath.Join(dir, "cut", "General.txt"),
+		[]byte("what four videos tuned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{}
+	a.loadGlobalPrompts()
+	if got := a.prompt("cut"); got != "what four videos tuned" {
+		t.Errorf("the old layout's edit reads as %q", short(got))
+	}
+	// and the next flush writes it where prompts live now, without touching
+	// the folder it came from -- anything else in there was a wording for a
+	// style, and the styles are gone
+	a.flushPrompts()
+	b, err := os.ReadFile(promptPath("cut"))
+	if err != nil || strings.TrimSpace(string(b)) != "what four videos tuned" {
+		t.Errorf("the adopted edit was not written to %s: %v", promptPath("cut"), err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cut", "General.txt")); err != nil {
+		t.Errorf("the old file was removed: %v", err)
+	}
+	// Reset drops the file, which is what makes a newer build's wording reach
+	// a machine that has stopped editing
+	a.resetPrompt("cut")
+	a.flushPrompts()
+	if _, err := os.Stat(promptPath("cut")); !os.IsNotExist(err) {
+		t.Errorf("Reset left the file behind: %v", err)
+	}
+	if got := a.prompt("cut"); got != promptDefFor("cut").def {
+		t.Errorf("after Reset the cut prompt is %q", short(got))
+	}
+}
+
+// One font in every box of text.
+//
+// Every editable box in the app is monospace -- the prompts, the user context,
+// the narration lines, the words on a card, the log. Three were not: the
+// Publish page's title, its thumbnail instruction and its description, built by
+// their own textBox rather than by editorBody, in the proportional font. So the
+// one page that shows a prompt's ANSWER beside the prompt that asked for it
+// showed the two in different typefaces, and the description looked like a
+// different kind of thing from every other box you type in.
+func TestEveryTextBoxIsInTheSameFont(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src := readSrc(t, f)
+		for i, line := range strings.Split(src, "\n") {
+			if !strings.Contains(line, "gtk.NewTextView()") {
+				continue
+			}
+			// the name it was given, and the next few lines it is set up in
+			name, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+			rest := strings.Split(src, "\n")[i : i+6]
+			if strings.Contains(strings.Join(rest, "\n"), name+".SetMonospace(true)") {
+				continue
+			}
+			// a read-only view is a box of text too, and the log is one
+			if strings.Contains(strings.Join(rest, "\n"), name+".SetEditable(false)") {
+				continue
+			}
+			t.Errorf("%s:%d builds a text box in another font than every other one", f, i+1)
 		}
 	}
-	if got := a.prompt("cut"); got != want {
-		t.Errorf("the box holds %q, want the shipped Highlights wording", short(got))
+	// the one-line fields, which cannot be told one at a time: a GtkEntry has
+	// no monospace switch, so it is said once in the app's own CSS
+	if !strings.Contains(readSrc(t, "main.go"), "entry, entry text { font-family: monospace; }") {
+		t.Error("the entries are back in the proportional font, one line above the boxes")
+	}
+}
+
+// The boxes you type in have the corner the controls beside them have.
+//
+// Every one of them is a scrolled window with the frame class -- the shared
+// editorFrame, and the four that build their own -- and the theme draws that
+// frame square. A page of rounded GTK controls with one square thing on it,
+// and the square thing is what you spend the most time looking at.
+//
+// The timeline is deliberately not in this: its bands are cairo and they stay
+// square, because a band is a measurement you aim at with a few px of
+// tolerance (see platePath in cut.go).
+func TestTheTextBoxesAreRoundedLikeEverythingElse(t *testing.T) {
+	if css := readSrc(t, "main.go"); !strings.Contains(css, `".frame { border-radius: 6px; }`) {
+		t.Error("the framed boxes are square again")
+	}
+	// and every text box is framed the same way, so one rule reaches all of
+	// them rather than four pages each deciding
+	n := strings.Count(readSrc(t, "prompts.go"), `AddCSSClass("frame")`)
+	for _, f := range []string{"main.go", "publish.go", "narrate.go"} {
+		n += strings.Count(readSrc(t, f), `AddCSSClass("frame")`)
+	}
+	for _, f := range []string{"cut_fx.go", "publish_text.go"} {
+		n += strings.Count(readSrc(t, f), "SetHasFrame(true)")
+	}
+	if n != 6 {
+		t.Errorf("%d text boxes are framed, want the six the app has -- one that "+
+			"frames itself another way is one this rule does not reach", n)
 	}
 }

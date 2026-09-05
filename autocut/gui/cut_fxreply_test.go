@@ -76,10 +76,8 @@ func TestAVolumeChangeNeedsAGainSomebodyMeant(t *testing.T) {
 	// use one, so it is said once in the system context every cut goes out
 	// behind (syscontext.go) -- what is checked is therefore what is SENT, not
 	// the wording on its own
-	for _, p := range []string{shortsSystem, fxRules} {
-		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+p, "0 silent") {
-			t.Error("nothing the cut is sent says which number means silence")
-		}
+	if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+fxRules, "0 silent") {
+		t.Error("nothing the effects pass is sent says which number means silence")
 	}
 }
 
@@ -88,10 +86,9 @@ func TestAVolumeChangeNeedsAGainSomebodyMeant(t *testing.T) {
 // the wording rather than accepted and dropped, so the model is never told to
 // do something whose answer is thrown away.
 func TestTheOverlayStaysAThingAHandPlaces(t *testing.T) {
-	a := &App{root: t.TempDir()}
-	for _, s := range a.promptStyleList("cut") {
-		if strings.Contains(s.Text, `"kind":"svg"`) {
-			t.Errorf("cut style %q asks for an svg, which needs a file path it cannot know", s.Name)
+	for _, d := range promptDefs {
+		if strings.Contains(d.def, `"kind":"svg"`) {
+			t.Errorf("the %s wording asks for an svg, which needs a file path it cannot know", d.key)
 		}
 	}
 	if got := fxFromReply([]sugFx{{Kind: "svg", Start: 10, End: 12}}); len(got) != 0 {
@@ -171,14 +168,10 @@ func TestTheNotesSayWhetherTheSpeechIsTheVideoOrInstructionsAboutIt(t *testing.T
 	if strings.Contains(sysSystem, "Where the user context calls it directions") {
 		t.Error("the system prompt says it too, to every job of every session")
 	}
-	a := &App{root: t.TempDir()}
-	list := a.promptStyleList("cut")
-	if len(list) < 4 {
-		t.Fatalf("the cut offers %d wordings, want the four styles", len(list))
-	}
-	for _, s := range list {
-		if strings.Contains(s.Text, "the speech is content") {
-			t.Errorf("cut style %q says how to read the spoken lines itself; the system context does", s.Name)
+	for _, d := range promptDefs {
+		if d.key != "system" && strings.Contains(d.def, "the speech is content") {
+			t.Errorf("the %s wording says how to read the spoken lines itself; "+
+				"the system context does", d.key)
 		}
 	}
 }

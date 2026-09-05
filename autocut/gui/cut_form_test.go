@@ -43,13 +43,11 @@ func TestTheCutPageSendsPromptsItDoesNotEdit(t *testing.T) {
 	if !strings.Contains(src, "bar.Append(rule()) // past here nothing changes the cut") {
 		t.Fatal("cut.go no longer marks where the bar stops changing the cut")
 	}
-	prep := readSrc(t, "prep.go")
-	i, j := strings.Index(prep, "bottom.Append(a.langEntry)"), strings.Index(prep, `a.styleBar("cut", "Style"`)
-	if j < 0 {
-		t.Fatal("Prepare does not offer the style choice")
-	}
-	if i < 0 || i > j {
-		t.Error("the style dropdown is not after the Language entry on Prepare's bottom row")
+	// ...and neither does Prepare: the Style dropdown that sat after Language
+	// is gone, and what kind of video this is goes in the context box beside
+	// it, with the rest of the session's facts (prompts.go)
+	if prep := readSrc(t, "prep.go"); strings.Contains(prep, "styleBar(") {
+		t.Error("the Style dropdown is back on Prepare's bottom row")
 	}
 }
 
@@ -61,7 +59,7 @@ func TestTheCutPageSendsPromptsItDoesNotEdit(t *testing.T) {
 func TestTheCutFormsOpenBesideTheTimelineAndNotOverIt(t *testing.T) {
 	for _, c := range []struct{ file, head, verb string }{
 		{"cut.go", `func \(a \*App\) askInsertParams\(`, "form.showFormFoot(verb+\" \"+filepath.Base(path), box, btns, nil)"},
-		{"cut_fx.go", `func \(a \*App\) fxWin\(`, "form.showFormFoot(title, box, btns, nil)"},
+		{"cut_fx.go", `func \(a \*App\) fxWin\(`, "form.showFormFoot(title, box, note, nil)"},
 	} {
 		body := funcBody(t, c.file, c.head)
 		if strings.Contains(body, "gtk.NewWindow()") {
@@ -75,10 +73,20 @@ func TestTheCutFormsOpenBesideTheTimelineAndNotOverIt(t *testing.T) {
 		if !strings.Contains(body, "form := a.cutForm()") || !strings.Contains(body, "if form == nil {") {
 			t.Errorf("%s does not check that there is a column to open in", c.head)
 		}
-		// Cancel and the verb both take the form down -- a form that answers
-		// and stays is a form that can be answered twice
-		if n := strings.Count(body, "form.hideForm()"); n < 2 {
-			t.Errorf("%s takes its form down %d times, want Cancel and the verb both", c.head, n)
+	}
+	// the insert form still answers with a press, so Cancel and the verb both
+	// take it down: a form that answers and stays is one that can be answered
+	// twice. The effect forms have no press to answer with at all -- they
+	// apply as they are typed -- so there is nothing there to take down and
+	// nothing to say it twice.
+	ins := funcBody(t, "cut.go", `func \(a \*App\) askInsertParams\(`)
+	if n := strings.Count(ins, "form.hideForm()"); n < 2 {
+		t.Errorf("askInsertParams takes its form down %d times, want Cancel and the verb both", n)
+	}
+	fx := funcBody(t, "cut_fx.go", `func \(a \*App\) fxWin\(`)
+	for _, gone := range []string{"Cancel", "form.hideForm()"} {
+		if strings.Contains(fx, gone) {
+			t.Errorf("an effect form still has a %q to press", gone)
 		}
 	}
 }
@@ -191,31 +199,32 @@ func TestTheFormsButtonsDoNotScrollAwayFromIt(t *testing.T) {
 		t.Error("dropForm keeps the removed buttons, so the next drop removes them twice")
 	}
 
-	// the two dialogs that were too tall for the column hand their buttons to
-	// the foot rather than appending them to the form
-	for _, c := range []struct{ file, head string }{
-		{"cut.go", `func \(a \*App\) askInsertParams\(`},
-		{"cut_fx.go", `func \(a \*App\) fxWin\(`},
-	} {
-		body := funcBody(t, c.file, c.head)
-		if strings.Contains(body, "box.Append(btns)") {
-			t.Errorf("%s puts its buttons in the scrolling part of the column", c.head)
-		}
-		if !strings.Contains(body, "btns, nil)") {
-			t.Errorf("%s does not pin its buttons under the column", c.head)
-		}
+	// the dialog that was too tall for the column hands its buttons to the
+	// foot rather than appending them to the form
+	body := funcBody(t, "cut.go", `func \(a \*App\) askInsertParams\(`)
+	if strings.Contains(body, "box.Append(btns)") {
+		t.Error("askInsertParams puts its buttons in the scrolling part of the column")
+	}
+	if !strings.Contains(body, "btns, nil)") {
+		t.Error("askInsertParams does not pin its buttons under the column")
+	}
+	// an effect form has no buttons; what is pinned under it is the line
+	// saying its answers are already in the cut
+	fx := funcBody(t, "cut_fx.go", `func \(a \*App\) fxWin\(`)
+	if !strings.Contains(fx, "note, nil)") {
+		t.Error("the effect form does not pin its note under the column")
 	}
 }
 
-// An effect form is four numbers and a button. It used to open with a
-// paragraph explaining the effect above them -- five lines of prose, read once,
-// re-read never, and pushing the numbers themselves down the panel. The words
-// are on the fields as tooltips, where they are asked for; the form is the
-// numbers, in two columns, with what the effect IS on the left and how it
-// arrives and leaves on the right.
+// An effect form is four numbers on one line. It used to open with a paragraph
+// explaining the effect above them -- five lines of prose, read once, re-read
+// never -- and then ask them in a two-column grid five rows deep, with a
+// sentence for a label on each and every entry stretched across half the
+// panel. The words are on the fields as tooltips, where they are asked for;
+// the numbers are the width of the numbers.
 func TestAnEffectFormIsItsNumbersAndNothingElse(t *testing.T) {
 	fx, svg := readSrc(t, "cut_fx.go"), readSrc(t, "fxsvg.go")
-	if !strings.Contains(fx, "func (a *App) fxWin(title, verb string,") {
+	if !strings.Contains(fx, "func (a *App) fxWin(title string, isNew bool, live *fxLive,") {
 		t.Error("fxWin still takes a paragraph to print above the questions")
 	}
 	// the paragraphs themselves, by their opening words: gone from the source,
@@ -231,55 +240,76 @@ func TestAnEffectFormIsItsNumbersAndNothingElse(t *testing.T) {
 		}
 	}
 
-	// two halves, and the same two everywhere: the length of the thing on the
-	// left, its fades on the right. A speed puts its rate above the length,
-	// because the rate is what makes it a speed
+	// two short lines, and the second is the same in every dialog: what the
+	// effect IS, then how it arrives and leaves (fxLine)
 	for _, want := range []string{
-		`fxGrid([]fxField{rRow, lRow}, []fxField{iRow, oRow, eRow})`, // speed
-		`fxGrid([]fxField{dRow}, []fxField{gRow, oRow, eRow})`,       // zoom
-		`fxGrid([]fxField{dRow}, []fxField{iRow, oRow, eRow})`,       // text, and the same for the svg
+		`fxLine(rRow, sndRow, lRow), fxLine(iRow, oRow, eRow), note}`, // speed
+		`fxLine(dRow, eEnd), fxLine(gRow, oRow, eRow), note}`,         // zoom, whose own question is what it does at the end
+		`sc, fxLine(dRow), fxLine(iRow, oRow, eRow)`,                  // text
+		`fxLine(gRow, lRow), fxLine(iRow, oRow, eRow)`,                // volume
+		`fxLine(nRow, dRow)`, // the label, which has no fades at all
 	} {
 		if !strings.Contains(fx, want) {
 			t.Errorf("cut_fx.go no longer lays a dialog out as %s", want)
 		}
 	}
-	if !strings.Contains(svg, `fxGrid([]fxField{dRow}, []fxField{iRow, oRow, eRow})`) {
-		t.Error("the svg dialog stacks its numbers in one column")
+	if !strings.Contains(svg, `fRow, fxLine(dRow), fxLine(iRow, oRow, eRow)`) {
+		t.Error("the svg dialog stacks its numbers in a column")
 	}
-	// stacked rows are what made the form too tall, so no dialog keeps a
-	// hand-built row of times beside the columns
-	for _, gone := range []string{"times.Append(dRow)", "times.Append(iRow)"} {
+	// the grid, and the sentences it needed labels wide enough for, are gone
+	for _, gone := range []string{"fxGrid(", `fxNumRow("Length seconds"`, `fxNumRow("Fade in seconds"`} {
 		if strings.Contains(fx, gone) || strings.Contains(svg, gone) {
-			t.Errorf("a dialog still builds its own %s instead of using fxGrid", gone)
+			t.Errorf("a dialog still has %s", gone)
 		}
 	}
 }
 
-// The two halves are laid out by a grid, and the reason is what the screenshot
-// of the box version showed: the labels were right-aligned and given the
-// slack, so each entry floated in the middle of its own half with a hand's
-// width of nothing on either side of it. A grid sizes the label column to the
-// longest label and hands the slack to the controls instead.
-func TestTheFormsTwoHalvesAreAGrid(t *testing.T) {
+// The line, and the widths on it. The screenshot that ended the grid showed
+// four entries of five characters each spread over a panel as wide as the
+// preview, with "Length seconds" beside one of them and a dropdown holding the
+// single word "Linear" stretched to match.
+func TestTheFormsQuestionsAreOneLineWide(t *testing.T) {
 	fx := readSrc(t, "cut_fx.go")
 	for _, want := range []string{
-		"func fxGrid(left, right []fxField) *gtk.Grid",
-		"g.Attach(f.lbl, c*2, r, 1, 1)",
-		"g.Attach(f.ctl, c*2+1, r, 1, 1)",
-		"f.lbl.SetMarginStart(18)", // the gutter down the middle
-		"e.SetHExpand(true)",       // ... and the slack, to the entry
+		"func fxLine(fields ...fxField) *gtk.Box",
+		"f.lbl.SetMarginStart(12)", // a gutter between one question and the next
+		"e.SetWidthChars(fxNumChars)",
+		"e.SetMaxWidthChars(fxNumChars)",
+		"fxNumChars = 5",
 	} {
 		if !strings.Contains(fx, want) {
-			t.Errorf("the form's halves are no longer a grid: %q is gone", want)
+			t.Errorf("the form's line is gone: %q", want)
 		}
 	}
-	// the label is the grid's to place, so it cannot be sealed inside a row
-	// box the grid cannot see into
-	if strings.Contains(fx, "row := gtk.NewBox(gtk.OrientationHorizontal, 6)\n\trow.Append(l)") {
-		t.Error("fxNumRow builds its own row box again, which the grid cannot line up")
+	// nothing on the LINE is given the panel's slack any more -- that is what
+	// made four short numbers fill a wide column, and what made a dropdown
+	// holding "×8" the widest thing on the speed form
+	for _, head := range []string{`func fxNumRow\(`, `func fxEaseRow\(`, `func newRatePick\(`} {
+		if b := funcBody(t, "cut_fx.go", head); strings.Contains(b, "SetHExpand(true)") {
+			t.Errorf("a control on the line still eats the panel's slack:\n%s", b)
+		}
 	}
-	if !strings.Contains(fx, "l.SetXAlign(0)") || strings.Contains(fx, "l.SetHExpand(true) //") {
-		t.Error("the labels are right-aligned and eating the slack again")
+	// ...and the one field that holds words rather than a number is not the
+	// panel's width either: a label is a NAME (cut_fxlabel_test.go)
+	if w := funcBody(t, "cut_fx.go", `func fxWordsRow\(`); strings.Contains(w, "SetHExpand(true)") {
+		t.Error("the name field eats the panel's slack")
+	}
+	// the dropdowns are the width of what is in them, which is why the lists
+	// they hold are written short (fxEases, sndNames)
+	for _, dd := range []struct{ file, list string }{
+		{"cut_fx.go", "fxEases = []string{\"Linear\"}"},
+		{"cut_fxsound.go", `"With the picture",`},
+	} {
+		if !strings.Contains(readSrc(t, dd.file), dd.list) {
+			t.Errorf("%s no longer keeps its list short: %q", dd.file, dd.list)
+		}
+	}
+	if n := readSrc(t, "cut_fxsound.go"); strings.Contains(n, "1× until the speed change ends") {
+		t.Error("the sound answers are back to sentences, which sets the dropdown's width")
+	}
+	// and the words box shows three lines rather than five
+	if !strings.Contains(fx, "fxTextH = 62") || !strings.Contains(fx, "sc.SetSizeRequest(-1, fxTextH)") {
+		t.Error("the text box is no longer three lines deep")
 	}
 	// and greying a question out greys the label with it
 	body := funcBody(t, "cut_fx.go", `func \(f fxField\) setSensitive\(on bool\) \{`)
@@ -349,11 +379,12 @@ func TestTheFadeShapeIsAskedFor(t *testing.T) {
 	if !strings.Contains(fx, `fxEases = []string{"Linear"}`) {
 		t.Error("the fade shapes are no longer a list of what is actually drawn")
 	}
-	if !strings.Contains(fx, `fxRowLabel("Fade curve"`) {
+	if !strings.Contains(fx, `fxRowLabel("Curve"`) {
 		t.Error("the fade shape row is gone")
 	}
 	// all five dialogs ask it, and all five store the answer
-	if n := strings.Count(fx, "eRow, ec := fxEaseRow(f)") + strings.Count(svg, "eRow, ec := fxEaseRow(f)"); n != 5 {
+	if n := strings.Count(fx, "eRow, ec := fxEaseRow(f, live)") +
+		strings.Count(svg, "eRow, ec := fxEaseRow(f, live)"); n != 5 {
 		t.Errorf("%d dialogs ask for the fade shape, want all 5", n)
 	}
 	if n := strings.Count(fx, "f.Ease = fxEaseOf(ec.Selected())") +

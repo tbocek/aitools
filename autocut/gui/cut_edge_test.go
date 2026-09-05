@@ -157,7 +157,8 @@ func TestThereIsOneThumbnailBand(t *testing.T) {
 	}
 }
 
-// ...and the wiring that puts the whole of it on the left button.
+// ...and the wiring that puts the whole of it on the right button: hover to see
+// which border is under the pointer, right-press to take it, drag to trim.
 func TestTheEdgeToolIsWired(t *testing.T) {
 	b, err := os.ReadFile("cut.go")
 	if err != nil {
@@ -168,12 +169,13 @@ func TestTheEdgeToolIsWired(t *testing.T) {
 		"pick.SetButton(gdk.BUTTON_PRIMARY)", // one button for the whole page...
 		"pick.ConnectPressed(",               // ...and the second click of it takes a whole clip
 		"case ed.grabEdge(px):",              // press: pick up the border under the cursor
-		// the left press takes the border and the same drag trims it
-		"if trimming = ed.pickAt(x+ed.viewX, false) == pickEdge; trimming {",
+		// the RIGHT press takes the border and the same drag trims it: the
+		// left button draws selections and nothing else now
+		"if ed.onHeldEdge(px) || ed.grabEdge(px) {",
 		"case ed.onHeldEdge(px):", // ...and the held one is offered first, and wider
 		// the border under the pointer is highlighted before any of that
 		"if ed.edgeHovOn {",
-		"ed.moveEdgeTo(ed.tAtView(dragStartX+ox), true)", // drag: move it, without writing the file per motion
+		"ed.moveEdgeTo(ed.tAtView(slideX0+ox), true)", // drag: move it, without writing the file per motion
 		"ed.showEdge(true) // the picture comes with it",
 		"ed.persist() // the drag is over", // release: this is the cut that goes on disk
 		"ed.dropEdge() // any other left click puts a held edge or clip down",
@@ -187,9 +189,9 @@ func TestTheEdgeToolIsWired(t *testing.T) {
 			t.Errorf("the cut page no longer contains %q", want)
 		}
 	}
-	// the right button is not part of the CUT any more. It exists again, but
-	// for the timeline underneath it (cut_shift.go) -- so the pin is the one
-	// that matters: no gesture that edits a clip may be behind it.
+	// one gesture per button, still: the cut's own drags are cases of the
+	// slide gesture rather than a third and fourth controller over the same
+	// pixels, which is what the two below were.
 	for _, gone := range []string{"edge.ConnectDragUpdate(", "seg.ConnectDragUpdate("} {
 		if strings.Contains(src, gone) {
 			t.Errorf("the timeline is back on two buttons (%q) — hovering a border and "+

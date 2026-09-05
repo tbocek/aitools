@@ -398,6 +398,36 @@ func (s *sourceList) changed() {
 	}
 }
 
+// srcRowKey is the key to a row's symbols, on the end of every one of their
+// tooltips: hover any of them and you are told what all four do, in the order
+// they sit in.
+//
+// It was a legend along the top of the list instead -- the same four icons
+// with their words, drawn once. That is a line of the page spent permanently
+// on a question asked twice, and it answered it a hand's width from the
+// buttons, which is the one place the eye is not while it is deciding what a
+// symbol does.
+//
+// A word each, not the sentence: the button under the pointer has already said
+// its own piece above this, and what the key is for is the three the pointer
+// is NOT on. The one it repeats in short is left in rather than skipped -- a
+// list of four with one missing reads as an omission, and the eye has to work
+// out which one it is looking at to know why.
+//
+// Each line opens with the symbol it is about. A key to a row of icons that
+// names them only in words is a key you have to solve: four buttons, four
+// lines, and the reader matching them up by position and hoping. These are
+// Unicode rather than the row's own icon names -- a tooltip is text, and
+// nothing in it can be a GtkImage -- so they are the nearest glyph to each,
+// which is enough to pair a line with a button at a glance. Pango draws them;
+// the toy text API on the timeline could not, which is why the marks there are
+// drawn as paths instead (cut_marks.go).
+const srcRowKey = "\n\nThe symbols on every row, in order:\n" +
+	"🎥 footage — frames come out of it, and the cut is made of it\n" +
+	"🎤 narrator — which of the voices this is; 1 speaks the narration\n" +
+	"✂ split the voice off — ▶ separates it into the voice and the rest\n" +
+	"🗑 remove — off this list; the file itself is left alone"
+
 // ---- the rows ---------------------------------------------------------------
 
 func (s *sourceList) render() {
@@ -432,7 +462,7 @@ func (s *sourceList) row(i int) *gtk.Box {
 	// rather than a button that silently never sticks
 	foot.SetSensitive(isVideo(it.path))
 	foot.SetTooltipText("Footage — frames come out of this file and it can be cut.\n" +
-		"Off: it is only listened to, which is what a video kept for its audio wants.")
+		"Off: it is only listened to, which is what a video kept for its audio wants." + srcRowKey)
 	foot.ConnectToggled(func() { s.setFootage(i, foot.Active()) })
 
 	// the narrator slot: a microphone, and the slot number once it holds one --
@@ -442,17 +472,26 @@ func (s *sourceList) row(i int) *gtk.Box {
 	narr.AddCSSClass("flat")
 	nb := gtk.NewBox(gtk.OrientationHorizontal, 2)
 	nb.Append(gtk.NewImageFromIconName("audio-input-microphone-symbolic"))
+	// the slot number, and the room for one whether or not there is a number
+	// to put in it: the label is always there and always a character wide, so
+	// an untagged row is exactly as wide as a tagged one. Built the other way
+	// -- the label appended only when there is a slot -- the button was two
+	// sizes, and every file name in the list started at whichever x its own
+	// row happened to give it.
+	slot := gtk.NewLabel("")
+	slot.SetWidthChars(1)
 	if it.narrator > 0 {
-		nb.Append(gtk.NewLabel(strconv.Itoa(it.narrator)))
+		slot.SetText(strconv.Itoa(it.narrator))
 	} else {
 		nb.AddCSSClass("dim-label")
 	}
+	nb.Append(slot)
 	narr.SetChild(nb)
 	if it.narrator == 1 {
 		narr.AddCSSClass("suggested-action") // the voice the narration is spoken in
 	}
 	narr.SetTooltipText("Narrator — click to cycle through the free slots and back to none.\n" +
-		"1 is the voice the narration is spoken in; 2–4 are the rest of the group.")
+		"1 is the voice the narration is spoken in; 2–4 are the rest of the group." + srcRowKey)
 	narr.ConnectClicked(func() { s.cycleNarrator(i) })
 
 	// an ellipsizing label: a recorder filename is 50 characters, and a row
@@ -474,15 +513,18 @@ func (s *sourceList) row(i int) *gtk.Box {
 	sep.SetActive(it.sepVoice)
 	sep.SetTooltipText("Split the voice off — on ▶ this recording is separated into the\n" +
 		"voice and everything else. This row keeps everything else; the voice\n" +
-		"is added as a track of its own, so it can be cut and mixed apart.")
+		"is added as a track of its own, so it can be cut and mixed apart." + srcRowKey)
 	sep.ConnectToggled(func() { s.setSepVoice(i, sep.Active()) })
-	// a row that IS a half of a split offers no scissors: there is no voice
-	// left to take off a voice, and the name says which rows those are
-	sep.SetVisible(!splitProduct(it.path))
+	// a row that IS a half of a split has no voice left to take off a voice,
+	// so its scissors are dead -- greyed rather than gone. Removed from the
+	// row entirely they took their column with them, and in a list where some
+	// rows are split products and some are not, the trash beside them sat at
+	// two different x.
+	sep.SetSensitive(!splitProduct(it.path))
 
 	del := gtk.NewButtonFromIconName("user-trash-symbolic")
 	del.AddCSSClass("flat")
-	del.SetTooltipText("Remove from this session — the file itself is left alone")
+	del.SetTooltipText("Remove from this session — the file itself is left alone" + srcRowKey)
 	del.ConnectClicked(func() { s.remove(i) })
 
 	row := gtk.NewBox(gtk.OrientationHorizontal, 4)

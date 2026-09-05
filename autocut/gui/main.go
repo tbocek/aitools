@@ -12,13 +12,11 @@ package main
 // page now, with its own ▶ and ⏹ for the sample so the run bar keeps meaning
 // "run the step on screen".
 //
-// One folder per step, stepN/, numbered by the tab it belonged to when the
-// numbers were the names -- the pages and the files are called what they do
-// now, and the folders are not, because renaming them would orphan every
-// project already on disk. Describing runs two jobs and splits its folder
-// between them by name, since a number would say nothing: understand/describe/ =
-// the event logs, understand/transcript/ = the fixed transcripts, the subtitles and
-// the session timeline.
+// One folder per step, named for it. Prepare's three jobs get a folder each
+// under prepare/: inputs/ = the frames, the per-source transcripts and who
+// spoke when, describe/ = the event logs, transcript/ = the fixed transcripts,
+// the subtitles and the session timeline. A project written under an older
+// layout is moved once, on the open that finds it (migrateFolders).
 //
 //   cd autocut && ./gui/autocut-gui
 //
@@ -87,15 +85,13 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"editor to know about this session — who is in it, how names are spelled, " +
 			"what has to end up in the video — and every request this project makes " +
 			"carries it. Behind it, in the order the pipeline sends them, is every " +
-			"system prompt in the app: this step's two, the cut and the audit that " +
-			"reads it back, the narration, the upload text. They are here rather than " +
-			"on the pages that send them because a prompt is written before the first " +
-			"run and then left alone, while those pages are where the session's work " +
-			"happens — and reading down the menu is reading the whole run. A ✎ beside " +
-			"a name means this project says something of its own there; the list " +
-			"beside it is which wording that prompt uses, ＋ saves what is in the box " +
-			"under a new name, and the button after it puts a built-in back or deletes " +
-			"one you added.\n\n" +
+			"system prompt in the app: this step's two, the cut and its three passes, " +
+			"the narration, the upload text. They are here rather than on the pages " +
+			"that send them because a prompt is written before the first run and then " +
+			"left alone, while those pages are where the session's work happens — and " +
+			"reading down the menu is reading the whole run. One wording each, kept on " +
+			"this machine once you change it: a ✎ beside a name means what the model " +
+			"reads there is not what shipped, and Reset puts the built-in back.\n\n" +
 			"This is the long one, so the two run buttons mean different things here. ⏸ " +
 			"parks it between requests and ▶ carries on from the same frame; ⏹ ends it, " +
 			"and if the describing had started the next ▶ describes the session from the " +
@@ -163,20 +159,12 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"ground — the minutes before you started the capture card are visibly not there " +
 			"rather than stretched to fit. The waveforms appear a moment after the page does; " +
 			"each is decoded once and kept.\n\n" +
-			"The two prompts this step sends — the cut, and the audit that reads it " +
-			"back — are on Prepare, in the box that holds every prompt in the app, and " +
-			"so is the Style they are sent with: which kind of cut ▶ asks for, picked " +
-			"after Language, beside the prompts it chooses between. " +
-			"General is the one to start on — it works out what the session " +
-			"is before it cuts, and it is what a new project uses. The other three " +
-			"already know what they are looking at, and cut better than General when " +
-			"they are right: Highlights fills the length with the best moments of a " +
-			"gaming session; Rating / tier list lines the subjects up, visits each one " +
-			"and ends on the verdict; YouTube Shorts cuts a vertical video of half a " +
-			"minute and decorates it with effects. Whichever you pick, what the cut is " +
-			"actually about comes from the User Context on Prepare. It is the same " +
-			"choice as the wording list beside the Cut prompt there — one store, two " +
-			"views — so ＋ adds your own and the Style list offers it.\n\n" +
+			"The prompts this step sends — the cut, then the captions, the speed and " +
+			"the effects, clip by clip — are on Prepare, in the box that holds every " +
+			"prompt in the app. There is one wording each and it assumes nothing about " +
+			"the footage: what KIND of video this is, how long it should run and what " +
+			"has to be in it come from the User Context beside them, which every step " +
+			"is sent and which outranks the wordings.\n\n" +
 			"That column is where every form on this page opens — the insert's questions, " +
 			"an effect's numbers — rather than in a window over the timeline, so the band " +
 			"or the card a question is about stays on screen, and live, while it is " +
@@ -615,20 +603,16 @@ type App struct {
 	promptMu    sync.Mutex
 	promptTxt   map[string]string
 	promptViews map[string]*gtk.TextView
-	// the several wordings a job can have and which one this project picked
-	// (prompts.go). promptSty holds only what the project has of its own to say
-	// -- an edited built-in or one it invented -- so both are keyed by job, then
-	// by style name. Under promptMu with promptTxt: setPrompt writes all three.
-	promptSty  map[string][]promptStyle
-	promptPick map[string]string
-	// what the prompt folder is believed to hold, so the flush that mirrors
-	// promptSty onto disk writes only what changed (promptstore.go). GUI
-	// thread only, like the views: it is written from the autosave tick.
+	// promptTxt is empty for a job whose shipped wording is what the model
+	// reads; what is in it is this machine's own. promptDisk is what the
+	// prompt folder is believed to hold, so the flush that mirrors one onto
+	// the other writes only what changed (promptstore.go) -- GUI thread only,
+	// like the views: it is written from the autosave tick.
 	promptDisk map[string]string
-	// the picker widgets, and the flag that stops filling them from reading as
-	// the user editing them. GUI thread only, so no lock (showPromptStyle).
+	// the row above each box -- the "edited" mark and the Reset beside it --
+	// and the flag that stops filling a box from reading as the user typing in
+	// it. GUI thread only, so no lock (showPrompt).
 	promptRows  map[string]promptRow
-	styleDrops  map[string]styleDrop // wording dropdowns surfaced on a page (styleBar), by key
 	promptQuiet bool
 	// redraws the ✎ marks on the bench's menu when a project load or an edit
 	// changes what the project is holding (prepedit.go)
@@ -860,16 +844,19 @@ func (f *freqPick) parse() {
 // Where each step writes. The folders are named for their steps, as the tabs
 // and the code are; they were step1/ to step6/ once, and a project written
 // then is moved to these names the first time it is opened (migrateFolders).
-// Prepare owns the first two -- inputs/ for the transcripts and frames,
-// understand/ for what the models made of them -- and inside understand/ the
-// two jobs get a folder each, because the describer resumes per chunk and the
-// fixer does not.
-func (a *App) inputsDir() string     { return filepath.Join(a.outDir, "inputs") }
+//
+// One folder per step, Prepare included. Its three jobs get a folder each
+// inside it -- the describer resumes per chunk and the fixer does not, and the
+// frames are neither -- but they are its three, so they are under its name:
+// prepare/inputs/, prepare/describe/, prepare/transcript/. They were inputs/
+// beside understand/{describe,transcript}, which made the one step two places
+// on disk and three buttons on its page.
+func (a *App) prepareDir() string    { return filepath.Join(a.outDir, "prepare") }
+func (a *App) inputsDir() string     { return filepath.Join(a.prepareDir(), "inputs") }
+func (a *App) describeDir() string   { return filepath.Join(a.prepareDir(), "describe") }
+func (a *App) transcriptDir() string { return filepath.Join(a.prepareDir(), "transcript") }
 func (a *App) narrateDir() string    { return filepath.Join(a.outDir, "narrate") }
 func (a *App) produceDir() string    { return filepath.Join(a.outDir, "produce") }
-func (a *App) understandDir() string { return filepath.Join(a.outDir, "understand") }
-func (a *App) describeDir() string   { return filepath.Join(a.understandDir(), "describe") }
-func (a *App) transcriptDir() string { return filepath.Join(a.understandDir(), "transcript") }
 
 // framesDir is where the first half of Prepare leaves one video's frames:
 // the describer reads them and the Cut page waits for them, so the path is
@@ -1098,7 +1085,31 @@ func (a *App) build(app *gtk.Application) {
 		// a slider whose scale marks are words rather than numbers: three lines
 		// of body text stacked under a trough make the row taller than
 		// everything beside it, and the words are a legend, not a reading
-		".tinyscale value, .tinyscale marks label { font-size: 0.78em; }")
+		".tinyscale value, .tinyscale marks label { font-size: 0.78em; } " +
+		// a slider's own reading, in the colour of a reading. The theme draws
+		// the value over the handle and the numbers under the marks in a
+		// dimmed foreground, which on a live control is the app's own way of
+		// saying "greyed out" -- so the one number a slider exists to report
+		// looked like a setting that could not be changed.
+		"scale value, scale marks label { color: @theme_fg_color; } " +
+		// the boxes you type in, with the corner the entries and buttons
+		// beside them have. Every one of them is a scrolled window given the
+		// frame class (editorFrame, and the four boxes that build their own),
+		// and the theme draws that frame square -- so a page of GTK controls
+		// had one square thing on it, which was the thing you spend the most
+		// time looking at. The scrolled window clips its child to this radius,
+		// so the text's own white corners come with it.
+		//
+		// The timeline is not in here: its bands are cairo, and they stay
+		// square because a band is a measurement (see platePath).
+		".frame { border-radius: 6px; } .frame textview, .frame textview text { border-radius: 6px; } " +
+		// ...and one font in everything you type in. The boxes set it on
+		// themselves (SetMonospace); an entry has no such switch, so the one
+		// line above a monospace box -- a title, a server, a model id, a
+		// number in an effect form -- came out in the proportional font, and
+		// the two rows of one form disagreed about what typed text looks
+		// like. Said once, here, for every entry in the app.
+		"entry, entry text { font-family: monospace; }")
 	gtk.StyleContextAddProviderForDisplay(gtk.BaseWidget(a.win).Display(), css,
 		gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 	// fits a 1366x768 laptop with room for the panel: every page is either

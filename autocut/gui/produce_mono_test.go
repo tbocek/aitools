@@ -97,7 +97,7 @@ func TestTheMonoToggleIsWired(t *testing.T) {
 	src := string(b)
 	for _, want := range []string{
 		`p.mono = gtk.NewCheckButtonWithLabel("Mono (one channel)")`,
-		`at(1, 5, "Audio channels:", p.mono)`,
+		"check(2, 3, p.mono)", // a tick needs no leading label
 		`Mono:      p.mono.Active(),`,
 		`p.mono.SetActive(st.Mono)`,
 		`audLayout(st)`,
@@ -105,5 +105,48 @@ func TestTheMonoToggleIsWired(t *testing.T) {
 		if !strings.Contains(src, want) {
 			t.Errorf("produce.go does not contain %q", want)
 		}
+	}
+}
+
+// The settings grid: three columns, one subject each, and a tick that says
+// what it is on itself.
+//
+// It was two columns and seven rows -- the sound settings stacked under the
+// picture settings, the page's whole right-hand half empty -- and every tick
+// carried a leading label that said the same thing the tick did ("Frame
+// timing: [x] Peak frame rate (VFR)"). VFR in particular sat two rows below
+// the frame rate it qualifies, where it reads as a setting of its own rather
+// than as what the number above it MEANS.
+func TestTheProduceSettingsAreThreeColumns(t *testing.T) {
+	body := funcBody(t, "produce.go", `func \(a \*App\) buildProduce\(\)`)
+	for _, want := range []string{
+		// the encoder column, the shape column, the sound-and-words column
+		`at(0, 0, "Container:", p.container)`,
+		`at(1, 0, "Resolution:", p.height)`,
+		`p.subsLbl = at(2, 0, "Subtitles:", p.subs)`,
+		// ...and the ticks, in the control column with no label of their own
+		"check := func(col, row int, w gtk.Widgetter) { grid.Attach(w, col*2+1, row, 1, 1) }",
+		"check(1, 3, p.vfr)", // beside the frame rate's own column, on the CRF row
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the settings grid no longer contains %q", want)
+		}
+	}
+	// the leading words are gone, not merely moved
+	for _, gone := range []string{`"Frame timing:"`, `"Frame edges:"`, `"Audio channels:"`} {
+		if strings.Contains(body, gone) {
+			t.Errorf("a tick still carries %s, which is what the tick says", gone)
+		}
+	}
+	// VFR shares the row with the CRF slider it was two rows under
+	crf := strings.Index(body, `at(0, 3, "Quality (CRF):", p.crf)`)
+	vfr := strings.Index(body, "check(1, 3, p.vfr)")
+	if crf < 0 || vfr < 0 {
+		t.Fatal("the CRF slider and the VFR tick are not both placed")
+	}
+	// a slider's own reading is drawn in the foreground colour: dimmed, it is
+	// the app's own way of saying a control is dead
+	if !strings.Contains(readSrc(t, "main.go"), "scale value, scale marks label { color: @theme_fg_color; }") {
+		t.Error("a slider's value and marks are back in the dimmed colour")
 	}
 }

@@ -66,9 +66,11 @@ func TestTheSplitButtonRecordsAWishAndTakesItBack(t *testing.T) {
 }
 
 // The toggle sits where the row was asked for it -- after the name, before the
-// trash -- and the legend above the list says what the icon means. An icon-only
-// button in a row of icon-only buttons is unreadable without one.
-func TestTheSplitToggleSitsBeforeTheTrashAndIsInTheLegend(t *testing.T) {
+// trash -- and its tooltip carries the key to the whole row. An icon-only
+// button in a row of icon-only buttons is unreadable without one, and the
+// legend that used to say so was a permanent line of the page a hand's width
+// away from the buttons it was about (srcRowKey).
+func TestTheSplitToggleSitsBeforeTheTrashAndSaysWhatTheRowIs(t *testing.T) {
 	body := funcBody(t, "sources.go", `func \(s \*sourceList\) row\(i int\) \*gtk\.Box \{`)
 	sep, del := strings.Index(body, "row.Append(sep)"), strings.Index(body, "row.Append(del)")
 	if sep < 0 || del < 0 {
@@ -86,8 +88,29 @@ func TestTheSplitToggleSitsBeforeTheTrashAndIsInTheLegend(t *testing.T) {
 	if !strings.Contains(body, "s.setSepVoice(i, sep.Active())") {
 		t.Error("toggling the split control does not reach setSepVoice")
 	}
-	if !strings.Contains(readSrc(t, "prep.go"), `{"edit-cut-symbolic", "split voice off"}`) {
-		t.Error("the legend does not say what the scissors on a row mean")
+	if !strings.Contains(body, "sep.SetTooltipText(") || !strings.Contains(body, "+ srcRowKey)") {
+		t.Error("the scissors say neither what they do nor what the row's other symbols are")
+	}
+	// ...and the legend it replaced is off the page: four icons drawn once,
+	// permanently, to answer a question that is asked at the button
+	if p := readSrc(t, "prep.go"); strings.Contains(p, `{"edit-cut-symbolic", "split voice off"}`) ||
+		strings.Contains(p, "legend.Append(") {
+		t.Error("the legend is back above the source list")
+	}
+	// every symbol on the row carries the key, not just this one: whichever
+	// one the hand is over is the one that has to answer
+	if n := strings.Count(readSrc(t, "sources.go"), "+ srcRowKey)"); n != 4 {
+		t.Errorf("%d of the row's four symbols name the others, want all of them", n)
+	}
+	// ...and the key says what each one DOES, which is what the legend it
+	// replaced said: four bare names is a list of words to guess at
+	// ...each opening with the symbol it is about, so a line pairs with a
+	// button at a glance instead of by counting positions
+	for _, want := range []string{"🎥 footage — ", "🎤 narrator — ",
+		"✂ split the voice off — ", "🗑 remove — "} {
+		if !strings.Contains(srcRowKey, want) {
+			t.Errorf("the row key never explains %q", want)
+		}
 	}
 }
 
@@ -875,8 +898,23 @@ func TestAHalfOfASplitOffersNoScissors(t *testing.T) {
 			t.Errorf("splitProduct(%q) = %v, want %v", c.path, got, c.want)
 		}
 	}
-	if !strings.Contains(readSrc(t, "sources.go"), "sep.SetVisible(!splitProduct(it.path))") {
+	// dead on such a row, not gone from it: taken out of the layout the
+	// scissors take their column with them, and a list where some rows are
+	// split products and some are not then has its trash at two different x
+	src := readSrc(t, "sources.go")
+	if !strings.Contains(src, "sep.SetSensitive(!splitProduct(it.path))") {
 		t.Error("the scissors are offered on a row that is already a half of a split")
+	}
+	if strings.Contains(src, "sep.SetVisible(") {
+		t.Error("the scissors leave the row rather than going grey, so the rows stop lining up")
+	}
+	// the same rule for the narrator slot: the number's room is there whether
+	// or not there is a number in it, or a tagged row is wider than an
+	// untagged one and no two file names start at the same x
+	for _, want := range []string{"slot := gtk.NewLabel(\"\")", "slot.SetWidthChars(1)", "nb.Append(slot)"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the narrator button no longer keeps room for its slot: %q", want)
+		}
 	}
 	// and the halves are named so: split-novoice keeps the picture and the
 	// room, split-voice is the voice alone

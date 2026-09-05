@@ -108,9 +108,9 @@ func TestTheSlideGestureIsWired(t *testing.T) {
 	// the zoom dialog asks all three of its times, named as every other
 	// effect names them
 	for _, want := range []string{
-		`fxNumRow("Fade in seconds"`,
-		`fxNumRow("Fade out seconds"`,
-		`fxNumRow("Length seconds"`,
+		`fxNumRow("Fade in (s)"`,
+		`fxNumRow("Fade out (s)"`,
+		`fxNumRow("Length (s)"`,
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("the zoom dialog no longer contains %s", want)
@@ -638,5 +638,68 @@ func TestAZoomInterruptsAnotherComingBack(t *testing.T) {
 	got := camRectAt(zooms, 3, 16.0/9, 16.0/9)
 	if math.Abs(got.hf-0.625) > 1e-9 {
 		t.Errorf("interrupted move: hf %.4f, want 0.625 -- the second zoom did not start from where the camera was", got.hf)
+	}
+}
+
+// Picking an aspect places the framing it asks for.
+//
+// A cut with a shape of its own has one question outstanding from the moment
+// the shape is picked: which slice of the recording the finished video shows.
+// The render has always had an answer -- the centred window that fills the
+// frame (fullFill) -- and it was arrived at invisibly, by a rule nothing on the
+// page states, so the lane said nothing and the preview's outline was the only
+// clue there was a decision at all. Now the answer is an effect: a staying zoom
+// at the beginning, centred, exactly that window.
+func TestPickingAnAspectPlacesTheFramingItAsksFor(t *testing.T) {
+	ed := newTestEd(t)
+	ed.vids = []tlVideo{{base: "a", path: "a.mkv", start: 0, dur: 300, w: 1920, h: 1080}}
+	ed.segs = []cutSeg{{S: 30, E: 90}}
+
+	ed.aspectChanged("9:16")
+	if len(ed.fx) != 1 {
+		t.Fatalf("picking an aspect left %d effect(s), want the framing it asks for", len(ed.fx))
+	}
+	f := ed.fx[0]
+	want := fullFill(1920.0/1080.0, parseAspect("9:16"))
+	if f.Kind != "zoom" || !f.Stay {
+		t.Errorf("the framing is %+v, want a staying zoom", f)
+	}
+	if f.T != 0 || f.Dur != aspectStayLn {
+		t.Errorf("it runs %g–%g s, want a second from the start", f.T, f.T+f.Dur)
+	}
+	if f.Cx != want.cx || f.Cy != want.cy || f.Hf != want.hf {
+		t.Errorf("its window is %g,%g h=%g, want the centred full fill %g,%g h=%g",
+			f.Cx, f.Cy, f.Hf, want.cx, want.cy, want.hf)
+	}
+	if f.Trans != 0 || f.Tout != 0 {
+		t.Error("the framing drifts in or out; it is where the video starts, not a move")
+	}
+	// one press, one step back: the shape and its framing go together
+	if len(ed.undo) != 1 {
+		t.Errorf("picking an aspect left %d undo step(s), want 1", len(ed.undo))
+	}
+	ed.undoLast()
+	if ed.aspect != "" || len(ed.fx) != 0 {
+		t.Errorf("undo left aspect %q and %d effect(s)", ed.aspect, len(ed.fx))
+	}
+
+	// a cut that is already framed has answered the question: a second answer
+	// at second nought would outrank it for every clip before the first one
+	ed.fx = []cutFx{{Kind: "zoom", T: 40, Dur: 3, Cx: 0.3, Cy: 0.5, Hf: 0.5, Stay: true}}
+	ed.aspectChanged("1:1")
+	if len(ed.fx) != 1 || ed.fx[0].T != 40 {
+		t.Errorf("a framed cut was given a second framing: %+v", ed.fx)
+	}
+	// and going back to the source's own shape places nothing at all
+	ed.fx = nil
+	ed.aspectChanged("")
+	if len(ed.fx) != 0 {
+		t.Errorf("the source's own shape placed %+v", ed.fx)
+	}
+	// the placement is the CHOICE's, not the setter's: setAspect runs on every
+	// project load and every undo, and an effect placed there would breed
+	set := funcBody(t, "cut_fx.go", `func \(ed \*cutEditor\) setAspect\(`)
+	if strings.Contains(set, "Stay: true") {
+		t.Error("loading a project places a framing")
 	}
 }

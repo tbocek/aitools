@@ -125,6 +125,14 @@ func (ed *cutEditor) hideForm() {
 // is where widgets are let go of, and letting go of a widget that is still in
 // the box is how a dropdown ends up pointing at a text view nobody can see.
 func (ed *cutEditor) dropForm() {
+	// a live form's last burst of typing, before the form it belongs to is
+	// taken out from under it: the debounce is a few hundred ms, and closing
+	// the panel a moment after the last letter must not be how that letter is
+	// lost. flush is a no-op when nothing is owed (debounce.go).
+	if l := ed.fxLiveCur; l != nil {
+		l.d.flush()
+		ed.fxLiveCur, ed.fxLiveOn = nil, nil
+	}
 	if ed.formFootCur != nil {
 		ed.formFoot.Remove(ed.formFootCur)
 		ed.formFootCur = nil

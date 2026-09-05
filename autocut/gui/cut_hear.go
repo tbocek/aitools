@@ -47,7 +47,7 @@ const (
 	// the two shared pixels: a press meant for the border switched a lane,
 	// and the badge looked like part of the handle it was sitting on.
 	hearIn = edgeGrab + hearHit
-	// under this a scene has no room to wear one, by segKillMin's rule: the
+	// under this a scene has no room to wear one, by killMin's rule: the
 	// target reaches hearIn+hearHit in from the left border, and a scene
 	// narrower than twice that has its MIDDLE inside the badge -- so a press
 	// meant to put the line on the clip would switch a lane instead.

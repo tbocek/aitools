@@ -269,8 +269,14 @@ func TestSlowAndFreezeComeOutTheRightLength(t *testing.T) {
 // the single line that makes effects render at all.
 func TestProduceRunsTheCutThroughTheEffects(t *testing.T) {
 	fn := funcBody(t, "produce.go", `func \(a \*App\) produceSegs\(\) \[\]cutSeg \{`)
-	if !strings.Contains(fn, "applyFx(splitSpliced(c.Segs), c.Fx)") {
-		t.Error("produceSegs no longer applies the speed effects — slows and freezes are edited but never rendered")
+	for _, want := range []string{
+		"segs := splitSpliced(c.Segs)",
+		"return applyFx(segs, c.Fx)",
+		"segs[i].Scene = i", // the stamp the sound's own planning reads (cut_fxsound.go)
+	} {
+		if !strings.Contains(fn, want) {
+			t.Errorf("produceSegs no longer %q — slows and freezes are edited but never rendered", want)
+		}
 	}
 }
 

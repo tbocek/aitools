@@ -573,8 +573,8 @@ func TestTheClipToolAndTheEditButtonAreWired(t *testing.T) {
 	for _, want := range []string{
 		"ed.pickAt(x+ed.viewX, true)",                          // the second click, and all of what it means
 		"case ed.grabSeg(px):",                                 // ...away from a border, which is a whole clip
-		"if moving = ed.onHeldSeg(x + ed.viewX); moving {",     // left press on the held clip
-		"ed.moveSegTo(ed.tAtView(dragStartX+ox)-grabAt, true)", // ...drags it, without writing the file per motion
+		"if !ed.onHeldSeg(px) {",                               // right press on the scene under the pointer
+		"ed.moveSegTo(ed.tAtView(slideX0+ox)-slideGrab, true)", // ...drags it, without writing the file per motion
 		"ed.showSeg(true)",
 		"if ed.segDirty {\n\t\t\t\t\ted.persist()", // release: this is the cut that goes on disk
 		"if ed.segOn && ed.nudgeSeg(n) {",          // ‹f and f› are the clip's while one is held
@@ -620,13 +620,15 @@ func TestAClickOnAHeldClipMovesTheLineAndNotTheClip(t *testing.T) {
 			t.Errorf("cut.go no longer contains %q", want)
 		}
 	}
-	// ...and the release of such a press puts the line where it landed
+	// ...and the release of such a press says what is in hand rather than
+	// dragging it. The line is not moved: sliding a clip is the right button's
+	// now, and where the red line goes is the left's alone.
 	i := strings.Index(src, "if !ed.segDirty && math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {")
 	if i < 0 {
-		t.Fatal("a click on a held clip no longer moves the red line")
+		t.Fatal("a right click on a held clip is read as a drag of it")
 	}
-	if j := strings.Index(src[i:], "ed.setPlayhead(ed.tAtView(dragStartX))"); j < 0 || j > 200 {
-		t.Error("the click on a held clip does not cue the playhead where it landed")
+	if j := strings.Index(src[i:], "ed.segStatus() // a right click on a scene is \"this one\""); j < 0 || j > 200 {
+		t.Error("the click on a held clip no longer says what it is holding")
 	}
 	// and the second click of a double one leaves the green alone: the single
 	// click has already taken that scene in hand

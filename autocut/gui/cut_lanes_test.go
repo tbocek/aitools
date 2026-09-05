@@ -68,10 +68,9 @@ func TestRecordingsShareARowUnlessTheyOverlap(t *testing.T) {
 
 // ---- where the rows are -------------------------------------------------------
 
-// The compatibility claim, in pixels. One camera puts everything exactly where
-// it was before there were rows: the band is one thumbnail deep and the effects
-// lane starts six px under the pictures, which is what fxLaneTop used to say in
-// so many words.
+// The compatibility claim, in pixels. One camera is one thumbnail's worth of
+// band -- and the effects lane is above it now, under the green bar, where its
+// y depends on nothing but the two fixed bands over it (cut_fx.go).
 func TestOneCameraLeavesTheBandExactlyWhereItWas(t *testing.T) {
 	ed := axisEd(t, tlVideo{start: 0, dur: 60})
 	if ed.laneN != 1 {
@@ -80,8 +79,11 @@ func TestOneCameraLeavesTheBandExactlyWhereItWas(t *testing.T) {
 	if got, want := ed.picBottom(), ed.picTop()+float64(ed.thumbHt)+4; got != want {
 		t.Errorf("the band ends at %.0f, want %.0f", got, want)
 	}
-	if got, want := ed.fxLaneTop(), ed.picTop()+float64(ed.thumbHt)+6; got != want {
+	if got, want := ed.fxLaneTop(), float64(rulerH)+float64(selBandH); got != want {
 		t.Errorf("the effects lane starts at %.0f, want %.0f", got, want)
+	}
+	if got, want := ed.picTop(), ed.fxLaneTop()+ed.fxLaneHeight(); got != want {
+		t.Errorf("the pictures start at %.0f, want %.0f — under the lane", got, want)
 	}
 	// and an editor that has never been laid out -- no widgets, no relayout --
 	// measures the same, because half the page asks these before any of that
@@ -104,8 +106,11 @@ func TestASecondCameraPushesTheEffectsLaneDown(t *testing.T) {
 	if got, want := ed.picBottom()-one.picBottom(), ed.laneH()+laneGap; got != want {
 		t.Errorf("a second row added %.0f px, want %.0f", got, want)
 	}
-	if ed.fxLaneTop() <= one.fxLaneTop() {
-		t.Error("the effects lane did not move down under the second row")
+	// ...and the effects lane does not move at all: it is above the pictures,
+	// so how many cameras there are is none of its business
+	if ed.fxLaneTop() != one.fxLaneTop() {
+		t.Errorf("a second camera moved the effects lane from %.0f to %.0f",
+			one.fxLaneTop(), ed.fxLaneTop())
 	}
 	// which row a press landed on. The three px between two rows are on
 	// neither, which is why laneAt can say so -- a drag started there has no

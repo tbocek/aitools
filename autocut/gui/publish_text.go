@@ -578,6 +578,7 @@ func (a *App) askPubText(initial string, ok func(string), rm func()) {
 	d.AddCSSClass("dim-label")
 
 	tv := gtk.NewTextView()
+	tv.SetMonospace(true) // every editable box in the app is this font
 	tv.SetWrapMode(gtk.WrapWordChar)
 	tv.SetAcceptsTab(false) // Tab moves to the next field, as everywhere else
 	tv.Buffer().SetText(initial)

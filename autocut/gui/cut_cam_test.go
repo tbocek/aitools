@@ -146,8 +146,12 @@ func TestTheLensesAreDrawnLitAndUnlit(t *testing.T) {
 	ed := camEd(t)
 	b := ed.camBadges()
 	at := renderTrack(t, ed, 620, 300)
-	lr, lg, lb := at(int(b[0].cx), int(b[0].cy))
-	dr, dg, db := at(int(b[1].cx), int(b[1].cy))
+	// on the PLATE, clear of what is drawn on it: the ring and, on the row in
+	// use, the filled dot inside it are white either way, so the centre pixel
+	// says nothing about which of the two this is (drawLens)
+	const onPlate = 6 // plate radius is hearR+hearPad = 8; the ring sits at ~3.7
+	lr, lg, lb := at(int(b[0].cx+onPlate), int(b[0].cy))
+	dr, dg, db := at(int(b[1].cx+onPlate), int(b[1].cy))
 	if int(lg) < int(lr)+40 || int(lg) < int(lb)+40 {
 		t.Errorf("the row in use reads rgb(%d,%d,%d) — not a lit plate", lr, lg, lb)
 	}

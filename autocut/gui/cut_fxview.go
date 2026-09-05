@@ -1008,7 +1008,11 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 			if kind == "svg" {
 				ed.a.askSvgParams(f, true, func(nf cutFx) {
 					if strings.TrimSpace(nf.Src) == "" {
-						ed.a.setStatus("no drawing was chosen — nothing was placed")
+						// the form is live and this is its first answer, given
+						// as it opened: there is nothing to place until a file
+						// is chosen, and choosing one is an answer too (fxWin)
+						ed.a.setStatus("choose a drawing and it goes on the picture — " +
+							"the rest of the form applies as you fill it in")
 						return
 					}
 					ed.addFx(nf)
@@ -1019,7 +1023,11 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 			}
 			ed.a.askTextParams(f, true, func(nf cutFx) {
 				if strings.TrimSpace(nf.Text) == "" {
-					ed.a.setStatus("no words were typed — nothing was placed")
+					// as above: an empty caption is not placed, and the words
+					// are what place it -- they go on the picture as they are
+					// typed
+					ed.a.setStatus("type the words and they go on the picture — " +
+						"the form applies as you type it")
 					return
 				}
 				ed.addFx(nf)

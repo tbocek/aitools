@@ -373,7 +373,7 @@ func TestTheSilentInsertIsWired(t *testing.T) {
 			"func insHasSound(path string) bool {",
 		},
 		"cut_insview.go": {
-			"ed.player.SetMuted(cardHush(s) || freezeHush(ed.fx, ed.playhead))",
+			"ed.player.SetMuted(cardHush(s) || fxHush(ed.fx, ed.playhead))",
 		},
 		"produce.go": {
 			"c, note = insClip(i, s, path+q.suffix(), vids)",

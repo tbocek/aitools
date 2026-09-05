@@ -284,7 +284,7 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 		"refills do not write back":          "if quiet || a.promptQuiet {",
 		"registration follows the selection": "delete(a.promptViews, old.key)",
 		"the wording row follows it too":     "delete(a.promptRows, old.key)",
-		"the box is filled from the store":   "a.showPromptStyle(r.key, a.promptPickName(r.key))",
+		"the box is filled from the store":   "a.showPrompt(r.key)",
 	} {
 		if !strings.Contains(ed, want) {
 			t.Errorf("the switchable box is missing %s (%s)", what, want)
@@ -305,54 +305,67 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 	}
 
 	// the prompt controls in the heading, and the context row with none of
-	// them: one wording by definition -- the one you wrote -- so a ＋ and a
-	// Reset would each be a control with nothing to do. No wording list here
-	// any more: the Style dropdown on the bottom row is the one place a
-	// wording is picked, for every job at once (applyStyle)
-	if strings.Contains(ed, "head.Append(wording)") {
-		t.Error("the editor grew a wording list back -- the Style dropdown is the one place a wording is picked")
+	// them: the context is one text by definition -- the one you wrote -- so a
+	// Reset there would be a control with nothing to put back. There is no
+	// wording list and no ＋ either: one prompt per job (prompts.go)
+	for _, gone := range []string{"head.Append(wording)", "head.Append(add)"} {
+		if strings.Contains(ed, gone) {
+			t.Errorf("the editor grew %q back -- there is one wording per job", gone)
+		}
 	}
 	for what, want := range map[string]string{
-		"the menu in the heading":      "head.Append(pick)",
-		"＋ to save a new wording":      "head.Append(add)",
-		"Reset/Remove":                 "head.Append(drop)",
-		"the context row without them": "showCtx(r)",
+		"the menu in the heading":          "head.Append(pick)",
+		"Reset":                            "head.Append(drop)",
+		"the context row without them":     "showCtx(r)",
+		"and Reset puts the built-in back": "a.resetPrompt(r.key)",
 	} {
 		if !strings.Contains(ed, want) {
 			t.Errorf("the heading row is missing %s (%s)", what, want)
 		}
 	}
-	// what ＋ and Reset do, both of them refusing the context row rather than
-	// guessing what "reset the context" would mean
-	for what, want := range map[string]string{
-		"＋ saves under a new name": "a.savePromptStyle(r.key, name,",
-		"Reset undoes edits":       "a.dropPromptStyle(r.key, name)",
-		"Remove confirms first":    "a.confirm(",
-		"the built-in comes back":  "a.showPromptStyle(r.key, promptDefFor(r.key).styleName())",
-	} {
-		if !strings.Contains(ed, want) {
-			t.Errorf("the prompt controls are missing %s (%s)", what, want)
+
+	// the two sides of the divider start on one line: this side's heading is
+	// its button row, and it joins the size group every editor heading is in,
+	// with the same top margin the editor's own box has (editorFrame)
+	src := funcBody(t, "prep.go", `func \(a \*App\) buildSources\(`)
+	for _, want := range []string{"a.headGroup.AddWidget(addRow)", "sources.SetMarginTop(4)"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the sources column does not line up with the box beside it: %q", want)
 		}
 	}
 
-	sync := funcBody(t, "stylebar.go", `func \(a \*App\) syncPromptMarks\(`)
+	sync := funcBody(t, "prompts.go", `func \(a \*App\) syncPromptMarks\(`)
 	if !strings.Contains(sync, "a.prepSync()") {
 		t.Error("syncPromptMarks no longer redraws the prep menu -- its ✎ goes stale on project load")
 	}
 
-	// all three folders one press writes are counted at the bottom, each with a
-	// way into it: the question asked before a run is whether this already
-	// happened and to which part of it
-	for _, want := range []string{"a.inputsDir, &p.inputsOut", "a.describeDir, &p.describeOut", "a.transcriptDir, &p.transcriptOut"} {
+	// what one press writes is counted at the bottom, with a way into it: the
+	// question asked before a run is whether this already happened. One
+	// button, like every other step's -- the three folders it fills are
+	// prepare/'s own subfolders now (migrateFolders), and which of them a file
+	// is in is a question the folder answers better than a label can
+	for _, want := range []string{
+		"a.openFolder(a.prepareDir())",
+		`outRow.Append(gtk.NewLabel("Prepare:"))`,
+	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("the Outputs row does not count %s", want)
+			t.Errorf("the Outputs row is missing %s", want)
+		}
+	}
+	if r := funcBody(t, "prep.go", `func \(p \*preproc\) refresh\(\) \{`); !strings.Contains(r,
+		"setOutCount(p.prepOut, p.a.prepareDir())") {
+		t.Error("the Outputs row is not counted from the step's own folder")
+	}
+	for _, gone := range []string{"p.inputsOut", "p.describeOut", "p.transcriptOut"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the Outputs row counts %s separately again", gone)
 		}
 	}
 }
 
-// TestTheOutputsRowSaysHowMuchAndHoverSaysWhen: three folders side by side, so
-// the count is on the row and its age is on the tooltip -- three copies of
-// "12 files, newest 3 min ago" is a paragraph across the bottom of a page.
+// TestTheOutputsRowSaysHowMuchAndHoverSaysWhen: the count is on the row and
+// its age is on the tooltip -- one folder per step along the bottom bar, and
+// "12 files, newest 3 min ago" on each of them is a paragraph across the page.
 func TestTheOutputsRowSaysHowMuchAndHoverSaysWhen(t *testing.T) {
 	dir := t.TempDir()
 	if n, _ := countOutputs(dir); n != 0 {
@@ -392,9 +405,8 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	ownConfig(t)
 	a := &App{root: t.TempDir()}
 	got := a.prepEditNames()
-	want := []string{"User Context", "System context", "Describe (General)", "Transcript (General)",
-		"Cut (General)", "Captions (General)", "Speed (General)", "Effects (General)", "Narration (General)",
-		"Upload text (General)"}
+	want := []string{"User Context", "System context", "Describe", "Transcript",
+		"Cut", "Captions", "Speed", "Effects", "Narration", "Upload text"}
 	if len(got) != len(want) {
 		t.Fatalf("the menu offers %v, want %v", got, want)
 	}
@@ -404,25 +416,19 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 		}
 	}
 	a.setPrompt("describe", "my own wording")
-	if got := a.prepEditNames(); got[2] != "Describe (General) ✎" {
+	if got := a.prepEditNames(); got[2] != "Describe ✎" {
 		t.Errorf("an edited describe prompt reads %q in the menu, want the ✎", got[2])
 	}
-	if got := a.prepEditNames(); got[3] != "Transcript (General)" {
+	if got := a.prepEditNames(); got[3] != "Transcript" {
 		t.Errorf("editing one prompt marked the other: %q", got)
 	}
-	// the Style's reach is what the parentheticals are for: one pick beside
-	// Language renames every row that has a wording under the style's name,
-	// and only those -- the context row stays bare
-	a.applyStyle("Highlights")
-	got = a.prepEditNames()
-	if got[4] != "Cut (Highlights)" {
-		t.Errorf("after the style pick the cut row reads %q, want Cut (Highlights)", got[4])
+	// typing the built-in back is not an edit, and the mark goes with it
+	a.setPrompt("describe", promptDefFor("describe").def)
+	if got := a.prepEditNames(); got[2] != "Describe" {
+		t.Errorf("a prompt typed back to the built-in still reads %q", got[2])
 	}
-	if got[8] != "Narration (General)" {
-		t.Errorf("a job with no Highlights wording reads %q, want its default", got[8])
-	}
-	if got[0] != "User Context" {
-		t.Errorf("the context row grew a wording name: %q", got[0])
+	if got := a.prepEditNames(); got[0] != "User Context" {
+		t.Errorf("the context row grew a name: %q", got[0])
 	}
 }
 

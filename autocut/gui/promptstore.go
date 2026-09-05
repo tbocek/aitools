@@ -1,10 +1,10 @@
 package main
 
 // Where an edited prompt is kept: ~/.config/autocut/prompts/, one text file
-// per wording, beside the settings that are also this machine's (settings.go).
+// per job, beside the settings that are also this machine's (settings.go).
 //
-//	prompts/cut/Highlights.txt
-//	prompts/narrate/General.txt
+//	prompts/cut.txt
+//	prompts/narrate.txt
 //
 // It used to be the project file, one prompt per key inside project.json, and
 // that was wrong about what a prompt is. A prompt is not a fact about this
@@ -14,11 +14,9 @@ package main
 // paragraph you had tuned over four videos was in a file you had stopped
 // opening.
 //
-// One file per wording rather than one blob, because a prompt is prose: it is
-// read in a diff, greped for a phrase, and occasionally fixed in an editor
-// while the app is closed. None of that survives being a JSON string with \n
-// in it. The picked wording is not here -- it is one short name per job and it
-// lives in llm.conf with the other short answers (rememberedBody).
+// A file rather than a blob, because a prompt is prose: it is read in a diff,
+// greped for a phrase, and occasionally fixed in an editor while the app is
+// closed. None of that survives being a JSON string with \n in it.
 //
 // Only what differs is written. The built-ins are in the binary, so an
 // untouched job has no file at all, which is what makes Reset a delete and
@@ -29,8 +27,6 @@ import (
 	"path/filepath"
 	"strings"
 )
-
-const promptExt = ".txt"
 
 // promptsDir is the folder, or "" when there is nowhere to put it. Same answer
 // as configDir, and for the same reason: nowhere to write is not an error, it
@@ -43,97 +39,85 @@ func promptsDir() string {
 	return filepath.Join(d, "prompts")
 }
 
-// promptFileName is a wording's name as a file name. A name is whatever was
-// typed into "Name this wording", and one of the shipped ones -- "Rating /
-// tier list" -- already holds the one character a file name cannot: a slash
-// would be read as a folder, and a name of ".." as a folder that is not even
-// under ours.
+const promptExt = ".txt"
+
+// promptPath is where a job's wording is kept, or "" when there is nowhere to
+// put it. One file per job: prompts/cut.txt.
 //
-// The mapping is therefore lossy on purpose, and promptStyleName is what
-// undoes it: a file is matched back against the built-ins by the name it
-// WOULD have, so "Rating - tier list.txt" is read as the shipped wording it
-// belongs to rather than as a fourth style with a nearly identical name.
-// Two invented names that flatten to the same file would share it; they would
-// also be two names nobody could tell apart in the dropdown.
-func promptFileName(name string) string {
-	f := strings.TrimSpace(strings.Map(func(r rune) rune {
-		if r == '/' || r == '\\' || r == 0 {
-			return '-'
-		}
-		return r
-	}, name))
-	if f == "" || f == "." || f == ".." {
-		return "" // nothing writable: the caller skips it
+// It was a folder per job with a file per WORDING in it -- prompts/cut/
+// Highlights.txt -- back when a Style dropdown turned every prompt at once.
+// The styles are gone (prompts.go), so the name in the path had nothing left
+// to vary, and a folder holding one file called General.txt is a folder
+// holding one file.
+func promptPath(key string) string {
+	d := promptsDir()
+	if d == "" || key == "" {
+		return ""
 	}
-	return f
+	return filepath.Join(d, key+promptExt)
 }
 
-// promptStyleName is the name a file holds a wording for: the built-in it
-// matches, or the file's own name for a wording this machine invented.
-func promptStyleName(key, file string) string {
-	d := promptDefFor(key)
-	for _, s := range d.builtins() {
-		if promptFileName(s.Name) == file {
-			return s.Name
-		}
-	}
-	return d.styleAlias(file)
-}
+// oldPromptNames are the file names the folder-per-job era wrote a job's
+// DEFAULT wording under. Anything else in that folder was a wording for a
+// style, and the styles no longer exist -- the file is left where it is, and
+// what is worth keeping out of it goes in the box or the user context by hand.
+var oldPromptNames = []string{"General" + promptExt, "Default" + promptExt}
 
-// loadGlobalPrompts is the startup read: every wording on disk, plus which one
-// each job is set to. Called once, before the first project is opened, so that
-// what the boxes show is this machine's answer rather than the last project's.
+// loadGlobalPrompts is the startup read: whatever this machine has of its own
+// for each job. Called once, before the first project is opened, so that what
+// the boxes show is this machine's answer rather than the last project's.
 func (a *App) loadGlobalPrompts() {
-	sty, disk := map[string][]promptStyle{}, map[string]string{}
+	txt, disk := map[string]string{}, map[string]string{}
 	for _, d := range promptDefs {
-		ents, err := os.ReadDir(filepath.Join(promptsDir(), d.key))
-		if err != nil {
-			continue // no folder for this job: it uses what the binary ships
+		text, from := a.readPrompt(d.key)
+		if text == "" {
+			continue
 		}
-		for _, e := range ents {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), promptExt) {
-				continue
-			}
-			b, err := os.ReadFile(filepath.Join(promptsDir(), d.key, e.Name()))
-			if err != nil {
-				a.logf("!!! could not read the %s prompt %s: %v", d.key, e.Name(), err)
-				continue
-			}
-			// an empty file is a wording that says nothing, which would send
-			// the model no system prompt at all -- treat it as absent
-			text := strings.TrimSpace(string(b))
-			if text == "" {
-				continue
-			}
-			file := strings.TrimSuffix(e.Name(), promptExt)
-			name := promptStyleName(d.key, file)
-			sty[d.key] = append(sty[d.key], promptStyle{Name: name, Text: text})
-			// promptDisk is what is believed to be on disk, so it is keyed by
-			// the wording -- except for one still under the old name for the
-			// default (legacyDefStyle), which is keyed by that instead. The
-			// next flush then finds the new name missing and the old one gone
-			// from memory, which writes the wording out as defStyle and drops
-			// the stale file: the rename, done once, on the launch that reads
-			// it. Any other file the two names agree.
-			if file == legacyDefStyle && name != file {
-				disk[d.key+"\x00"+file] = text
-				continue
-			}
-			disk[d.key+"\x00"+name] = text
+		txt[d.key] = text
+		if from == promptPath(d.key) {
+			// adopted from the old folder instead: leaving promptDisk empty
+			// for it is what makes the next flush write it where it belongs
+			disk[d.key] = text
 		}
 	}
-	pick := a.readGlobal().PromptPick
 	a.promptMu.Lock()
-	a.promptSty = sty
-	a.promptPick = map[string]string{}
-	for k, n := range pick {
-		a.promptPick[k] = n
-	}
+	a.promptTxt = txt
 	a.promptMu.Unlock()
 	a.promptDisk = disk
 	for _, d := range promptDefs {
-		a.showPromptStyle(d.key, a.promptPickName(d.key))
+		a.showPrompt(d.key)
 	}
+}
+
+// readPrompt is one job's stored wording and the file it came from: its own
+// file, or -- for a machine that last ran a build with styles -- the default
+// wording out of the old folder.
+//
+// An empty file is a wording that says nothing, which would send the model no
+// system prompt at all: treated as absent, here as before.
+func (a *App) readPrompt(key string) (text, from string) {
+	try := []string{promptPath(key)}
+	if d := promptsDir(); d != "" {
+		for _, n := range oldPromptNames {
+			try = append(try, filepath.Join(d, key, n))
+		}
+	}
+	for _, p := range try {
+		if p == "" {
+			continue
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				a.logf("!!! could not read the %s prompt: %v", key, err)
+			}
+			continue
+		}
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s, p
+		}
+	}
+	return "", ""
 }
 
 // flushPrompts writes what changed since the last flush. Called from the same
@@ -144,91 +128,43 @@ func (a *App) loadGlobalPrompts() {
 // promptDisk is what is believed to be on disk, so a session that edits
 // nothing writes nothing. A write that fails is logged and then treated as
 // done: retrying it every two seconds would put the same line in the log for
-// the rest of the evening, and the next edit to that wording tries again
-// anyway, which is the moment a retry is worth something.
+// the rest of the evening, and the next edit tries again anyway, which is the
+// moment a retry is worth something.
+//
+// A job back on its shipped wording has its file REMOVED, not written empty:
+// that is what Reset is, and leaving the file would put the edit back on the
+// next launch.
 //
 // GUI thread only, like flushProject -- promptDisk has no lock and needs none.
 func (a *App) flushPrompts() {
-	dir := promptsDir()
-	if dir == "" {
+	if promptsDir() == "" {
 		return
 	}
 	cur := map[string]string{}
-	a.promptMu.Lock()
-	for k, list := range a.promptSty {
-		for _, s := range list {
-			if promptFileName(s.Name) != "" {
-				cur[k+"\x00"+s.Name] = s.Text
-			}
+	for _, d := range promptDefs {
+		if a.promptOwned(d.key) {
+			cur[d.key] = a.prompt(d.key)
 		}
 	}
-	a.promptMu.Unlock()
-
-	for id, text := range cur {
-		if a.promptDisk[id] == text {
+	for key, text := range cur {
+		if a.promptDisk[key] == text {
 			continue
 		}
-		key, name, _ := strings.Cut(id, "\x00")
-		p := filepath.Join(dir, key)
-		if err := os.MkdirAll(p, 0o700); err != nil {
+		if err := os.MkdirAll(promptsDir(), 0o700); err != nil {
 			a.logf("!!! could not keep the %s prompt: %v", key, err)
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(p, promptFileName(name)+promptExt),
-			[]byte(text+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(promptPath(key), []byte(text+"\n"), 0o600); err != nil {
 			a.logf("!!! could not keep the %s prompt: %v", key, err)
 		}
 	}
-	// gone from memory means gone from disk: that is what Reset is, and
-	// leaving the file would put the wording back on the next launch
-	for id := range a.promptDisk {
-		if _, ok := cur[id]; ok {
+	for key := range a.promptDisk {
+		if _, ok := cur[key]; ok {
 			continue
 		}
-		key, name, _ := strings.Cut(id, "\x00")
-		if err := os.Remove(filepath.Join(dir, key, promptFileName(name)+promptExt)); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(promptPath(key)); err != nil && !os.IsNotExist(err) {
 			a.logf("!!! could not drop the %s prompt: %v", key, err)
 		}
 	}
 	a.promptDisk = cur
-}
-
-// promptStored is whether this machine has anything of its own for a job: a
-// wording it edited or invented, or a shipped wording other than the default
-// picked. It is the question applyPromptStyles asks before letting a project's
-// wording in, and it is deliberately wider than promptOwned's: an edited
-// "Highlights" counts even while "General" is the one picked, because it is
-// still work somebody did here.
-func (a *App) promptStored(key string) bool {
-	if a.promptPickName(key) != promptDefFor(key).styleName() {
-		return true
-	}
-	a.promptMu.Lock()
-	defer a.promptMu.Unlock()
-	return len(a.promptSty[key]) > 0
-}
-
-// rememberPromptPick records which wording a job is set to. Only when it is
-// not the shipped default: a machine that never touched the dropdown says
-// nothing about it, and follows whatever a later build ships as the default.
-func (a *App) rememberPromptPick(key, name string) {
-	g := a.readGlobal()
-	_, had := g.PromptPick[key]
-	switch {
-	case name == promptDefFor(key).styleName():
-		if !had {
-			return
-		}
-		delete(g.PromptPick, key)
-	case g.PromptPick[key] == name:
-		return
-	default:
-		if g.PromptPick == nil {
-			g.PromptPick = map[string]string{}
-		}
-		g.PromptPick[key] = name
-	}
-	if err := a.writeGlobal(g); err != nil {
-		a.logf("settings: %v", err)
-	}
 }

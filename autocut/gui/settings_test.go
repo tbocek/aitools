@@ -194,11 +194,11 @@ func ownConfig(t *testing.T) {
 	}
 }
 
-// One file now holds two kinds of answer: the endpoints, which the settings
-// dialog writes, and what was remembered without anyone being asked -- the open
-// project, the picked wordings. They are written by different code on different
-// occasions, so the dialog has to read before it writes: saving an ffmpeg path
-// must not be how you lose the project the next launch would have opened.
+// One file holds two kinds of answer: the endpoints, which the settings dialog
+// writes, and what was remembered without anyone being asked -- which project
+// was open. They are written by different code on different occasions, so the
+// dialog has to read before it writes: saving an ffmpeg path must not be how
+// you lose the project the next launch would have opened.
 func TestSavingTheSettingsKeepsWhatWasRemembered(t *testing.T) {
 	ownConfig(t)
 	root := t.TempDir()
@@ -208,7 +208,6 @@ func TestSavingTheSettingsKeepsWhatWasRemembered(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.rememberProject(named)
-	a.rememberPromptPick("cut", "Highlights")
 
 	if err := a.writeConf(appConf{Server: "https://x"}); err != nil {
 		t.Fatal(err)
@@ -217,9 +216,6 @@ func TestSavingTheSettingsKeepsWhatWasRemembered(t *testing.T) {
 	b := &App{root: root}
 	if got := b.lastProject(); got != named {
 		t.Errorf("saving the settings left the last project as %q, want %q", got, named)
-	}
-	if got := b.readGlobal().PromptPick["cut"]; got != "Highlights" {
-		t.Errorf("saving the settings left the cut wording as %q, want Highlights", got)
 	}
 	if got := b.readConf().Server; got != "https://x" {
 		t.Errorf("the endpoint that was saved reads back as %q", got)

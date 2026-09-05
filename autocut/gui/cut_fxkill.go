@@ -23,7 +23,7 @@ import (
 )
 
 // fxKillCentre is where effect i's ✕ sits -- timeline x, area y -- and
-// whether it has one at all. The width floor is the scene's (segKillMin), for
+// whether it has one at all. The width floor is the scene's (killMin), for
 // the scene's reason: below it the band's middle is inside the target, and a
 // press meant to slide the effect would remove it.
 func (ed *cutEditor) fxKillCentre(i int) (float64, float64, bool) {
@@ -31,11 +31,11 @@ func (ed *cutEditor) fxKillCentre(i int) (float64, float64, bool) {
 		return 0, 0, false
 	}
 	x0, x1 := ed.fxSpanPx(ed.fx[i])
-	if x1-x0 < segKillMin {
+	if x1-x0 < killMin {
 		return 0, 0, false
 	}
 	rows, _ := fxRows(ed.fx)
-	return x1 - segKillIn, ed.fxLaneTop() + (float64(rows[i])+0.5)*fxLaneH, true
+	return x1 - killIn, ed.fxLaneTop() + (float64(rows[i])+0.5)*fxLaneH, true
 }
 
 // fxKillAt is the effect whose ✕ is under a press at timeline-x px and

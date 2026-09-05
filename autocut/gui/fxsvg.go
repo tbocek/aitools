@@ -234,10 +234,10 @@ func (a *App) svgClicked() {
 // screen, and the two fades. The same dialog as a title's, one row apart --
 // the words are a file instead.
 func (a *App) askSvgParams(f cutFx, isNew bool, ok func(cutFx)) {
-	verb := "Save"
-	if isNew {
-		verb = "Place"
-	}
+	// the form applies as it is typed, and the first answer it gives places
+	// the drawing or opens the undo step (fxWin, fxLiveOk)
+	ok = a.fxLiveOk(ok)
+	live := &fxLive{}
 	if f.Dur <= 0 {
 		f.Dur = 3
 	}
@@ -252,21 +252,22 @@ func (a *App) askSvgParams(f cutFx, isNew bool, ok func(cutFx)) {
 			f.Src = path
 			name.SetText(svgBase(path))
 			name.SetTooltipText(path)
+			live.touch() // the file is an answer like any other
 		})
 	})
 	fRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	fRow.Append(name)
 	fRow.Append(pick)
-	dRow, d := fxNumRow("Length seconds",
+	dRow, d := fxNumRow("Length (s)",
 		"how long the drawing stays up altogether, fades included — the same "+
-			"seconds its bar covers on the lane", f.Dur)
-	iRow, i := fxNumRow("Fade in seconds",
-		"how long it takes to appear: 0 cuts it straight on", f.Trans)
-	oRow, o := fxNumRow("Fade out seconds",
-		"how long it takes to go again: 0 cuts it straight off", f.Tout)
-	eRow, ec := fxEaseRow(f)
-	a.fxWin(fmt.Sprintf("SVG at %s", mmss(f.T)), verb,
-		[]gtk.Widgetter{fRow, fxGrid([]fxField{dRow}, []fxField{iRow, oRow, eRow})}, func() {
+			"seconds its bar covers on the lane", f.Dur, live)
+	iRow, i := fxNumRow("Fade in (s)",
+		"how long it takes to appear: 0 cuts it straight on", f.Trans, live)
+	oRow, o := fxNumRow("Fade out (s)",
+		"how long it takes to go again: 0 cuts it straight off", f.Tout, live)
+	eRow, ec := fxEaseRow(f, live)
+	a.fxWin(fmt.Sprintf("SVG at %s", mmss(f.T)), isNew, live,
+		[]gtk.Widgetter{fRow, fxLine(dRow), fxLine(iRow, oRow, eRow)}, func() {
 			f.Dur = math.Max(0.3, fxNumOf(d, f.Dur))
 			f.Trans = fxNumOf(i, f.Trans)
 			f.Tout = fxNumOf(o, f.Tout)

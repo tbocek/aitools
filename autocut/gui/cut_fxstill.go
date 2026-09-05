@@ -41,14 +41,27 @@ func freezeNow(fx []cutFx, t float64) *cutFx {
 	return nil
 }
 
-// freezeHush is whether the preview's sound is owed silence at session time t:
-// a stop is standing there and it asked for its seconds to be taken out. The
-// render does this with a volume filter over the same window (stillMute), and
-// the preview does it by muting the session the way a card does -- so what you
-// hear scrubbing through the stop is what the finished video has.
-func freezeHush(fx []cutFx, t float64) bool {
-	f := freezeNow(fx, t)
-	return f != nil && f.Mute
+// fxHush is whether the preview's sound is owed silence at session time t: a
+// speed effect covering it whose sound is Silent (cut_fxsound.go). It used to
+// be a stop's question alone -- the tick under the stop dialog was the only
+// way to ask for silence -- and it is every rate's now, so this asks about
+// every rate.
+//
+// What the preview cannot follow is the other pair of answers: a sound left on
+// its own clock is a second read of the same recording at an offset, which the
+// player has one pipeline for and it is glued to the picture. Those stretches
+// preview at the picture's speed and render as they are asked to; the lane
+// draws the difference (drawSndTail).
+func fxHush(fx []cutFx, t float64) bool {
+	for _, f := range fx {
+		if f.Kind != "speed" || f.sound() != sndMute || f.Dur <= 0 {
+			continue
+		}
+		if t >= f.T && t < f.T+f.Dur {
+			return true
+		}
+	}
+	return false
 }
 
 // fxStill is one stop effect's frame, rendered once and kept while the

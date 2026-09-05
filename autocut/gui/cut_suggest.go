@@ -69,15 +69,6 @@ func (a *App) suggestClicked() {
 	} else {
 		a.logf(">>> suggest: the user context names no length — aiming at %s", mmss(target))
 	}
-	// the Shorts style has a length of its own. Picking the wording already
-	// set the box (styleTarget), but the box stays editable, so the same
-	// judgement -- a target outside the format is the box left over from other
-	// work, not a wish -- is made again at the moment it counts.
-	shorts := a.promptPickName("cut") == shortsStyleName
-	shortsClamped := false
-	if shorts {
-		target, shortsClamped = shortsTargetFix(target)
-	}
 	// how long the session runs, which is the denominator the choosing half of
 	// the bar counts against (see suggestCut)
 	span := 0.0
@@ -94,10 +85,6 @@ func (a *App) suggestClicked() {
 	a.logExp.SetExpanded(true)
 	a.saveProjectNow() // the run is a moment worth a file
 	a.logf(">>> suggest: target %.0f s — three calls: the cut, its captions, its effects", target)
-	if shortsClamped {
-		a.logf(">>> target %s s is not a Short (20-30 s) — aiming at %.0f s instead",
-			mmss(target), shortsLen)
-	}
 	// Both calls are streamed, so the bar has real news to report -- but not
 	// yet: the model thinks for minutes before it writes the first segment, and
 	// there is nothing to measure in that. So it pulses until the first finished
@@ -293,19 +280,25 @@ const maxSpeedRate = 4.0
 
 // suggestWindow is how far a suggestion's total may drift from the target
 // before it is rejected. The
-// wide band exists because a highlight cut is a wish, not a contract:
-// minutes-long cuts land where the material lets them. A Short is the
-// opposite -- 20 to 30 seconds is a promise to the viewer -- so its ceiling
-// is a fifth over instead of half over: a 25-second target must not ship as a
-// 37-second "Short", and being told so is what makes the next attempt trim
-// inside its beats (the budget in shortsSystem) rather than keep the length.
+// wide band exists because a long cut is a wish, not a contract: minutes-long
+// cuts land where the material lets them. A short one is the opposite -- "30
+// seconds" is a promise to whoever was told it -- so under a minute the
+// ceiling is a fifth over instead of half over: a 25-second target must not
+// ship as a 37-second clip, and being told so is what makes the next attempt
+// trim inside its beats rather than keep the length.
 // The floor stays shared: too little footage is the same failure everywhere.
 func (a *App) suggestWindow(target float64) (lo, hi float64) {
-	if a.promptPickName("cut") == shortsStyleName {
+	if target <= shortTarget {
 		return target * 0.6, target * 1.2
 	}
 	return target * 0.6, target * 1.5
 }
+
+// shortTarget is where a target stops being a wish and becomes a format. Under
+// a minute is a Short, a teaser, a clip for a post: a length somebody promised
+// somewhere, and 45 seconds of "30 second" video is a different thing from
+// what was asked for. Minutes-long cuts land where the material lets them.
+const shortTarget = 60.0
 
 // sugFx is one effect as a cut style's reply spells it: a kind, the stretch of
 // session seconds it covers, and the one number that kind needs. Every style
@@ -814,7 +807,7 @@ func (a *App) captionCut(segs []cutSeg, rows []tsvRow) []cutFx {
 		lo, hi := b*captionBatch, min(len(segs), (b+1)*captionBatch)
 		batch := segs[lo:hi]
 		a.prog(trackSTT, 0.7+0.2*float64(b)/float64(batches), "captions, clips %d–%d of %d", lo+1, hi, len(segs))
-		brief := clipBriefsWith(batch, rows, narr, func(i int, s cutSeg) string {
+		brief := clipBriefsWith(batch, rows, nil, narr, func(i int, s cutSeg) string {
 			return fmt.Sprintf("CLIP %d: %.0f s long", lo+i+1, s.E-s.S)
 		})
 		user := a.ctxBlockFor("captions") + "THE CLIPS, AND WHAT WAS SAID OVER EACH:\n" + brief
@@ -902,7 +895,7 @@ func (a *App) decorateCut(segs []cutSeg, rows []tsvRow) []cutFx {
 	if err := a.checkpoint(); err != nil {
 		return nil
 	}
-	brief := clipBriefsWith(segs, rows, a.narratorMic(), func(i int, s cutSeg) string {
+	brief := clipBriefsWith(segs, rows, nil, a.narratorMic(), func(i int, s cutSeg) string {
 		return fmt.Sprintf("CLIP %d: %.0f s long", i+1, s.E-s.S)
 	})
 	user := a.ctxBlockFor("effects") + "THE CLIPS, AND WHAT WAS SAID AND SHOWN OVER EACH:\n" + brief

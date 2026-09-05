@@ -85,37 +85,14 @@ type Project struct {
 	// file: it is left exactly as it was, so an older build opening it finds
 	// its wordings where it left them.
 	//
-	// Prompts is the oldest of the three, from before a job could have more
-	// than one wording: one string per job and no name for it. It belongs to
-	// whichever style was the default at the time, which is the default now.
-	Prompts      map[string]string        `json:"prompts,omitempty"`
-	PromptStyles map[string][]promptStyle `json:"prompt_styles,omitempty"`
-	PromptPick   map[string]string        `json:"prompt_pick,omitempty"`
-
-	// Which kind of video this session is: the name the Style dropdown on
-	// Prepare is on -- General, Showcase, Rating / tier list, YouTube Shorts,
-	// or a wording saved here under a name of its own. Written every save,
-	// read every load, and applied last so it wins (applyStyle).
-	//
-	// It is in the PROJECT and not beside the prompts, which are the machine's
-	// (promptstore.go), because the two are different questions. How you like
-	// to be cut for is the same in January's raid as in March's; whether THIS
-	// session is a showcase of towers or a highlight reel is a fact about this
-	// session, like its notes and its target length. Kept per machine it was
-	// the last project's answer: a showcase opened after a highlight reel was
-	// cut as a highlight reel, and the dropdown said so, and the only way to
-	// notice was to read it.
-	//
-	// One string rather than the pick per job, because that is what the
-	// dropdown is: it lists the cut's wordings and applyStyle turns every
-	// other job to the one of that name, or to its default. Storing the six
-	// answers would be storing the same fact six times and inviting them to
-	// disagree.
-	//
-	// Absent in a project written before this, and then nothing is applied and
-	// the machine's own last pick stands -- which is what such a project got
-	// anyway, so opening one changes nothing about it.
-	Style string `json:"style,omitempty"`
+	// Prompts is the only one still read: one string per job and no name for
+	// it, which is exactly the shape the prompts have again. The keys of the
+	// several-wordings-per-job era -- a Style
+	// dropdown on Prepare that turned every prompt at once -- and they are
+	// gone from the app, so they are gone from here: what kind of video a
+	// session is belongs in its context, with the rest of its facts, and a
+	// project written back then keeps those keys until it is saved again.
+	Prompts map[string]string `json:"prompts,omitempty"`
 
 	Produce *prodSettings `json:"produce,omitempty"`
 	// the thumbnail and the upload text. Absent until the thumbnail half of
@@ -259,11 +236,10 @@ func (a *App) currentProject() Project {
 		FrameScale: scaleName,
 		Language:   a.projectLanguage(),
 		// the cut's wording IS the style: the dropdown lists that job's
-		// wordings and every other job follows it (applyStyle). Written even
+		// wordings and every other job followed it. Written even
 		// when it is the shipped default, so that "this project is General"
 		// and "this project predates the field" stay different answers -- the
 		// first has to be able to switch a machine back off Showcase.
-		Style:       a.promptPickName("cut"),
 		VidDir:      a.relToRoot(a.vidDir),
 		AudDir:      a.relToRoot(a.audDir),
 		Context:     a.sessionCtx(),
@@ -435,9 +411,11 @@ func (a *App) saveProjectNow() {
 	}
 }
 
-// migrateFolders moves a project's data out of the numbered folders it was
-// written into before the folders were named for their steps -- step1/ to
-// step6/ -- into inputs/, understand/, cut/, narrate/, produce/ and publish/.
+// migrateFolders moves a project's data into the folders this build writes,
+// through the two renames there have been: out of the numbered step1/..step6/
+// into folders named for their steps, and then Prepare's three -- inputs/ and
+// understand/{describe,transcript} -- under prepare/, where the step that
+// writes them is one folder like every other step.
 // Once, on the open that finds them: a folder already under its new name is
 // left alone, so a project opened by a newer build and then by this one
 // cannot have its work moved over itself. Logged, because a rename of
@@ -460,6 +438,34 @@ func (a *App) migrateFolders() {
 		}
 		a.logf(">>> moved %s/ to %s/ -- the folders are named for their steps now", m[0], m[1])
 	}
+	// ...and the three folders the FIRST step fills into one folder of its
+	// own. inputs/ sat beside understand/, and understand/ held the other
+	// two, so one step was two places on disk -- and its page carried three
+	// output buttons where every other step has one.
+	for _, m := range [][2]string{
+		{"inputs", filepath.Join("prepare", "inputs")},
+		{filepath.Join("understand", "describe"), filepath.Join("prepare", "describe")},
+		{filepath.Join("understand", "transcript"), filepath.Join("prepare", "transcript")},
+	} {
+		from, to := filepath.Join(a.outDir, m[0]), filepath.Join(a.outDir, m[1])
+		if !exists(from) || exists(to) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			a.logf("!!! could not make %s/: %v -- %s/ is still where it was", filepath.Dir(m[1]), err, m[0])
+			continue
+		}
+		if err := os.Rename(from, to); err != nil {
+			a.logf("!!! could not move %s/ to %s/: %v -- the files are still under the old name", m[0], m[1], err)
+			continue
+		}
+		a.logf(">>> moved %s/ to %s/ -- Prepare's work is under its own name now", m[0], m[1])
+	}
+	// what is left of understand/ once its two are out: nothing, and an empty
+	// folder beside the named ones is a step somebody will go looking for.
+	// Remove, not RemoveAll -- anything still in there is not ours to throw
+	// away, and the call simply fails.
+	os.Remove(filepath.Join(a.outDir, "understand"))
 }
 
 // saveProjectTo is the explicit save behind the button: it names the file the
@@ -601,13 +607,7 @@ func (a *App) applyProject(p Project) {
 		a.setFrameScale(p.FrameScale)
 	}
 	a.applyLanguage(p.Language)
-	a.applyPromptStyles(p.PromptStyles, p.PromptPick, p.Prompts)
-	// ...and the style last, so the project's own answer wins over whatever
-	// this machine was left on. A project written before the field says
-	// nothing and keeps the machine's, which is what it had before.
-	if p.Style != "" {
-		a.applyStyle(p.Style)
-	}
+	a.adoptProjectPrompts(p.Prompts)
 	a.applySessionCtx(p.Context)
 	a.applyNarrOff(p.NoNarration)
 	a.migrateHints(p)

@@ -60,15 +60,16 @@ func (r prepRow) title() string {
 // were free to change at runtime.
 func prepRows() []prepRow {
 	return []prepRow{
-		{"User Context", "", "Who is in this session, what they were doing, how names are " +
-			"spelled, what to make sure ends up in the video.\n\nSent with every request " +
-			"this project makes: the frame describer, the transcript fixer, the cut and " +
-			"its audit, the narration and the upload text. Left empty, nothing is sent."},
+		{"User Context", "", "What kind of video this is, who is in it, what they were " +
+			"doing, how names are spelled, how long it should run, what has to end up " +
+			"in it.\n\nSent with every request this project makes — the frame " +
+			"describer, the transcript fixer, the cut and its three passes, the " +
+			"narration, the upload text — and it outranks the prompts below, which are " +
+			"written to be true of any session. Left empty, nothing is sent."},
 		{"System context", "system", "The formats every job works to: the three kinds " +
 			"of line, which clock a request stamps them on, and that the answer is read " +
 			"by a machine.\n\nSent in front of every prompt below, so a fact about this " +
-			"tool is written once instead of in each of them. It has no wordings: the " +
-			"formats are the same whichever style the video is cut in."},
+			"tool is written once instead of in each of them."},
 		{"Describe", "describe", fmt.Sprintf(
 			"%d frames per request, plus the last %d descriptions and up to %d spoken "+
 				"lines either side as context. No frame is ever sent twice: those "+
@@ -77,9 +78,9 @@ func prepRows() []prepRow {
 		{"Transcript", "fix", fmt.Sprintf(
 			"The fixer: %d transcript lines per request, each block given what every "+
 				"other source showed or said at the same moment.", fixBlock)},
-		{"Cut", "cut", "The rules ▶ Suggest works to, plus what this session was and " +
-			"what matters in it. Its wordings are the styles: the Style dropdown under " +
-			"the sources picks between them, for every prompt at once."},
+		{"Cut", "cut", "How ▶ Suggest chooses the moments: read what the session is, " +
+			"place what the context names, fill the rest, shape the whole. It assumes " +
+			"nothing about the kind of video — that is what the context above is for."},
 		{"Captions", "captions", "The second pass, clip by clip: what was said over each " +
 			"kept clip, on screen as text effects. Cleaned as a subtitler would; the " +
 			"user context says fewer, or none."},
@@ -88,19 +89,21 @@ func prepRows() []prepRow {
 			"on it runs at 1."},
 		{"Effects", "effects", "The last pass, over the kept clips: the zooms, stops and " +
 			"volume that make a moment land. Speed and captions are the passes before."},
-		{"Narration", "narrate", "The rules the narration is written to, plus what this " +
-			"session was and what matters in it."},
+		{"Narration", "narrate", "The craft the narration is written to: what a line is " +
+			"about, how it is placed, how a pause is made. Who the voice IS comes from " +
+			"the context above."},
 		{"Upload text", "youtube", "Gets the cut and the narration — no images — and " +
 			"answers with the YouTube title, the thumbnail instruction and the description."},
 	}
 }
 
-// prepEditNames is the menu's rows, each prompt named with the wording the
-// Style turned it to -- "Cut (Highlights)" -- because the choice is made once,
-// beside Language, and this menu is where its reach over every job has to be
-// readable. The ✎ still marks a wording this machine reworded (promptOwned).
-// The context wears neither: it is this session's own text, with no wording to
-// name and nothing built-in to differ from.
+// prepEditNames is the menu's rows. A row wore the wording the Style had
+// turned it to -- "Cut (Highlights)" -- and there are no wordings to name any
+// more: one prompt per job, and what kind of video this is goes in the
+// context. The ✎ stays: it marks a prompt this machine has reworded
+// (promptOwned), which is the one thing about a row worth saying when the row
+// is not open. The context wears neither -- it is this session's own text,
+// with nothing built-in to differ from.
 func (a *App) prepEditNames() []string {
 	rows := prepRows()
 	out := make([]string, len(rows))
@@ -108,9 +111,6 @@ func (a *App) prepEditNames() []string {
 		out[i] = r.menu
 		if r.key == "" {
 			continue
-		}
-		if !promptDefFor(r.key).solo {
-			out[i] += " (" + a.promptPickName(r.key) + ")"
 		}
 		if a.promptOwned(r.key) {
 			out[i] += " ✎"
@@ -123,8 +123,7 @@ func (a *App) prepEditNames() []string {
 // heading the menu for what the box shows plus the controls that belong to a
 // prompt -- save this as a new wording, put the built-in back. Which wording
 // the box shows is not chosen here: the Style dropdown on the bottom row sets
-// it for every job at once (applyStyle), and the menu's row names say what it
-// chose.
+// it: there is one wording per job, and the box is it.
 //
 // There is nothing to save before switching away: every keystroke writes
 // through, to the context cache or through setPrompt to the picked wording. And
@@ -180,17 +179,11 @@ func (a *App) prepEditor() gtk.Widgetter {
 		prompt := r.key != ""
 		mark.SetVisible(prompt)
 		drop.SetVisible(prompt)
-		// ＋ saves what is in the box as a NEW wording, which only means
-		// something for a job that HAS wordings. The system context is one
-		// text under every style, so a second one of it would be a name
-		// nothing ever picks -- Reset stays, because putting the built-in back
-		// is exactly as useful here as anywhere else.
-		add.SetVisible(prompt && !promptDefFor(r.key).solo)
 	}
 
 	tv.Buffer().ConnectChanged(func() {
 		if quiet || a.promptQuiet {
-			return // show below, or showPromptStyle, is filling the box
+			return // show below, or showPrompt, is filling the box
 		}
 		b := tv.Buffer()
 		s := b.Text(b.StartIter(), b.EndIter(), false)
@@ -239,62 +232,26 @@ func (a *App) prepEditor() gtk.Widgetter {
 		quiet = false
 		// fills the box and the mark from the store -- which is why switching
 		// away and back is lossless however much was typed in between
-		a.showPromptStyle(r.key, a.promptPickName(r.key))
+		a.showPrompt(r.key)
 	}
 
-	add.ConnectClicked(func() {
-		r := rows[cur]
-		if r.key == "" {
-			return
-		}
-		a.askName("Name this wording", "Kept on this machine, and what "+r.menu+
-			" sends from now on. The Style dropdown finds wordings by name: for the "+
-			"cut a new name is a new style, and for any other job a style's name is "+
-			"what that style sends here.",
-			func(name string) {
-				b := tv.Buffer()
-				a.savePromptStyle(r.key, name, b.Text(b.StartIter(), b.EndIter(), false))
-				a.showPromptStyle(r.key, name)
-				if r.key == "cut" {
-					// a new cut wording is a new style, and saving one is
-					// picking it -- the rest of the prompts have to turn with
-					// it, exactly as the dropdown would have turned them
-					a.applyStyle(name)
-				}
-			})
-	})
+	// Reset puts the built-in back, which is also what throws this machine's
+	// copy away: there is one wording per job now, so an edit is the only
+	// thing Reset could mean. The ＋ beside it was "Name this wording" -- a new
+	// wording for the job, and for the cut a new style -- and there are no
+	// styles to name any more (prompts.go).
 	drop.ConnectClicked(func() {
-		r := rows[cur]
-		if r.key == "" {
-			return
+		if r := rows[cur]; r.key != "" {
+			a.resetPrompt(r.key)
 		}
-		name := a.promptPickName(r.key)
-		if a.shippedPromptStyle(r.key, name) {
-			a.dropPromptStyle(r.key, name) // revert: the shipped wording is still called this
-			a.showPromptStyle(r.key, name)
-			return
-		}
-		a.confirm("Remove the “"+name+"” wording?",
-			"It is in your settings folder and nowhere else, so this is the only copy. "+
-				"The box goes back to “"+promptDefFor(r.key).styleName()+"”.",
-			"Remove", func() {
-				a.dropPromptStyle(r.key, name)
-				a.showPromptStyle(r.key, promptDefFor(r.key).styleName())
-				if r.key == "cut" {
-					// the removed wording was a style; a project cannot stay
-					// on a style that no longer exists, so every prompt turns
-					// back to the default the box just went to
-					a.applyStyle(promptDefFor(r.key).styleName())
-				}
-			})
 	})
 
 	menu := gtk.NewStringList(nil)
 	pick := gtk.NewDropDown(menu, nil)
 	pick.SetTooltipText("What the box shows. The context is this session's facts, " +
 		"sent with every request; the rest are the prompts, in the order the " +
-		"pipeline sends them, each named with the wording the Style turned it " +
-		"to. ✎ marks a wording edited on this machine.")
+		"pipeline sends them, in the order the pipeline sends them. " +
+		"✎ marks one edited on this machine.")
 	pick.NotifyProperty("selected", func() {
 		if a.promptQuiet {
 			return // prepSync is redrawing the rows; the pick did not move
@@ -326,7 +283,6 @@ func (a *App) prepEditor() gtk.Widgetter {
 	head.Append(lbl)
 	head.Append(mark)
 	head.Append(pick)
-	head.Append(add)
 	head.Append(drop)
 	return a.editorBody(head, tv)
 }

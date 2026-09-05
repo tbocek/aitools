@@ -43,14 +43,30 @@ const (
 	segKillR   = 4.0  // the arms of the ✕, from its centre
 	segKillPad = 3.0  // the plate's edge, beyond the arms
 	segKillHit = 10.0 // and the target, which is bigger than either
-	segKillIn  = 11.0 // its centre, in from the edge it is drawn against
-	segKillTop = 11.0 // and down from the top of the picture band
-	// under this a thing has no corner to spare. The number is not a taste:
-	// the target reaches segKillIn+segKillHit in from the edge, and anything
-	// narrower than twice that has its MIDDLE inside the ✕ -- so a click meant
-	// for the thing itself would remove the thing. Twice the reach, and a
-	// little over, so the half away from the badge is plain timeline.
-	segKillMin = 2*(segKillIn+segKillHit) + 6
+	segKillTop = 11.0 // its centre, down from the top of the picture band
+	// ...and in from the edge it is drawn against. ONE number, for every ✕ on
+	// the page: the bar's, an effect's, a cut lane's, an emptied row's.
+	//
+	// It is not a taste either. Every edge one of these sits against can be
+	// GRABBED -- a clip border, a bar's end, an effect's end -- and the grab
+	// reaches edgeGrab px either side of it. Set closer in than that, the
+	// badge's target overlaps the border's: the press asking for "a bit
+	// shorter" finds "gone", and the press asking for the badge's outer edge
+	// finds the handle. So the target begins exactly where the grab stops.
+	//
+	// The badges were set from two different numbers for a while -- 16 on the
+	// green bar, which had worked this out, and 11 everywhere else, which had
+	// not -- so an effect's ✕ swallowed the whole of its own right-hand grip,
+	// and the two marks sat at visibly different distances from their edges.
+	// The speaker badges already keep this rule (hearIn); this is the same
+	// sentence for the ✕.
+	killIn = edgeGrab + segKillHit
+	// under this a thing has no corner to spare: the target reaches
+	// killIn+segKillHit in from the edge, and anything narrower than twice
+	// that has its MIDDLE inside the ✕ -- so a click meant for the thing
+	// itself would remove the thing. Twice the reach, and a little over, so
+	// the half away from the badge is plain timeline.
+	killMin = 2*(killIn+segKillHit) + 6
 )
 
 // drawKillBadge paints one ✕ centred on cx,cy: a plate, then the arms.

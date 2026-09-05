@@ -261,7 +261,7 @@ func (ed *cutEditor) cardNow() (*cutSeg, float64) {
 func cardHush(s *cutSeg) bool { return s != nil && !s.keepsSoundUnder() }
 
 func (ed *cutEditor) cardSound(s *cutSeg, into float64) {
-	ed.player.SetMuted(cardHush(s) || freezeHush(ed.fx, ed.playhead))
+	ed.player.SetMuted(cardHush(s) || fxHush(ed.fx, ed.playhead))
 	want := ed.cardVoice(s)
 	if want == ed.cardSnd {
 		return

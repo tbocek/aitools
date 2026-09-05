@@ -31,8 +31,7 @@ const fxMarkW = 9.0
 // fill is doing under it.
 func markPlate(cr *cairo.Context, x, y float64, kind, s string) {
 	e := cr.TextExtents(s)
-	cr.SetSourceRGBA(0, 0, 0, 0.66)
-	cr.Rectangle(x-3, y-11, fxMarkW+4+e.Width+6, 14)
+	platePath(cr, x-3, y-11, fxMarkW+4+e.Width+6, plateH)
 	cr.Fill()
 	cr.SetSourceRGB(1, 1, 1)
 	drawMark(cr, kind, x, y-10)
@@ -138,8 +137,29 @@ func drawMark(cr *cairo.Context, kind string, x, y float64) {
 // say instead, a mark says.
 //
 // chars is the room the words have, in characters; only a title uses it.
+// sndSuffix is the tail on a speed's label: nothing at all for the answer
+// every cut used to give, and a word or two for the four that are worth
+// knowing about without opening the form.
+func sndSuffix(f cutFx) string {
+	switch f.sound() {
+	case sndPitch:
+		return " pitched"
+	case sndFx:
+		return " · sound 1×"
+	case sndScene:
+		return " · sound 1× to the scene's end"
+	case sndMute:
+		return " silent"
+	}
+	return ""
+}
+
 func laneLabel(f cutFx, chars int) (mark, label string) {
 	switch f.Kind {
+	case "label":
+		// the name IS the effect: there is nothing else about it to say, and
+		// what it is called is what the hand is looking for on the lane
+		return "label", laneWords(f.Text, chars)
 	case "zoom":
 		if f.Stay {
 			return "stay", fmt.Sprintf("%.1fs", f.Dur)
@@ -147,12 +167,15 @@ func laneLabel(f cutFx, chars int) (mark, label string) {
 		return "zoom", fmt.Sprintf("%.1fs", f.Dur)
 	case "speed":
 		if f.frozenFx() {
-			if f.Mute {
+			if f.sound() == sndMute {
 				return "hush", fmt.Sprintf("%.1fs", f.Dur) // silent seconds
 			}
 			return "stop", fmt.Sprintf("%.1fs", f.Dur)
 		}
-		return "speed", "×" + fxNum(f.Rate)
+		// the rate, and what the sound does when that is not the plain answer:
+		// a ×4 whose sound is silent or off on its own clock is a different
+		// effect to hear, and the bar is where that is read (cut_fxsound.go)
+		return "speed", "×" + fxNum(f.Rate) + sndSuffix(f)
 	case "text":
 		return "text", laneWords(f.Text, chars)
 	case "svg":

@@ -79,6 +79,8 @@ One session -- pictures and microphones, all on one clock -- written as stamped 
   [12:07] SPEAKER_01: something said out loud, which the video plays
   [12:11] NARRATOR: something said on a microphone the video does not play, so only a job that uses it is heard
 
+A clip's block may also carry MARKED: the editor's own name for a moment in it -- not something said and not something the picture showed, but what they call it.
+
 THE CLOCKS
 Every line is stamped, and the request says which clock. Answer on the same one.
 

@@ -75,7 +75,7 @@ func TestACardOverTheFootageSilencesTheFootageInNarrateToo(t *testing.T) {
 	if !strings.Contains(body, "cardHush(overInsert(") {
 		t.Error("syncFxSound never asks whether a card has taken these seconds' sound")
 	}
-	if !strings.Contains(body, "freezeHush(") {
+	if !strings.Contains(body, "fxHush(") {
 		t.Error("syncFxSound stopped honouring a stop's silence")
 	}
 }

@@ -374,7 +374,7 @@ func TestTheInsertPreviewIsWired(t *testing.T) {
 			"ed.showInsert()",
 			// whatever is on the picture decides what comes out of the speakers
 			"s, into := ed.cardNow()\n\ted.cardSound(s, into)",
-			"ed.player.SetMuted(cardHush(s) || freezeHush(ed.fx, ed.playhead))",
+			"ed.player.SetMuted(cardHush(s) || fxHush(ed.fx, ed.playhead))",
 		},
 	} {
 		b, err := os.ReadFile(file)

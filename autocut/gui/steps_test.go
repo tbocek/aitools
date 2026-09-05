@@ -253,8 +253,10 @@ func TestThePagesAreNamedForWhatTheyDoAndTheFoldersForWhatTheyWere(t *testing.T)
 	// the folders, named for their steps, each reached through its one helper
 	src := readSrc(t, "main.go")
 	for _, want := range []string{
-		`func (a *App) inputsDir() string     { return filepath.Join(a.outDir, "inputs") }`,
-		`func (a *App) understandDir() string { return filepath.Join(a.outDir, "understand") }`,
+		`func (a *App) prepareDir() string    { return filepath.Join(a.outDir, "prepare") }`,
+		`func (a *App) inputsDir() string     { return filepath.Join(a.prepareDir(), "inputs") }`,
+		`func (a *App) describeDir() string   { return filepath.Join(a.prepareDir(), "describe") }`,
+		`func (a *App) transcriptDir() string { return filepath.Join(a.prepareDir(), "transcript") }`,
 		`func (a *App) narrateDir() string    { return filepath.Join(a.outDir, "narrate") }`,
 		`func (a *App) produceDir() string    { return filepath.Join(a.outDir, "produce") }`,
 	} {
@@ -274,7 +276,7 @@ func TestThePagesAreNamedForWhatTheyDoAndTheFoldersForWhatTheyWere(t *testing.T)
 		if strings.HasSuffix(f, "_test.go") || f == "main.go" || f == "cut.go" || f == "publish.go" || f == "project.go" {
 			continue
 		}
-		for _, lit := range []string{`"inputs"`, `"understand"`, `"narrate"`, `"produce"`, `"publish"`} {
+		for _, lit := range []string{`"prepare"`, `"narrate"`, `"produce"`, `"publish"`} {
 			if strings.Contains(readSrc(t, f), "filepath.Join(a.outDir, "+lit) {
 				t.Errorf("%s joins a.outDir with %s itself instead of through the helper", f, lit)
 			}
@@ -299,7 +301,10 @@ func TestANumberedProjectIsMovedToTheNamedFolders(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.migrateFolders()
-	for _, c := range []struct{ dir, want string }{{"inputs", "step1"}, {"cut", "step3"}} {
+	for _, c := range []struct{ dir, want string }{
+		{filepath.Join("prepare", "inputs"), "step1"}, // ...and on into prepare/, in the same pass
+		{"cut", "step3"},
+	} {
 		b, err := os.ReadFile(filepath.Join(a.outDir, c.dir, "x"))
 		if err != nil || string(b) != c.want {
 			t.Errorf("%s/x = %q, %v -- want the file moved from %s/", c.dir, b, err, c.want)
@@ -317,7 +322,58 @@ func TestANumberedProjectIsMovedToTheNamedFolders(t *testing.T) {
 		t.Error("a folder that never existed under the old name was created")
 	}
 	a.migrateFolders() // a second open changes nothing
-	if b, _ := os.ReadFile(filepath.Join(a.outDir, "inputs", "x")); string(b) != "step1" {
+	if b, _ := os.ReadFile(filepath.Join(a.outDir, "prepare", "inputs", "x")); string(b) != "step1" {
 		t.Error("the second migration disturbed the first")
+	}
+}
+
+// The second rename there has been: Prepare's three folders under one name.
+//
+// inputs/ sat beside understand/, and understand/ held describe/ and
+// transcript/ -- one step in two places on disk, and three output buttons on
+// its page where every other step has one. They are prepare/'s three
+// subfolders now, moved on the open that finds them.
+func TestPreparesFoldersAreMovedUnderItsOwn(t *testing.T) {
+	a := &App{outDir: t.TempDir()}
+	for _, old := range []string{"inputs", filepath.Join("understand", "describe"),
+		filepath.Join("understand", "transcript")} {
+		if err := os.MkdirAll(filepath.Join(a.outDir, old), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(a.outDir, old, "x"), []byte(old), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.migrateFolders()
+
+	for _, c := range []struct{ dir, want string }{
+		{"inputs", "inputs"},
+		{"describe", filepath.Join("understand", "describe")},
+		{"transcript", filepath.Join("understand", "transcript")},
+	} {
+		b, err := os.ReadFile(filepath.Join(a.outDir, "prepare", c.dir, "x"))
+		if err != nil || string(b) != c.want {
+			t.Errorf("prepare/%s/x = %q, %v -- want the file moved from %s/", c.dir, b, err, c.want)
+		}
+	}
+	// the folder the two came out of goes with them: an empty understand/
+	// beside the named ones is a step somebody goes looking for
+	if _, err := os.Stat(filepath.Join(a.outDir, "understand")); !os.IsNotExist(err) {
+		t.Errorf("understand/ is still there: %v", err)
+	}
+	// and the paths the app uses are the ones it moved them to
+	if got := a.inputsDir(); got != filepath.Join(a.outDir, "prepare", "inputs") {
+		t.Errorf("inputsDir is %q", got)
+	}
+	// twice is once: a second open finds them already there and leaves them
+	a.migrateFolders()
+	if b, _ := os.ReadFile(filepath.Join(a.outDir, "prepare", "describe", "x")); string(b) == "" {
+		t.Error("the second open moved the folders again")
+	}
+	// ...and a project with nothing to move gets no folders it never had
+	fresh := &App{outDir: t.TempDir()}
+	fresh.migrateFolders()
+	if _, err := os.Stat(filepath.Join(fresh.outDir, "prepare")); !os.IsNotExist(err) {
+		t.Error("a project with no work in it was given a prepare/ folder to be empty in")
 	}
 }
