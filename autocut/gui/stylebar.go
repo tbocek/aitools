@@ -41,7 +41,7 @@ type styleDrop struct {
 // styleBar builds the surfaced dropdown: a dim label and the wordings the
 // registry offers for key, this machine's own included. A pick here is the
 // project's style -- every prompt's stored choice, the bench menu's labels
-// and the Shorts target correction (styleTarget) all follow.
+// all follow.
 func (a *App) styleBar(key, label, tip string) *gtk.Box {
 	d := styleDrop{names: gtk.NewStringList(nil), pick: nil}
 	d.pick = gtk.NewDropDown(d.names, nil)

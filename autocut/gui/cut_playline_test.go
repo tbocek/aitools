@@ -119,63 +119,43 @@ func TestThePlaybackTickRepaintsTheLineNotTheBands(t *testing.T) {
 	}
 }
 
-// ⏸ then ▶ carries on from where it stopped.
+// ▶ starts where the red line is, and nothing else gets a say.
 //
-// ▶ has starts that are not the line: with a clip edge held it plays from the
-// edge, with a clip held from the clip's own start -- both there so that
-// pressing play after a trim shows the trim rather than whatever second the
-// line was last left on. Resuming is not one of those. Pause halfway through
-// the clip you are working on, press ▶, and the old code read it as a fresh
-// start and took you back to the clip's first frame: the same seconds again,
-// every time, exactly where you had asked it to stop.
-func TestPauseThenPlayCarriesOnFromWhereItStopped(t *testing.T) {
-	ed := newTestEd(t)
-	ed.playhead = 42
-
-	if ed.resumingHere() {
-		t.Error("a page that has never played reads as resuming")
-	}
-	ed.markPause()
-	if !ed.resumingHere() {
-		t.Error("the line has not moved since the pause and it does not read as resuming")
-	}
-	// a hand on the line -- a click on a track, a frame step with nothing held
-	// -- is the hand choosing a new place, and ▶ after that is a start
-	ed.playhead = 42.5
-	if ed.resumingHere() {
-		t.Error("the line moved after the pause and ▶ still reads as a resume")
-	}
-	// ...and back on the paused second it resumes again: the test is where the
-	// line IS, not what has happened to it
-	ed.playhead = 42
-	if !ed.resumingHere() {
-		t.Error("the line is back where the pause left it and ▶ does not resume")
-	}
-	// ⏹ is not ⏸: it hands the transport back, and there is no position left
-	// to carry on from
-	ed.stop()
-	if ed.resumingHere() {
-		t.Error("⏹ left a resume point behind")
-	}
-
-	// the wiring: the resume is decided before the press is spent, it is one
-	// case of the same switch the held-edge and held-clip starts are in --
-	// ahead of both, or the hold would win the press it is meant to lose --
-	// and ⏸ is what writes the point
-	src := readSrc(t, "cut.go")
-	for _, want := range []string{
-		"resume := ed.resumingHere()",
-		"ed.markPause() // this press is the ⏸",
-		"case resume:",
+// It used to have starts of its own, all of them one idea: whatever is in hand
+// is what you want to watch. A held clip edge played from the edge, a held
+// clip from the clip's own start, and ⏸ then ▶ had to be told apart from both
+// -- a remembered second, and a test that the line had not moved since -- to
+// carry on where it stopped rather than jump.
+//
+// Clicking the green is how a scene is taken in hand, which is the commonest
+// press on this page, so the exception fired on nearly every ▶: back to the
+// scene's first frame, the seconds you had just watched again. ▶✂ beside it
+// refused the same holds on the grounds that holding a clip is how you edit
+// it, not how you choose where the video starts. That is the rule now, and it
+// is one rule for both buttons.
+func TestPlayStartsWhereTheLineIs(t *testing.T) {
+	body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) toggle\(\) \{`)
+	for _, gone := range []string{
+		"case ed.edgeOn:", // ...played from the held edge
+		"case s != nil:",  // ...and from the held clip's start
+		"ed.setPlayhead(", // neither, nor anything else: ▶ does not move the line
+		"resumingHere",    // so there is nothing for a resume to be an exception to
 	} {
-		if !strings.Contains(src, want) {
-			t.Errorf("cut.go no longer contains %q", want)
+		if strings.Contains(body, gone) {
+			t.Errorf("▶ chooses where to start again: toggle still has %q", gone)
 		}
 	}
-	i := strings.Index(src, "case resume:")
-	for _, later := range []string{"case ed.edgeOn:", "case s != nil:"} {
-		if j := strings.Index(src, later); j < 0 || j < i {
-			t.Errorf("%q is asked before the resume, so a held thing wins a press that meant carry on", later)
+	// and the machinery that told a resume from a start is gone with it,
+	// rather than left standing as a state nothing reads
+	src := readSrc(t, "cut.go")
+	for _, gone := range []string{"resumeOn", "resumeT", "markPause"} {
+		if strings.Contains(src, gone) {
+			t.Errorf("the cut page still carries %q, which nothing can act on now", gone)
 		}
+	}
+	// the one move that is left is not a hold: under ✂ Cut only a line in a
+	// dropped stretch is a line where the finished video has nothing
+	if !strings.Contains(body, "if !ed.playing() && ed.cutOnly {\n\t\ted.cutOnlySnap()\n\t}") {
+		t.Errorf("▶✂ no longer moves a line standing in a gap:\n%s", body)
 	}
 }

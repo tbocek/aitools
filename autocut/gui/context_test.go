@@ -125,7 +125,6 @@ func TestEveryLLMStepSendsTheContext(t *testing.T) {
 		{"describe.go", `text := a.ctxBlockFor("describe")`},   // the frame describer
 		{"transcript.go", `user := a.ctxBlockFor("fix")`},      // the transcript fixer
 		{"cut_suggest.go", `user := a.ctxBlockFor("cut")`},     // suggest...
-		{"cut_suggest.go", `user := a.ctxBlockFor("audit")`},   // ...and its audit
 		{"narrate.go", `user := a.ctxBlockFor("narrate")`},     // the narration
 		{"publish.go", `msg("user", a.ctxBlockFor("youtube")`}, // the upload text
 	}
@@ -207,7 +206,7 @@ func TestTheUserContextOutranksEveryWordingButTheMechanics(t *testing.T) {
 	if strings.Contains(promptDefFor("system").def, "within a tenth") {
 		t.Error("the system context still promises a tenth of the target, which is tighter than the gate")
 	}
-	if !strings.Contains(promptDefFor("system").def, "inside the accepted range the request states") {
-		t.Error("the system context does not point at the request's accepted range")
+	if strings.Contains(promptDefFor("system").def, "target length within a tenth") {
+		t.Error("the system context promises a tolerance of its own again; the range is the request's")
 	}
 }

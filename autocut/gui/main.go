@@ -524,10 +524,21 @@ type App struct {
 	linkPaths     map[string]string // what a tagged path displays -> where it really is
 	llmMu         sync.Mutex        // guards llmSeq; describe calls from worker goroutines
 	llmSeq        int               // per-run counter naming the llm/ exchange files
-	status        *gtk.Label
-	running       bool
-	audioNoted    string // the audio.cpp server already reported in the log
-	ttsModel      string // the model id that server serves, asked for once
+	// whether this video has a narration at all. The Narrate page's own
+	// checkbox writes it, the run refuses when it is set, and Produce hides
+	// what only a narration needs (narrate.go, produce.go).
+	narrOff bool
+	// the run's own page: its file name, the finished calls' HTML in order, and
+	// how many there have been. One page per run rather than one per call --
+	// what happened is a thread through several calls, and a directory listing
+	// is not a thread (llmlog.go).
+	runName    string
+	runSecs    []string
+	runN       int
+	status     *gtk.Label
+	running    bool
+	audioNoted string // the audio.cpp server already reported in the log
+	ttsModel   string // the model id that server serves, asked for once
 
 	// The Prepare page's own controls -- the settings a run reads off it,
 	// which is everything on that page a runner needs and nothing it draws.

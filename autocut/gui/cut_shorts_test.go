@@ -42,35 +42,33 @@ func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
 			t.Errorf("the Shorts prompt does not say %q", want)
 		}
 	}
-	// EVERY style asks for fx, in the same reply as the segments: an effect is
-	// part of the same judgement as the cut it decorates, and a cut proposed
-	// with nothing on it is a cut nobody finished. Shorts words it for a phone
-	// and the other three share fxRules, but the reply shape is one shape --
-	// suggestParse reads it without knowing which wording asked.
+	// No style asks for effects in the cut's reply any more: the cut is the
+	// segments and their speeds, and the captions and decorations are asked
+	// for afterwards, clip by clip (captionCut, decorateCut). The one reply
+	// that did all three is what kept failing. Shorts keeps its own effects
+	// paragraph -- a 25-second clip is one clip -- and the parser tolerates
+	// effects in any cut reply; the shape the wordings are sent no longer
+	// names them.
 	for _, s := range a.promptStyleList("cut") {
 		sent := strings.TrimSpace(sysSystem) + "\n\n" + s.Text
-		if !strings.Contains(sent, `"fx":[`) {
-			t.Errorf("cut style %q no longer asks for effects in its reply", s.Name)
-			continue
+		if !strings.Contains(sent, `{"segments":[{"start":0,"end":28}`) {
+			t.Errorf("cut style %q is not sent the cut's reply shape", s.Name)
 		}
-		for _, want := range []string{
-			`"kind":"zoom"`, `"kind":"speed"`, `"kind":"text"`,
-			"inside one of your segments",
-		} {
-			if !strings.Contains(sent, want) {
-				t.Errorf("the %q prompt does not say %q", s.Name, want)
-			}
+		if strings.Contains(sent, `"fx":[{"kind":"zoom"`) {
+			t.Errorf("cut style %q is sent the effects in the cut's reply shape again", s.Name)
 		}
 	}
-	// ...and the three that are not Shorts take the same wording from one
-	// place, so a rule added to effects cannot reach two cuts out of three
+	// ...and none of them talks about speed at all: how fast a clip plays is
+	// its own pass now, after the captions, because a caption over a stretch
+	// at 4 is gone before it is read (speedSystem)
 	for _, s := range a.promptStyleList("cut") {
 		if s.Name == shortsStyleName {
 			continue
 		}
-		if !strings.Contains(s.Text, strings.TrimSpace(fxRules)) {
-			t.Errorf("cut style %q spells its own effects rules out instead of sharing fxRules", s.Name)
+		if strings.Contains(s.Text, strings.TrimSpace(cutReply)) {
+			continue
 		}
+		t.Errorf("cut style %q does not end in the shared reply rules", s.Name)
 	}
 	// what the user wrote about the session directs the effects too, not just
 	// the choosing: "speed the boring parts up and show them" is an
@@ -86,14 +84,6 @@ func TestTheShortsStyleIsOnTheMenu(t *testing.T) {
 		if !strings.Contains(withNotes.ctxBlock(), want) {
 			t.Errorf("the notes block does not say %q, so the session notes "+
 				"cannot ask for a dull stretch to be kept at speed", want)
-		}
-	}
-	// ...and the audit is told to read them back: one fxcheck per effect,
-	// held inside the segments as corrected
-	audP := a.sysPrompt("audit")
-	for _, want := range []string{`"fxchecks":[`, "inside one of the segments"} {
-		if !strings.Contains(audP, want) {
-			t.Errorf("the audit prompt does not say %q", want)
 		}
 	}
 }
@@ -215,11 +205,9 @@ func TestTheShortsWiringIsInPlace(t *testing.T) {
 			`shorts := a.promptPickName("cut") == shortsStyleName`,
 			"target, shortsClamped = shortsTargetFix(target)",
 			// both acceptance gates ask the style-aware window, not a shared 1.5x
-			"if len(merged) < minSuggestSegs(target) || total < lo || total > hi {",
-			"if lo, hi := a.suggestWindow(target); total < lo || total > hi {",
+			"if lo, hi := a.footageWindow(target); raw < lo || raw > hi {",
 			"return segs, fx, nil",
 			// the audit gets the effects with the segments and hands both back
-			"segs, fx = a.auditCut(session, target, span, segs, fx)",
 			// the clamp runs against the segments as applied, snapEdge and
 			// coalesce included, which is the guarantee the prompts cannot give
 			"kept := clampFxToSegs(fx, a.ed.segs)",
@@ -227,12 +215,11 @@ func TestTheShortsWiringIsInPlace(t *testing.T) {
 		},
 		"cut.go": {
 			// the pick corrects the box itself, through the shared judgement
-			"if fixed, changed := shortsTargetFix(cur); changed {",
 			// the prompt makes the model budget: divide the target across the
 			// notes' parts, then trade seconds -- a directed plan, not a vibe
 			"Divide the target length by the number of beats",
 			"trade seconds between beats, keeping the same total",
-			"add up how long your segments RUN",
+			"lands in the range you were given",
 			// generic over the notes: the beat count is whatever the editor
 			// wrote -- one part or five -- and the segment count follows the
 			// beats rather than a fixed 1-to-3
@@ -241,7 +228,6 @@ func TestTheShortsWiringIsInPlace(t *testing.T) {
 		},
 		"prompts.go": {
 			// ...and picking a wording is what asks for that correction
-			"a.styleTarget(key, name)",
 		},
 	} {
 		src := readSrc(t, file)
@@ -258,7 +244,11 @@ func TestTheShortsWiringIsInPlace(t *testing.T) {
 	if !strings.Contains(string(p), "{shortsStyleName, strings.TrimSpace(shortsSystem)}") {
 		t.Error("prompts.go does not offer the Shorts style under the cut key")
 	}
-	if strings.Contains(string(p), `{key: "effects"`) {
-		t.Error("prompts.go still registers the effects prompt — the third call is gone, its key goes the way of \"thumbnail\"")
+	// the effects prompt is back on the bench, as the third pass: the cut,
+	// then the captions clip by clip, then the decorations (cut_suggest.go)
+	for _, key := range []string{`{key: "captions"`, `{key: "effects"`} {
+		if !strings.Contains(string(p), key) {
+			t.Errorf("prompts.go does not register %s, so that pass has no wording to edit", key)
+		}
 	}
 }

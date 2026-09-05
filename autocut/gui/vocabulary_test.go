@@ -100,7 +100,6 @@ func TestEveryPromptDescribesTheSameThreeLabels(t *testing.T) {
 		{"cut (rating)", ratingSystem},
 		{"cut (showcase)", showcaseSystem},
 		{"cut (shorts)", shortsSystem},
-		{"audit", auditSystem},
 		{"narrate", narrSystem},
 	} {
 		sent := strings.TrimSpace(sysSystem) + "\n\n" + p.text

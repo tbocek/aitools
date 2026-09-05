@@ -6,7 +6,7 @@ package main
 // dragging an edge, dropping a card, muting a lane. This is the one path where
 // the timeline arrives from outside: the session transcript goes out to a
 // model, two prompts run over it in turn -- the cut, which chooses segments
-// and (for the Shorts style) the effects that decorate them, then an audit
+// and (for the Shorts style) the effects that decorate them, then two passes
 // that reads both back -- and what comes back is a set of segments and a set
 // of effects the page then has to be talked into believing.
 //
@@ -57,8 +57,18 @@ func (a *App) suggestClicked() {
 		return
 	}
 	session := sessionText(rows, a.narratorMic())
-	target := 300.0
-	fmt.Sscanf(a.ed.target.Text(), "%f", &target)
+	// how long the finished video should be, as the user context names it:
+	// "about 12 min", "a 90 s teaser". It was a box on the Cut page's toolbar,
+	// which is a second place to say a thing the context already says -- and
+	// the two disagreed for a week of runs, the box quietly winning while the
+	// sentence beside it read 12 minutes. One place, and it is the one the
+	// person writes in. Nothing named, and the default stands.
+	target := defTargetSecs
+	if want, ok := ctxLength(a.sessionCtx()); ok {
+		target = want
+	} else {
+		a.logf(">>> suggest: the user context names no length — aiming at %s", mmss(target))
+	}
 	// the Shorts style has a length of its own. Picking the wording already
 	// set the box (styleTarget), but the box stays editable, so the same
 	// judgement -- a target outside the format is the box left over from other
@@ -82,21 +92,11 @@ func (a *App) suggestClicked() {
 	a.qReset()
 	a.updateRunControls()
 	a.logExp.SetExpanded(true)
-	a.logf(">>> suggest: target %.0f s — two LLM calls (choose, then audit), a few minutes", target)
-	// two places can name the length -- the target box and the user context --
-	// and only the box is what the reply is judged by. A context that says
-	// "about 12 min" over a box that says 5:00 sends the model after a length
-	// the gate then refuses, three times over; said here, once, before the
-	// first call, it is a thing the person can fix rather than a run that fails
-	if want, ok := ctxLength(a.sessionCtx()); ok {
-		if lo, hi := a.suggestWindow(target); want < lo || want > hi {
-			a.logf(">>> suggest: the user context says ~%s but the target box says %s — the box is what the reply is judged by",
-				mmss(want), mmss(target))
-		}
-	}
+	a.saveProjectNow() // the run is a moment worth a file
+	a.logf(">>> suggest: target %.0f s — three calls: the cut, its captions, its effects", target)
 	if shortsClamped {
 		a.logf(">>> target %s s is not a Short (20-30 s) — aiming at %.0f s instead",
-			strings.TrimSpace(a.ed.target.Text()), shortsLen)
+			mmss(target), shortsLen)
 	}
 	// Both calls are streamed, so the bar has real news to report -- but not
 	// yet: the model thinks for minutes before it writes the first segment, and
@@ -107,7 +107,7 @@ func (a *App) suggestClicked() {
 	// news. (Same shape as publish; see there.)
 	// the queue's first word, not the bar's: anything the queue says later
 	// would otherwise land after this and wipe it (showProg runs on an idle)
-	a.qJob(trackSTT, "suggest", 1, 2)
+	a.qJob(trackSTT, "suggest", 1, 4)
 	a.prog(trackSTT, 0, "thinking over the whole session")
 	glib.TimeoutAdd(150, func() bool {
 		if !a.running {
@@ -126,10 +126,22 @@ func (a *App) suggestClicked() {
 		a.logCtx("suggest")
 		segs, fx, err := a.suggestCut(session, target, span)
 		if err == nil {
-			a.qJob(trackSTT, "suggest", 2, 2)
-			a.prog(trackSTT, suggestChooseShare, "reading the cut back")
-			a.logfIdle(">>> audit: %d segments and %d effect(s) read back against the brief", len(segs), len(fx))
-			segs, fx = a.auditCut(session, target, span, segs, fx)
+			// the cut stands. Now what goes ON it, clip by clip: the captions,
+			// then the decorations. Each pass sees the kept clips and nothing
+			// else, answers in the clip's own seconds, and can fail on its own
+			// without taking the cut with it.
+			a.qJob(trackSTT, "suggest", 2, 4)
+			caps := a.captionCut(segs, rows)
+			// the speeds come after the captions and know about them: a
+			// caption over a stretch at 4 is gone before it is read, and
+			// which lines are captioned is the pass above's decision
+			a.qJob(trackSTT, "suggest", 3, 4)
+			a.prog(trackSTT, 0.85, "how fast each clip plays")
+			fx = append(fx, caps...)
+			fx = append(fx, a.speedCut(segs, caps, target)...)
+			a.qJob(trackSTT, "suggest", 4, 4)
+			a.prog(trackSTT, 0.93, "the zooms and stops")
+			fx = append(fx, a.decorateCut(segs, rows)...)
 		}
 		glib.IdleAdd(func() {
 			a.running = false
@@ -153,11 +165,10 @@ func (a *App) suggestClicked() {
 					S: a.ed.snapEdge(s.S, true), E: a.ed.snapEdge(s.E, false)})
 			}
 			a.ed.coalesce()
-			// The audit checks the effects against the segments, but it is
-			// a model being asked; snapEdge and coalesce also just moved the
-			// boundaries again. The clamp is the guarantee -- whoever
-			// proposed an effect, it lands inside the cut as applied, or
-			// not at all.
+			// snapEdge and coalesce just moved the boundaries the effects
+			// were placed against. The clamp is the guarantee -- whichever
+			// pass proposed an effect, it lands inside the cut as applied,
+			// or not at all.
 			if len(fx) > 0 {
 				kept := clampFxToSegs(fx, a.ed.segs)
 				if n := len(fx) - len(kept); n > 0 {
@@ -186,275 +197,14 @@ func (a *App) suggestClicked() {
 			a.logf(">>> suggested %d segments, %d:%02d total",
 				len(segs), int(total)/60, int(total)%60)
 			if len(fx) > 0 {
-				a.logf(">>> ...and %d effect(s) from the style", len(fx))
+				a.logf(">>> ...and %d effect(s): the speeds, the captions and the decorations", len(fx))
 			}
 		})
 	}()
 }
 
-// One paragraph or bullet per line, unwrapped: see describeSystem.
-//
-// The session belongs in the cut prompt, not here: this one is read the same
-// way for every project, and it is handed the cut prompt as the brief, so notes
-// about what mattered in a session reach the audit anyway. What is worth
-// editing here is how suspicious the audit is -- how readily it drops, how far
-// it will extend an end.
-const auditSystem = `You are checking a proposed cut against the brief it was made from, before anyone watches it. You did not choose these moments; your job is to find where they are wrong.
-
-Answer in the audit's shape. drop is for a stretch where nothing happens or that repeats another segment, and sparingly; add is where most of your value is. An effect follows the segment you moved it with, and goes with a segment you dropped.
-
-For each segment, ask in this order.
-
-1. Does it run to its payoff? Read the timeline past its end: if the thing it is about is still being argued, opened or decided, or gets its reaction after the end, extend past the last line that belongs to the moment. This is the commonest fault.
-2. Does it start early enough to make sense on its own? Move the start back to where the setup begins.
-3. Is either boundary in the middle of a sentence? Move it into the gap between two lines.
-4. Is the thing it is about on screen -- does an EVENT line inside it show it?
-
-Then for the whole cut.
-
-5. Every moment the USER CONTEXT names must be in the cut. Add it if missing; fix a segment that stops short of it.
-6. The first segment must establish what the session is.
-7. After your corrections the segments must still be in order and must not overlap. If extending one runs into the next, extend it and drop the next, saying so.
-8. Keep the total inside the accepted range you were given: pay for additions by dropping the weakest segments. Inside it, leave the total alone -- a cut that is already accepted does not need trimming towards the middle of the range.
-
-When a segment is right, say ok. A change for its own sake is worse than no check at all.`
-
-// auditCut is the second read of a suggestion, against the brief that produced
-// it. The first call chooses moments from thousands of timeline lines at once;
-// this one has far less to do -- it has the moments in front of it and only has
-// to ask whether each one is right -- and that is what makes it worth a second
-// long call. It is also the only check with any judgement in it: everything the
-// code validates is arithmetic (does the JSON parse, is there footage, does the
-// total land near the target), and none of that can see a segment that ends
-// forty seconds before the chest is opened.
-//
-// It never fails the run. Anything wrong with the audit -- a refusal, bad JSON,
-// a corrected cut that no longer passes the arithmetic -- leaves the original
-// suggestion standing and says so in the log. A second opinion that can lose
-// you the first one is not worth having.
-func (a *App) auditCut(session string, target, span float64, segs []cutSeg, fx []cutFx) ([]cutSeg, []cutFx) {
-	var props strings.Builder
-	for i, s := range segs {
-		fmt.Fprintf(&props, "#%d  [%s] to [%s]  (%.0f s)\n", i+1, mmss(s.S), mmss(s.E), s.E-s.S)
-	}
-	// the effects under their own numbers, when there are any: the audit is
-	// asked about them by number exactly as it is asked about the segments
-	fxBlock := ""
-	if len(fx) > 0 {
-		var b strings.Builder
-		for i, f := range fx {
-			t0, t1 := f.fxSpan()
-			extra := ""
-			kind := f.Kind
-			switch {
-			case f.frozenFx():
-				kind = "stop" // "speed rate 0" is the storage, not the effect
-			case f.Kind == "speed":
-				extra = fmt.Sprintf("  rate %g", f.Rate)
-			case f.Kind == "volume":
-				extra = fmt.Sprintf("  gain %g", f.Gain)
-			case f.Kind == "text":
-				extra = fmt.Sprintf("  %q", f.Text)
-			}
-			fmt.Fprintf(&b, "#%d  %s  [%s] to [%s]%s\n", i+1, kind, mmss(t0), mmss(t1), extra)
-		}
-		fxBlock = "PROPOSED EFFECTS:\n" + b.String() + "\n"
-	}
-	alo, ahi := a.suggestWindow(target)
-	user := a.ctxBlockFor("audit") + fmt.Sprintf("THE BRIEF THE CUT WAS MADE FROM:\n%s\n\n"+
-		"SESSION LENGTH: %.0f seconds (%s). Every second you name is inside it.\n\n"+
-		"TARGET LENGTH: %.0f seconds of finished video. ACCEPTED: %.0f to %.0f seconds.\n\n"+
-		"PROPOSED SEGMENTS:\n%s\n%sSESSION TIMELINE:\n%s",
-		a.prompt("cut"), span, mmss(span), target, alo, ahi, props.String(), fxBlock, session)
-	msgs := []map[string]any{msg("system", a.sysPrompt("audit")), msg("user", user)}
-
-	if err := a.checkpoint(); err != nil {
-		return segs, fx
-	}
-	// the rest of the bar, and this half has a denominator: one check per
-	// proposed segment is what the audit was asked for
-	best := 0
-	onText := func(s string) {
-		n, _ := jsonItemsDone(s, "checks")
-		if len(segs) == 0 || n <= best {
-			return
-		}
-		best = n
-		a.prog(trackSTT, suggestChooseShare+(1-suggestChooseShare)*
-			math.Min(1, float64(best)/float64(len(segs))),
-			"checked %d/%d", best, len(segs))
-	}
-	reply, err := a.llmChatRetryOn("audit", msgs, true, onText)
-	if err != nil {
-		a.logfIdle(">>> audit skipped (%v) — the suggestion stands", err)
-		return segs, fx
-	}
-	clean := strings.TrimSpace(reply)
-	if i := strings.Index(clean, "{"); i >= 0 {
-		clean = clean[i:]
-	}
-	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
-	var out struct {
-		Checks []struct {
-			I          int
-			Verdict    string
-			Start, End float64
-			Why        string
-		} `json:"checks"`
-		Add []struct {
-			Start, End float64
-			Why        string
-		} `json:"add"`
-		FxChecks []fxCheck `json:"fxchecks"`
-	}
-	if err := json.Unmarshal([]byte(clean), &out); err != nil {
-		a.logfIdle(">>> audit did not answer in JSON — the suggestion stands")
-		return segs, fx
-	}
-
-	keep := make([]cutSeg, len(segs))
-	copy(keep, segs)
-	drop := make([]bool, len(segs))
-	fixed, dropped := 0, 0
-	for _, c := range out.Checks {
-		i := c.I - 1
-		if i < 0 || i >= len(segs) {
-			continue // a number for a segment that was never proposed
-		}
-		switch strings.ToLower(strings.TrimSpace(c.Verdict)) {
-		case "drop":
-			drop[i] = true
-			dropped++
-			a.logfIdle("    audit − #%d [%s]–[%s]: %s", c.I, mmss(segs[i].S), mmss(segs[i].E), c.Why)
-		case "fix":
-			if c.End <= c.Start {
-				continue
-			}
-			if c.Start == segs[i].S && c.End == segs[i].E {
-				continue // "fix" with nothing changed is an ok
-			}
-			a.logfIdle("    audit ~ #%d [%s]–[%s] → [%s]–[%s] (%+.0f s): %s", c.I,
-				mmss(segs[i].S), mmss(segs[i].E), mmss(c.Start), mmss(c.End),
-				(c.End-c.Start)-(segs[i].E-segs[i].S), c.Why)
-			keep[i] = cutSeg{S: c.Start, E: c.End}
-			fixed++
-		}
-	}
-	var res []cutSeg
-	for i, s := range keep {
-		if !drop[i] {
-			res = append(res, s)
-		}
-	}
-	for _, ad := range out.Add {
-		if ad.End <= ad.Start {
-			continue
-		}
-		a.logfIdle("    audit + [%s]–[%s] (%.0f s): %s", mmss(ad.Start), mmss(ad.End), ad.End-ad.Start, ad.Why)
-		res = append(res, cutSeg{S: ad.Start, E: ad.End})
-	}
-	fxOut, fxChanged := a.applyFxChecks(fx, out.FxChecks)
-	if fixed+dropped+len(out.Add)+fxChanged == 0 {
-		a.logfIdle(">>> audit: all %d segments pass, nothing changed", len(segs))
-		return segs, fx
-	}
-
-	res = a.keepFilmed(res)
-	sort.Slice(res, func(i, j int) bool { return res[i].S < res[j].S })
-	// the audit is told not to overlap and mostly does not; where extending one
-	// segment reached into the next, one longer segment is what was meant
-	var merged []cutSeg
-	for _, s := range res {
-		if n := len(merged); n > 0 && s.S <= merged[n-1].E {
-			if s.E > merged[n-1].E {
-				merged[n-1].E = s.E
-			}
-			continue
-		}
-		merged = append(merged, s)
-	}
-	// with the effects the audit is returning laid over it: a check that adds
-	// a ×4 and then measures the cut without it is checking a video nobody
-	// will watch (applyFx, cut_speedmix.go)
-	total := cutLen(applyFx(merged, fxOut))
-	lo, hi := a.suggestWindow(target)
-	if len(merged) < minSuggestSegs(target) || total < lo || total > hi {
-		a.logfIdle(">>> audit rejected: %d segments, %.0f s against a %.0f s target — "+
-			"the suggestion stands", len(merged), total, target)
-		return segs, fx
-	}
-	a.logfIdle(">>> audit: %d fixed, %d dropped, %d added, %d effect(s) changed — %d segments, %d:%02d total",
-		fixed, dropped, len(out.Add), fxChanged, len(merged), int(total)/60, int(total)%60)
-	return merged, fxOut
-}
-
-// fxCheck is the audit's verdict on one proposed effect, by its number.
-type fxCheck struct {
-	I          int
-	Verdict    string
-	Start, End float64
-	Why        string
-}
-
-// applyFxChecks reads the audit's effect verdicts back onto the proposal,
-// with the segment checks' own discipline: a number never proposed is
-// ignored, a fix that changes nothing is an ok, and a fix has to leave a
-// playable band -- fades shrink with it (trimFades) and a speed keeps a rate
-// the render can build (clampSpeed), exactly as clampFxToSegs trims. The
-// count going back is how many verdicts changed something, which is what the
-// caller folds into "did the audit change anything at all".
-func (a *App) applyFxChecks(fx []cutFx, checks []fxCheck) ([]cutFx, int) {
-	keep := make([]cutFx, len(fx))
-	copy(keep, fx)
-	drop := make([]bool, len(fx))
-	changed := 0
-	for _, c := range checks {
-		i := c.I - 1
-		if i < 0 || i >= len(fx) {
-			continue
-		}
-		t0, t1 := fx[i].fxSpan()
-		switch strings.ToLower(strings.TrimSpace(c.Verdict)) {
-		case "drop":
-			drop[i] = true
-			changed++
-			a.logfIdle("    audit − fx #%d %s [%s]–[%s]: %s", c.I, fx[i].Kind, mmss(t0), mmss(t1), c.Why)
-		case "fix":
-			if c.End <= c.Start {
-				continue
-			}
-			if c.Start == t0 && c.End == t1 {
-				continue // "fix" with nothing changed is an ok
-			}
-			f := keep[i]
-			switch f.Kind {
-			case "zoom", "text", "svg", "speed", "volume":
-			default:
-				continue // a kind with no span to move
-			}
-			was := t1 - t0
-			f.T, f.Dur = c.Start, c.End-c.Start
-			if f.Kind == "speed" && !f.frozenFx() {
-				f.Rate, f.Dur = clampSpeed(f.Rate, f.Dur)
-			}
-			trimFades(&f, was)
-			keep[i] = f
-			changed++
-			a.logfIdle("    audit ~ fx #%d %s [%s]–[%s] → [%s]–[%s]: %s", c.I, fx[i].Kind,
-				mmss(t0), mmss(t1), mmss(c.Start), mmss(c.End), c.Why)
-		}
-	}
-	var out []cutFx
-	for i, f := range keep {
-		if !drop[i] {
-			out = append(out, f)
-		}
-	}
-	return out, changed
-}
-
 // keepFilmed drops what cannot be shown: a segment with no recording at either
-// end is time nobody has footage of. Both the suggestion and the audit go
+// end is time nobody has footage of. The suggestion goes
 // through it, so neither can put a hole in the video.
 func (a *App) keepFilmed(segs []cutSeg) []cutSeg {
 	var out []cutSeg
@@ -473,7 +223,7 @@ func (a *App) keepFilmed(segs []cutSeg) []cutSeg {
 // is arithmetic nonsense rather than a choice. Four made sense when every cut
 // was minutes long; a Short's count is however many beats its notes name, and
 // rejecting a two-segment answer to a 25 s target burns attempts on a rule
-// the target itself contradicts. The audit accepts by the same count.
+// the target itself contradicts.
 func minSuggestSegs(target float64) int {
 	if n := 1 + int(target/30); n < 4 {
 		return n
@@ -494,23 +244,6 @@ func minSuggestSegs(target float64) int {
 // and this is four times that with a floor, so a cut that really is made of
 // many short moments is not refused. What it catches is the runaway, which
 // misses by an order of magnitude and not by a few.
-// maxSuggestFx is the same guard for the effects, and it exists for the same
-// reason at the other end of the reply: a wording that says three or four per
-// five minutes, a user context that asks for the speech on screen, and a model
-// resolving the two by writing one text effect per spoken line. Hundreds of
-// them, each carrying a sentence, is the answer that runs into the token
-// ceiling and arrives truncated.
-//
-// Generous, because the user context is allowed to ask for many -- a caption
-// on each of twenty things in a showcase is a legitimate answer. What it
-// catches is the subtitle track, which misses by an order of magnitude.
-func maxSuggestFx(target float64) int {
-	if n := int(target / 10); n > 24 {
-		return n
-	}
-	return 24
-}
-
 func maxSuggestSegs(target float64) int {
 	if n := int(target / 5); n > 40 {
 		return n
@@ -541,8 +274,25 @@ func ctxLength(ctx string) (float64, bool) {
 
 var ctxLenRe = regexp.MustCompile(`(?i)~?\b(\d+(?:[.,]\d+)?)\s*(min(?:ute)?s?|m|s|sec(?:ond)?s?)\b`)
 
+// footageWindow is how much SESSION the cut may keep. The floor is the
+// finished video's own -- footage under it cannot fill the target at any rate
+// -- and the ceiling is what the speed pass could squeeze into the target at
+// the fastest rate it uses, so a cut inside it is one the arithmetic can still
+// land. Wide on purpose: which of those seconds are worth keeping is the cut's
+// judgement, and how many of them run fast is a later call's.
+func (a *App) footageWindow(target float64) (lo, hi float64) {
+	lo, hi = a.suggestWindow(target)
+	return lo, hi * maxSpeedRate
+}
+
+// maxSpeedRate is the fastest rate the speed pass is expected to use, and
+// therefore how much footage a target can swallow. 4 and not 8: eight is for a
+// minute of loading screen, not for a whole video, and a ceiling built on it
+// would accept cuts nothing could make watchable.
+const maxSpeedRate = 4.0
+
 // suggestWindow is how far a suggestion's total may drift from the target
-// before it is rejected -- by the suggest loop and by the audit alike. The
+// before it is rejected. The
 // wide band exists because a highlight cut is a wish, not a contract:
 // minutes-long cuts land where the material lets them. A Short is the
 // opposite -- 20 to 30 seconds is a promise to the viewer -- so its ceiling
@@ -573,6 +323,39 @@ type sugFx struct {
 	Text string
 }
 
+// speedGapMin is how close two speed stretches at the same rate may come
+// before they are one stretch. A cut once came back with two ×4 runs a second
+// apart -- a one-second island of normal speed between two fast ones, which
+// on screen is a hiccup and on the lane is two badges jammed together. Under
+// this many seconds of ordinary footage between them, the island goes too.
+const speedGapMin = 4.0
+
+// joinSpeeds folds speed effects at one rate that run into each other, or
+// nearly, into one. The rest of the list is untouched and the order is kept.
+func joinSpeeds(fx []cutFx) []cutFx {
+	var speeds, rest []cutFx
+	for _, f := range fx {
+		if f.Kind == "speed" && f.Rate > 0 {
+			speeds = append(speeds, f)
+		} else {
+			rest = append(rest, f)
+		}
+	}
+	sort.SliceStable(speeds, func(i, j int) bool { return speeds[i].T < speeds[j].T })
+	var out []cutFx
+	for _, f := range speeds {
+		if n := len(out); n > 0 && out[n-1].Rate == f.Rate &&
+			f.T-(out[n-1].T+out[n-1].Dur) < speedGapMin {
+			end := math.Max(out[n-1].T+out[n-1].Dur, f.T+f.Dur)
+			out[n-1].Dur = end - out[n-1].T
+			out[n-1].Tout = f.Tout // the fade out is the later stretch's
+			continue
+		}
+		out = append(out, f)
+	}
+	return append(out, rest...)
+}
+
 // fxFromReply turns proposed effects into the page's own cutFx. The model is
 // trusted with WHEN and WHICH KIND; everything about HOW -- where a zoom
 // centres, how a caption is boxed, how long a fade runs -- is this app's own
@@ -590,12 +373,18 @@ type sugFx struct {
 // finished video -- so the ceiling is what that rate reaches on a cut far
 // longer than anyone makes, and a reply past it is a model decorating instead
 // of editing.
-const fxMaxProposed = 24
+const fxMaxProposed = 1000 // effectively none: how many effects a cut carries is the prompt's call, not this file's
 
-func fxFromReply(in []sugFx) []cutFx {
+func fxFromReply(in []sugFx) []cutFx { return fxFrom(in, fxMaxProposed) }
+
+// fxFrom is fxFromReply with the cap as an argument: the reply's own effects
+// are decorations and are held to fxMaxProposed; the speeds a cut is built
+// from are not decorations and are held to nothing, or a cut of sixty
+// sped-up stretches has thirty-six of them quietly running at 1.
+func fxFrom(in []sugFx, cap int) []cutFx {
 	var out []cutFx
 	for _, f := range in {
-		if len(out) == fxMaxProposed {
+		if cap > 0 && len(out) == cap {
 			break
 		}
 		d := f.End - f.Start
@@ -682,7 +471,7 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 	// That is not a hypothetical: an 11-minute call once came back with 85 kB
 	// of arithmetic and no JSON at all. The two numbers come from the same
 	// function the validator uses, so the prompt and the gate cannot drift.
-	lo, hi := a.suggestWindow(target)
+	lo, hi := a.footageWindow(target)
 	// ...and how long the session it is choosing from actually runs. The
 	// timeline is written in mm:ss and the answer is in seconds, and nothing
 	// used to state where the session ENDS: three attempts in a row once came
@@ -692,10 +481,10 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 	// between them is where a run of plausible numbers turns into nonsense.
 	user := a.ctxBlockFor("cut") + fmt.Sprintf("SESSION LENGTH: %.0f seconds, which the timeline "+
 		"writes as %s. Every start and end you give is a number of SECONDS between 0 and "+
-		"%.0f.\n\nTARGET LENGTH: %.0f seconds of finished video -- the target box, which is "+
-		"what the reply is judged by; a length named in the user context does not change it. "+
-		"ACCEPTED: %.0f to %.0f seconds, and at most %d segments. Stop at the first set of "+
-		"moments that lands in that range.\n\nSESSION TIMELINE:\n%s",
+		"%.0f.\n\nTARGET LENGTH: %.0f seconds of finished video, which is the length named "+
+		"in the user context. The dull stretches are played fast afterwards, so KEEP "+
+		"between %.0f and %.0f seconds of footage, in at most %d segments. Stop at the "+
+		"first set of moments that lands in that range.\n\nSESSION TIMELINE:\n%s",
 		span, mmss(span), span, target, lo, hi, maxSuggestSegs(target), session)
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
 	// the web, for a caption that names a thing the timeline does not explain
@@ -729,7 +518,15 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 			a.prog(trackSTT, suggestChooseShare*f, "%d moments", n)
 		}
 	}
-	// thinking, until an attempt comes back with nothing: see thinkAgain
+	// Thinking first, and execute mode only after an attempt comes back with
+	// nothing (thinkAgain). This was briefly the other way round, on the
+	// evidence of six empty thinking attempts in a row -- all six under a
+	// user context that asked for a caption per line of speech, which is what
+	// the reasoning was spent on. Every run before that context, over three
+	// days, was a thinking call that answered in about ten minutes; the
+	// execute-mode attempts that replaced it answered in two and answered
+	// worse -- the whole session kept, malformed JSON, a search instead of an
+	// answer. The fallback stays; the default is what worked.
 	think := true
 	for try := 0; try < 3; try++ {
 		if err := a.checkpoint(); err != nil {
@@ -804,9 +601,16 @@ func (a *App) checkCutReply(reply string, target, span float64, attempt int) ([]
 		}
 		return nil, nil, problem
 	}
+	// a rate on a segment: 1 is the ordinary rate and says nothing, and any
+	// other is a speed effect over the whole segment. They are kept APART from
+	// the reply's own effects -- they are how the cut is built, not decoration
+	// on it, so they are neither counted against the effect ceiling nor cut
+	// off by fxMaxProposed, which once dropped every one of sixty and had the
+	// total counted at the footage's own length
+	var segSpeeds []sugFx
 	for _, s := range out.Segments {
-		if r := math.Max(s.Speed, s.Rate); r > 0 {
-			out.Fx = append(out.Fx, sugFx{Kind: "speed", Start: s.Start, End: s.End, Rate: r})
+		if r := math.Max(s.Speed, s.Rate); r > 0 && math.Abs(r-1) > 1e-9 {
+			segSpeeds = append(segSpeeds, sugFx{Kind: "speed", Start: s.Start, End: s.End, Rate: r})
 		}
 	}
 	var probs []string
@@ -827,7 +631,7 @@ func (a *App) checkCutReply(reply string, target, span float64, attempt int) ([]
 			past++
 		}
 	}
-	for _, f := range out.Fx {
+	for _, f := range append(append([]sugFx(nil), out.Fx...), segSpeeds...) {
 		if span > 0 && f.Start >= span {
 			if past == 0 {
 				first = f.Start
@@ -842,11 +646,6 @@ func (a *App) checkCutReply(reply string, target, span float64, attempt int) ([]
 
 	if len(out.Segments) < minSuggestSegs(target) {
 		probs = append(probs, fmt.Sprintf("fewer than %d segments", minSuggestSegs(target)))
-	} else if n := maxSuggestFx(target); len(out.Fx) > n {
-		probs = append(probs, fmt.Sprintf("%d effects, which is a subtitle track and not a cut "+
-			"-- keep it under %d. Everything said goes on screen through the "+
-			"narration step's captions, not through text effects here",
-			len(out.Fx), n))
 	} else if n := maxSuggestSegs(target); len(out.Segments) > n {
 		// said as a shape problem, because that is what it is: an answer
 		// this long is a model that stopped choosing moments
@@ -872,20 +671,19 @@ func (a *App) checkCutReply(reply string, target, span float64, attempt int) ([]
 	if n := asked - len(segs); n > 0 {
 		a.logfIdle(">>> suggest attempt %d: %d segment(s) dropped for having no footage", attempt, n)
 	}
-	// against the target as the video will run, not as the segments read: an
-	// answer that spends a minute of footage at ×4 has proposed fifteen
-	// seconds of video, and telling it the minute is telling it something it
-	// can do nothing with. Both numbers go back, so the model can see which
-	// of the two it got wrong.
-	fx := fxFromReply(out.Fx)
-	total := cutLen(applyFx(segs, fx))
-	if lo, hi := a.suggestWindow(target); total < lo || total > hi {
-		raw := 0.0
-		for _, s := range segs {
-			raw += s.E - s.S
-		}
-		probs = append(probs, fmt.Sprintf("total %.0f s of finished video from %.0f s of footage "+
-			"(the speed effects counted), where %.0f to %.0f is accepted", total, raw, lo, hi))
+	// on FOOTAGE, not on finished length: how fast it plays is the speed
+	// pass's answer and does not exist yet. The ceiling is what that pass
+	// could compress into the target at the fastest ordinary rate, so a cut
+	// this side of it is one the arithmetic can still land.
+	fx := joinSpeeds(append(fxFrom(segSpeeds, 0), fxFromReply(out.Fx)...))
+	raw := 0.0
+	for _, s := range segs {
+		raw += s.E - s.S
+	}
+	if lo, hi := a.footageWindow(target); raw < lo || raw > hi {
+		probs = append(probs, fmt.Sprintf("%.0f s of footage, where %.0f to %.0f is accepted "+
+			"(the dull stretches are played fast afterwards, which is what makes the "+
+			"upper end reachable)", raw, lo, hi))
 	}
 	if len(probs) > 0 {
 		return nil, nil, strings.Join(probs, "; ")
@@ -912,7 +710,7 @@ func mmssHint(n, span float64) string {
 
 // clampFxToSegs holds a proposed effect to the cut as it will actually play:
 // inside a footage segment, or gone. It has to run against the segments AS
-// APPLIED -- after the audit, after snapEdge, after coalesce -- because every
+// APPLIED -- after snapEdge, after coalesce -- because every
 // one of those moves boundaries after the effects were chosen, and a rule
 // enforced any earlier is enforced against a cut that no longer exists.
 // Inserts do not count as home: they bring their own picture, and an effect
@@ -977,4 +775,314 @@ func clampFxToSegs(fx []cutFx, segs []cutSeg) []cutFx {
 		out = append(out, f)
 	}
 	return out
+}
+
+// ---- the passes after the cut ----------------------------------------------
+//
+// The cut used to be one reply: the segments, the length arithmetic, and every
+// effect, in one answer to one request holding the whole timeline. The three
+// jobs interfere. A model writing two hundred captions ran into the token
+// ceiling before it finished; one told to caption every line concluded every
+// line had to stay and kept the whole session; one thinking about all three at
+// once spent eleven minutes and wrote nothing. Separated, none of them is
+// hard: the cut is a short list, the captions are a paragraph per clip, the
+// decorations are a handful.
+//
+// So the cut is chosen first, and only then are the effects asked
+// for -- in the clips' own seconds, from a brief that holds nothing but the
+// kept clips and what was said over them. Offsets from a clip's start, not
+// session stamps: a reply that reads [28:04] as 2804 is a reply that cannot
+// happen when the clip starts at 0.
+
+// captionBatch is how many clips one captions request carries. Five is a few
+// paragraphs in and a few dozen lines out -- small enough that a bad answer
+// costs a minute, not a run.
+const captionBatch = 5
+
+// captionCut is the captions pass: every spoken line over the kept clips as a
+// text effect, batch by batch. A batch that fails twice is skipped and said
+// so; the cut stands either way.
+func (a *App) captionCut(segs []cutSeg, rows []tsvRow) []cutFx {
+	var out []cutFx
+	narr := a.narratorMic()
+	system := a.sysPrompt("captions")
+	batches := (len(segs) + captionBatch - 1) / captionBatch
+	for b := 0; b*captionBatch < len(segs); b++ {
+		if err := a.checkpoint(); err != nil {
+			return out
+		}
+		lo, hi := b*captionBatch, min(len(segs), (b+1)*captionBatch)
+		batch := segs[lo:hi]
+		a.prog(trackSTT, 0.7+0.2*float64(b)/float64(batches), "captions, clips %d–%d of %d", lo+1, hi, len(segs))
+		brief := clipBriefsWith(batch, rows, narr, func(i int, s cutSeg) string {
+			return fmt.Sprintf("CLIP %d: %.0f s long", lo+i+1, s.E-s.S)
+		})
+		user := a.ctxBlockFor("captions") + "THE CLIPS, AND WHAT WAS SAID OVER EACH:\n" + brief
+		msgs := []map[string]any{msg("system", system), msg("user", user)}
+		for try := 0; try < 2; try++ {
+			reply, err := a.llmChatRetryOn("captions", msgs, false, nil)
+			if err != nil {
+				a.logfIdle("!!! captions: clips %d–%d: %v", lo+1, hi, err)
+				break
+			}
+			fx, problem := captionsFromReply(batch, lo, reply)
+			if problem == "" {
+				out = append(out, fx...)
+				a.logfIdle(">>> captions: clips %d–%d: %d caption(s)", lo+1, hi, len(fx))
+				break
+			}
+			a.logfIdle(">>> captions: clips %d–%d rejected: %s", lo+1, hi, problem)
+			if try == 1 {
+				a.logfIdle("!!! captions: clips %d–%d skipped -- the cut stands without them", lo+1, hi)
+			}
+			msgs = retryTurn(msgs, reply, problem)
+		}
+	}
+	return out
+}
+
+// captionsFromReply reads one batch's answer into text effects on the session
+// clock. Clip numbers are as the brief gave them (first is number first+1);
+// seconds are offsets from the clip's start and are held inside the clip. A
+// clip the reply does not mention has no captions, which is an answer.
+func captionsFromReply(batch []cutSeg, first int, reply string) ([]cutFx, string) {
+	if p := noAnswer(reply); p != "" {
+		return nil, p
+	}
+	clean := strings.TrimSpace(reply)
+	if i := strings.Index(clean, "{"); i >= 0 {
+		clean = clean[i:]
+	}
+	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
+	var out struct {
+		Clips []struct {
+			I  int `json:"i"`
+			Fx []struct {
+				Start, End float64
+				Text       string
+			} `json:"fx"`
+		} `json:"clips"`
+	}
+	if err := json.Unmarshal([]byte(clean), &out); err != nil {
+		if p := cutOff(reply, err); p != "" {
+			return nil, p
+		}
+		return nil, "not valid JSON: " + err.Error()
+	}
+	var fx []cutFx
+	for _, c := range out.Clips {
+		k := c.I - first - 1
+		if k < 0 || k >= len(batch) {
+			return nil, fmt.Sprintf("clip %d is not one of the clips given (%d to %d)", c.I, first+1, first+len(batch))
+		}
+		seg := batch[k]
+		for _, e := range c.Fx {
+			txt := strings.TrimSpace(e.Text)
+			if txt == "" {
+				continue
+			}
+			st, en := math.Max(0, e.Start), math.Min(seg.E-seg.S, e.End)
+			if en-st < 0.3 {
+				continue // a caption nobody could read, or one entirely past the clip
+			}
+			d := en - st
+			fade := math.Min(0.3, d/4)
+			fx = append(fx, cutFx{Kind: "text", T: seg.S + st, Dur: d, Trans: fade, Tout: fade, Text: txt})
+		}
+	}
+	return fx, ""
+}
+
+// decorateCut is the effects pass: the zooms, stops and volume, in one request
+// over every kept clip. A failed answer is logged and the cut stands plain.
+func (a *App) decorateCut(segs []cutSeg, rows []tsvRow) []cutFx {
+	if len(segs) == 0 {
+		return nil
+	}
+	if err := a.checkpoint(); err != nil {
+		return nil
+	}
+	brief := clipBriefsWith(segs, rows, a.narratorMic(), func(i int, s cutSeg) string {
+		return fmt.Sprintf("CLIP %d: %.0f s long", i+1, s.E-s.S)
+	})
+	user := a.ctxBlockFor("effects") + "THE CLIPS, AND WHAT WAS SAID AND SHOWN OVER EACH:\n" + brief
+	msgs := []map[string]any{msg("system", a.sysPrompt("effects")), msg("user", user)}
+	for try := 0; try < 2; try++ {
+		reply, err := a.llmChatRetryOn("effects", msgs, false, nil)
+		if err != nil {
+			a.logfIdle("!!! effects: %v", err)
+			return nil
+		}
+		fx, problem := decorationsFromReply(segs, reply)
+		if problem == "" {
+			a.logfIdle(">>> effects: %d decoration(s)", len(fx))
+			return fx
+		}
+		a.logfIdle(">>> effects rejected: %s", problem)
+		msgs = retryTurn(msgs, reply, problem)
+	}
+	a.logfIdle("!!! effects: no usable answer -- the cut stands without them")
+	return nil
+}
+
+// decorationsFromReply reads the effects pass: each named to a clip, offsets
+// from that clip's start, held inside it. The kinds the pass owns and no
+// others -- a speed or a caption here is written elsewhere and is dropped.
+func decorationsFromReply(segs []cutSeg, reply string) ([]cutFx, string) {
+	if p := noAnswer(reply); p != "" {
+		return nil, p
+	}
+	clean := strings.TrimSpace(reply)
+	if i := strings.Index(clean, "{"); i >= 0 {
+		clean = clean[i:]
+	}
+	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
+	var out struct {
+		Fx []struct {
+			Clip       int
+			Kind       string
+			Start, End float64
+			Gain       *float64
+		} `json:"fx"`
+	}
+	if err := json.Unmarshal([]byte(clean), &out); err != nil {
+		if p := cutOff(reply, err); p != "" {
+			return nil, p
+		}
+		return nil, "not valid JSON: " + err.Error()
+	}
+	var in []sugFx
+	for _, e := range out.Fx {
+		k := e.Clip - 1
+		if k < 0 || k >= len(segs) {
+			return nil, fmt.Sprintf("clip %d is not one of the clips given (1 to %d)", e.Clip, len(segs))
+		}
+		kind := strings.ToLower(strings.TrimSpace(e.Kind))
+		if kind != "zoom" && kind != "stop" && kind != "volume" {
+			continue
+		}
+		seg := segs[k]
+		st, en := math.Max(0, e.Start), math.Min(seg.E-seg.S, e.End)
+		if en <= st {
+			continue
+		}
+		in = append(in, sugFx{Kind: kind, Start: seg.S + st, End: seg.S + en, Gain: e.Gain})
+	}
+	return fxFrom(in, 0), ""
+}
+
+// ---- the speed pass ---------------------------------------------------------
+//
+// How fast each clip plays, asked once the cut stands and its captions are
+// placed. Two reasons it is its own call and not part of the cut's answer.
+//
+// The arithmetic. Fitting F seconds of footage into a target of T is a sum,
+// and it was being asked of the same reply that chose the moments from a
+// timeline of thousands of lines. That pairing is what produced ten-minute
+// calls with no answer in them: the model would choose, add up, re-choose,
+// add up again, and run out of call. Here the sum is the whole job and the
+// brief is a list of clips.
+//
+// The captions. A caption over a stretch at 4 is gone before it is read, and
+// which lines become captions is the captions pass's decision -- so nothing
+// before that pass can know which clips must stay at 1. The rule is enforced
+// here rather than only asked for: a rate on a captioned clip is dropped, and
+// the model is told which clips carry them so it does not spend the answer on
+// rates that will be thrown away.
+
+// speedCut asks for a rate per clip and returns the speed effects. A failure
+// leaves the cut at 1 throughout, which is a longer video and a whole one.
+func (a *App) speedCut(segs []cutSeg, caps []cutFx, target float64) []cutFx {
+	if len(segs) == 0 {
+		return nil
+	}
+	if err := a.checkpoint(); err != nil {
+		return nil
+	}
+	capped := make([]int, len(segs)) // how many captions each clip carries
+	for _, f := range caps {
+		for i, s := range segs {
+			if f.T >= s.S && f.T < s.E {
+				capped[i]++
+			}
+		}
+	}
+	var b strings.Builder
+	raw := 0.0
+	for i, s := range segs {
+		raw += s.E - s.S
+		what := "nothing said over it"
+		if capped[i] > 0 {
+			what = fmt.Sprintf("%d caption(s) -- runs at 1", capped[i])
+		}
+		fmt.Fprintf(&b, "CLIP %d: %.0f s, %s\n", i+1, s.E-s.S, what)
+	}
+	lo, hi := a.suggestWindow(target)
+	user := a.ctxBlockFor("speed") + fmt.Sprintf("FOOTAGE: %.0f seconds over %d clips.\n"+
+		"TARGET: %.0f seconds of finished video, and %.0f to %.0f is accepted.\n\n"+
+		"THE CLIPS:\n%s", raw, len(segs), target, lo, hi, b.String())
+	msgs := []map[string]any{msg("system", a.sysPrompt("speed")), msg("user", user)}
+	for try := 0; try < 2; try++ {
+		reply, err := a.llmChatRetryOn("speed", msgs, false, nil)
+		if err != nil {
+			a.logfIdle("!!! speed: %v", err)
+			return nil
+		}
+		fx, problem := speedsFromReply(segs, capped, reply)
+		if problem == "" {
+			if total := cutLen(applyFx(segs, fx)); total < lo || total > hi {
+				problem = fmt.Sprintf("that comes to %.0f s of finished video from %.0f s of "+
+					"footage, where %.0f to %.0f is accepted", total, raw, lo, hi)
+			} else {
+				a.logfIdle(">>> speed: %d clip(s) run fast — %s of video from %s of footage",
+					len(fx), mmss(total), mmss(raw))
+				return fx
+			}
+		}
+		a.logfIdle(">>> speed rejected: %s", problem)
+		msgs = retryTurn(msgs, reply, problem)
+	}
+	a.logfIdle("!!! speed: no usable answer — every clip plays at 1")
+	return nil
+}
+
+// speedsFromReply reads a rate per clip into speed effects over whole clips.
+// A rate on a captioned clip is dropped: the words on it would be unreadable,
+// and that rule is not the model's to weigh against the arithmetic.
+func speedsFromReply(segs []cutSeg, capped []int, reply string) ([]cutFx, string) {
+	if p := noAnswer(reply); p != "" {
+		return nil, p
+	}
+	clean := strings.TrimSpace(reply)
+	if i := strings.Index(clean, "{"); i >= 0 {
+		clean = clean[i:]
+	}
+	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
+	var out struct {
+		Speeds []struct {
+			Clip int
+			Rate float64
+		} `json:"speeds"`
+	}
+	if err := json.Unmarshal([]byte(clean), &out); err != nil {
+		if p := cutOff(reply, err); p != "" {
+			return nil, p
+		}
+		return nil, "not valid JSON: " + err.Error()
+	}
+	var in []sugFx
+	for _, sp := range out.Speeds {
+		i := sp.Clip - 1
+		if i < 0 || i >= len(segs) {
+			return nil, fmt.Sprintf("clip %d is not one of the clips given (1 to %d)", sp.Clip, len(segs))
+		}
+		if sp.Rate <= 1 {
+			continue // 1 is the ordinary rate and says nothing; below it is not this pass's
+		}
+		if capped[i] > 0 {
+			continue // words on screen: this clip runs at 1, whatever was asked for
+		}
+		in = append(in, sugFx{Kind: "speed", Start: segs[i].S, End: segs[i].E, Rate: sp.Rate})
+	}
+	return joinSpeeds(fxFrom(in, 0)), ""
 }

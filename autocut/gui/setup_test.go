@@ -420,12 +420,29 @@ func TestTestAllIsEveryTestOnce(t *testing.T) {
 		t.Errorf("setup.go hooks %d test buttons, want 10 — if a row was added, "+
 			"check its Test joined runAll (it does if it went through hook)", got)
 	}
-	// left of the spring, Cancel and Save right of it: the sweep sits apart
-	// from the verbs that close the dialog, so a reach for Save cannot land on
-	// nine network calls
-	i, j := strings.Index(src, "btns.Append(testAll)"), strings.Index(src, "btns.Append(cancel)")
+	// at the right, after the spring: the dialog has no Save and no Cancel to
+	// sit beside any more, and a lone button belongs where a dialog keeps its
+	// buttons
+	i, j := strings.Index(src, "btns.Append(spring)"), strings.Index(src, "btns.Append(testAll)")
 	if i < 0 || j < 0 || i > j {
-		t.Error("Test All is not laid out left of Cancel/Save in the button row")
+		t.Error("Test All is not at the right of the button row")
+	}
+	// ...and there is nothing to press to keep the settings: they save
+	// themselves a beat after the typing stops
+	for _, gone := range []string{`gtk.NewButtonWithLabel("Save")`, `gtk.NewButtonWithLabel("Cancel")`} {
+		if strings.Contains(src, gone) {
+			t.Errorf("the settings dialog has a %s again -- a window you can leave "+
+				"without saving is one you leave without saving", gone)
+		}
+	}
+	for _, want := range []string{
+		"saveTimer = glib.TimeoutAdd(confSaveWait, func() bool {", // the beat
+		"e.ConnectChanged(touched)",                               // every box pushes it back
+		"win.ConnectCloseRequest(func() bool {",                   // and closing flushes it
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("setup.go no longer contains %q", want)
+		}
 	}
 }
 

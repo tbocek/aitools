@@ -26,7 +26,7 @@ func TestEveryJobIsToldTheFormatsOnce(t *testing.T) {
 	}
 
 	first := strings.SplitN(strings.TrimSpace(sysSystem), "\n\n", 2)[0]
-	for _, key := range []string{"describe", "fix", "cut", "audit", "narrate", "youtube"} {
+	for _, key := range []string{"describe", "fix", "cut", "captions", "effects", "narrate", "youtube"} {
 		got := a.sysPrompt(key)
 		if !strings.HasPrefix(got, first) {
 			t.Errorf("the %s job is not told the formats first:\n%s", key, short(got))
@@ -81,9 +81,6 @@ func TestNoJobAssemblesItsOwnSystemMessage(t *testing.T) {
 			}
 		}
 	}
-	if src := readSrc(t, "cut_suggest.go"); !strings.Contains(src, `a.sysPrompt("audit")`) {
-		t.Error(`the audit no longer goes out through sysPrompt`)
-	}
 }
 
 // The wordings stop repeating what the context now says. Leaving both in is not
@@ -96,7 +93,6 @@ func TestTheCutWordingsDoNotRepeatTheSystemContext(t *testing.T) {
 		{"rating", ratingSystem},
 		{"showcase", showcaseSystem},
 		{"shorts", shortsSystem},
-		{"audit", auditSystem},
 	} {
 		for _, gone := range []string{"[12:04] EVENT", "counting past 59", "4350 seconds"} {
 			if strings.Contains(p.text, gone) {
@@ -127,9 +123,10 @@ func shippedPrompts() []struct{ name, text string } {
 		{"cut (rating)", ratingSystem},
 		{"cut (showcase)", showcaseSystem},
 		{"cut (shorts)", shortsSystem},
-		{"cut (shared effects)", fxRules},
+		{"speed", speedSystem},
+		{"captions", captionSystem},
+		{"effects", fxRules},
 		{"cut (shared reply)", cutReply},
-		{"audit", auditSystem},
 		{"narrate", narrSystem},
 		{"youtube", youtubeSystem},
 	}
@@ -197,7 +194,7 @@ func TestTheSystemContextNamesTheWholePipeline(t *testing.T) {
 	for _, kind := range []string{"zoom", "text", "speed", "stop", "volume"} {
 		if !strings.Contains(sysSystem, kind) {
 			t.Errorf("the system context does not say what a %q effect is, so the cut "+
-				"wordings and the audit each have to", kind)
+				"wordings each have to", kind)
 		}
 	}
 }
@@ -279,7 +276,7 @@ func TestTheSystemContextIsUnderHeadings(t *testing.T) {
 }
 
 // TestEachJobIsSentOnlyTheSectionsItCanUse: the box is one text and is sent
-// whole to nobody. The describing step used to be handed the audit's reply
+// whole to nobody. The describing step used to be handed the cut's reply
 // shape and the narration's emotions; the transcript fixer was told what a
 // zoom does -- seven kilobytes in front of every call, of which a describe
 // call could use two. The sections go by heading, and the jobs list keeps only
@@ -294,15 +291,13 @@ func TestEachJobIsSentOnlyTheSectionsItCanUse(t *testing.T) {
 		without []string // sections it has no use for
 		with    []string // ...and the ones it must still get
 	}{
-		{"describe", "\n  describe:", []string{"\n  audit:", "\n  narrate:", "\n  cut:", "\n  upload text:"},
+		{"describe", "\n  describe:", []string{"\n  captions:", "\n  narrate:", "\n  cut:", "\n  upload text:"},
 			[]string{"\nTHE CUT\n", "\nTHE FOUR STEPS\n", "\nTOOLS\n"}, nil},
 		{"fix", "\n  transcript:", []string{"\n  describe:", "\n  cut:", "\n  narrate:"},
 			[]string{"\nTHE CUT\n", "\nTHE FOUR STEPS\n", "\nTOOLS\n"}, nil},
-		{"cut", "\n  cut:", []string{"\n  audit:", "\n  narrate:", "\n  describe:"},
+		{"cut", "\n  cut:", []string{"\n  captions:", "\n  narrate:", "\n  describe:"},
 			nil, []string{"\nTHE CUT\n", "\nTHE FOUR STEPS\n", "\nTOOLS\n"}},
-		{"audit", "\n  audit:", []string{"\n  cut:", "\n  narrate:"},
-			[]string{"\nTOOLS\n"}, []string{"\nTHE CUT\n", "\nTHE FOUR STEPS\n"}},
-		{"narrate", "\n  narrate:", []string{"\n  cut:", "\n  audit:"},
+		{"narrate", "\n  narrate:", []string{"\n  cut:", "\n  captions:"},
 			[]string{"\nTHE CUT\n"}, []string{"\nTHE FOUR STEPS\n", "\nTOOLS\n", "a time in the video is not a time in the session"}},
 		{"youtube", "\n  upload text:", []string{"\n  cut:", "\n  narrate:"},
 			[]string{"\nTHE CUT\n"}, []string{"\nTHE FOUR STEPS\n", "\nTOOLS\n", "a time in the video is not a time in the session"}},
@@ -332,7 +327,7 @@ func TestEachJobIsSentOnlyTheSectionsItCanUse(t *testing.T) {
 		}
 	}
 	// the system context itself is never cut down: the bench shows the box
-	if got := a.sysPrompt("system"); !strings.Contains(got, "\n  audit:") || !strings.Contains(got, "\nTHE CUT\n") {
+	if got := a.sysPrompt("system"); !strings.Contains(got, "\n  captions:") || !strings.Contains(got, "\nTHE CUT\n") {
 		t.Error("the system context's own assembly is filtered, so the bench would show a box missing its sections")
 	}
 	// a section somebody adds to the box under a heading this does not know
@@ -350,12 +345,12 @@ func TestEachJobIsSentOnlyTheSectionsItCanUse(t *testing.T) {
 	}
 	// the speech rule rides under the context only where speech is decided
 	a.setSessionCtx("Beans = purple")
-	for _, key := range []string{"cut", "audit", "narrate"} {
+	for _, key := range []string{"cut", "narrate"} {
 		if !strings.Contains(a.ctxBlockFor(key), "The speech is content") {
 			t.Errorf("%s decides what to do with speech and is not told the rule", key)
 		}
 	}
-	for _, key := range []string{"describe", "fix", "youtube"} {
+	for _, key := range []string{"describe", "fix", "youtube", "captions", "effects"} {
 		if strings.Contains(a.ctxBlockFor(key), "The speech is content") {
 			t.Errorf("%s never decides what to do with speech and is told the rule anyway", key)
 		}

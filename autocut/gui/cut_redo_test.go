@@ -76,7 +76,7 @@ func TestTheRedoIsWired(t *testing.T) {
 	src := string(b)
 	for _, want := range []string{
 		`ed.redoBtn = gtk.NewButtonFromIconName("edit-redo-symbolic")`,
-		"bar.Append(linked(ed.undoBtn, ed.redoBtn, ed.revertBtn))",
+		"bar.Append(linked(ed.undoBtn, ed.redoBtn, ed.revertBtn, ed.clearBtn))",
 		"ed.redoBtn.SetSensitive(len(ed.redo) > 0)",
 		"ed.redo = nil", // pushUndo: a fresh edit forks history
 		"case (keyval == gdk.KEY_Z || keyval == gdk.KEY_y) && state&gdk.ControlMask != 0:",

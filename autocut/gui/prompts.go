@@ -139,7 +139,19 @@ var promptDefs = []promptDef{
 			{"Rating / tier list", strings.TrimSpace(ratingSystem)},
 			{"Showcase", strings.TrimSpace(showcaseSystem)},
 			{shortsStyleName, strings.TrimSpace(shortsSystem)}}},
-	{key: "audit", def: strings.TrimSpace(auditSystem)},
+	// the two passes that follow the cut, clip by clip: what was said, on
+	// screen; and the zooms, stops and volume. They were one reply with the
+	// segments, and the one reply is what kept failing (cut_suggest.go).
+	//
+	// "audit" was here: a second long call that read the suggestion back
+	// against the same brief and moved its boundaries. It was worth having
+	// when the cut was one reply doing three jobs; against a cut that is only
+	// segments it spent ten minutes to move a border a few seconds, and its
+	// own schema could not say the one thing it kept noticing. Removed, not
+	// renamed -- a project's edited copy is a dead key nobody reads.
+	{key: "captions", def: strings.TrimSpace(captionSystem)},
+	{key: "speed", def: strings.TrimSpace(speedSystem)},
+	{key: "effects", def: strings.TrimSpace(effectsSystem)},
 	// "effects" was here: the third call that decorated the audited cut. The
 	// effects ride the cut reply again -- every style's, see fxRules -- and
 	// the audit checks them, so the key is gone the way "thumbnail" below
@@ -379,7 +391,6 @@ func (a *App) pickPromptStyle(key, name string) {
 		a.promptQuiet = false
 	}
 	a.markPromptRow(key)
-	a.styleTarget(key, name) // a wording with a length of its own corrects the ▶ target box
 	a.syncStylePicks(key, name)
 }
 

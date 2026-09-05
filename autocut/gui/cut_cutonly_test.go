@@ -172,20 +172,18 @@ func TestTheCutPreviewStartsFromTheRedLine(t *testing.T) {
 		t.Errorf("▶ moved the line off a removed stretch to %.0fs", ed.playhead)
 	}
 
-	// and a hold does not get to move the line first. All three arms are one
-	// switch so the order IS the rule; cut-only ahead of both holds is what
-	// keeps a picked-up clip from outranking the line.
+	// and nothing else moves the line at all any more. ▶ and ▶✂ start where
+	// the red line is; the snap above is the one exception, and it is not a
+	// hold -- a line in a dropped stretch is a line where the finished video
+	// has nothing to play (see toggle).
 	body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) toggle\(\) \{`)
-	only, edge := strings.Index(body, "case ed.cutOnly:"), strings.Index(body, "case ed.edgeOn:")
-	held := strings.Index(body, "case s != nil:")
-	if only < 0 || edge < 0 || held < 0 {
-		t.Fatalf("toggle no longer chooses where ▶ starts in one switch:\n%s", body)
+	if !strings.Contains(body, "ed.cutOnlySnap()") {
+		t.Errorf("▶✂ no longer snaps out of a gap:\n%s", body)
 	}
-	if only > edge {
-		t.Error("a held edge is asked about before the cut-only preview, so ▶✂ starts at the edge again")
-	}
-	if only > held {
-		t.Error("a held clip is asked about before the cut-only preview, so ▶✂ starts at the clip again")
+	for _, gone := range []string{"case ed.edgeOn:", "case s != nil:"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("a held thing chooses where ▶ starts again: %q", gone)
+		}
 	}
 }
 

@@ -180,11 +180,12 @@ func TestEveryCallGoesThroughTheRecorder(t *testing.T) {
 			"rec := a.recordChatStart(step, thinking, msgs)",
 			"rec.done(rep.recorded(), rep.Stop, time.Since(t0), err)",
 		},
-		"describe.go":    {"a.llmChat" + `Retry("describe", `},
-		"transcript.go":  {"a.llmChat" + `Retry("transcript", `},
-		"cut_suggest.go": {`a.llmChatRetryTools("suggest", `, `a.llmChatRetryOn("audit", `},
-		"narrate.go":     {`a.llmChatRetryTools("narrate", `},
-		"publish.go":     {"a.llmChat" + `RetryTools("publish", `}, // split: the guard must not read pins as calls
+		"describe.go":   {"a.llmChat" + `Retry("describe", `},
+		"transcript.go": {"a.llmChat" + `Retry("transcript", `},
+		"cut_suggest.go": {`a.llmChatRetryTools("suggest", `, `a.llmChatRetryOn("captions", `,
+			`a.llmChatRetryOn("effects", `},
+		"narrate.go": {`a.llmChatRetryTools("narrate", `},
+		"publish.go": {"a.llmChat" + `RetryTools("publish", `}, // split: the guard must not read pins as calls
 		"llmlog.go": {
 			"buf.ApplyTag(a.linkTag,",    // the path is tagged...
 			"a.log.AddController(click)", // ...and the tag is what the click resolves
@@ -341,5 +342,55 @@ func TestAnUnstreamedCallStaysUnstreamed(t *testing.T) {
 	}
 	if streamed {
 		t.Error("a call with no callback asked the server to stream")
+	}
+}
+
+// One page per run, not one per call. A run is the cut, then its captions
+// batch by batch, then its effects -- and reading what happened meant opening
+// nine files in the order their names implied. The question is never "what did
+// call four say", it is "what did this run do".
+func TestARunIsOnePage(t *testing.T) {
+	a := chatFake(t, 200, `{"choices":[{"message":{"content":"THE ANSWER"}}]}`)
+	a.qReset() // every step's runner starts here, and so does the page
+	for i := 0; i < 3; i++ {
+		if _, err := a.llmChat("suggest", []map[string]any{msg("user", fmt.Sprintf("call %d", i+1))}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pages, _ := filepath.Glob(filepath.Join(a.llmDir(), "*.html"))
+	if len(pages) != 1 {
+		t.Fatalf("three calls left %d pages, want one for the run: %v", len(pages), pages)
+	}
+	b, err := os.ReadFile(pages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(b)
+	for i, want := range []string{"call 1", "call 2", "call 3"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the run page is missing what call %d sent", i+1)
+		}
+	}
+	// numbered in the order they went out, and each with its own reply
+	for _, want := range []string{"<h1>1. suggest</h1>", "<h1>2. suggest</h1>", "<h1>3. suggest</h1>"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the run page has no heading %q", want)
+		}
+	}
+	if n := strings.Count(page, "THE ANSWER"); n != 3 {
+		t.Errorf("%d replies on the page, want 3", n)
+	}
+	// one document, not three concatenated
+	if n := strings.Count(page, "<!doctype html>"); n != 1 {
+		t.Errorf("the page has %d doctypes", n)
+	}
+	// the next run gets its own page
+	a.qReset()
+	if _, err := a.llmChat("narrate", []map[string]any{msg("user", "another run")}, false); err != nil {
+		t.Fatal(err)
+	}
+	pages, _ = filepath.Glob(filepath.Join(a.llmDir(), "*.html"))
+	if len(pages) != 2 {
+		t.Errorf("the second run left %d pages in all, want 2", len(pages))
 	}
 }

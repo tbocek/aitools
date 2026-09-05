@@ -94,11 +94,7 @@ func TestSuggestReportsWhileItRunsInsteadOfOnlyPulsing(t *testing.T) {
 	for _, want := range []struct{ frag, why string }{
 		{`a.llmChatRetryTools("suggest", msgs, think, tools, a.webRunner("suggest", ffx), onText)`,
 			"a call that is not streamed cannot be counted while it runs"},
-		{`a.llmChatRetryOn("audit", msgs, true, onText)`,
-			"the audit call is streamed and recorded under its own name"},
 		{`jsonItemsDone(s, "segments")`, "choosing has to count its own segments"},
-		{`jsonItemsDone(s, "checks")`, "the audit has to count its own checks"},
-		{`a.prog(trackSTT, suggestChooseShare`, "the audit half has to start where the choosing half ended"},
 		{`a.progParts[trackSTT] > 0`,
 			"the pulse has to end on the first real fraction, or it fights the bar it shares"},
 	} {
@@ -106,13 +102,16 @@ func TestSuggestReportsWhileItRunsInsteadOfOnlyPulsing(t *testing.T) {
 			t.Errorf("suggest no longer contains %q -- %s", want.frag, want.why)
 		}
 	}
-	if strings.Count(src, ", onText)") != 2 {
-		t.Errorf("%d of the two suggest calls are streamed",
+	// one streamed call: the cut is the long one and the only one with
+	// anything to count while it runs; the two passes after it answer in a
+	// minute from a brief of a few clips
+	if strings.Count(src, ", onText)") != 1 {
+		t.Errorf("%d suggest calls are streamed, want the cut alone",
 			strings.Count(src, ", onText)"))
 	}
-	// the two halves have to add up to the whole bar, or a finished run stops short
+	// the cut's share leaves room for the passes after it, or a finished run stops short
 	if suggestChooseShare <= 0 || suggestChooseShare >= 1 {
-		t.Errorf("suggestChooseShare is %g -- one of the two calls owns none of the bar", suggestChooseShare)
+		t.Errorf("suggestChooseShare is %g -- the cut owns all of the bar or none of it", suggestChooseShare)
 	}
 }
 
@@ -128,10 +127,9 @@ func TestSuggestReportsWhileItRunsInsteadOfOnlyPulsing(t *testing.T) {
 func TestTheModelIsToldTheRangeItWillBeJudgedBy(t *testing.T) {
 	src := readSrc(t, "cut_suggest.go")
 	for _, want := range []string{
-		"lo, hi := a.suggestWindow(target)",
-		`"ACCEPTED: %.0f to %.0f seconds, and at most %d segments. Stop at the first set of "`,
-		"alo, ahi := a.suggestWindow(target)", // the audit is judged the same way
-		"total := cutLen(applyFx(segs, fx))",  // and measured the same way
+		"lo, hi := a.footageWindow(target)",
+		`"between %.0f and %.0f seconds of footage, in at most %d segments. Stop at the "`,
+		"total := cutLen(applyFx(segs, fx))", // and measured the same way
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("cut_suggest.go no longer contains %q", want)
@@ -142,10 +140,8 @@ func TestTheModelIsToldTheRangeItWillBeJudgedBy(t *testing.T) {
 	// different number from the one the gate measures
 	cut := readSrc(t, "cut.go")
 	for _, want := range []string{
-		"add up how long your segments RUN",
-		"that divided by the rate wherever a speed effect covers them",
-		"the total is inside the accepted range you were given",
-		"One pass at the total.",
+		"the footage they come to -- end minus start, added up -- lands in the range you were given",
+		"Anywhere inside it is right; do not trim towards its middle.",
 	} {
 		if !strings.Contains(cut, want) {
 			t.Errorf("the cut wording no longer says %q", want)
@@ -190,7 +186,7 @@ func TestARunawayAnswerIsRejectedForItsShape(t *testing.T) {
 	// and the wording says how a dull stretch is meant to be expressed, which
 	// is the thing the runaway was a broken attempt at
 	if !strings.Contains(readSrc(t, "cut.go"),
-		"ONE segment with a speed effect over it, never a row of small segments") {
+		"keep such a stretch whole, as ONE segment") {
 		t.Error("the effect rules no longer say how to show a stretch without watching it")
 	}
 }
@@ -202,60 +198,21 @@ func TestARunawayAnswerIsRejectedForItsShape(t *testing.T) {
 // between every line of speech, which is the answer that ran to 548 segments.
 func TestTheWordingsAllowALongSegmentUnderSpeed(t *testing.T) {
 	src := readSrc(t, "cut.go")
-	if !strings.Contains(src, "two to four times the ordinary length") ||
-		!strings.Contains(src, "DIVIDED by the rate") {
-		t.Error("the effect rules no longer say how long a sped-up segment may run")
+	if !strings.Contains(src, "keep such a stretch whole, as ONE segment") {
+		t.Error("the cut's rules no longer say a stretch to be shown fast stays one segment")
 	}
-	// the lengths are guides and say so: a model told 45 seconds as a limit
-	// packs a long stretch into a row of small segments instead
+	// the lengths are guides and say so once, in the tail every wording ends
+	// with: a model told 45 seconds as a limit packs a long stretch into a row
+	// of small segments instead
 	if strings.Contains(src, "8 to 45 seconds") {
 		t.Error("a wording still states the old fixed 8-to-45-second segment")
 	}
-	for _, want := range []string{
-		"8 seconds to about a minute",
-		"These are rough guides, not limits.",
-		"Roughly 8 seconds to a minute each, longer under a speed effect",
-	} {
-		if !strings.Contains(src, want) {
-			t.Errorf("no wording says %q", want)
-		}
+	if !strings.Contains(cutReply, "about 8 seconds to a minute, longer where a stretch has to be shown but not watched") {
+		t.Error("nothing says how long a segment runs")
 	}
-}
-
-// The user context outranks the wording's own numbers, and the wording says so.
-//
-// A cut prompt that says "three or four effects per five minutes" and a user
-// context that says "put what they said on screen" are a contradiction, and
-// the model resolved it by obeying the prompt: 32 speed effects, zero
-// captions, and an audit that then spent twelve minutes noticing. The counts
-// are defaults now, and the one thing the context cannot ask the effects to
-// become is a subtitle track -- that is a step of its own.
-func TestTheUserContextOutranksTheEffectDefaults(t *testing.T) {
-	cut := readSrc(t, "cut.go")
-	for _, want := range []string{
-		"That count is a DEFAULT, and the USER CONTEXT outranks it.",
-		"The one thing this list cannot become is a subtitle track.",
-		"narration step with its captions voice",
-	} {
-		if !strings.Contains(cut, want) {
-			t.Errorf("the effect rules no longer say %q", want)
-		}
-	}
-	// and the gate that catches the subtitle track names where captions come
-	// from, so a rejected answer is told what to do instead of what not to do
-	if maxSuggestFx(300) < 24 || maxSuggestFx(3000) <= maxSuggestFx(300) {
-		t.Errorf("the effect ceiling is %d for a 300 s target and %d for 3000 -- "+
-			"a context that asks for many captions is refused",
-			maxSuggestFx(300), maxSuggestFx(3000))
-	}
-	src := readSrc(t, "cut_suggest.go")
-	for _, want := range []string{
-		"} else if n := maxSuggestFx(target); len(out.Fx) > n {",
-		`"narration step's captions, not through text effects here"`,
-	} {
-		if !strings.Contains(src, want) {
-			t.Errorf("cut_suggest.go no longer contains %q", want)
-		}
+	// said once, in the tail every wording ends with, and nowhere else
+	if n := strings.Count(src, "8 seconds to a minute"); n != 1 {
+		t.Errorf("the segment length is stated %d times in cut.go, want once (in cutReply)", n)
 	}
 }
 
@@ -267,34 +224,31 @@ func TestTheUserContextOutranksTheEffectDefaults(t *testing.T) {
 // eleven minutes of reasoning once went on.
 func TestTheWordingSaysHowManySecondsMustRunFast(t *testing.T) {
 	for _, want := range []string{
-		"B = (F - T) * r / (r - 1)",
-		"F 850, T 720, r 4: B = 130 * 4/3 = 173 seconds at 4 and 677 at 1",
-		"B at or below 0 means no speed is needed",
-		"B above F means that footage cannot be squeezed to that target at that rate",
-		"one segment each, with its speed on it",
+		"(F-T)*r/(r-1) seconds must run at r",
+		"F 850, T 720, r 4 means 173 seconds fast",
+		"A clip with captions on it runs at 1",
 	} {
-		if !strings.Contains(cutReply, want) {
-			t.Errorf("the cut reply rules no longer say %q", want)
+		if !strings.Contains(speedSystem, want) {
+			t.Errorf("the speed pass's wording no longer says %q", want)
 		}
 	}
-	// and the worked example is right, or the model learns the wrong sum
+	// and the formula is right, or the model learns the wrong sum: 850 s of
+	// footage into a 720 s target at 4 is 173 s fast and 677 at 1
 	f, target, r := 850.0, 720.0, 4.0
 	b := (f - target) * r / (r - 1)
 	if int(b+0.5) != 173 || int(f-b+0.5) != 677 {
-		t.Errorf("the example's arithmetic is B=%.0f, N=%.0f", b, f-b)
+		t.Errorf("the formula gives B=%.0f, N=%.0f", b, f-b)
 	}
-	// which lands where the example says: 677 + 173/4 = 720
 	if got := (f - b) + b/r; got < 719.5 || got > 720.5 {
 		t.Errorf("677 s at 1 and 173 s at 4 come to %.1f s, not the target", got)
 	}
 }
 
-// Two places can name the length, and only the box is judged. A context that
-// says "about 12 min" over a target box left at 5:00 sent the model after a
-// length the gate refused three times in a row -- 846 s of video against
-// 180-450 -- and nothing said the two disagreed. Now the log says so before
-// the first call, and the request says which one counts.
-func TestALengthInTheContextThatDisagreesWithTheBoxIsSaidOutLoud(t *testing.T) {
+// The length the run aims at is the one the user context names. It was a box
+// on the Cut page as well, and for a week of runs the two disagreed -- the box
+// quietly winning at 300 while the sentence beside it read 12 minutes, and
+// every attempt refused for a length nobody had asked for.
+func TestTheLengthComesFromTheUserContext(t *testing.T) {
 	for _, c := range []struct {
 		ctx  string
 		want float64
@@ -304,8 +258,7 @@ func TestALengthInTheContextThatDisagreesWithTheBoxIsSaidOutLoud(t *testing.T) {
 		{"about 15 min of it", 900, true},
 		{"keep it to 5 minutes", 300, true},
 		{"a 90 s teaser", 90, true},
-		{"90 seconds, no more", 90, true},
-		{"you get a bonus at 500 wins, and level 2 is where it starts", 0, false}, // numbers, no unit
+		{"you get a bonus at 500 wins, and level 2 is where it starts", 0, false},
 		{"", 0, false},
 	} {
 		got, ok := ctxLength(c.ctx)
@@ -315,12 +268,17 @@ func TestALengthInTheContextThatDisagreesWithTheBoxIsSaidOutLoud(t *testing.T) {
 	}
 	src := readSrc(t, "cut_suggest.go")
 	for _, want := range []string{
+		"target := defTargetSecs",
 		"if want, ok := ctxLength(a.sessionCtx()); ok {",
-		"the box is what the reply is judged by",
-		"the target box, which is \"+\n\t\t\"what the reply is judged by; a length named in the user context does not change it",
+		"the user context names no length",
+		"which is the length named ",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("cut_suggest.go no longer contains %q", want)
 		}
+	}
+	// and there is no second place to say it
+	if strings.Contains(readSrc(t, "cut.go"), "ed.target") {
+		t.Error("the target box is back on the Cut page's toolbar")
 	}
 }

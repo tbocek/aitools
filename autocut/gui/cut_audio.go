@@ -725,6 +725,11 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 			cr.Stroke()
 		}
 	}
+	// and which lanes each of them hears, grey where it does not. Every scene,
+	// not only the one in hand: the switch on the name plate is these answers
+	// written to all of them at once, and a press on it that changed nothing
+	// visible but its own plate looked like a state of its own (cut_hear.go).
+	ed.drawSilences(cr, ed.laneSilences(), vx0, vx1)
 	// and under the ▶✂ preview the dropped stretches are dimmed rather than merely left
 	// untinted, the picture band's rule: in that mode they are the seconds ▶
 	// jumps over, and a lane that still showed them at full brightness would

@@ -262,7 +262,6 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 		"the describe prompt":    `{"Describe", "describe"`,
 		"the transcript prompt":  `{"Transcript", "fix"`,
 		"the cut prompt":         `{"Cut", "cut"`,
-		"the audit prompt":       `{"Audit", "audit"`,
 		"the narration prompt":   `{"Narration", "narrate"`,
 		"the upload-text prompt": `{"Upload text", "youtube"`,
 	} {
@@ -296,7 +295,7 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 	// in the other
 	at := -1
 	for _, want := range []string{`"User Context", ""`, `"Describe", "describe"`,
-		`"Transcript", "fix"`, `"Cut", "cut"`, `"Audit", "audit"`,
+		`"Transcript", "fix"`, `"Cut", "cut"`,
 		`"Narration", "narrate"`, `"Upload text", "youtube"`} {
 		i := strings.Index(rows, want)
 		if i < at {
@@ -394,7 +393,7 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	a := &App{root: t.TempDir()}
 	got := a.prepEditNames()
 	want := []string{"User Context", "System context", "Describe (General)", "Transcript (General)",
-		"Cut (General)", "Audit (General)", "Narration (General)",
+		"Cut (General)", "Captions (General)", "Speed (General)", "Effects (General)", "Narration (General)",
 		"Upload text (General)"}
 	if len(got) != len(want) {
 		t.Fatalf("the menu offers %v, want %v", got, want)
@@ -419,8 +418,8 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	if got[4] != "Cut (Highlights)" {
 		t.Errorf("after the style pick the cut row reads %q, want Cut (Highlights)", got[4])
 	}
-	if got[6] != "Narration (General)" {
-		t.Errorf("a job with no Highlights wording reads %q, want its default", got[6])
+	if got[8] != "Narration (General)" {
+		t.Errorf("a job with no Highlights wording reads %q, want its default", got[8])
 	}
 	if got[0] != "User Context" {
 		t.Errorf("the context row grew a wording name: %q", got[0])

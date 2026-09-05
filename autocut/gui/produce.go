@@ -102,9 +102,63 @@ type prodSettings struct {
 	// Stored the wrong way round on purpose: the blurred backdrop is the
 	// default, and a project written before this setting existed has to keep
 	// getting it.
-	Bare    bool   `json:"bare,omitempty"`
-	Subs    string `json:"subs"` // burn | mux | sidecar | none
-	OutFile string `json:"out_file"`
+	Bare bool   `json:"bare,omitempty"`
+	Subs string `json:"subs"` // burn | mux | sidecar | none
+	// what the subtitles ARE: the narration written over the cut ("", the
+	// default and everything a project saved before this field), or the words
+	// the people in the recording actually said ("spoken") -- the transcript,
+	// cleaned by Prepare's fix step, placed on the finished video's clock.
+	// This is how "put what I said on screen" is done: by the app, from the
+	// transcript it already has, not by asking a model to write one caption
+	// per line of speech and watching it run out of room.
+	SubsFrom string `json:"subs_from,omitempty"`
+	OutFile  string `json:"out_file"`
+}
+
+// captionLines is what the subtitle track carries for one clip: the narration
+// lines the writer put on it, or -- with SubsFrom "spoken" -- the words said
+// during it, read off the session rows and placed in the clip's own output
+// seconds, speed and all. The two never mix: a video captioned with what was
+// said is a video whose narration, if it has one, is heard and not read.
+//
+// EVENT lines are never captions; they describe the picture to the model. A
+// row is kept if any of it falls inside the clip, and clipped to the clip's
+// edges, so a sentence that straddles a cut is captioned for the part that is
+// in the video and not the part that is not.
+func captionLines(c prodClip, sessS, sessE float64, spoken []tsvRow, from string) []prodLine {
+	if from != "spoken" {
+		return c.lines
+	}
+	var out []prodLine
+	for _, r := range spoken {
+		if r.spk == "EVENT" || strings.TrimSpace(r.text) == "" || r.e <= sessS || r.s >= sessE {
+			continue
+		}
+		s0, e0 := math.Max(r.s, sessS), math.Min(r.e, sessE)
+		at := (s0 - sessS) / c.speed()
+		dur := (e0 - s0) / c.speed()
+		if dur < 0.3 {
+			continue // a flash nobody can read, cut off by the clip's edge
+		}
+		out = append(out, prodLine{text: strings.TrimSpace(r.text), at: at, delay: at, dur: dur})
+	}
+	return out
+}
+
+// spokenRows is the transcript as captions read it: every line anybody said,
+// on the cut's own corrected clock (sessionRows), and nothing the picture
+// showed. Loaded once per render rather than once per clip.
+func (a *App) spokenRows(st prodSettings) []tsvRow {
+	if st.SubsFrom != "spoken" {
+		return nil
+	}
+	var out []tsvRow
+	for _, r := range a.sessionRows() {
+		if r.spk != "EVENT" {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 var (
@@ -116,19 +170,29 @@ var (
 	prodABR        = []string{"128", "192", "256", "320"}
 	prodSubsLbl    = []string{"burned in", "track in file", "sidecar .srt", "none"}
 	prodSubsKey    = []string{"burn", "mux", "sidecar", "none"}
+	// what the subtitles are made of (prodSettings.SubsFrom): the narration,
+	// or the transcript of what people said
+	prodSubsFromLbl = []string{"the narration", "what was said"}
+	prodSubsFromKey = []string{"", "spoken"}
 )
 
 type producer struct {
 	a *App
 
 	container, codec, preset, height, fps, abr, subs *gtk.DropDown
-	vfr, mono, blur                                  *gtk.CheckButton
-	crf, gvol                                        *gtk.Scale
-	outLbl                                           *gtk.Label
-	outFile                                          string
-	outAuto                                          bool       // still the default -- follows the output folder
-	inputs, out                                      *gtk.Label // the two rows every step has
-	guard                                            bool       // suppresses feedback while applying a project
+	subsFrom                                         *gtk.DropDown // what the subtitles carry
+	// the three controls that exist to carry a narration, with their labels:
+	// how loud the game sits UNDER the voice, and what becomes of the voice's
+	// subtitles. With no narration they are about nothing, and they go
+	// (syncNarrOff).
+	subsLbl, subsFromLbl, gvolLbl *gtk.Label
+	vfr, mono, blur               *gtk.CheckButton
+	crf, gvol                     *gtk.Scale
+	outLbl                        *gtk.Label
+	outFile                       string
+	outAuto                       bool       // still the default -- follows the output folder
+	inputs, out                   *gtk.Label // the two rows every step has
+	guard                         bool       // suppresses feedback while applying a project
 }
 
 // ---- settings ---------------------------------------------------------------
@@ -155,6 +219,24 @@ func atoiOr(s string, def int) int {
 		return n
 	}
 	return def
+}
+
+// syncNarrOff shows or hides what only a narration needs. Called when the tick
+// on the Narrate page changes and when a project's answer arrives, and safe
+// before the page exists -- a project can load before Produce is built.
+func (a *App) syncNarrOff() {
+	p := a.prod
+	if p == nil || p.subs == nil {
+		return
+	}
+	on := !a.narrOff
+	for _, w := range []interface{ SetVisible(bool) }{
+		p.subs, p.subsLbl, p.subsFrom, p.subsFromLbl, p.gvol, p.gvolLbl,
+	} {
+		if w != nil {
+			w.SetVisible(on)
+		}
+	}
 }
 
 // defaultProdSettings is the render a project gets before anyone touches the
@@ -217,6 +299,7 @@ func (a *App) prodSettings() prodSettings {
 		Bare:      !p.blur.Active(),
 		GameVol:   p.gvol.Value(),
 		Subs:      prodSubsKey[int(p.subs.Selected())],
+		SubsFrom:  prodSubsFromKey[int(p.subsFrom.Selected())],
 		OutFile:   p.outFile,
 	}
 	// webm carries neither h264 nor aac; silently producing an unplayable
@@ -245,6 +328,11 @@ func (a *App) applyProdSettings(st *prodSettings) {
 	for i, k := range prodSubsKey {
 		if k == st.Subs {
 			p.subs.SetSelected(uint(i))
+		}
+	}
+	for i, k := range prodSubsFromKey {
+		if k == st.SubsFrom {
+			p.subsFrom.SetSelected(uint(i))
 		}
 	}
 	if st.CRF > 0 {
@@ -317,6 +405,7 @@ func (p *producer) syncExt() {
 func (a *App) buildProduce() gtk.Widgetter {
 	p := &producer{a: a}
 	a.prod = p
+	defer a.syncNarrOff() // a project loaded before this page was built has already said
 
 	// no paragraph at the top: what this step does is in the ⓘ in the header bar
 	// (steps[].help), which the settings below it can now have the space of
@@ -324,12 +413,13 @@ func (a *App) buildProduce() gtk.Widgetter {
 	grid.SetColumnSpacing(10)
 	grid.SetRowSpacing(6)
 	grid.SetColumnHomogeneous(false)
-	at := func(col, row int, label string, w gtk.Widgetter) {
+	at := func(col, row int, label string, w gtk.Widgetter) *gtk.Label {
 		l := gtk.NewLabel(label)
 		l.SetXAlign(1)
 		l.AddCSSClass("dim-label")
 		grid.Attach(l, col*2, row, 1, 1)
 		grid.Attach(w, col*2+1, row, 1, 1)
+		return l
 	}
 	dd := func(list []string, sel int, tip string) *gtk.DropDown {
 		d := gtk.NewDropDownFromStrings(list)
@@ -349,8 +439,12 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.height = dd(prodHeights, 1, "the short side of the frame — the cut page's aspect sets its shape; original keeps the footage's own size")
 	p.fps = dd(prodFPS, 2, "output frame rate — a ceiling rather than a target with VFR on")
 	p.abr = dd(prodABR, 0, "audio bitrate in kbit/s")
-	p.subs = dd(prodSubsLbl, 2, "what to do with the narration subtitles: burned "+
+	p.subs = dd(prodSubsLbl, 2, "what to do with the subtitles: burned "+
 		"into the picture, a separate track inside the file, an .srt beside it, or nothing")
+	p.subsFrom = dd(prodSubsFromLbl, 0, "what the subtitles say: the narration written over the "+
+		"cut, or the words the people in the recording actually said -- the transcript, "+
+		"cleaned by Prepare, on the finished video's clock. Pick the second and burn them in "+
+		"to put what was said on screen without asking the cut for a caption per line")
 
 	// VFR makes the rate above a ceiling. Capture from a headset is variable by
 	// nature -- it renders what it can, and the rate above is the peak it
@@ -407,8 +501,9 @@ func (a *App) buildProduce() gtk.Widgetter {
 	at(1, 0, "Resolution:", p.height)
 	at(1, 1, "Frame rate:", p.fps)
 	at(1, 2, "Audio bitrate:", p.abr)
-	at(1, 3, "Game audio:", p.gvol)
-	at(0, 4, "Subtitles:", p.subs)
+	p.gvolLbl = at(1, 3, "Game audio:", p.gvol)
+	p.subsLbl = at(0, 4, "Subtitles:", p.subs)
+	p.subsFromLbl = at(0, 6, "Subtitles say:", p.subsFrom)
 	at(1, 4, "Frame timing:", p.vfr)
 	at(1, 5, "Audio channels:", p.mono)
 	at(0, 5, "Frame edges:", p.blur)
@@ -698,6 +793,14 @@ func (a *App) produceCut() cutFile {
 }
 
 func (a *App) produceEntries() []narrEntry {
+	// no narration at all: whatever is written stays on the Narrate page, and
+	// the render behaves as if it were not there -- nothing spoken, nothing
+	// laid over a clip, no subtitle track (narrate.go's own tick). Read here
+	// rather than at each of the four places that use these entries, because
+	// this is the one seam every one of them comes through.
+	if a.narrOff {
+		return nil
+	}
 	if a.narr != nil {
 		a.narr.pullRows()
 		if len(a.narr.entries) > 0 {
@@ -1585,16 +1688,23 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		}
 	}
 
-	// 3. subtitles, on the produced timeline
+	// 3. subtitles, on the produced timeline. None at all when this video has
+	// no narration: the track carries the voice-over's lines, and the page
+	// hides the choice for the same reason (syncNarrOff).
 	srt, cum := "", 0.0
 	cue := 0
+	spoken := a.spokenRows(st)
+	if a.narrOff {
+		st.Subs, spoken = "none", nil // no lines, no track (produceEntries)
+	}
 	for _, c := range clips {
-		for k, ln := range c.lines {
+		caps := captionLines(c, c.sessS, c.sessS+c.length*c.speed(), spoken, st.SubsFrom)
+		for k, ln := range caps {
 			end := cum + ln.delay + ln.dur/c.tempo
 			if ln.dur == 0 { // unspoken: hold the caption until the next line, or the clip's end
 				end = cum + c.length
-				if k+1 < len(c.lines) {
-					end = cum + c.lines[k+1].delay
+				if k+1 < len(caps) {
+					end = cum + caps[k+1].delay
 				}
 			}
 			cue++
@@ -1632,15 +1742,16 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		}
 		name := stem + ext
 		var cueFile string
-		if st.Subs == "burn" && len(c.lines) > 0 {
+		caps := captionLines(c, c.sessS, c.sessS+c.length*c.speed(), spoken, st.SubsFrom)
+		if st.Subs == "burn" && len(caps) > 0 {
 			cueFile = filepath.Join(clipDir, stem+".srt")
 			one := ""
-			for k, ln := range c.lines {
+			for k, ln := range caps {
 				end := ln.delay + ln.dur/c.tempo
 				if ln.dur == 0 {
 					end = c.length
-					if k+1 < len(c.lines) {
-						end = c.lines[k+1].delay
+					if k+1 < len(caps) {
+						end = caps[k+1].delay
 					}
 				}
 				one += fmt.Sprintf("%d\n%s --> %s\n%s\n\n", k+1, srtTime(ln.delay),

@@ -105,6 +105,12 @@ func (t qTrack) line() string {
 // run's leftovers would be added to every reading this one takes. It also gives
 // the bar back to whatever runs next, whole (see qPhase).
 func (a *App) qReset() {
+	// the exchange page belongs to the run, and this is the one call every run
+	// makes at its start: closing the old page here means the next LLM call
+	// opens a new one, named for whichever step makes it (llmlog.go)
+	a.llmMu.Lock()
+	a.runName, a.runSecs, a.runN = "", nil, 0
+	a.llmMu.Unlock()
 	a.progMu.Lock()
 	a.progParts = [2]float64{}
 	a.progQ = [2]qTrack{}

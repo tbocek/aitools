@@ -267,30 +267,6 @@ func TestTheVolumeFormAsksInPercentAndStoresAFactor(t *testing.T) {
 	}
 }
 
-// The audit can move a volume band the way it moves a zoom's. It is listed by
-// kind there, because a kind the audit does not know is silently left where it
-// was -- which is how an effect ends up over footage the audit just decided
-// was the wrong footage.
-func TestTheAuditCanMoveAVolumeBand(t *testing.T) {
-	a := &App{}
-	in := []cutFx{{Kind: "volume", T: 60, Dur: 8, Gain: 2, Trans: 1, Tout: 1}}
-	out, changed := a.applyFxChecks(in, []fxCheck{
-		{I: 1, Verdict: "fix", Start: 62, End: 66, Why: "follows the moved segment"},
-	})
-	if changed != 1 || len(out) != 1 {
-		t.Fatalf("changed=%d, %d effects left", changed, len(out))
-	}
-	if out[0].T != 62 || out[0].Dur != 4 {
-		t.Errorf("the band came back at %.1f for %.1fs, want 62 for 4s", out[0].T, out[0].Dur)
-	}
-	if out[0].Gain != 2 {
-		t.Errorf("the move changed the gain to %v", out[0].Gain)
-	}
-	if out[0].Trans+out[0].Tout > out[0].Dur {
-		t.Errorf("fades %.2f/%.2f do not fit the %.2fs band", out[0].Trans, out[0].Tout, out[0].Dur)
-	}
-}
-
 // A cut moving under it takes it with it, the way it takes a title: the band is
 // trimmed to the footage that is left, and the fades shrink in proportion.
 func TestAVolumeEffectFollowsTheCutUnderIt(t *testing.T) {

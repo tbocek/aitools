@@ -46,14 +46,17 @@ func TestTheShowcaseWordingIsPickableAndCutsForLooking(t *testing.T) {
 
 	// what makes it a showcase rather than a highlight reel: the thing has to
 	// be on screen, seen whole and seen close, and several things share the
-	// length instead of the first one eating it
+	// length instead of the first one eating it. Everything else it used to
+	// say -- where the subject's name comes from, what a thing's seconds are,
+	// which parts to skip -- was the user context's to say, and a wording that
+	// says it too is a wording arguing with the person editing.
 	for _, want := range []string{
-		`{"segments":[{"start":<sec>,"end":<sec>,"speed":<rate, only on a segment that runs at that rate from end to end>}],"fx":[`, // the reply suggestParse reads
+		`{"segments":[{"start":0,"end":28},{"start":104,"end":232},{"start":232,"end":301}]}`, // the reply suggestParse reads
 		"target length",             // the length the run checks
 		"is not a showcase segment", // the subject out of frame is not one
-		"The whole of it",           // the pass that shows its size and shape
-		"Count the things.",         // several subjects is the same job repeated
-		"divide the target length",
+		"the whole of it",           // the pass that shows its size and shape
+		"number of things shown",    // several subjects share the length
+		"Divide the target length",
 	} {
 		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+showcaseSystem, want) {
 			t.Errorf("the Showcase wording never says %q", want)

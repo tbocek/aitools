@@ -83,26 +83,6 @@ func TestAVolumeChangeNeedsAGainSomebodyMeant(t *testing.T) {
 	}
 }
 
-// The audit judges the effects from a list it is handed, so that list has to
-// say what each one does. A stop reads as a stop and not as "speed rate 0",
-// which is the storage; a volume says its gain, as a speed says its rate.
-func TestTheAuditIsToldWhatEachEffectDoes(t *testing.T) {
-	src := funcBody(t, "cut_suggest.go", `func \(a \*App\) auditCut\(`)
-	for _, pin := range []string{
-		`kind = "stop"`,
-		`extra = fmt.Sprintf("  gain %g", f.Gain)`,
-		`extra = fmt.Sprintf("  rate %g", f.Rate)`,
-		"mmss(t0), mmss(t1), extra)",
-	} {
-		if !strings.Contains(src, pin) {
-			t.Errorf("the proposed-effects block no longer says %q", pin)
-		}
-	}
-	if strings.Contains(src, "mmss(t0), mmss(t1)") && !strings.Contains(src, "kind, mmss(t0)") {
-		t.Error("the block prints f.Kind, so a held frame reaches the audit as a speed")
-	}
-}
-
 // svg is the one kind of the app's five a reply cannot ask for: the ink is a
 // file on this machine and nothing in a reply can name one. It is left out of
 // the wording rather than accepted and dropped, so the model is never told to
@@ -125,15 +105,19 @@ func TestTheOverlayStaysAThingAHandPlaces(t *testing.T) {
 // away; a parser accepting one nobody asks for is code no reply reaches.
 func TestTheWordingAndTheParserNameTheSameEffects(t *testing.T) {
 	kinds := []string{"zoom", "text", "speed", "stop", "volume"}
-	// the reply shape is one shape, spelled once in the system context every
-	// cut wording is sent behind (syscontext.go) -- so it is the context that
-	// has to offer every kind, not each wording
-	for _, k := range kinds {
-		if !strings.Contains(sysSystem, `"kind":"`+k+`"`) {
-			t.Errorf("the system context's cut shape never offers %q", k)
+	// the reply shapes are spelled once, in the system context's job lines
+	// (syscontext.go), and the five kinds are spread over three of them now:
+	// speed rides on a segment in the cut's reply, text is the captions
+	// pass's, and the other three are the effects pass's
+	for _, want := range []string{
+		`"rate":4`, `"text":"I will be showcasing the new tower"`,
+		`"kind":"zoom"`, `"kind":"stop"`, `"kind":"volume"`,
+	} {
+		if !strings.Contains(sysSystem, want) {
+			t.Errorf("no job's reply shape in the system context offers %s", want)
 		}
 	}
-	src := funcBody(t, "cut_suggest.go", `func fxFromReply\(`)
+	src := funcBody(t, "cut_suggest.go", `func fxFrom\(`)
 	for _, k := range kinds {
 		if !strings.Contains(src, `case "`+k+`"`) {
 			t.Errorf("the wording asks for %q and fxFromReply drops it on the floor", k)
@@ -146,15 +130,17 @@ func TestTheWordingAndTheParserNameTheSameEffects(t *testing.T) {
 // matters, caption what is going on, rush what has to be shown but not
 // watched.
 func TestTheWordingSaysWhichEffectAMomentNeeds(t *testing.T) {
-	for _, want := range []string{
-		"Pick the kind by what the moment needs",
-		"easy to miss -> zoom onto it",
-		"would not know what is happening -> text saying it",
-		"shown but not watched -> speed",
+	// each kind's rule lives in the pass that writes it: zoom, stop and volume
+	// in the effects wording, text in the captions wording, speed in the cut's
+	for _, c := range []struct{ in, want string }{
+		{fxRules, "Pick the kind by what the moment needs"},
+		{fxRules, "easy to miss -> zoom onto it"},
+		{fxRules, "The one beat everything else was leading to -> stop"},
+		{captionSystem, "One text effect per spoken line"},
+		{speedSystem, "Take the fast seconds from the clips with nothing being said"},
 	} {
-		if !strings.Contains(fxRules, want) {
-			t.Errorf("the shared effects wording no longer says %q, so the kind is a "+
-				"free choice rather than one the moment makes", want)
+		if !strings.Contains(c.in, c.want) {
+			t.Errorf("no wording says %q, so the kind is a free choice rather than one the moment makes", c.want)
 		}
 	}
 }

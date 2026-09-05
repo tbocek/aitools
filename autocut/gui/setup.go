@@ -823,6 +823,12 @@ func (b *testBadge) done(ok bool, why string) {
 	b.stack.SetVisibleChildName(name)
 }
 
+// confSaveWait is how long the settings dialog waits after the last keystroke
+// before it writes the file. Long enough that a typed URL is one write and not
+// thirty; short enough that closing the window a moment later finds the work
+// already done.
+const confSaveWait = 600
+
 func (a *App) setupDialog() {
 	c := a.readConf()
 
@@ -1148,9 +1154,19 @@ func (a *App) setupDialog() {
 			func() (string, error) { return testSD(url, k) }
 	})
 
-	save := gtk.NewButtonWithLabel("Save")
-	save.AddCSSClass("suggested-action")
-	save.ConnectClicked(func() {
+	// The dialog has no Save and no Cancel. It had both, and a settings window
+	// you can leave without saving is a settings window you leave without
+	// saving: a server typed, a Test run against it, the verdict read, the
+	// window closed on the Escape that dismisses every other dialog -- and the
+	// typing gone. Nothing here is dangerous enough to be worth confirming,
+	// and everything here is worth keeping.
+	//
+	// So a change to any box writes the file, a beat after the typing stops.
+	// The beat matters: a save per keystroke is a file rewritten thirty times
+	// across one URL, and every one of them a chance to leave half a line on
+	// disk if the machine picks that moment to stop.
+	var saveTimer glib.SourceHandle
+	writeConf := func() {
 		cc := appConf{Server: server.Text(), Model: model.Text(), Key: key.Text(),
 			TTS:    strings.TrimRight(strings.TrimSpace(tts.Text()), "/"),
 			TTSKey: ttsKey.Text(),
@@ -1176,10 +1192,37 @@ func (a *App) setupDialog() {
 		// the "already listening on" note both belong to the old one
 		a.ttsModel, a.audioNoted = "", ""
 		a.setStatus("settings saved to " + confPath())
-		win.Close()
+	}
+	// touched is what every box calls: the pending write is pushed back, so
+	// the file is written once the typing stops rather than once per letter.
+	touched := func() {
+		if saveTimer != 0 {
+			glib.SourceRemove(saveTimer)
+		}
+		saveTimer = glib.TimeoutAdd(confSaveWait, func() bool {
+			saveTimer = 0
+			writeConf()
+			return false
+		})
+	}
+	// ...and closing the window is the other end of it: a beat that has not
+	// elapsed must not lose the last thing typed
+	win.ConnectCloseRequest(func() bool {
+		if saveTimer != 0 {
+			glib.SourceRemove(saveTimer)
+			saveTimer = 0
+			writeConf()
+		}
+		return false
 	})
-	cancel := gtk.NewButtonWithLabel("Cancel")
-	cancel.ConnectClicked(func() { win.Close() })
+	for _, e := range []interface {
+		ConnectChanged(func()) glib.SignalHandle
+	}{server, model, tts, asrModel, diarModel, sepModel, ttsm, sd, ff, fx} {
+		e.ConnectChanged(touched)
+	}
+	key.ConnectChanged(touched)
+	ttsKey.ConnectChanged(touched)
+	sdKey.ConnectChanged(touched)
 
 	grid := gtk.NewGrid()
 	grid.SetRowSpacing(10)
@@ -1324,10 +1367,10 @@ func (a *App) setupDialog() {
 	grid.Attach(lbl("API key:"), 0, 17, 1, 1)
 	grid.Attach(sdKey, 1, 17, 3, 1)
 
-	// the dialog's one row of verbs: Test All on the left, because it acts on
-	// the rows above it and not on the dialog; Cancel and Save on the right,
-	// where a dialog keeps its answers. Every verdict still lands on the row
-	// that owns it -- this button only saves eight trips up the page.
+	// the dialog's one verb, at the right where a dialog keeps its buttons --
+	// Save and Cancel used to be there and the settings save themselves now,
+	// so this is what is left. Every verdict still lands on the row that owns
+	// it; this button only saves eight trips up the page.
 	testAll := gtk.NewButtonWithLabel("Test All")
 	testAll.SetTooltipText("Run every Test on this page at once — each verdict lands beside its own row")
 	testAll.ConnectClicked(func() {
@@ -1336,12 +1379,10 @@ func (a *App) setupDialog() {
 		}
 	})
 	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	btns.Append(testAll)
 	spring := gtk.NewBox(gtk.OrientationHorizontal, 0)
 	spring.SetHExpand(true)
 	btns.Append(spring)
-	btns.Append(cancel)
-	btns.Append(save)
+	btns.Append(testAll)
 	grid.Attach(btns, 0, 18, 4, 1)
 
 	// the log is the LAST row, below even the verbs: expanded it grows downward

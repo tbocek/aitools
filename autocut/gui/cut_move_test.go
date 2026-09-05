@@ -598,3 +598,44 @@ func TestTheClipToolAndTheEditButtonAreWired(t *testing.T) {
 		}
 	}
 }
+
+// A click is not a drag, and a held clip is not a hole in the page.
+//
+// Nobody double-clicks without moving the mouse a pixel or two. The second
+// press landed on a clip the first had taken in hand, the wiggle was read as a
+// drag, the clip slid, and the picture jumped to its start to show where it
+// had gone -- and from then on every press inside that clip was another move,
+// so the red line could not be put anywhere in the one stretch you were
+// working on.
+func TestAClickOnAHeldClipMovesTheLineAndNotTheClip(t *testing.T) {
+	src := readSrc(t, "cut.go")
+	// the threshold: until the pointer has travelled, a press on something
+	// held is still a click
+	for _, want := range []string{
+		"dragSlop = 4.0",
+		"if (trimming && !ed.edgeDirty) || (moving && !ed.segDirty) {",
+		"if math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut.go no longer contains %q", want)
+		}
+	}
+	// ...and the release of such a press puts the line where it landed
+	i := strings.Index(src, "if !ed.segDirty && math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {")
+	if i < 0 {
+		t.Fatal("a click on a held clip no longer moves the red line")
+	}
+	if j := strings.Index(src[i:], "ed.setPlayhead(ed.tAtView(dragStartX))"); j < 0 || j > 200 {
+		t.Error("the click on a held clip does not cue the playhead where it landed")
+	}
+	// and the second click of a double one leaves the green alone: the single
+	// click has already taken that scene in hand
+	if !strings.Contains(src, "if ed.segOnGreen(x+ed.viewX, y) >= 0 {\n\t\t\t\treturn // the single click has it") {
+		t.Error("a double click on the green picks the clip up a second time")
+	}
+	// the threshold is smaller than the border grab, or a press meant for a
+	// border would be swallowed before it could trim
+	if dragSlop > edgeGrab {
+		t.Errorf("the drag threshold (%g) is wider than the border's grab (%g)", dragSlop, edgeGrab)
+	}
+}

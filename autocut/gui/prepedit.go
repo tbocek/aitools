@@ -80,8 +80,14 @@ func prepRows() []prepRow {
 		{"Cut", "cut", "The rules ▶ Suggest works to, plus what this session was and " +
 			"what matters in it. Its wordings are the styles: the Style dropdown under " +
 			"the sources picks between them, for every prompt at once."},
-		{"Audit", "audit", "How the suggestion is read back: what counts as ending too " +
-			"early, and how readily a segment is dropped."},
+		{"Captions", "captions", "The second pass, clip by clip: what was said over each " +
+			"kept clip, on screen as text effects. Cleaned as a subtitler would; the " +
+			"user context says fewer, or none."},
+		{"Speed", "speed", "The third pass: how fast each kept clip plays, and the " +
+			"arithmetic that lands the cut on the target length. A clip with captions " +
+			"on it runs at 1."},
+		{"Effects", "effects", "The last pass, over the kept clips: the zooms, stops and " +
+			"volume that make a moment land. Speed and captions are the passes before."},
 		{"Narration", "narrate", "The rules the narration is written to, plus what this " +
 			"session was and what matters in it."},
 		{"Upload text", "youtube", "Gets the cut and the narration — no images — and " +

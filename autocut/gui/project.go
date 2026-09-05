@@ -41,8 +41,13 @@ type Project struct {
 	// -- and it is a property of the footage, so it belongs to the project that
 	// names that footage. Absent means defLanguage, the same deal a prompt gets.
 	Language string `json:"language,omitempty"`
-	VidDir   string `json:"vid_dir,omitempty"` // where the choosers open, each
-	AudDir   string `json:"aud_dir,omitempty"` // relative to root when it can be
+	// this video has no narration at all: no lines written, none spoken, and
+	// nothing in Produce that exists to carry one. Off is the ordinary answer
+	// and every project written before this reads as off, so an old project
+	// still narrates. See App.narrOff.
+	NoNarration bool   `json:"no_narration,omitempty"`
+	VidDir      string `json:"vid_dir,omitempty"` // where the choosers open, each
+	AudDir      string `json:"aud_dir,omitempty"` // relative to root when it can be
 	// in_dir is read, never written: there was one input folder, which had to
 	// hold input_video/ and input_audio/. A project written back then names it
 	// here, and those two subfolders are where the two folders above start.
@@ -258,12 +263,13 @@ func (a *App) currentProject() Project {
 		// when it is the shipped default, so that "this project is General"
 		// and "this project predates the field" stay different answers -- the
 		// first has to be able to switch a machine back off Showcase.
-		Style:   a.promptPickName("cut"),
-		VidDir:  a.relToRoot(a.vidDir),
-		AudDir:  a.relToRoot(a.audDir),
-		Context: a.sessionCtx(),
-		Produce: prod,
-		Publish: a.currentPublish(),
+		Style:       a.promptPickName("cut"),
+		VidDir:      a.relToRoot(a.vidDir),
+		AudDir:      a.relToRoot(a.audDir),
+		Context:     a.sessionCtx(),
+		NoNarration: a.narrOff,
+		Produce:     prod,
+		Publish:     a.currentPublish(),
 	}
 }
 
@@ -603,6 +609,7 @@ func (a *App) applyProject(p Project) {
 		a.applyStyle(p.Style)
 	}
 	a.applySessionCtx(p.Context)
+	a.applyNarrOff(p.NoNarration)
 	a.migrateHints(p)
 	a.applyProdSettings(p.Produce)
 	a.applyPublish(p.Publish)

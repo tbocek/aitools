@@ -40,6 +40,92 @@ import (
 // and the step is right there in each file's name.
 func (a *App) llmDir() string { return filepath.Join(a.outDir, "llm") }
 
+// ---- one page per run --------------------------------------------------------
+//
+// A run is several calls -- the cut, then its captions batch by batch, then its
+// effects -- and each one used to be a file of its own. Reading what happened
+// meant opening nine of them in the order their names implied and holding the
+// thread across the tabs; the question is never "what did call four say", it is
+// "what did this run do", and that answer was spread over a directory listing.
+//
+// So the run gets a page. Every call appends a section to it, the link in the
+// log is the same link all run long, and a refresh mid-call shows the reply
+// arriving at the bottom of everything that came before it.
+//
+// The finished sections are kept in memory rather than parsed back off the
+// page: the file is rewritten whole at the end of every call, which is the
+// same write the single-call page always did, and holding the HTML costs a few
+// hundred kB for the length of a run.
+
+// beginRun starts a page, named for the step whose first call opened it. Every
+// step's runner calls qReset at its start, which clears the page so the next
+// call opens a fresh one -- so a run is exactly the calls between two qResets,
+// and no step has to name itself twice.
+func (a *App) beginRun(step string) {
+	if a.outDir == "" {
+		return
+	}
+	a.llmMu.Lock()
+	defer a.llmMu.Unlock()
+	a.runName = fmt.Sprintf("%s-%s.html", time.Now().Format("0102-150405"), step)
+	a.runSecs = nil
+	a.runN = 0
+}
+
+// runPagePath is the file, or "" when no run has begun (a call outside a run,
+// or a headless one).
+func (a *App) runPagePath() string {
+	if a.outDir == "" || a.runName == "" {
+		return ""
+	}
+	return filepath.Join(a.llmDir(), a.runName)
+}
+
+// writeRunPage puts the page down as it stands: every finished call, then the
+// one in flight if there is one. tail is left unclosed for the streaming
+// reply to be appended to, exactly as the single-call page always did.
+func (a *App) writeRunPage(tail string, open bool) *os.File {
+	path := a.runPagePath()
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(a.llmDir(), 0o755); err != nil {
+		a.logfIdle(">>>   could not keep the exchange: %v", err)
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString(runPageHead(a.runName))
+	a.llmMu.Lock()
+	for _, sec := range a.runSecs {
+		b.WriteString(sec)
+	}
+	a.llmMu.Unlock()
+	b.WriteString(tail)
+	if !open {
+		b.WriteString("</body></html>\n")
+		if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+			a.logfIdle(">>>   could not keep the exchange: %v", err)
+		}
+		return nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		a.logfIdle(">>>   could not keep the exchange: %v", err)
+		return nil
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
+		f.Close()
+		return nil
+	}
+	return f
+}
+
+func runPageHead(name string) string {
+	return fmt.Sprintf("<!doctype html>\n<html><head><meta charset=\"utf-8\">"+
+		"<title>%s -- Autocut run</title>\n<style>%s</style></head><body>\n",
+		html.EscapeString(name), chatCSS)
+}
+
 // chatRec is one exchange being recorded: opened by recordChatStart when the
 // request goes out, grown by stream while the reply arrives, completed by
 // done. A nil recorder is valid and inert -- headless callers get one, and
@@ -50,6 +136,7 @@ type chatRec struct {
 	thinking bool
 	msgs     []map[string]any
 	name     string
+	n        int      // which call of the run this is
 	f        *os.File // the page, held open so the reply can be appended live
 	streamed int      // how much of the reply is already on the page
 }
@@ -64,37 +151,29 @@ func (a *App) recordChatStart(step string, thinking bool, msgs []map[string]any)
 	if a.outDir == "" {
 		return nil // headless (tests): nowhere agreed to hold the files
 	}
+	if a.runName == "" {
+		a.beginRun(step) // a call outside any run still gets a page of its own
+	}
 	a.llmMu.Lock()
 	a.llmSeq++
-	// the clock orders files across runs, the counter inside a same-second burst
-	name := fmt.Sprintf("%s-%02d-%s.html", time.Now().Format("0102-150405"), a.llmSeq, step)
+	a.runN++
+	n := a.runN
+	name := a.runName
 	a.llmMu.Unlock()
-	c := &chatRec{a: a, step: step, thinking: thinking, msgs: msgs, name: name}
+	c := &chatRec{a: a, step: step, thinking: thinking, msgs: msgs, name: name, n: n}
 	text, imgs := chatSent(msgs)
 	a.logfIdle(">>> %s: %s of text and %d image(s) went to the LLM", step, sizeOf(text), imgs)
-	// the page is created now and held open: everything sent, then an open
-	// assistant section that stream appends the reply into as it arrives. Any
-	// failure here just loses the live page -- done rewrites the whole file,
-	// and the disk may be kinder then.
-	if err := os.MkdirAll(a.llmDir(), 0o755); err != nil {
-		a.logfIdle(">>>   could not keep the exchange: %v", err)
-		return c
+	// the section is written now and the file held open: everything sent, then
+	// an open assistant block that stream appends the reply into as it
+	// arrives. Any failure here just loses the live page -- done rewrites the
+	// whole file, and the disk may be kinder then.
+	c.f = a.writeRunPage(chatSection(n, step, a.readConf().Model, thinking, msgs, "", "", 0, nil, true), true)
+	if c.f != nil && n == 1 {
+		path := a.runPagePath()
+		glib.IdleAdd(func() {
+			a.logPath(">>>   this run's exchanges, images included: ", filepath.Join("llm", name), path)
+		})
 	}
-	path := filepath.Join(a.llmDir(), name)
-	f, err := os.Create(path)
-	if err != nil {
-		a.logfIdle(">>>   could not keep the exchange: %v", err)
-		return c
-	}
-	if _, err := f.Write(chatHTML(step, a.readConf().Model, thinking, msgs, "", "", 0, nil, true)); err != nil {
-		a.logfIdle(">>>   could not keep the exchange: %v", err)
-		f.Close()
-		return c
-	}
-	c.f = f
-	glib.IdleAdd(func() {
-		a.logPath(">>>   the whole exchange, images included: ", filepath.Join("llm", name), path)
-	})
 	return c
 }
 
@@ -151,8 +230,9 @@ func (c *chatRec) done(reply, stop string, took time.Duration, callErr error) {
 	switch {
 	case callErr != nil:
 	case stop == "length":
-		// the server stopped it, not the model: the answer ends mid-word and
-		// everything downstream would report it as a parse error
+		// the server stopped it, not the model: whichever half it was writing
+		// ends mid-word, and everything downstream would report the answer as
+		// a parse error and the reasoning as a model that gave up
 		verdict += " — cut off at the model's token limit"
 	case strings.TrimSpace(answer) == "":
 		verdict += " — the model answered nothing at all"
@@ -164,19 +244,11 @@ func (c *chatRec) done(reply, stop string, took time.Duration, callErr error) {
 	if p := chatPreview(reply); p != "" {
 		c.a.logfIdle(">>>   the reply begins: %s", p)
 	}
-	if err := c.write(reply, stop, took, callErr, false); err != nil {
-		c.a.logfIdle(">>>   could not keep the exchange: %v", err)
-	}
-}
-
-// write puts the page down as it stands. Both moments come through here, so
-// the pending page and the finished one are the same file by construction.
-func (c *chatRec) write(reply, stop string, took time.Duration, callErr error, pending bool) error {
-	if err := os.MkdirAll(c.a.llmDir(), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(c.a.llmDir(), c.name),
-		chatHTML(c.step, c.a.readConf().Model, c.thinking, c.msgs, reply, stop, took, callErr, pending), 0o644)
+	sec := chatSection(c.n, c.step, c.a.readConf().Model, c.thinking, c.msgs, reply, stop, took, callErr, false)
+	c.a.llmMu.Lock()
+	c.a.runSecs = append(c.a.runSecs, sec)
+	c.a.llmMu.Unlock()
+	c.a.writeRunPage("", false)
 }
 
 // chatSent measures a request the way the preview reports it: how much text,
@@ -250,10 +322,16 @@ details summary{color:#666;cursor:pointer}
 // images ride along as the data URLs they were sent as, and the thinking sits
 // behind a fold so the answer is what the eye lands on.
 func chatHTML(step, model string, thinking bool, msgs []map[string]any, reply, stop string, took time.Duration, callErr error, pending bool) []byte {
+	return []byte(runPageHead(step) +
+		chatSection(1, step, model, thinking, msgs, reply, stop, took, callErr, pending))
+}
+
+// chatSection is one call on the run's page: what was sent, then what came
+// back. The page is the sections in order under one header (writeRunPage), and
+// a pending section is left unclosed so the streaming reply appends into it.
+func chatSection(n int, step, model string, thinking bool, msgs []map[string]any, reply, stop string, took time.Duration, callErr error, pending bool) string {
 	esc := html.EscapeString
 	var b strings.Builder
-	fmt.Fprintf(&b, "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>%s -- Autocut LLM exchange</title>\n<style>%s</style></head><body>\n",
-		esc(step), chatCSS)
 	mode := "execute"
 	if thinking {
 		mode = "thinking"
@@ -262,8 +340,8 @@ func chatHTML(step, model string, thinking bool, msgs []map[string]any, reply, s
 	if pending {
 		status = "reply pending"
 	}
-	fmt.Fprintf(&b, "<h1>%s</h1>\n<p class=\"meta\">%s · model %s · %s mode · %s</p>\n",
-		esc(step), time.Now().Format("2006-01-02 15:04:05"), esc(model), mode, status)
+	fmt.Fprintf(&b, "<hr><h1>%d. %s</h1>\n<p class=\"meta\">%s · model %s · %s mode · %s</p>\n",
+		n, esc(step), time.Now().Format("2006-01-02 15:04:05"), esc(model), mode, status)
 	if callErr != nil {
 		fmt.Fprintf(&b, "<p class=\"err\">the call failed: %s</p>\n", esc(callErr.Error()))
 	}
@@ -294,7 +372,7 @@ func chatHTML(step, model string, thinking bool, msgs []map[string]any, reply, s
 		// reply right here as it arrives. Browsers render the unclosed tags
 		// fine, and the finished page replaces the whole file anyway.
 		b.WriteString("<pre>")
-		return []byte(b.String())
+		return b.String()
 	}
 	think, answer := splitThink(reply)
 	if think != "" {
@@ -315,13 +393,17 @@ func chatHTML(step, model string, thinking bool, msgs []map[string]any, reply, s
 		// fold full of reasoning is a model that thought and never wrote; an
 		// empty page with nothing behind it is a server that sent nothing.
 		msg := "(empty reply)"
-		if think != "" {
+		switch {
+		case stop == "length":
+			// the budget ran out inside the reasoning: the fold above ends
+			// mid-sentence and there was never going to be an answer after it
+			msg = "(no answer — the reasoning above ran into the model's token limit and stopped there)"
+		case think != "":
 			msg = "(no answer — the model spent the call thinking; the reasoning is folded above)"
 		}
 		b.WriteString("<p class=\"meta\">" + msg + "</p>\n")
 	}
-	b.WriteString("</body></html>\n")
-	return []byte(b.String())
+	return b.String()
 }
 
 // logPath is logf with a tail that opens. The path is drawn like a link and a

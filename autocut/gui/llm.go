@@ -59,6 +59,19 @@ type toolCall struct {
 	} `json:"function"`
 }
 
+// How much the server may write in one answer, reasoning included.
+//
+// The thinking ceiling is the one that has been hit: a cut over a 28-minute
+// session came back with 68 kB of reasoning that stopped mid-sum and no answer
+// at all -- the model was still working, and the budget ran out under it.
+// Reasoning is where a long timeline gets read, and a job that reasons its way
+// through a thousand stamped lines needs room to; a plain answer is a page of
+// JSON and has never come close to its own.
+const (
+	thinkTokens = 65536
+	plainTokens = 8192
+)
+
 // chatReply is what one round returns: words, or calls, or both.
 type chatReply struct {
 	Content string
@@ -245,11 +258,11 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool,
 	}
 	if thinking {
 		body["temperature"] = 1.0
-		body["max_tokens"] = 32768
+		body["max_tokens"] = thinkTokens
 		body["chat_template_kwargs"] = map[string]any{"preserve_thinking": true}
 	} else {
 		body["temperature"] = 0.6
-		body["max_tokens"] = 8192
+		body["max_tokens"] = plainTokens
 		body["chat_template_kwargs"] = map[string]any{
 			"preserve_thinking": true, "enable_thinking": false,
 		}

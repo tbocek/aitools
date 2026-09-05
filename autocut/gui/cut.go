@@ -61,6 +61,13 @@ const (
 	minSegLn = 1.0 // segments shorter than this are dropped when editing
 	undoDeep = 50  // how many edits back Undo reaches
 	edgeGrab = 6.0 // px either side of a clip edge that hovers and trims it
+	// how far the pointer must travel before a press on something held is a
+	// DRAG of it rather than a click on it. Nobody double-clicks without
+	// moving the mouse a pixel or two, and every one of those pixels used to
+	// be a move: the second press landed on a clip the first had taken in
+	// hand, the wiggle slid it, and the picture jumped to the clip's start to
+	// show where it had gone. A few px of stillness is what a click is.
+	dragSlop = 4.0
 	// px either side of the HELD edge that a press takes hold of it by. Wider
 	// than edgeGrab because by then you are aiming at something you can see --
 	// the white bar -- and because missing costs more: a press that lands clear
@@ -87,11 +94,13 @@ const (
 	// and the drag's end always seeks exactly where it landed.
 	scrubEvery = 90 * time.Millisecond
 
-	// How the run bar is shared between Suggest's two calls. Choosing gets the
-	// bigger half because it is the one that can be asked again: its answer is
-	// validated and rejected up to three times, where the audit runs once and is
-	// kept or discarded whole.
-	suggestChooseShare = 0.6
+	// How the run bar is shared between Suggest's three calls. Choosing gets
+	// the most because it is the long one -- the whole timeline, thought over,
+	// and asked again up to three times -- where the captions and the effects
+	// see only the kept clips and answer in a minute.
+	suggestChooseShare = 0.7
+	// how long a cut aims at when the user context names no length.
+	defTargetSecs = 300.0
 	// the most segments the cut prompt asks for. Only a fallback denominator,
 	// for a reply whose segments have no readable end to place them by.
 	suggestMaxSegs = 20.0
@@ -135,7 +144,7 @@ Work in this order.
 
 4. Shape the whole. The first segment establishes what this is: wherever the speakers say what they are doing or what they are after. Set busy stretches (EVENT says hectic) against calm ones. Finish on something that reads as an ending -- the result, the verdict, the last word.
 
-Each segment starts a beat before the first word you want and ends after the reaction to it: 8 seconds to about a minute, longer when a moment needs its whole build-up and payoff, and longer again under a speed effect (see below). These are rough guides, not limits. How many: about one segment per 20 seconds of target length, never fewer than two.` + fxRules + cutReply
+Each segment starts a beat before the first word you want and ends after the reaction to it. About one segment per 20 seconds of target length, never fewer than two.` + cutReply
 
 const suggestSystem = `You choose the moments for a highlight video of a gaming session, cut for YouTube. Someone who was not there should enjoy it from start to finish.
 
@@ -147,7 +156,7 @@ Work in this order.
 
 3. Pick from that list until the target length is spent, in this order: the first segment, wherever the speakers say what they are doing or what they are after; then the peaks with the loudest reaction; then enough calm stretches to set the loud ones against, because all peaks is as tiring as none. Split the session into four equal quarters and take at least one segment from each. The last segment is something that feels like an ending.
 
-Each segment starts a beat before the first word you want and ends after the reaction to it: 8 seconds to about a minute, longer when a moment needs its whole build-up and payoff, longer again under a speed effect (see below), and a joke gets its setup. These are rough guides, not limits. How many: about one segment per 20 seconds of target length, never fewer than two.` + fxRules + cutReply
+Each segment starts a beat before the first word you want and ends after the reaction to it, and a joke gets its setup. About one segment per 20 seconds of target length, never fewer than two.` + cutReply
 
 // ratingSystem is the cut for a session whose shape is a verdict: a group plays
 // several things and ranks them. suggestSystem cuts for the best moments, which
@@ -180,7 +189,7 @@ Work in this order.
 
 5. Spend what is still left, in this order: what this is, where the speakers say what they are doing and how the scoring works; the line-up, where the session shows the items before playing them -- a menu, a list, the names read out; then the items the group argued about or changed their mind on, and funny lines that land on items already covered.
 
-You cannot gather the items into a montage: cover each one where it happens on the timeline. Roughly 8 seconds to a minute each, longer under a speed effect (see below); a verdict or a reveal runs as long as it needs. End a segment on the judgement -- someone saying what they think -- not the moment the action stops. If the timeline does not show where an item was rated, take the nearest stretch where it is discussed.` + fxRules + cutReply
+You cannot gather the items into a montage: cover each one where it happens on the timeline, and a verdict or a reveal runs as long as it needs. End a segment on the judgement -- someone saying what they think -- not the moment the action stops. If the timeline does not show where an item was rated, take the nearest stretch where it is discussed.` + cutReply
 
 // showcaseSystem is the cut for a session whose subject is a THING rather than
 // a stretch of time: an unboxing, a paint job, a new unit, a printed model, a
@@ -200,26 +209,11 @@ You cannot gather the items into a montage: cover each one where it happens on t
 // wording exists to prevent.
 //
 // One paragraph or bullet per line, unwrapped: see describeSystem.
-const showcaseSystem = `You cut a showcase: a session where someone shows a thing -- a model, a figure, a unit, a tower, a machine, a build, a piece of kit -- to a viewer who wants to see it. They should finish knowing what it is, what it looks like up close, and what it does.
+const showcaseSystem = `You cut a showcase: someone is showing a thing to a viewer who wants to see it.
 
-Work in this order.
+Divide the target length by the number of things shown, and spend each thing's share in this order: what it is, the whole of it (the pass where the camera holds on it or goes around it -- the segment most often missing), the close views, it doing what it is for, the verdict on it.
 
-1. Name the subject. The USER CONTEXT says what is being shown -- take its word for it, spelled its way. With none, take it from the speech and the EVENT lines: what is on the table, in the hand, on the screen.
-
-2. Count the things. A showcase of towers is one entry per tower; a showcase of one figure is one entry. Find them where the speech or an EVENT line names one, and write each down with the second it first enters and the second the session leaves it -- everything about it is between those two, and nothing outside them belongs to it. Several things is the same job repeated, and going long on the first leaves the last with nothing.
-
-3. Budget: divide the target length by the number of things. That is each one's share before you look at any of them. A thing the user context calls out may take more; the extra comes out of the others and the total does not move.
-
-4. For each thing, in the order they come up, spend its share on these, in this order:
-- What it is: where it is first named or first properly in frame. One segment, and the viewer knows what they are looking at.
-- The whole of it: the pass where the camera holds on it or goes around it, so its size, shape and finish are seen once. Every showcase needs this segment and it is the one most often missing. A slow pan runs as long as the camera takes: cutting it in half wastes the one shot that shows the whole thing.
-- The details: the close views, the parts the speaker points out, the things they say are good or wrong. This is where most of the share goes: a close view with the explanation over it is the best segment this video has.
-- It doing what it is for: assembled, switched on, placed, played, driven, fired, worn, put next to something for scale.
-- The verdict on it: what the speaker makes of it, what it cost, whether they would have another. End the thing here.
-
-5. Check every segment against the EVENT lines: the thing must be on screen. A stretch where it is out of frame is not a showcase segment however good the line over it is. Then drop repeats: two segments of the same view of the same part is one segment -- every segment shows something the viewer has not seen yet. Skip the box, the packaging and the setting-up unless something in it is worth seeing.
-
-Roughly 8 seconds to a minute each, longer under a speed effect (see below); a pan as long as it takes.` + fxRules + cutReply
+The thing must be on screen: a stretch where it is out of frame is not a showcase segment however good the line over it is. Two segments of the same view of the same part are one segment.` + cutReply
 
 // shortsStyleName is how the Shorts wording is picked and stored; the style
 // clamp in suggestClicked reads the same name, so the two cannot drift apart.
@@ -244,24 +238,6 @@ func shortsTargetFix(t float64) (float64, bool) {
 		return shortsLen, true
 	}
 	return t, false
-}
-
-// styleTarget makes the target box follow a wording that has a length of its
-// own. The run already aimed at 25 s when the Shorts style met a long-cut
-// target, but it said so only in the log, and the box went on showing a
-// number the run was not going to use. Correcting the box on the pick is the
-// same judgement made where it can be seen -- and overridden: the box stays a
-// box. Called from pickPromptStyle, so a project whose saved pick is Shorts
-// gets the box set on load too; before the page exists it is a no-op.
-func (a *App) styleTarget(key, name string) {
-	if key != "cut" || name != shortsStyleName || a.ed == nil || a.ed.target == nil {
-		return
-	}
-	cur := 0.0
-	fmt.Sscanf(a.ed.target.Text(), "%f", &cur)
-	if fixed, changed := shortsTargetFix(cur); changed {
-		a.ed.target.SetText(strconv.Itoa(int(fixed)))
-	}
 }
 
 // shortsSystem is the cut for a YouTube Short: one subject, 20 to 30 seconds,
@@ -329,17 +305,76 @@ Effects, for a phone.
 // has already chosen cannot act on it; told both at once, it can.
 //
 // One paragraph or bullet per line, unwrapped: see describeSystem.
-const fxRules = `
+// speedSystem is the wording of the speed pass: the third call, made once the
+// cut stands and its captions are placed. It is given the clips, how long each
+// is, and which of them carry captions, and it answers a rate per clip.
+//
+// Speed used to ride on the cut's own reply, and the length arithmetic with
+// it: the same answer chose the moments AND made them fit the target. That is
+// the pairing that ate ten-minute calls. Here the arithmetic is the whole job,
+// the brief is a list of clips rather than a timeline, and an answer that
+// misses can be corrected in seconds.
+//
+// It also comes AFTER the captions for a reason that has nothing to do with
+// call sizes: a caption over a stretch at 4 flashes past in a quarter of its
+// reading time. Which lines become captions is the captions pass's decision,
+// so nothing before it can know which clips must stay at 1.
+//
+// One paragraph or bullet per line, unwrapped: see describeSystem.
+const speedSystem = `You decide how fast each clip of a finished cut plays. The clips are chosen and are not yours to change; you answer with a rate for the ones that should run fast, and nothing else.
 
-Effects.
+The arithmetic is the job. You are given the footage F the clips come to, the target T, and the range the answer is judged by. To fit F seconds into T at rate r, (F-T)*r/(r-1) seconds must run at r and the rest at 1: F 850, T 720, r 4 means 173 seconds fast. If that is more than the footage you may speed, say so by speeding what you can -- the range has room in it.
 
-- Few and deliberate: three or four across five minutes of finished video, each with a reason you could say out loud. Not one on every segment, and not none.
-- That count is a DEFAULT, and the USER CONTEXT outranks it. Asked for a caption on each thing as it is named, write those captions. Asked to speed every dull stretch, write those speeds. Asked for none, write none. A rule here that contradicts what the person editing asked for is this list being wrong about their video.
-- The one thing this list cannot become is a subtitle track. One text effect per line of speech is hundreds of them -- more than a single answer can hold, and not what these are for. Putting everything said on screen is the narration step with its captions voice, which writes the lines and Produce burns into the picture; a cut that tries to do it here gets cut off in the middle and lands nothing at all.
-- Pick the kind by what the moment needs, not by variety. Something important on screen and easy to miss -> zoom onto it. A viewer who would not know what is happening -> text saying it. A stretch that must be shown but not watched -> speed. The one beat worth landing on -> stop. Sound that does not sit right against the rest -> volume.
-- A stretch that has to be shown but not watched is ONE segment with a speed effect over it, never a row of small segments with the dull seconds left out. The cut is what the video contains; the effects are how it plays. Cutting between every line of speech to skip the pauses is how an answer turns into hundreds of segments and stops being a cut.
-- A segment under a speed effect may be two to four times the ordinary length -- minutes rather than a minute -- because it costs the finished video its seconds DIVIDED by the rate: two minutes at 4 spends thirty seconds of the target. That is what makes showing a long dull stretch affordable, and it is a rough guide like the others, not a limit.
-- A zoom runs two to four seconds, onto the score, the face, the mistake, while the speech is about it. A caption is under about eight words -- the name of a thing as it is first shown, the number someone just said, what the footage does not say out loud -- and says something true, from the material or from a search. speed 2 rushes a few seconds of the walk back or the loading screen, 4 to 8 a whole minute of it; 0.5 savours one impact, once in a video. One stop per video, on the beat everything else was leading to. volume for a stretch recorded too quiet or too loud, for ducking a background under a line that matters, and for muting seconds the session says are not to be heard.`
+- Take the fast seconds from the clips with nothing being said: the walk back, the loading, the waiting. Longest first.
+- A clip with captions on it runs at 1. Words on screen at 4 are gone before they are read, and the request says which clips carry them.
+- speed 2 rushes a few seconds, 4 to 8 a whole minute. Never below 1 unless the user context asks for slow motion.
+- A clip is one rate from end to end. Half a clip fast is two clips, and the cut is not yours to change.
+
+Answer in the speed pass's shape.`
+
+// fxRules is the wording of the effects pass: the third call, made once the
+// cut stands and its captions are written. It sees the kept clips and what was
+// said over each, and answers with the decorations -- zooms, stops, volume --
+// each pinned to a clip. It used to ride on every cut wording, so that one
+// reply chose the moments, did the length arithmetic, and wrote the effects;
+// the three jobs interfered, and the effects half is the one that kept eating
+// the call. Here it has the kept clips in front of it and nothing to choose.
+//
+// One paragraph or bullet per line, unwrapped: see describeSystem.
+const fxRules = `You decorate a cut that has already been chosen. The clips are in front of you, with what was said and shown over each; you add the effects that make a moment land, and nothing else -- the segments are not yours to change, and captions and speed are written elsewhere.
+
+- Few and deliberate: three or four across five minutes of finished video, each with a reason you could say out loud. Not one on every clip, and not none.
+- That count is a DEFAULT, and the USER CONTEXT outranks it. Asked for more, write more; asked for none, write none.
+- Pick the kind by what the moment needs, not by variety. Something important on screen and easy to miss -> zoom onto it. The one beat everything else was leading to -> stop. Sound that does not sit right against the rest -> volume.
+- A zoom runs two to four seconds, onto the score, the face, the mistake, while the speech is about it. One stop per video, a second or two on the beat the video is about. volume for a stretch recorded too quiet or too loud, for ducking a background under a line that matters, and for muting seconds the user context says are not to be heard: 1 as recorded, 0 silent.
+- Every effect names its clip and its seconds FROM THAT CLIP'S START, inside the clip: a zoom at 0 to 3 of clip 4 starts where clip 4 does.
+
+Answer in the effects' shape.`
+
+// effectsSystem is fxRules under the name the bench's conventions expect: a
+// wording ends in System, and the registry test counts them by that.
+const effectsSystem = fxRules
+
+// captionSystem is the wording of the captions pass: the second call, clip by
+// clip, once the cut stands. Every line said over a clip becomes a text effect
+// in the clip's own seconds -- which is exactly the job that broke the single
+// call every time it was asked there. Two hundred captions over a whole
+// session is an answer no reply can hold and a reasoning no call can finish;
+// ten captions over one clip is a paragraph.
+//
+// The default is every line, because the words on screen were what the person
+// asked for. What the USER CONTEXT says about them -- fewer, cleaner, only the
+// verdicts, none at all -- outranks the default, as everywhere.
+//
+// One paragraph or bullet per line, unwrapped: see describeSystem.
+const captionSystem = `You put what was said on screen. You are given a few clips of a finished cut, each with the lines spoken over it, stamped in seconds from that clip's start. You answer with the text effects for each clip, and nothing else: the clips are chosen and are not yours to change.
+
+- One text effect per spoken line, by default: it starts when the line starts, ends when the line ends, and says what was said. The user context outranks this default -- asked for fewer, or only certain lines, or none, do that.
+- Clean the words as a subtitler would: no ehm, no ehh, no stutters ("I I" is "I"), no repeated words, sentence case, the swearing kept. Otherwise the speaker's own words, not a paraphrase.
+- A line that is not about the video -- an aside to the editor, "cut this part" -- is not captioned. The user context says which lines are directions.
+- Seconds are offsets from the clip's start, and every effect lies inside its clip. A line that runs past the clip's end is captioned up to the end.
+
+Answer in the captions' shape.`
 
 // cutReply is the end of every cut wording, Shorts included: where a segment
 // may start and end, the length arithmetic, the reply, and the check to run
@@ -354,13 +389,11 @@ Effects.
 // at a half does not.
 const cutReply = `
 
-Where a segment ends: on the payoff, never just before it. A moment that only makes sense because of something earlier needs that earlier thing in the cut too, or neither. Too long: shorten the weakest segments. Too short: extend to the payoff first, then add the next moment on your list.
+A segment ends on the payoff, never just before it, and a moment that only makes sense because of an earlier one takes that one too or neither. Segments run from about 8 seconds to a minute, longer where a stretch has to be shown but not watched -- keep such a stretch whole, as ONE segment: it is played fast afterwards, not cut into pieces with the dull seconds left out.
 
-Answer in the cut's shape. Before you answer, add up how long your segments RUN -- end minus start, and that divided by the rate wherever a speed effect covers them, because a stretch at 4 costs the video a quarter of its seconds -- and check: the total is inside the accepted range you were given; every segment has an EVENT line inside it; every start is later than the end before it; every effect lies inside one of your segments; everything the user context names is in.
+Answer in the cut's shape: the segments alone. How fast each plays, what is captioned over it and what is drawn on it are asked for afterwards, clip by clip, once the cut stands.
 
-One pass at the total. Land inside the range and answer; do not trim and re-add to reach an exact number. If the total is outside it you will be told what it came to and given your answer back to correct, which costs one short reply -- where working it out to the second before answering costs the whole call.
-
-When the user context fixes how much footage to show -- half the session, every round, the whole build -- and that is more than the target, speed is what closes the gap, and it is arithmetic before it is taste. Footage F seconds, target T, rate r: the seconds that must run at r are B = (F - T) * r / (r - 1), and the rest run at 1. F 850, T 720, r 4: B = 130 * 4/3 = 173 seconds at 4 and 677 at 1. B at or below 0 means no speed is needed. B above F means that footage cannot be squeezed to that target at that rate: keep less of it, or use a higher rate, and say which in the reply. Take the B seconds from the stretches where nothing is said and nothing changes, longest first, until they add up -- one segment each, with its speed on it.`
+Check before you answer: every segment has an EVENT line inside it, every start is later than the end before it, everything the user context names is in, and the footage they come to -- end minus start, added up -- lands in the range you were given. Anywhere inside it is right; do not trim towards its middle.`
 
 // cutSeg is one piece of the finished video. Normally it is a stretch of the
 // session: S and E are session seconds and the footage under them is what plays.
@@ -635,11 +668,6 @@ type cutEditor struct {
 	srcHt     int    // the height the source area was last asked for; see fitSrc
 	playhead  float64
 	hasPlay   bool
-	// where ⏸ stopped, and whether it did. ▶ has places it starts from that
-	// are not the line (a held edge, a held clip); resuming is not one of
-	// them, and this is how the two are told apart. See toggle.
-	resumeT  float64
-	resumeOn bool
 	// the row the preview is WATCHING, plus one; 0 for the cut's own answer,
 	// so a zero editor answers to the cut. Inside a kept scene the preview
 	// shows the scene's camera (camAt), which leaves no way to see what
@@ -828,6 +856,9 @@ type cutEditor struct {
 	// this one is the selection's verb and nothing else's (cut_selrm.go), so
 	// it can cut a hole in a scene, which the green bar's ✕ cannot.
 	remBtn *gtk.Button
+	// ✗ Clear: the whole cut off the timeline at once. Beside Undo and Revert
+	// (cut_clear.go).
+	clearBtn *gtk.Button
 }
 
 // ---- data ------------------------------------------------------------------
@@ -3993,6 +4024,10 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 			ed.drawPairStrip(cr, v, *au, lt+ed.laneH(), vx0, vx1)
 		}
 	}
+	// which scenes silence the sound filmed with their own camera, on the
+	// strips under the pictures: the same grey the band below carries, for the
+	// same reason (cut_hear.go)
+	ed.drawSilences(cr, ed.pairSilences(), vx0, vx1)
 	// which row the held scene is SHOWN from, said on the rows themselves
 	// (cut_cam.go) -- and under it, whether it hears the camera it is shown
 	// from, said on that camera's own strip (cut_hear.go). One column of
@@ -4448,52 +4483,29 @@ func (ed *cutEditor) toggle() {
 		ed.monRow = 0
 		ed.redrawTracks() // the dashed outline goes with it
 	}
-	// ⏸ then ▶ is one gesture -- "let me look at that" -- and it has to put the
-	// picture back where it stopped it. Without this the second press was read
-	// as a fresh start and took the line to whatever was held: pause halfway
-	// through the clip you are working on, press ▶, and you are at its first
-	// frame again, watching the part you had just watched.
+	// ▶ starts where the red line is. That is the whole rule, both buttons.
 	//
-	// The line's own position is the test, not a flag: anything that moves it
-	// while paused -- a click on a track, a frame step with nothing held -- is
-	// the hand choosing a new place, and a press after that starts there. A
-	// step that moves the HELD thing instead leaves the line alone, so it
-	// resumes, which is what "step the clip and carry on" should do.
-	resume := ed.resumingHere()
-	if ed.playing() {
-		ed.markPause() // this press is the ⏸
-	} else {
-		ed.resumeOn = false // and this one spends what it left
-	}
-	// Where ▶ starts, which is not always where the line is. Only on the way
-	// into playing, whichever branch takes it: ⏸ has to stop where it is.
-	if !ed.playing() {
-		switch s := ed.heldSeg(); {
-		// ▶✂ is asked a different question from ▶ -- not "show me the thing I
-		// am editing" but "how does the FINISHED video run from here" -- and
-		// here is the red line, wherever the hand last put it. Inside a clip
-		// that is a second the cut keeps, so it plays from there; outside one
-		// there is nothing to play, so the line moves to the next clip and
-		// plays from that (cutOnlySnap). Holding a clip is how you edit it, not
-		// how you choose where the video starts, so neither hold below moves
-		// the line here: winding back to a boundary you were not asking about
-		// is the same chore in reverse.
-		case ed.cutOnly:
-			ed.cutOnlySnap()
-		// resuming: the line is where ⏸ left it, and that is where the
-		// picture goes on from. Under ▶✂ above it too -- cutOnlySnap only
-		// moves a line standing in a gap, which a paused one is not.
-		case resume:
-		// With a clip edge held, ▶ plays from the EDGE. It is the thing you are
-		// working on and the only reason to press play while holding it is to
-		// watch what you have just trimmed to; starting from wherever the
-		// playhead was last left meant winding back to the boundary by hand
-		// every time.
-		case ed.edgeOn:
-			ed.setPlayhead(ed.edgeTime())
-		case s != nil:
-			ed.setPlayhead(s.S) // a held clip plays from its own start, for the same reason
-		}
+	// It used to have exceptions, and they were all one idea: whatever is in
+	// hand is what you want to watch. A held clip edge started the preview at
+	// the edge, a held clip at the clip's own start, and ⏸ then ▶ needed a rule
+	// of its own (a remembered second, and a test that the line had not moved
+	// since) to escape the same jump and carry on where it stopped.
+	//
+	// Taking a scene in hand is the commonest press on this page -- it is what
+	// a click on the green does -- so the exception fired constantly and always
+	// the same way: the line thrown back to the scene's first frame, the part
+	// you had just watched played again, and no way to watch the middle of the
+	// scene you are editing but to put it down first. ▶✂ already refused both
+	// holds for the reason that turns out to be the general one -- holding a
+	// clip is how you edit it, not how you choose where the video starts -- and
+	// the two buttons disagreeing about where play begins was the last of it.
+	//
+	// What is left is not a hold. Under ✂ Cut only a line standing in a dropped
+	// stretch stands where the finished video has nothing at all, so it moves
+	// to the next clip (cutOnlySnap). Inside a clip -- which is where a pause
+	// leaves it -- it stays exactly where it is.
+	if !ed.playing() && ed.cutOnly {
+		ed.cutOnlySnap()
 	}
 	// what this scene hears, settled before the transport moves rather than in
 	// the showInsert below it: ▶ starts the recordings (syncMix), and a lane
@@ -4508,23 +4520,11 @@ func (ed *cutEditor) toggle() {
 	ed.a.updateRunControls()
 }
 
-// markPause remembers where the transport stopped, so the next ▶ can tell
-// "carry on" from "start". Only ⏸ writes it; ⏹ throws it away (stop).
-func (ed *cutEditor) markPause() { ed.resumeT, ed.resumeOn = ed.playhead, true }
-
-// resumingHere is whether ▶ is the second half of a ⏸ ... ▶ pair. The line's
-// own position is the test: it is where the pause left it, so anything that
-// has moved it since is the hand asking to start somewhere else instead.
-func (ed *cutEditor) resumingHere() bool {
-	return ed.resumeOn && math.Abs(ed.playhead-ed.resumeT) < 1e-6
-}
-
 func (ed *cutEditor) stop() {
 	if ed.player != nil {
 		ed.player.Stop()
 	}
-	ed.started = false  // ⏹ hands ▶ back to the step's own job, suggesting
-	ed.resumeOn = false // and there is nothing left to resume from
+	ed.started = false // ⏹ hands ▶ back to the step's own job, suggesting
 }
 
 // ---- page ------------------------------------------------------------------
@@ -4543,31 +4543,10 @@ func (a *App) buildCut() gtk.Widgetter {
 		a.logf("cut preview player: %v", err)
 	}
 
-	// Suggesting is this page's long job, and every other page's long job is the
-	// run bar's ▶. It used to be a "Suggest cut" button here as well, which left
-	// the page with two ways to start the same run and made ▶ mean Suggest only
-	// while the cut happened to be empty. The button is gone; what is left is the
-	// length it runs to, captioned with the button that now uses it.
-	tgtTip := "target seconds for the FIRST suggested cut, which ▶ in the run bar asks for; " +
-		"your own edits are never limited"
-	tgtLbl := gtk.NewLabel("")
-	tgtLbl.SetMarkup("<small>▶ target</small>")
-	tgtLbl.AddCSSClass("dim-label")
-	tgtLbl.SetTooltipText(tgtTip)
-	ed.target = gtk.NewEntry()
-	ed.target.SetText("300")
-	ed.target.SetMaxWidthChars(4)
-	ed.target.SetWidthChars(4) // it holds a number of seconds, not a sentence
-	ed.target.SetInputPurpose(gtk.InputPurposeDigits)
-	ed.target.SetTooltipText(tgtTip)
-	secs := gtk.NewLabel("s")
-	secs.AddCSSClass("dim-label")
-	secs.SetTooltipText("seconds")
-	// the number and its unit read as one control, so they sit closer than the
-	// bar's spacing; the caption goes underneath, with the other small print
-	tgtBox := gtk.NewBox(gtk.OrientationHorizontal, 2)
-	tgtBox.Append(ed.target)
-	tgtBox.Append(secs)
+	// Suggesting is this page's long job, and every other page's long job is
+	// the run bar's ▶. There is nothing here for it any more: the length it
+	// aims at is a sentence in the user context on Prepare ("about 12 min"),
+	// beside everything else the run is told.
 	ed.addBtn = gtk.NewButtonWithLabel("＋ Add")
 	add := ed.addBtn
 	add.AddCSSClass("suggested-action")
@@ -4614,6 +4593,14 @@ func (a *App) buildCut() gtk.Widgetter {
 		"the last suggestion — or, if you have not suggested yet, to the cut this page opened with")
 	ed.revertBtn.SetSensitive(false)
 	ed.revertBtn.ConnectClicked(func() { a.revertClicked() })
+	// Clear, beside Revert because they are the same kind of verb -- throw work
+	// away -- and different about which work: Revert goes back to the last
+	// suggestion, this one goes back to nothing at all. One Undo brings it
+	// back, which is what makes it a button rather than a question.
+	ed.clearBtn = gtk.NewButtonFromIconName("edit-clear-all-symbolic")
+	ed.clearBtn.SetTooltipText("Clear: take every kept stretch and every effect off the " +
+		"timeline, leaving the recordings as they were loaded (↶ Undo brings them back)")
+	ed.clearBtn.ConnectClicked(func() { ed.clearCut() })
 	ed.undoBtn = gtk.NewButtonFromIconName("edit-undo-symbolic")
 	ed.undoBtn.SetTooltipText("Undo — take back the last Add, Remove or Suggest (Ctrl+Z)")
 	ed.undoBtn.SetSensitive(false)
@@ -4826,11 +4813,14 @@ func (a *App) buildCut() gtk.Widgetter {
 	// bar is a long way to go to turn the game down
 	bar.Append(volumeCtl())
 	bar.Append(rule())
-	bar.Append(col(tgtBox, tgtLbl))
 	bar.Append(col(linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))
-	bar.Append(ed.aspectDD)
+	aspLbl := gtk.NewLabel("")
+	aspLbl.SetMarkup("<small>aspect</small>")
+	aspLbl.AddCSSClass("dim-label")
+	aspLbl.SetTooltipText("the shape of the finished video")
+	bar.Append(col(ed.aspectDD, aspLbl))
 	bar.Append(fxDD)
-	bar.Append(linked(ed.undoBtn, ed.redoBtn, ed.revertBtn))
+	bar.Append(linked(ed.undoBtn, ed.redoBtn, ed.revertBtn, ed.clearBtn))
 	// The two prompts this page sends -- the rules Suggest works to and the
 	// audit that reads its answer back -- were a dropdown and an Edit button
 	// here. They are on Prepare with all the others now (prepedit.go): a prompt
@@ -5107,6 +5097,14 @@ func (a *App) buildCut() gtk.Widgetter {
 			ed.syncSelBtns()
 		})
 		drag.ConnectDragUpdate(func(ox, oy float64) {
+			// nothing has moved yet and the pointer has barely left where it
+			// was pressed: this is still a click, and a click does not drag
+			// what it landed on
+			if (trimming && !ed.edgeDirty) || (moving && !ed.segDirty) {
+				if math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {
+					return
+				}
+			}
 			if trimming {
 				ed.moveEdgeTo(ed.tAtView(dragStartX+ox), true)
 				ed.showEdge(true) // the picture comes with it
@@ -5172,6 +5170,18 @@ func (a *App) buildCut() gtk.Widgetter {
 			}
 			if moving {
 				moving = false
+				// a press on the clip already in hand that went nowhere is a
+				// CLICK on it, and a click on the footage puts the red line
+				// where it landed -- the same thing it does everywhere else on
+				// the band. Without this a held clip was a hole in the page:
+				// every press inside it was read as the start of a move, so
+				// the one place you most want to put the line was the one
+				// place you could not.
+				if !ed.segDirty && math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {
+					ed.setPlayhead(ed.tAtView(dragStartX))
+					ed.segStatus()
+					return
+				}
 				// dragged up against the clip beside it, the two are one clip
 				// again: the drop is the join (cut_split.go). Asked before the
 				// write, so what goes on disk is the merged cut, and it says
@@ -5424,11 +5434,19 @@ func (a *App) buildCut() gtk.Widgetter {
 		// the effect AND opens its numbers (see the drag's end), so the second
 		// click of a double one has nothing left to mean and the branch below
 		// is only there to keep the press off the playhead.
+		// The second click of a double one. A click on the GREEN already takes
+		// that scene in hand (the drag's release, below), so on a kept stretch
+		// this has nothing left to do -- what it is still for is the footage
+		// the cut does not keep and the cards it does, neither of which is
+		// green and neither of which any single click picks up.
 		pick := gtk.NewGestureClick()
 		pick.SetButton(gdk.BUTTON_PRIMARY)
 		pick.ConnectPressed(func(n int, x, y float64) {
 			if n < 2 {
 				return
+			}
+			if ed.segOnGreen(x+ed.viewX, y) >= 0 {
+				return // the single click has it; a second one must not re-take it
 			}
 			area.GrabFocus()
 			if area == ed.srcArea && ed.fxHitLane(y) {

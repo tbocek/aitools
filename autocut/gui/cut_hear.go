@@ -366,6 +366,102 @@ func (ed *cutEditor) toggleLanesAll(bases []string, name string) {
 		"switch beside it brings it back (%d changed)", name, n))
 }
 
+// ---- what every scene hears, said on every scene -----------------------------
+
+// A lane a scene silences is drawn grey where that scene is, on every scene at
+// once rather than only the one in hand.
+//
+// It used to be the held scene's alone (drawHearBadges), and the whole-lane
+// switch beside the name is nothing but these same answers written to every
+// scene in one press (toggleLaneAll). So switching a lane off for the cut
+// changed one plate on a name that nobody was looking at, and left forty green
+// selections looking exactly as they had: the switch read as a state of its
+// own, kept somewhere else, that the cut knew nothing about. It is not one --
+// there is nothing to store and nothing that could disagree -- and the page
+// should not be able to give the other impression.
+//
+// A wash rather than a badge, because this is the answer for scenes nobody is
+// pointing at: at any zoom the tint is the part that reads, and forty plates
+// on forty scenes would be forty controls that are not there to press.
+
+// laneWash is a stretch of one lane to be greyed: timeline x, area y.
+type laneWash struct{ x0, x1, y0, y1 float64 }
+
+// laneSilences is one per lane a scene does not hear, in the recorders' band.
+//
+// The scene the badges are about is left out: drawHearBadges paints that one
+// itself, in the same grey, and painting it twice would make the scene under
+// the hand darker than every other silent scene for no reason anybody could
+// read off the page.
+func (ed *cutEditor) laneSilences() []laneWash {
+	auds := ed.sepAuds()
+	if len(auds) == 0 {
+		return nil
+	}
+	shown := ed.hearScene()
+	var out []laneWash
+	for i := range ed.segs {
+		s := &ed.segs[i]
+		if s.isInsert() || s == shown {
+			continue // an insert brings its own sound; no scene silences it
+		}
+		for _, au := range auds {
+			if s.hears(au.base) {
+				continue
+			}
+			if y0, y1, ok := ed.audLaneSpan(au.base); ok {
+				out = append(out, laneWash{ed.xOf(s.S), ed.xOf(s.E), y0, y1})
+			}
+		}
+	}
+	return out
+}
+
+// pairSilences is the same over the strips under the pictures: the sound
+// filmed with the camera each scene is SHOWN from, which is the only strip
+// with an answer to give (hearBadgesSrc's rule -- the render takes a clip's
+// own sound off the recording it is cut from).
+func (ed *cutEditor) pairSilences() []laneWash {
+	shown := ed.hearScene()
+	var out []laneWash
+	for i := range ed.segs {
+		s := &ed.segs[i]
+		if s.isInsert() || s == shown {
+			continue
+		}
+		v := pickVideoOn(ed.vids, s.Cam, s.S)
+		if v == nil || s.hears(v.base) {
+			continue
+		}
+		au := ed.pairAud(v.base)
+		if au == nil {
+			continue // a camera that filmed no sound has no strip to grey
+		}
+		y := ed.laneTop(v.lane) + ed.laneH()
+		out = append(out, laneWash{ed.xOf(s.S), ed.xOf(s.E),
+			y, y + float64(ed.lanes(*au))*waveLaneH})
+	}
+	return out
+}
+
+// drawSilences paints them, from inside each band's translation, in the grey
+// drawHearBadges gives a lane the held scene does not hear -- one colour for
+// one answer, wherever the page says it.
+func (ed *cutEditor) drawSilences(cr *cairo.Context, washes []laneWash, vx0, vx1 float64) {
+	cr.SetSourceRGBA(0.55, 0.55, 0.6, 0.3)
+	n := 0
+	for _, w := range washes {
+		if w.x1 < vx0 || w.x0 > vx1 {
+			continue
+		}
+		cr.Rectangle(w.x0, w.y0, w.x1-w.x0, w.y1-w.y0)
+		n++
+	}
+	if n > 0 {
+		cr.Fill()
+	}
+}
+
 // hearBadgesSrc is the badges on the paired strips, in the picture band. Only
 // the camera the scene is SHOWN from wears one: the render takes a clip's own
 // sound off the recording it is cut from (pickVideoOn), so silencing another
@@ -377,9 +473,12 @@ func (ed *cutEditor) hearBadgesSrc() []hearBadge {
 	}
 	s := ed.hearScene()
 	v := pickVideoOn(ed.vids, s.Cam, s.S)
+	if v == nil {
+		return nil // no footage on that row at this second
+	}
 	au := ed.pairAud(v.base)
-	if v == nil || au == nil {
-		return nil // no footage here, or a camera that filmed no sound
+	if au == nil {
+		return nil // a camera that filmed no sound
 	}
 	h := float64(ed.lanes(*au)) * waveLaneH
 	return []hearBadge{{v.base, cx, ed.laneTop(v.lane) + ed.laneH() + h/2, h, s.hears(v.base)}}

@@ -70,8 +70,7 @@ func (a *App) ctxBlock() string { return a.ctxBlockFor("cut") }
 
 // ctxBlockFor is the block as one job carries it. The speech rule under it is
 // about what to DO with spoken lines -- keep them, caption them, cut on them
-// -- and only the jobs that decide that get it: the cut, its audit, and the
-// narration. The frame describer, the transcript fixer and the upload text
+// -- and only the jobs that decide that get it: the cut and the narration. The frame describer, the transcript fixer and the upload text
 // are told the context and nothing about a decision they never make.
 func (a *App) ctxBlockFor(key string) string {
 	s := a.sessionCtx()
@@ -84,7 +83,7 @@ func (a *App) ctxBlockFor(key string) string {
 		"only the mechanics of the answer -- its shape, its clock, what may be " +
 		"invented -- are not its to change:\n" + s + "\n\n"
 	switch key {
-	case "cut", "audit", "narrate":
+	case "cut", "narrate":
 		b += ctxSpeech + "\n\n"
 	}
 	return b

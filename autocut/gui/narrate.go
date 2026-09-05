@@ -233,7 +233,51 @@ type narrEntry struct {
 	Roll int `json:"roll,omitempty"`
 }
 
+// setNarrOff records the Narration tick and lets every page that cares redraw:
+// Produce hides the game volume and the subtitles when there is no voice for
+// them to be about.
+func (a *App) setNarrOff(off bool) {
+	if a.narrOff == off {
+		return
+	}
+	a.narrOff = off
+	a.syncNarrOff()
+	a.syncNarrPage()
+	a.saveProjectNow()
+}
+
+// applyNarrOff is a project's answer arriving: the box follows it, and so does
+// Produce. Called from applyProject, which may run before either page exists.
+func (a *App) applyNarrOff(off bool) {
+	a.narrOff = off
+	if a.narr != nil && a.narr.onBox != nil {
+		a.narr.onBox.SetActive(!off)
+	}
+	a.syncNarrOff()
+	a.syncNarrPage()
+}
+
+// syncNarrPage greys the Narrate page when this video has no narration. Safe
+// before the page exists: a project's answer arrives first.
+func (a *App) syncNarrPage() {
+	n := a.narr
+	if n == nil {
+		return
+	}
+	for _, w := range n.body {
+		if s, ok := w.(interface{ SetSensitive(bool) }); ok {
+			s.SetSensitive(!a.narrOff)
+		}
+	}
+}
+
 type narrator struct {
+	// the Narration tick at the top of the page: whether this video has one,
+	// and everything the tick greys out -- the lines, the preview and the
+	// voice picker. Not the tick itself: it is how the page comes back.
+	onBox *gtk.CheckButton
+	body  []gtk.Widgetter
+
 	a       *App
 	entries []narrEntry
 	// the clips whose last line you deleted: "this one plays its own audio"
@@ -696,12 +740,35 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	// is read alongside the sample it plays.
 	voice := a.buildVoicePicker()
 
+	// Whether this video is narrated at all, at the top of the column that is
+	// about the narration. Some videos want none -- the speakers carry them,
+	// or the words go on screen instead -- and there was no way to say so: the
+	// nearest was the captions voice, which still writes lines and still asks
+	// Produce to carry them. Off means off, and Produce loses what only a
+	// narration needs (produce.go).
+	n.onBox = gtk.NewCheckButtonWithLabel("Narration")
+	n.onBox.SetActive(!a.narrOff)
+	n.onBox.SetTooltipText("Whether this video has a narration. Unticked, ▶ writes none, " +
+		"the lines already written are left alone, and Produce drops the game-volume " +
+		"slider and the subtitle choices -- all three exist to carry a voice-over.")
+	n.onBox.ConnectToggled(func() { a.setNarrOff(!n.onBox.Active()) })
+	head := gtk.NewBox(gtk.OrientationHorizontal, 6)
+	head.SetHAlign(gtk.AlignEnd)
+	head.Append(n.onBox)
+
 	right := gtk.NewBox(gtk.OrientationVertical, 6)
 	right.SetMarginStart(12)
 	right.SetMarginEnd(12)
 	right.SetMarginBottom(8)
+	right.Append(head)
 	right.Append(preview)
 	right.Append(voice)
+	// everything on this page except the tick itself: with no narration there
+	// is nothing here to do, and a page of live controls over a video that has
+	// none is a page that invites the work the tick just said not to do. The
+	// tick stays alive, because turning it back on is the one thing still
+	// worth pressing.
+	n.body = []gtk.Widgetter{left, preview, voice}
 
 	// ...and the narration lines run the full height beside it, with the whole
 	// of the left column to wrap in
@@ -2741,6 +2808,10 @@ func (a *App) narrateRun() {
 	segs := a.produceSegs()
 	if len(segs) == 0 {
 		a.setStatus("no cut yet — build one on the Cut step first")
+		return
+	}
+	if a.narrOff {
+		a.setStatus("this video has no narration — tick Narration at the top of this page to write one")
 		return
 	}
 	n.pullRows() // an edit still sitting in a text box is part of this run

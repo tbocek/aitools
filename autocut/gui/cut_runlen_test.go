@@ -133,7 +133,6 @@ func TestEveryTimeOnThePageReadsTheSamePipe(t *testing.T) {
 	sg := readSrc(t, "cut_suggest.go")
 	for _, want := range []string{
 		"total := cutLen(applyFx(segs, fx))",
-		"total := cutLen(applyFx(merged, fxOut))",
 	} {
 		if !strings.Contains(sg, want) {
 			t.Errorf("cut_suggest.go no longer contains %q", want)

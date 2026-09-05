@@ -26,16 +26,12 @@ func TestTheCutPageHasNoSuggestButtonOfItsOwn(t *testing.T) {
 	if strings.Contains(src, `NewButtonWithLabel("Suggest`) {
 		t.Error("the Cut toolbar builds a Suggest button again -- ▶ in the run bar is the step's run")
 	}
-	// the length it runs to stays, and now has to say what reads it: it used to
-	// lean on the button beside it for that ("Suggest cut [300] s")
-	if !strings.Contains(src, "ed.target = gtk.NewEntry()") {
-		t.Fatal("the target-seconds field is gone with the button")
+	// the length it runs to is not here either: it is a sentence in the user
+	// context ("about 12 min"), read at the run (suggestClicked)
+	if strings.Contains(src, "ed.target = gtk.NewEntry()") {
+		t.Error("the target box is back on the toolbar, a second place to say the length")
 	}
-	i := strings.Index(src, "ed.target = gtk.NewEntry()")
-	near := src[max(0, i-500):min(i+700, len(src))]
-	if !strings.Contains(near, "▶") {
-		t.Errorf("nothing near the target field mentions ▶, so the number labels itself:\n%s", near)
-	}
+
 }
 
 // The run bar's Cut branch is the whole of the step's run control. It must
