@@ -125,32 +125,33 @@ func TestTheBadgeSitsInTheGapAndThenOnTheSeam(t *testing.T) {
 }
 
 // The stretch before the first clip and the one after the last are not between
-// anything, and they are the longest gaps on the page: the middle of one is an
-// arbitrary point in the void, minutes from either edge and off screen at any
-// working zoom. So they wear their − at the ends of the page instead.
-func TestTheHeadAndTailFoldAtTheEndsOfThePage(t *testing.T) {
-	ed := foldEd(t) // gaps 0-20, 60-100, 140-300
+// anything: the middle of one is an arbitrary point in the void -- these are
+// the longest gaps on the page -- and its far end is the edge of the page,
+// where a badge floats in black with nothing to say which timeline it is on.
+// So their badges sit just INSIDE the clip they run up against, on the green.
+func TestTheHeadAndTailFoldSitInsideTheClipTheyMeet(t *testing.T) {
+	ed := foldEd(t) // clips 20-60 and 100-140; gaps 0-20, 60-100, 140-300
 	b := ed.foldBadges()
 	if len(b) != 3 {
 		t.Fatalf("%d badges for three gaps", len(b))
 	}
-	if got, want := b[0].cx, ed.xOf(0)+killIn; got != want {
-		t.Errorf("the head's − is at %g, want the leftmost end at %g", got, want)
+	if got, want := b[0].cx, ed.xOf(20)+killIn; got != want {
+		t.Errorf("the head's − is at %g, want it inside the first clip at %g", got, want)
 	}
-	if got, want := b[2].cx, ed.xOf(300)-killIn; got != want {
-		t.Errorf("the tail's − is at %g, want the rightmost end at %g", got, want)
+	if got, want := b[2].cx, ed.xOf(140)-killIn; got != want {
+		t.Errorf("the tail's − is at %g, want it inside the last clip at %g", got, want)
 	}
 	// the gap between two clips keeps its middle: its ends are those clips' grips
 	if got, want := b[1].cx, (ed.xOf(60)+ed.xOf(100))/2; got != want {
 		t.Errorf("the middle gap's − is at %g, want %g", got, want)
 	}
-	// never past the middle, or a short head would put the badge inside the
-	// clip beside it
-	ed.segs[0].S = 6 // a head of 24 px, which killIn would overshoot
-	if got, want := ed.foldBadges()[0].cx, (ed.xOf(0)+ed.xOf(6))/2; got != want {
-		t.Errorf("on a %g px head the − is at %g, want its middle at %g",
-			ed.xOf(6)-ed.xOf(0), got, want)
+	// never past that clip's middle, which is its ✕: on a clip too short to
+	// hold both, the fold's badge gives way
+	ed.segs[0].E = 24 // a 4 s clip, narrower than twice killIn
+	if got, want := ed.foldBadges()[0].cx, (ed.xOf(20)+ed.xOf(24))/2; got != want {
+		t.Errorf("on a short first clip the − is at %g, want its middle at %g", got, want)
 	}
+	ed.segs[0].E = 60
 	// and never half off the page: folded, the head's seam is the head of the tape
 	ed.segs[0].S = 20
 	ed.folds = [][2]float64{{0, 20}}

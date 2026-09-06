@@ -129,6 +129,35 @@ func (a *App) relToRoot(dir string) string {
 	return dir
 }
 
+// projPrefix marks a path stored relative to the PROJECT rather than to the
+// root. Sources can live inside the project folder -- the voice-split step
+// writes its stems there, and Add can copy footage in (project_import.go) --
+// and a project is a folder you are meant to be able to rename, move or zip.
+// Stored absolute, every one of those breaks the session silently: the file is
+// not where the project says, the row is pruned, and the autosave then writes
+// the pruned list back.
+const projPrefix = "project:"
+
+// storePath is how a path goes into the project file: relative to the project
+// when it is inside it, relative to the root when it is under that, and
+// absolute otherwise.
+func (a *App) storePath(p string) string {
+	if a.outDir != "" {
+		if rel, err := filepath.Rel(a.outDir, p); err == nil && !strings.HasPrefix(rel, "..") {
+			return projPrefix + filepath.ToSlash(rel)
+		}
+	}
+	return a.relToRoot(p)
+}
+
+// loadPath is its inverse.
+func (a *App) loadPath(p string) string {
+	if rest, ok := strings.CutPrefix(p, projPrefix); ok {
+		return filepath.Join(a.outDir, filepath.FromSlash(rest))
+	}
+	return a.fromRoot(p)
+}
+
 // fromRoot is its inverse, with an empty value meaning "the root itself".
 func (a *App) fromRoot(rel string) string {
 	switch {
@@ -141,60 +170,48 @@ func (a *App) fromRoot(rel string) string {
 	}
 }
 
-// A project is a file you can double-click, and the folder it writes into is
-// its own path with .data on the end: /mnt/rec/tom.json.autocut writes into
-// /mnt/rec/tom.json.autocut.data. Nothing chooses that folder and nothing
-// stores it. Stored, it was a second answer to "where does this session write"
-// that could disagree with the first -- a project copied to another machine,
-// or a folder emptied between sessions, and the work went somewhere nobody was
-// looking. Derived, the two travel together and cannot come apart, and the
-// answer to "where are my transcripts" is the project's own name.
+// A project is a FOLDER: /mnt/rec/tom.autocut, with autocut.json in it and every
+// step's work beside that -- prepare/, cut/, narrate/, produce/. One thing to
+// copy, to back up, to hand to somebody, to zip.
 //
-// Which is also why a session nobody has saved still has a file: the working
-// copy is root/session.autocut, so the rule is the same everywhere and there
-// is no unsaved special case. Save then renames the pair.
+// It used to be a file and a folder that hung off its name: tom.autocut and
+// tom.autocut.data. That derivation was the point -- nothing stored the
+// folder, so the two could not disagree about where the work went -- and it is
+// kept exactly, by making them one thing. The project's name is still the
+// answer to "where are my transcripts"; there is simply nothing left to come
+// apart. What it cost was that a project was two entries in a file manager,
+// and moving one of them broke it silently.
+//
+// Which is also why a session nobody has saved still has one: the working copy
+// is root/session.autocut, so the rule is the same everywhere and there is no
+// unsaved special case. Save then renames the folder.
+//
+// Projects written by earlier builds are migrated on open (adoptLegacy): the
+// old .data folder becomes the project, and the old file becomes its
+// autocut.json.
 const projExt = ".autocut"
+
+// projMain is the project's own file inside its folder. Named rather than
+// spelled out because the folder IS the project everywhere else in the app,
+// and this is the one place that cares which file in it carries the JSON.
+//
+// autocut.json rather than main.json: opened on its own -- in an editor, in a
+// diff, out of a zip somebody sent -- "main.json" is a file that could belong
+// to anything.
+const projMain = "autocut.json"
+
+// projFile is where a project folder keeps its JSON.
+func projFile(dir string) string { return filepath.Join(dir, projMain) }
 
 // workName is the working copy inside the autocut root: what the first launch
 // starts as, and what New Project goes back to.
 const workName = "session" + projExt
 
-// dataDir is a project's output folder. One line, so that every step, every
-// page and the Save that moves the folder all mean the same folder.
-func dataDir(proj string) string { return proj + ".data" }
-
-// projectName is the file an opened project is kept as from here on, which is
-// not always the file it was read from. A project saved before projects were
-// files the desktop could open is a .json, and the name is what the output
-// folder hangs off -- so leaving it as it was would mean tom.json writing into
-// tom.json.data while everything saved since writes beside a .autocut. One
-// rule, so opening tom.json continues as tom.json.autocut.
-//
-// The old file is not touched and not deleted: it stays on disk as the last
-// thing that build wrote, and the session simply goes on under the new name.
-// Unless that name is taken -- then the .json keeps its own, because quietly
-// autosaving over a project the user already has is not an upgrade.
-//
-// root/project.json is the exception, and not really one: it was never a name
-// anybody chose, it was the working copy, and the working copy has a name of
-// its own now.
-func (a *App) projectName(path string) string {
-	if path == filepath.Join(a.root, "project.json") {
-		return filepath.Join(a.root, workName)
-	}
-	up := withProjExt(path)
-	switch {
-	case up == path:
-		return path
-	case exists(up):
-		a.logf("!!! %s is still open under its old name: %s is already there, and this "+
-			"session would have written over it", filepath.Base(path), filepath.Base(up))
-		return path
-	}
-	a.logf(">>> %s is open as %s from here on; %s is left on disk as it is",
-		filepath.Base(path), filepath.Base(up), filepath.Base(path))
-	return up
-}
+// dataDir is a project's output folder, which is the project (see projExt).
+// Kept as a name because every step, every page and the Save that moves the
+// folder go through it, and "the project" and "where it writes" are worth
+// being able to tell apart in the reading even when they are one path.
+func dataDir(proj string) string { return proj }
 
 // withProjExt is what Save actually writes, whatever was typed in the name box.
 // The extension is not decoration: it is what the desktop matches to open a
@@ -222,7 +239,7 @@ func (a *App) currentProject() Project {
 	var srcs []ProjectSource
 	for _, it := range a.srcList.items {
 		srcs = append(srcs, ProjectSource{
-			Path: a.relToRoot(it.path), Footage: it.footage, Narrator: it.narrator,
+			Path: a.storePath(it.path), Footage: it.footage, Narrator: it.narrator,
 			SepVoice: it.sepVoice, Tracks: it.tracks,
 		})
 	}
@@ -262,7 +279,7 @@ func (a *App) projectSources(p Project) []sourceItem {
 		var out []sourceItem
 		for _, s := range p.Sources {
 			out = append(out, sourceItem{
-				path: a.fromRoot(s.Path), footage: s.Footage, narrator: s.Narrator,
+				path: a.loadPath(s.Path), footage: s.Footage, narrator: s.Narrator,
 				sepVoice: s.SepVoice, tracks: s.Tracks,
 			})
 		}
@@ -306,8 +323,14 @@ func (a *App) projectJSON() []byte {
 	return append(b, '\n')
 }
 
+// writeProject writes the JSON into the project folder, making it if this is
+// the first write -- a project that has never been saved is a folder that does
+// not exist yet, and the autosave is what brings it into being.
 func (a *App) writeProject(path string, b []byte) error {
-	return os.WriteFile(path, b, 0o644)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(projFile(path), b, 0o644)
 }
 
 // projNameChars is how much of the project's name the header bar shows before
@@ -405,6 +428,80 @@ func (a *App) saveProjectNow() {
 	if err := a.writeProject(a.projPath, b); err != nil {
 		a.logf("save project: %v", err)
 	}
+}
+
+// adoptLegacy turns a project from an earlier build -- the file tom.autocut
+// beside the folder tom.autocut.data -- into the folder this build opens, and
+// answers with the folder either way.
+//
+// A staging name and three moves, in the order that survives being
+// interrupted: the .data folder is renamed aside, the file is written into it
+// as autocut.json, the old file is removed, and only then does the staging folder
+// take the project's name. Stop it anywhere and what is on disk is the file
+// that made it plus a folder called <name>.adopting -- nothing is lost, and
+// the next open says what it found rather than guessing.
+//
+// The staging step is not fussiness: a project already called tom.autocut has
+// to become a FOLDER called tom.autocut, and the file is in the way of its own
+// new name.
+//
+// A path that is already a folder is returned untouched, which is every open
+// after the first.
+func (a *App) adoptLegacy(path string) (string, error) {
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+		return path, nil
+	}
+	// the autocut.json a file manager or an old recents list can point at
+	if strings.EqualFold(filepath.Base(path), projMain) {
+		return filepath.Dir(path), nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	dir := withProjExt(path)
+	// root/project.json was never a name anybody chose -- it was the working
+	// copy, before a project was something you could double-click -- and the
+	// working copy has a name of its own now
+	if path == filepath.Join(a.root, "project.json") {
+		dir = filepath.Join(a.root, workName)
+	}
+	if dir != path && exists(dir) {
+		return "", fmt.Errorf("%s was written by an older build and %s already exists: "+
+			"move one of them aside", filepath.Base(path), filepath.Base(dir))
+	}
+	tmp := dir + ".adopting"
+	if exists(tmp) {
+		return "", fmt.Errorf("%s is left over from an interrupted open: move it aside, "+
+			"or rename it to %s", filepath.Base(tmp), filepath.Base(dir))
+	}
+	if old := path + ".data"; exists(old) {
+		if err := os.Rename(old, tmp); err != nil {
+			return "", fmt.Errorf("moving %s aside: %w", filepath.Base(old), err)
+		}
+	} else if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return "", fmt.Errorf("making %s: %w", tmp, err)
+	}
+	// ...and the paths inside it that pointed into the folder being renamed.
+	// The stems the voice split writes live in there, and so does anything Add
+	// copied in: left absolute they would name a folder that no longer exists,
+	// the rows would be pruned on the next open, and the autosave would write
+	// the pruned list back. Stored project-relative they cannot come apart
+	// again (storePath).
+	b = []byte(strings.ReplaceAll(string(b), `"`+path+".data"+string(filepath.Separator), `"`+projPrefix))
+	if err := os.WriteFile(projFile(tmp), b, 0o644); err != nil {
+		return "", fmt.Errorf("writing %s: %w", projFile(tmp), err)
+	}
+	if err := os.Remove(path); err != nil {
+		return "", fmt.Errorf("removing %s, whose contents are now in %s: %w",
+			filepath.Base(path), filepath.Base(tmp), err)
+	}
+	if err := os.Rename(tmp, dir); err != nil {
+		return "", fmt.Errorf("naming %s: %w", filepath.Base(dir), err)
+	}
+	a.logf(">>> %s is a folder now, with the project inside it as %s — everything this "+
+		"session writes is in there", filepath.Base(dir), projMain)
+	return dir, nil
 }
 
 // migrateFolders moves a project's data into the folders this build writes,
@@ -551,7 +648,13 @@ func (a *App) flushProject() {
 }
 
 func (a *App) loadProjectFrom(path string) {
-	b, err := os.ReadFile(path)
+	path, err := a.adoptLegacy(path)
+	if err != nil {
+		a.logf("!!! %v", err)
+		a.setStatus("could not open that project — see log")
+		return
+	}
+	b, err := os.ReadFile(projFile(path))
 	if err != nil {
 		a.logf("load project: %v", err)
 		return
@@ -561,13 +664,16 @@ func (a *App) loadProjectFrom(path string) {
 		a.logf("load project: %v", err)
 		return
 	}
+	// The folder BEFORE the pages: a source that lives inside the project is
+	// stored relative to it (storePath), and applyProject is what resolves
+	// those. Read with the last project's folder still set, they would resolve
+	// into the last project's folder, not be there, and be pruned -- which is
+	// how a session loses the sources it was cut from.
+	a.projPath, a.outDir = path, dataDir(path)
 	a.applyProject(p)
-	// After applyProject, exactly where the output folder used to be set: what
-	// is open is what the autosave keeps, and every page that reads the folder
-	// is now reading this project's own rather than the last one's. Under the
-	// name it is kept as, which for an older project is not the one it was read
-	// from (projectName).
-	a.setProject(a.projectName(path))
+	// ...and then the rest of what opening a project means: the pages that
+	// read the folder, the voice, the autosave's target.
+	a.setProject(path)
 	if p.OutDir != "" && a.fromRoot(p.OutDir) != a.outDir {
 		a.logf("!!! this project used to write into %s and now writes into %s -- "+
 			"the old folder is untouched", a.fromRoot(p.OutDir), a.outDir)
@@ -587,7 +693,7 @@ func (a *App) applyProject(p Project) {
 	// the folders first: they are where the file choosers open, and where a
 	// pre-merge project's half-relative source names are resolved from
 	vid, aud := srcDirs(p)
-	a.vidDir, a.audDir = a.fromRoot(vid), a.fromRoot(aud)
+	a.vidDir, a.audDir = a.loadPath(vid), a.loadPath(aud)
 	items := a.projectSources(p)
 	// a project entry whose file vanished (renamed, moved) must be LOUD: a
 	// silently-dropped source once cost half a debugging session
@@ -799,7 +905,7 @@ func (a *App) addFilesDialog() {
 				paths = append(paths, (&gio.File{Object: obj}).Path())
 			}
 		}
-		a.addSources(paths...)
+		a.askImport(paths)
 	})
 }
 
@@ -824,7 +930,7 @@ func (a *App) addFolderDialog() {
 		for _, n := range listMedia(dir) {
 			paths = append(paths, filepath.Join(dir, n))
 		}
-		a.addSources(paths...)
+		a.askImport(paths)
 	})
 }
 
@@ -850,16 +956,6 @@ func (a *App) addSources(paths ...string) {
 	}
 }
 
-// projFilter is the one filter both project dialogs use: .autocut files, plus
-// the .json a project was before it was a file the desktop could open.
-func projFilter() *gtk.FileFilter {
-	filt := gtk.NewFileFilter()
-	filt.SetName("Autocut projects")
-	filt.AddSuffix(strings.TrimPrefix(projExt, "."))
-	filt.AddSuffix("json")
-	return filt
-}
-
 // saveProjectDialog names the project. It opens beside the open project rather
 // than in the root, because Save As on /mnt/rec/tom.json.autocut is nearly
 // always another name in /mnt/rec -- that is where the footage is.
@@ -873,9 +969,9 @@ func (a *App) saveProjectDialog() {
 	d := gtk.NewFileDialog()
 	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
 	d.SetInitialName(filepath.Base(a.projPath))
-	filters := gio.NewListStore(gtk.GTypeFileFilter)
-	filters.Append(projFilter().Object)
-	d.SetFilters(filters)
+	// Save, not SelectFolder: this is where a name is typed, and the name is
+	// what the folder will be called (withProjExt adds the extension). A
+	// folder chooser can only pick one that exists.
 	d.Save(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
 		f, err := d.SaveFinish(res)
 		if err != nil || f == nil {
@@ -885,14 +981,15 @@ func (a *App) saveProjectDialog() {
 	})
 }
 
+// loadProjectDialog picks a project FOLDER -- which is what a project is
+// (projExt). A project from an older build is a file and cannot be picked
+// here; it is opened by double-clicking it, from the recents list, or from the
+// command line, and adopted into a folder on the way in (adoptLegacy).
 func (a *App) loadProjectDialog() {
 	d := gtk.NewFileDialog()
 	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
-	filters := gio.NewListStore(gtk.GTypeFileFilter)
-	filters.Append(projFilter().Object)
-	d.SetFilters(filters)
-	d.Open(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.OpenFinish(res)
+	d.SelectFolder(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
+		f, err := d.SelectFolderFinish(res)
 		if err != nil || f == nil {
 			return
 		}

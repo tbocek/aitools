@@ -118,3 +118,29 @@ func TestTheGutterFoldsTheLot(t *testing.T) {
 		t.Errorf("the fold-all control is not asked before the selection band (%d, %d)", i, j)
 	}
 }
+
+// A press on a control in the gutter is a press on that control, and nothing
+// else. Every second in the strip is second zero, so a click there cued the
+// red line to the start of the session -- switching a lane's sound off threw
+// the playhead to 0:00 as a side effect. Only the black between the controls
+// is a place to put the line.
+func TestAPressOnAGutterControlLeavesTheLineWhereItIs(t *testing.T) {
+	ed := foldEd(t)
+	y := ed.foldAllY()
+	if !ed.gutterCtl(gutterMid, y) {
+		t.Error("the fold-all badge does not count as a gutter control")
+	}
+	// the empty black beside it is not a control: a click there is a click on
+	// the timeline like any other
+	if ed.gutterCtl(gutterMid, y+40) {
+		t.Error("empty gutter counts as a control, so the line can never be put at the start")
+	}
+	// ...and neither is anything on the tape itself
+	if ed.gutterCtl(ed.xOf(30), y) {
+		t.Error("a press on the tape reads as a gutter control")
+	}
+	// the click that cues the line asks first
+	if !strings.Contains(readSrc(t, "cut.go"), "if !ed.gutterCtl(dragStartX+ed.viewX, dragStartY) {") {
+		t.Error("a click on a gutter control still throws the red line to second zero")
+	}
+}

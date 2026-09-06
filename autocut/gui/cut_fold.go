@@ -228,30 +228,47 @@ func (ed *cutEditor) foldBadges() []foldBadge {
 // and the middle is the one part of it nothing else wants.
 //
 // But the stretch BEFORE the first clip and the one after the last are not
-// between anything, and they are usually the longest gaps on the page --
-// setting the capture going, and forgetting to stop it. The middle of those is
-// an arbitrary point in the void, minutes from either edge and off screen at
-// any zoom worth working at. So the head's − goes at the leftmost end of the
-// page and the tail's at the rightmost, killIn in from the edge like every
-// other badge drawn against one: "before all of this" and "after all of this"
-// are read off the ends of a timeline, which is where they are.
+// between anything. Their middle is an arbitrary point in the void -- these
+// are usually the longest gaps on the page, the capture set going and
+// forgotten about -- and their far end is the edge of the page, where a badge
+// is a mark floating in black with nothing to say which timeline it belongs
+// to. So the head's badge goes just INSIDE the first clip and the tail's just
+// inside the last: on the green, killIn from the border, which is where every
+// badge that sits against an edge on this page sits.
 //
-// Never past the middle, though -- on a short head or tail that would put the
-// badge inside the clip beside it -- and never so close to an end that half
-// its plate hangs off the page, which is what the folded head's seam would
-// otherwise do at x 0.
+// Never past that clip's middle, which is its ✕ (drawSelBand): on a clip too
+// short to hold both, the fold's badge gives way and stays at the border.
 func (ed *cutEditor) foldBadgeX(g foldGap, x0, x1 float64) float64 {
 	mid := (x0 + x1) / 2
 	head, tail := ed.headTail(g)
 	switch {
-	case g.on: // a seam: one x, and there is no choice to make
 	case head:
-		mid = math.Min(x0+killIn, mid)
+		mid = ed.insideBar(g.t1, true)
 	case tail:
-		mid = math.Max(x1-killIn, mid)
+		mid = ed.insideBar(g.t0, false)
 	}
 	const plate = segKillR + segKillPad
 	return math.Max(plate, math.Min(mid, ed.totalW-plate))
+}
+
+// insideBar is a point killIn inside the kept clip that starts (or ends) at
+// second t, and no further in than that clip's own middle. With no clip there
+// -- an empty cut is one gap and no bars -- it is the border itself.
+func (ed *cutEditor) insideBar(t float64, start bool) float64 {
+	for _, s := range ed.segs {
+		if s.isInsert() {
+			continue
+		}
+		if start && math.Abs(s.S-t) < 0.01 {
+			x0, x1 := ed.xOf(s.S), ed.xOf(s.E)
+			return math.Min(x0+killIn, (x0+x1)/2)
+		}
+		if !start && math.Abs(s.E-t) < 0.01 {
+			x0, x1 := ed.xOf(s.S), ed.xOf(s.E)
+			return math.Max(x1-killIn, (x0+x1)/2)
+		}
+	}
+	return ed.xOf(t)
 }
 
 // headTail says whether a gap opens a filmed run or closes one: the stretch

@@ -116,6 +116,23 @@ func (ed *cutEditor) drawFoldAll(cr *cairo.Context) {
 	foldPlate(cr, gutterMid, ed.foldAllY(), mark, ed.foldAllHov)
 }
 
+// gutterCtl is whether a press landed on a control standing in the strip: the
+// fold-all badge, a lane's sound switch, the sound switch on a row's own
+// strip, or an emptied row's ✕.
+//
+// A click on the timeline cues the red line to the second under it, and every
+// second in the gutter is second zero -- so pressing any of these threw the
+// line back to the start of the session as a side effect of switching a lane
+// off. The strip is not the tape: a press on something in it is a press on
+// that thing, and only the black between them is a place to put the line.
+func (ed *cutEditor) gutterCtl(px, y float64) bool {
+	if px > gutterPx {
+		return false
+	}
+	return ed.foldAllAt(px, y) || ed.laneSwitchAt(px, y) != "" ||
+		ed.pairSwitchAt(px, y) != nil || ed.rowKillAt(px, y) >= 0
+}
+
 // hoverFoldAll lights it under the pointer, like every other badge here.
 func (ed *cutEditor) hoverFoldAll(x, y float64) {
 	on := x >= 0 && ed.foldAllAt(x+ed.viewX, y)

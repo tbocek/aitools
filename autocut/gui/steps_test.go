@@ -448,7 +448,13 @@ func TestEveryPageKeepsTheSameMarginsAroundItsWork(t *testing.T) {
 		}},
 		{"publish.go", `func \(a \*App\) buildPublishPanes\(`, []string{
 			"col.SetMarginStart(12)", "col.SetMarginEnd(6)", "col.SetMarginTop(8)",
-			"wrote.SetMarginStart(6)", "wrote.SetMarginEnd(12)", "wrote.SetMarginTop(8)",
+		}},
+		// ...and the other half of that page is one column carrying the
+		// margins for both its rows: the words and the encoder settings under
+		// them had a pair each, so one ended 24 from the window and the other 12
+		{"produce.go", `func \(a \*App\) buildProduce\(`, []string{
+			"right.SetMarginStart(6)", "right.SetMarginEnd(12)",
+			"right.SetMarginTop(8)", "right.SetMarginBottom(8)",
 		}},
 	} {
 		body := funcBody(t, c.file, c.fn)
@@ -462,9 +468,12 @@ func TestEveryPageKeepsTheSameMarginsAroundItsWork(t *testing.T) {
 	// own on top: Produce's settings grid was indented 12 further than the
 	// title and the description directly above it
 	prod := funcBody(t, "produce.go", `func \(a \*App\) buildProduce\(`)
-	for _, gone := range []string{"box.SetMarginStart(12)", "box.SetMarginEnd(12)"} {
+	for _, gone := range []string{"box.SetMargin", "outer.SetMargin"} {
 		if strings.Contains(prod, gone) {
-			t.Errorf("the settings grid indents itself past the words above it: %q", gone)
+			t.Errorf("a row inside the column indents itself past its neighbours: %q", gone)
 		}
+	}
+	if strings.Contains(readSrc(t, "publish.go"), "wrote.SetMargin") {
+		t.Error("the words carry margins of their own again, so the column has two right edges")
 	}
 }

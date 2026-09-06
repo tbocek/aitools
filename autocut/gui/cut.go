@@ -5379,8 +5379,12 @@ func (a *App) buildCut() gtk.Widgetter {
 					ed.monRow = l + 1
 				}
 			}
-			ed.setPlayhead(ed.tAtView(dragStartX))
-			ed.monStatus()
+			// ...unless the press was on a control in the gutter, which is
+			// not the tape and has no second to cue to (cut_gutter.go)
+			if !ed.gutterCtl(dragStartX+ed.viewX, dragStartY) {
+				ed.setPlayhead(ed.tAtView(dragStartX))
+				ed.monStatus()
+			}
 			// ...and a click ON THE GREEN takes that scene in hand, which is
 			// what the same click on the green bar in the band already does.
 			// It is one object drawn in two rows, and it answered to one click

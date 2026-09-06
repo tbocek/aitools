@@ -221,8 +221,12 @@ func TestOldProjectsBecomeSourcesWithTheirRoles(t *testing.T) {
 // had open any more.
 func TestAProjectOwnsTheFolderBesideIt(t *testing.T) {
 	const proj = "/mnt/rec/tom.json.autocut"
-	if got, want := dataDir(proj), proj+".data"; got != want {
-		t.Errorf("%s writes into %s, want %s", proj, got, want)
+	// the project IS the folder now: one thing to copy, back up or zip
+	if got := dataDir(proj); got != proj {
+		t.Errorf("%s writes into %s, want the project's own folder", proj, got)
+	}
+	if got, want := projFile(proj), proj+"/autocut.json"; got != want {
+		t.Errorf("the project's file is %s, want %s", got, want)
 	}
 	// Save takes whatever was typed into the name box. The extension is what
 	// the desktop opens with Autocut and what .data hangs off, so it is added
@@ -372,19 +376,21 @@ func TestPointingAtAProjectRedrawsWhatItsFolderHolds(t *testing.T) {
 func TestTheAutosaveWritesAndThenKnowsItIsUpToDate(t *testing.T) {
 	root := t.TempDir()
 	a := &App{root: root}
-	p := filepath.Join(root, "project.json")
+	p := filepath.Join(root, "tom"+projExt)
 	if err := a.writeProject(p, []byte("{}\n")); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(p)
+	// the folder is made by the write: a project nobody has saved is a folder
+	// that does not exist yet, and the autosave is what brings it into being
+	b, err := os.ReadFile(projFile(p))
 	if err != nil || string(b) != "{}\n" {
 		t.Fatalf("read back %q, %v", b, err)
 	}
-	// a write into a folder that is not there fails rather than panicking: the
-	// ticker calls this every couple of seconds, and a project saved to a
-	// removed drive must cost one log line, not the session
-	if err := a.writeProject(filepath.Join(root, "gone", "project.json"), b); err == nil {
-		t.Error("writing into a missing folder reported success")
+	// a write into a place that cannot hold a folder fails rather than
+	// panicking: the ticker calls this every couple of seconds, and a project
+	// on a removed drive must cost one log line, not the session
+	if err := a.writeProject(filepath.Join(projFile(p), "under-a-file"), b); err == nil {
+		t.Error("writing into a path that is a file reported success")
 	}
 }
 
@@ -708,53 +714,96 @@ func TestNewProjectResetsEveryPageThroughApplyProject(t *testing.T) {
 	}
 }
 
-// A project opened under an older name goes on under the new one. The name is
-// what the output folder hangs off, so a tom.json left as tom.json would write
-// into tom.json.data while everything saved since writes beside a .autocut --
-// one rule with two answers, which is the thing this whole change is against.
-// It has to happen on the way IN as well as on the way out: Save is not the
-// only door.
+// A project written by an older build is adopted on open: the .data folder
+// becomes the project, and the file that named it becomes the autocut.json in
+// it. One thing on disk where there were two, which is what the whole change
+// is for -- and the old pair could be separated by a move, which broke a
+// project silently.
 //
-// The old file is left on disk. Nothing here deletes or overwrites a file the
-// user has, which is also why a name already in use stops the upgrade instead
-// of taking it.
-func TestAnOlderProjectGoesOnUnderTheNameTheRuleGivesIt(t *testing.T) {
+// Nothing is written over. A name already taken by a folder stops the adoption
+// and says so, because quietly merging somebody's two projects is worse than
+// refusing to open one.
+func TestAProjectFromAnOlderBuildBecomesAFolder(t *testing.T) {
 	ownConfig(t)
 	root := t.TempDir()
 	a := &App{root: root}
 
-	json := filepath.Join(root, "tom.json")
-	if got, want := a.projectName(json), json+projExt; got != want {
-		t.Errorf("opening %s continues as %s, want %s", json, got, want)
-	}
-	// already the new name: nothing to do, and no .autocut.autocut
-	named := filepath.Join(root, "tom.json"+projExt)
-	if got := a.projectName(named); got != named {
-		t.Errorf("opening %s continues as %s", named, got)
-	}
-	// the new name is taken by a project of its own: it is not written over
-	if err := os.WriteFile(named, []byte("{}"), 0o644); err != nil {
+	// the pair an older build wrote: the file, and the folder hanging off its name
+	file := filepath.Join(root, "tom.json"+projExt)
+	data := file + ".data"
+	if err := os.WriteFile(file, []byte(`{"out_dir":"x"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.projectName(json); got != json {
-		t.Errorf("opening %s continues as %s, which is a project that already exists", json, got)
+	if err := os.MkdirAll(filepath.Join(data, "cut"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, "cut", "cut.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.adoptLegacy(file)
+	if err != nil {
+		t.Fatalf("adopting the old pair: %v", err)
+	}
+	if got != file {
+		t.Errorf("the project is now %s, want the folder %s", got, file)
+	}
+	if b, err := os.ReadFile(projFile(got)); err != nil || string(b) != `{"out_dir":"x"}` {
+		t.Errorf("the project's own file did not come with it: %q %v", b, err)
+	}
+	// the work that was in .data is in the project, and .data is gone
+	if !exists(filepath.Join(got, "cut", "cut.json")) {
+		t.Error("the cut was left behind in the old .data folder")
+	}
+	if exists(data) {
+		t.Error("the old .data folder is still there, so the work is in two places")
+	}
+	// opening it again is a no-op: it is already a folder
+	if again, err := a.adoptLegacy(got); err != nil || again != got {
+		t.Errorf("a project that is already a folder came back as %q, %v", again, err)
+	}
+	// ...and so is being handed the autocut.json inside it, which is what a
+	// file manager or an old recents entry can still be pointing at
+	if in, err := a.adoptLegacy(projFile(got)); err != nil || in != got {
+		t.Errorf("autocut.json picked out of its own folder came back as %q, %v", in, err)
 	}
 
-	// The working copy is the one file that gets a name rather than a suffix:
-	// root/project.json was never a name anybody chose, and the session it
-	// holds is the session, so it comes back as the working copy the launch
-	// already looks for.
-	if got, want := a.projectName(filepath.Join(root, "project.json")), filepath.Join(root, workName); got != want {
-		t.Errorf("the old working copy comes back as %s, want %s", got, want)
+	// a .json from before projects had an extension becomes name.json.autocut
+	old := filepath.Join(root, "jan.json")
+	if err := os.WriteFile(old, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.adoptLegacy(old); err != nil || got != old+projExt {
+		t.Errorf("%s became %q (%v), want %s", old, got, err, old+projExt)
+	}
+	// the very old working copy comes back as the working copy, not as
+	// project.json.autocut: it was never a name anybody chose
+	work := filepath.Join(root, "project.json")
+	if err := os.WriteFile(work, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.adoptLegacy(work); err != nil || got != filepath.Join(root, workName) {
+		t.Errorf("the old working copy came back as %q (%v), want %s", got, err, filepath.Join(root, workName))
 	}
 
-	// and the load path is what applies it -- Save is not the only door in
+	// a name already taken by a folder: the adoption stops rather than merging
+	taken := filepath.Join(root, "kim.json")
+	if err := os.WriteFile(taken, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(taken+projExt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.adoptLegacy(taken); err == nil {
+		t.Error("a project was adopted into a folder that already exists")
+	}
+
+	// and the load path is what does it -- Save is not the only door in
 	body := funcBody(t, "project.go", `func \(a \*App\) loadProjectFrom\(`)
-	if !strings.Contains(body, "a.setProject(a.projectName(path))") {
-		t.Errorf("a loaded project keeps whatever name it was read under:\n%s", body)
+	if !strings.Contains(body, "path, err := a.adoptLegacy(path)") {
+		t.Errorf("a project read from an older build's file is not adopted:\n%s", body)
 	}
-	// what it is remembered as has to be the name it is kept under, or the next
-	// launch reopens the old file and the upgrade happens again every time
+	// what it is remembered as has to be the folder it is kept as, or the next
+	// launch reopens the old file and the adoption happens again every time
 	if !strings.Contains(body, "a.rememberProject(a.projPath)") {
 		t.Errorf("the next launch is pointed at the file this one stopped using:\n%s", body)
 	}
@@ -794,10 +843,18 @@ func TestNothingChoosesTheOutputFolder(t *testing.T) {
 		}
 		sets += strings.Count(src, "a.outDir = ")
 	}
-	// two: the empty session main() starts with, and setProject. A third is a
-	// folder that moved without the project file it belongs to.
-	if sets != 2 {
-		t.Errorf("the output folder is assigned in %d places, want 2 (main and setProject)", sets)
+	// three: the empty session main() starts with, setProject, and the load
+	// that has to know the folder before it resolves the sources stored inside
+	// it (loadProjectFrom -- setProject then says it again, harmlessly). A
+	// fourth is a folder that moved without the project it belongs to.
+	if sets != 3 {
+		t.Errorf("the output folder is assigned in %d places, want 3", sets)
+	}
+	// ...and that one is before the pages are filled, or a source stored
+	// inside the project resolves into the project that was open before it
+	load := funcBody(t, "project.go", `func \(a \*App\) loadProjectFrom\(`)
+	if i, j := strings.Index(load, "a.projPath, a.outDir = path, dataDir(path)"), strings.Index(load, "a.applyProject(p)"); i < 0 || j < 0 || i > j {
+		t.Error("the project's folder is set after its sources are resolved, so they resolve into the last one's")
 	}
 }
 
@@ -820,5 +877,109 @@ func TestAProjectNoLongerCarriesAStyle(t *testing.T) {
 	}
 	if b, _ := json.Marshal(Project{}); strings.Contains(string(b), "style") {
 		t.Errorf("an untouched project mentions a style: %s", b)
+	}
+}
+
+// Adding a source asks where it should live: in place, or in the project.
+//
+// A project is a folder so that it can be copied, backed up or zipped as one
+// thing -- and a session whose footage is on the card it was recorded on is
+// not one thing, with nothing saying so until the card is gone and the row
+// goes red. Both answers are right for different sessions, so it is asked once
+// and never again for that file.
+func TestAddingASourceAsksWhetherToCopyItIn(t *testing.T) {
+	root := t.TempDir()
+	a := &App{root: root, outDir: filepath.Join(root, "tom"+projExt)}
+	if err := os.MkdirAll(a.sourcesDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// where the copies go: inside the project, which is the whole reason to
+	// press it
+	if got, want := a.sourcesDir(), filepath.Join(a.outDir, "sources"); got != want {
+		t.Errorf("copies land in %s, want %s", got, want)
+	}
+	// a file already inside the project is not a candidate for copying
+	inside := filepath.Join(a.sourcesDir(), "a.mp4")
+	if err := os.WriteFile(inside, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !a.inProject(inside) {
+		t.Error("a file in the project's own sources folder reads as outside it")
+	}
+	if a.inProject(filepath.Join(root, "elsewhere.mp4")) {
+		t.Error("a file beside the project reads as inside it")
+	}
+	// the copy itself: written to a .part and renamed, so an interrupted copy
+	// cannot be mistaken for a source
+	src := filepath.Join(root, "card.mp4")
+	if err := os.WriteFile(src, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	to, err := copyInto(a.sourcesDir(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(to); err != nil || string(b) != "0123456789" {
+		t.Errorf("the copy reads %q, %v", b, err)
+	}
+	if exists(to + ".part") {
+		t.Error("the half-written copy is still on disk beside the finished one")
+	}
+	// the same file again costs nothing: same name, same size, already here
+	stat, _ := os.Stat(to)
+	if again, err := copyInto(a.sourcesDir(), src); err != nil || again != to {
+		t.Errorf("adding the same card twice came back %q, %v", again, err)
+	}
+	if now, _ := os.Stat(to); now.ModTime() != stat.ModTime() {
+		t.Error("the second add copied the file again")
+	}
+	// and both doors ask
+	src2 := readSrc(t, "project.go")
+	if n := strings.Count(src2, "a.askImport(paths)"); n != 2 {
+		t.Errorf("%d of the two Add buttons ask where the file should live, want 2", n)
+	}
+}
+
+// A source inside the project is stored relative to the project.
+//
+// This is what a folder-shaped project is for: rename it, move it, zip it and
+// hand it over. Absolute paths break every one of those silently -- the file
+// is not where the project says, the row is pruned on open, and the autosave
+// writes the pruned list back, so the session loses the sources it was cut
+// from. The voice split writes its stems inside the project, and Add can copy
+// footage in, so this is the ordinary case and not a corner.
+func TestASourceInsideTheProjectMovesWithIt(t *testing.T) {
+	root := t.TempDir()
+	a := &App{root: root, outDir: filepath.Join(root, "tom"+projExt)}
+
+	in := filepath.Join(a.outDir, "stems", "a.novoice.mkv")
+	if got, want := a.storePath(in), projPrefix+"stems/a.novoice.mkv"; got != want {
+		t.Errorf("a stem is stored as %q, want %q", got, want)
+	}
+	if got := a.loadPath(a.storePath(in)); got != in {
+		t.Errorf("it reads back as %q, want %q", got, in)
+	}
+	// ...and the same project under another name finds it again, which is the
+	// whole point
+	moved := &App{root: root, outDir: filepath.Join(root, "jan"+projExt)}
+	if got, want := moved.loadPath(a.storePath(in)), filepath.Join(moved.outDir, "stems", "a.novoice.mkv"); got != want {
+		t.Errorf("after a rename the stem reads as %q, want %q", got, want)
+	}
+	// a source outside the project is stored as it always was
+	out := filepath.Join(root, "Nick2", "card.mp4")
+	if got := a.storePath(out); strings.HasPrefix(got, projPrefix) {
+		t.Errorf("a file beside the project is stored as project-relative: %q", got)
+	}
+	// the two ends of the project file use the pair
+	src := readSrc(t, "project.go")
+	for _, want := range []string{"Path: a.storePath(it.path)", "path: a.loadPath(s.Path)"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the project file does not go through the pair: %q", want)
+		}
+	}
+	// and a project adopted from an older build has its old .data paths
+	// rewritten to it, or the first open after the upgrade prunes them
+	if !strings.Contains(funcBody(t, "project.go", `func \(a \*App\) adoptLegacy\(`), `"`+"`"+`+path+".data"`) {
+		t.Error("adopting an older project leaves paths pointing into the folder it renamed")
 	}
 }

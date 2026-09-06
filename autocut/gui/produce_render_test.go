@@ -414,6 +414,12 @@ func TestTheVideoIsAlwaysFinalAndOverwritingIsAsked(t *testing.T) {
 	for _, want := range []string{
 		`p.setOut(filepath.Join(a.produceDir(), "final.mp4"))`,
 		`p.again = gtk.NewButtonFromIconName("view-refresh-symbolic")`,
+		// ...and the way out of the project beside it: the video lives in
+		// produce/ with the work it was made from, which is right for a
+		// project and wrong for the thing you upload
+		`p.save = gtk.NewButtonFromIconName("document-save-symbolic")`,
+		"a.exportVideo()",
+		"box.Append(a.heading(\"Transcode\"",
 		`box.Append(a.heading("Transcode"`,
 		"a.transcodeClicked()",
 		// ...and both doors ask before they overwrite, with the red button --
@@ -430,6 +436,15 @@ func TestTheVideoIsAlwaysFinalAndOverwritingIsAsked(t *testing.T) {
 	if !strings.Contains(funcBody(t, "project.go", `func \(a \*App\) confirm\(`), `go1.AddCSSClass("destructive-action")`) {
 		t.Error("the overwrite question is not asked with the red button")
 	}
+	// saving the video out is a COPY, and one that cannot leave half a file
+	// behind: the project keeps the video the render stamp is about
+	exp := funcBody(t, "produce.go", `func \(a \*App\) exportVideo\(\) \{`)
+	if !strings.Contains(exp, "copyFile(src, out)") || strings.Contains(exp, "os.Rename(src") {
+		t.Errorf("the video is moved out of the project rather than copied:\n%s", exp)
+	}
+	if !strings.Contains(funcBody(t, "project_import.go", `func copyFile\(src, out string\) error \{`), "part := out + \".part\"") {
+		t.Error("an interrupted save leaves something that looks like a finished video")
+	}
 	// ↻ encodes and nothing else: no model call, no thumbnail
 	run := funcBody(t, "produce.go", `func \(a \*App\) produceRun\(words bool\) \{`)
 	for _, want := range []string{"if words {\n\t\t\twg.Add(1)", "case !words:"} {
@@ -441,5 +456,64 @@ func TestTheVideoIsAlwaysFinalAndOverwritingIsAsked(t *testing.T) {
 	// video's folder with it
 	if !strings.Contains(funcBody(t, "project.go", `func \(a \*App\) currentProject\(\) Project \{`), "st.OutFile = \"\"") {
 		t.Error("the project file carries a destination again")
+	}
+}
+
+// ▶ makes what is missing; ↻ makes it again.
+//
+// Pressing ▶ twice used to spend the same minutes writing the same file, and
+// pressing it after fixing a title -- a fact the video does not contain --
+// spent them too. So the render is stamped with everything that reaches the
+// ffmpeg command line, and the thumbnail with everything that reaches sd.cpp;
+// ▶ skips whichever of the two is already what the page describes. The ↻
+// buttons never skip: a model asked the same question twice answers
+// differently, which is the whole reason they exist.
+func TestPressingPlayTwiceDoesNotRemakeWhatIsAlreadyThere(t *testing.T) {
+	// the render's stamp is the ffmpeg call's own inputs, and not the words
+	stamp := funcBody(t, "produce_stamp.go", `func \(a \*App\) renderStamp\(`)
+	for _, want := range []string{
+		"Set     prodSettings", // the encoder settings...
+		"Segs    []cutSeg",     // ...the cut...
+		"Lines   []line",       // ...the narration, by its wavs
+		"Sources []string",     // ...and the recordings under it
+		"Aspect  string",
+		"Voice   string",
+		`in.Set.OutFile = ""`, // where it goes is not what it is
+	} {
+		if !strings.Contains(stamp, want) {
+			t.Errorf("the render stamp does not cover %q", want)
+		}
+	}
+	for _, gone := range []string{"Title", "Desc", "Prompt", "Thumb"} {
+		if strings.Contains(stamp, gone) {
+			t.Errorf("the render stamp covers %q, which is not in the video", gone)
+		}
+	}
+	// a missing file is always stale, whatever the stamp says
+	stale := funcBody(t, "produce_stamp.go", `func \(a \*App\) renderStale\(`)
+	if !strings.Contains(stale, "!exists(st.OutFile)") {
+		t.Error("a missing video is not re-encoded")
+	}
+	// ▶ skips, ↻ Transcode does not
+	run := funcBody(t, "produce.go", `func \(a \*App\) produceRun\(words bool\) \{`)
+	if !strings.Contains(run, "encode := !words || a.renderStale(segs, entries, st, vids, auds)") {
+		t.Error("▶ encodes an up-to-date video again, or ↻ refuses to")
+	}
+	if !strings.Contains(run, "a.markRendered(segs, entries, st, vids, auds)") {
+		t.Error("nothing stamps the video that was just written")
+	}
+	// the same rule for the drawing, and the ↻ over the picture forces it
+	pubs := funcBody(t, "publish.go", `func \(a \*App\) publishStage\(`)
+	if !strings.Contains(pubs, "if !force && !a.drawStale(st, aspect) {") {
+		t.Error("▶ redraws a thumbnail nothing has changed about")
+	}
+	draw := funcBody(t, "publish.go", `func \(a \*App\) drawStamp\(`)
+	for _, want := range []string{"st.Frames", "st.Prompt", "st.Negative", "aspect"} {
+		if !strings.Contains(draw, want) {
+			t.Errorf("the thumbnail's stamp does not cover %q", want)
+		}
+	}
+	if !strings.Contains(funcBody(t, "publish.go", `func \(a \*App\) publishRedraw\(\) \{`), "written, false, true)") {
+		t.Error("↻ over the thumbnail no longer forces a draw")
 	}
 }

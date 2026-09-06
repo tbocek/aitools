@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
@@ -146,6 +147,7 @@ type producer struct {
 	vfr, mono, blur  *gtk.CheckButton
 	crf, gvol        *gtk.Scale
 	again            *gtk.Button // ↻ on the Transcode heading: encode again
+	save             *gtk.Button // ...and ⤓ beside it: the video, somewhere else
 	outFile          string      // always produce/final.<container> (setOut)
 	inputs, out      *gtk.Label  // the two rows every step has
 	guard            bool        // suppresses feedback while applying a project
@@ -370,11 +372,27 @@ func (a *App) buildProduce() gtk.Widgetter {
 	low := gtk.NewGrid()
 	low.SetColumnSpacing(10)
 	low.SetRowSpacing(6)
+	// One width per label column, shared by both grids, and every label flush
+	// left in it.
+	//
+	// They were right-aligned, which is the usual thing for a form of one
+	// column -- and this is two grids of three and two, so the labels came out
+	// on four different left edges under a heading that starts at one: nothing
+	// on the block lined up with anything else on it. Left-aligned and sized
+	// together, every row starts where "Transcode" does and every control
+	// starts where the control above it does.
+	var lblCol [3]*gtk.SizeGroup
 	// a label and the thing it names, in whichever grid the caller is filling
 	lbl := func(g *gtk.Grid, col, row int, label string, w gtk.Widgetter) *gtk.Label {
 		l := gtk.NewLabel(label)
-		l.SetXAlign(1)
+		l.SetXAlign(0)
 		l.AddCSSClass("dim-label")
+		if col < len(lblCol) {
+			if lblCol[col] == nil {
+				lblCol[col] = gtk.NewSizeGroup(gtk.SizeGroupHorizontal)
+			}
+			lblCol[col].AddWidget(l)
+		}
 		// centred in the row rather than filling it: a row holding a slider is
 		// as tall as the slider -- which draws its number above itself -- and
 		// everything else in that row was being stretched to match. A dropdown
@@ -545,13 +563,11 @@ func (a *App) buildProduce() gtk.Widgetter {
 	outRow.Append(p.out)
 	a.outStack.AddNamed(outRow, "produce") // the shared bar's Outputs group; see outStack in main.go
 
-	// no side margins: this box is one of the right column's rows, and the
-	// column already stands 6 off the handle and 12 off the window (the words
-	// above it are at those same two numbers). Its own 12 indented the whole
-	// settings grid past the title and the description it sits under.
-	box := gtk.NewBox(gtk.OrientationVertical, 10)
-	box.SetMarginTop(8)
-	box.SetMarginBottom(8)
+	// no margins of its own: this box is one of the right column's rows and
+	// the column carries them (below). 6 between the heading and its grids,
+	// and between the two grids -- the same step the rest of the column uses
+	// between a heading and its box.
+	box := gtk.NewBox(gtk.OrientationVertical, 6)
 	// the heading this half of the column is under, with the ↻ that runs it
 	// again beside it -- the same mark, in the same corner, as the ↻ over the
 	// thumbnail on the other half of the page
@@ -560,8 +576,17 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.again.SetTooltipText("Encode the video again from the cut and these settings — " +
 		"no model call, and the thumbnail and the upload text are left alone")
 	p.again.ConnectClicked(func() { a.transcodeClicked() })
+	// ...and the way out of the project, beside it: the finished video lives
+	// in produce/ with the work it was made from, which is right for a project
+	// and wrong for the thing you actually upload. The same ⤓ the thumbnail
+	// wears, doing the same job one file over.
+	p.save = gtk.NewButtonFromIconName("document-save-symbolic")
+	p.save.AddCSSClass("flat")
+	p.save.SetTooltipText("Save the finished video somewhere else — a copy; " +
+		"produce/final stays where it is")
+	p.save.ConnectClicked(func() { a.exportVideo() })
 	box.Append(a.heading("Transcode", "How the finished video is encoded, and where it goes: "+
-		"produce/final, beside everything else this step writes", p.again))
+		"produce/final, beside everything else this step writes", p.save, p.again))
 	box.Append(grid)
 	box.Append(low)
 
@@ -581,8 +606,16 @@ func (a *App) buildProduce() gtk.Widgetter {
 	scroll.SetChild(box)
 	scroll.SetPropagateNaturalHeight(true)
 
+	// the column's own margins, for everything in it: 6 off the handle, 12 off
+	// the window, 8 top and bottom -- the same four numbers every page keeps
+	// (steps_test.go). They were on the rows instead, one row at a time, so
+	// the words ended 24 from the window and the settings 12.
 	right := gtk.NewBox(gtk.OrientationVertical, 6)
 	right.SetSizeRequest(360, -1)
+	right.SetMarginStart(6)
+	right.SetMarginEnd(12)
+	right.SetMarginTop(8)
+	right.SetMarginBottom(8)
 	right.Append(said)
 	right.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
 	right.Append(scroll)
@@ -595,7 +628,6 @@ func (a *App) buildProduce() gtk.Widgetter {
 	outer.SetShrinkStartChild(false)
 	outer.SetShrinkEndChild(false)
 	outer.SetVExpand(true)
-	outer.SetMarginEnd(12)
 	// half each, like Prepare: the picture being made and the words that go up
 	// with it are both the work of this page, and left to itself the pane gave
 	// the thumbnail whatever it asked for and the title, the description and
@@ -605,6 +637,53 @@ func (a *App) buildProduce() gtk.Widgetter {
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
 	page.Append(outer)
 	return page
+}
+
+// exportVideo copies the finished video out of the project. A copy and not a
+// move: produce/final is what the stamp is about (produce_stamp.go), and a
+// project whose video had been carried off would encode it again on the next
+// ▶ for no reason anybody could see.
+//
+// The copy runs on a goroutine -- these are hundreds of megabytes -- through
+// the same io.Copy every source import uses, so an interrupted one leaves a
+// .part and not half a video (copyInto).
+func (a *App) exportVideo() {
+	p := a.prod
+	if p == nil {
+		return
+	}
+	if !exists(p.outFile) {
+		a.setStatus("nothing to save yet — ▶ renders the video first")
+		return
+	}
+	d := gtk.NewFileDialog()
+	d.SetTitle("Save the video")
+	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
+	// named for the project rather than "final": the folder it came out of
+	// says which project it is and the copy is leaving that folder
+	d.SetInitialName(strings.TrimSuffix(filepath.Base(a.projPath), filepath.Ext(a.projPath)) +
+		filepath.Ext(p.outFile))
+	d.Save(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
+		f, err := d.SaveFinish(res)
+		if err != nil || f == nil {
+			return // dismissed
+		}
+		out, src := f.Path(), p.outFile
+		a.setStatus("saving " + filepath.Base(out) + "…")
+		go func() {
+			err := copyFile(src, out)
+			glib.IdleAdd(func() {
+				if err != nil {
+					a.logf("!!! save video: %v", err)
+					a.setStatus("could not save the video — see log")
+					return
+				}
+				fi, _ := os.Stat(out)
+				a.logf(">>> saved %s", out)
+				a.setStatus(fmt.Sprintf("saved %s — %s", filepath.Base(out), humanSize(fi.Size())))
+			})
+		}()
+	})
 }
 
 // updateProduceInfo redraws both rows: what the render reads and what it has

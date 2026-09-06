@@ -502,9 +502,10 @@ func (a *App) buildPublishPanes() (draw, said gtk.Widgetter) {
 	p.suggest.ConnectClicked(func() { a.publishSuggest() })
 
 	wrote := gtk.NewBox(gtk.OrientationVertical, 6)
-	wrote.SetMarginTop(8)
-	wrote.SetMarginStart(6) // the handle's side, matching the drawing beside it
-	wrote.SetMarginEnd(12)  // ...and the window's
+	// no margins of its own: the words and the encoder settings under them are
+	// two rows of one column, and the column carries the margins for both
+	// (buildProduce). Its own pair put the words 12 further in than the
+	// settings, so the two halves of one column had two right edges.
 	wrote.Append(p.a.heading("Title", "The YouTube title, printed across the top of the thumbnail",
 		p.suggest))
 	wrote.Append(p.title)
