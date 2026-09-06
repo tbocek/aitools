@@ -1,6 +1,6 @@
 package main
 
-// Adding a source: in place, or into the project.
+// Adding a source: into the project, or in place.
 //
 // A project is a folder now (projExt), and the point of that is that it can be
 // copied, backed up or zipped as one thing. A session whose sources are
@@ -8,10 +8,11 @@ package main
 // on a drive that will be unplugged -- is not one thing, and nothing about the
 // project says so until a source is gone and the row goes red.
 //
-// So the choice is asked once, when the file is added, and both answers are
-// legitimate. Reference is right for the footage you are cutting on the
-// machine that recorded it: 20 GB of capture does not want a second copy.
-// Copy is right for anything that has to survive being handed over.
+// So copying in is the default, and a tick beside the Add buttons turns it off
+// for the project (Project.RefSources). Both answers are legitimate: reference
+// is right for the footage you are cutting on the machine that recorded it,
+// where 20 GB of capture does not want a second copy; copy is right for
+// anything that has to survive being handed over.
 //
 // The copy goes to <project>/sources/. Not a settings folder, not the root:
 // inside the project, because that is the whole reason to press it.
@@ -24,7 +25,6 @@ import (
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
-	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
 // sourcesDir is where copied sources land.
@@ -41,88 +41,27 @@ func (a *App) inProject(path string) bool {
 	return err == nil && !strings.HasPrefix(rel, "..")
 }
 
-// askImport is the question every Add asks: copy these into the project, or
-// point at them where they are. Files already inside the project skip it.
-func (a *App) askImport(paths []string) {
-	var outside []string
-	for _, p := range paths {
-		if !a.inProject(p) {
-			outside = append(outside, p)
-		}
+// applyRefSources puts a project's answer on the tick.
+func (a *App) applyRefSources(ref bool) {
+	a.refSources = ref
+	if a.copyTick == nil {
+		return
 	}
-	if len(outside) == 0 {
+	a.refQuiet = true
+	a.copyTick.SetActive(!ref)
+	a.refQuiet = false
+}
+
+// askImport is what every Add does with the files it was handed: copies them
+// into the project, or references them where they are, as the tick beside the
+// Add buttons says. It was a question asked on every Add; it is a setting,
+// because the answer is a fact about the project and not about the file.
+func (a *App) askImport(paths []string) {
+	if a.refSources {
 		a.addSources(paths...)
 		return
 	}
-	total := int64(0)
-	for _, p := range outside {
-		if fi, err := os.Stat(p); err == nil {
-			total += fi.Size()
-		}
-	}
-	a.askCopy(fmt.Sprintf("Copy %s into the project?", plural(len(paths), "file")),
-		fmt.Sprintf("%s of footage.\n\nCopied, the project folder holds everything it needs "+
-			"and can be moved or zipped as one thing. Referenced, nothing is duplicated and "+
-			"the session breaks if the files move.", humanSize(total)),
-		func(copyIn bool) {
-			if !copyIn {
-				a.addSources(paths...)
-				return
-			}
-			a.copySources(paths)
-		})
-}
-
-// askCopy is the two-answer question, with Cancel. Neither answer is
-// destructive, so neither button is red: this is a fork in the road, not a
-// warning.
-func (a *App) askCopy(question, detail string, ok func(copyIn bool)) {
-	win := gtk.NewWindow()
-	win.SetTransientFor(&a.win.Window)
-	win.SetModal(true)
-	win.SetTitle(question)
-	win.SetDefaultSize(460, -1)
-
-	q := gtk.NewLabel(question)
-	q.SetXAlign(0)
-	q.SetWrap(true)
-	q.AddCSSClass("heading")
-	d := gtk.NewLabel(detail)
-	d.SetXAlign(0)
-	d.SetWrap(true)
-	d.AddCSSClass("dim-label")
-
-	cancel := gtk.NewButtonWithLabel("Cancel")
-	cancel.ConnectClicked(func() { win.Close() })
-	ref := gtk.NewButtonWithLabel("Reference in place")
-	ref.ConnectClicked(func() {
-		win.Close()
-		ok(false)
-	})
-	cp := gtk.NewButtonWithLabel("Copy in")
-	cp.AddCSSClass("suggested-action")
-	cp.ConnectClicked(func() {
-		win.Close()
-		ok(true)
-	})
-	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	btns.SetHAlign(gtk.AlignEnd)
-	btns.SetMarginTop(8)
-	btns.Append(cancel)
-	btns.Append(ref)
-	btns.Append(cp)
-
-	box := gtk.NewBox(gtk.OrientationVertical, 8)
-	box.SetMarginTop(16)
-	box.SetMarginBottom(16)
-	box.SetMarginStart(16)
-	box.SetMarginEnd(16)
-	box.Append(q)
-	box.Append(d)
-	box.Append(btns)
-	win.SetChild(box)
-	cp.GrabFocus()
-	win.SetVisible(true)
+	a.copySources(paths)
 }
 
 // copySources copies what is outside the project into <project>/sources/ and
@@ -144,22 +83,49 @@ func (a *App) copySources(paths []string) {
 		a.setStatus("could not make the project's sources folder — see log")
 		return
 	}
+	// files already inside the project are added as they are, whatever the
+	// tick says: copying a file onto itself is not a thing to offer
+	var todo []string
+	total := int64(0)
+	for _, p := range paths {
+		if a.inProject(p) {
+			continue
+		}
+		todo = append(todo, p)
+		if fi, err := os.Stat(p); err == nil {
+			total += fi.Size()
+		}
+	}
+	if len(todo) == 0 {
+		a.addSources(paths...)
+		return
+	}
 	a.running = true
 	a.updateRunControls()
 	a.logExp.SetExpanded(true)
-	a.logf(">>> copying %s into %s", plural(len(paths), "source"), dir)
+	a.logf(">>> copying %s (%s) into %s", plural(len(todo), "source"), humanSize(total), dir)
 	go func() {
 		var out []string
-		for i, p := range paths {
+		done := int64(0)
+		for _, p := range paths {
 			if a.inProject(p) {
 				out = append(out, p)
 				continue
 			}
-			a.progIdle(float64(i)/float64(len(paths)), "copying %s", filepath.Base(p))
-			to, err := copyInto(dir, p)
+			// the bar is the bytes, not the files: one 18 GB capture is one
+			// file, and a bar that sat at 0 for ten minutes is a bar that
+			// says the copy is stuck
+			name := filepath.Base(p)
+			meter := &copyMeter{total: total, done: done, tick: func(f float64) {
+				a.progIdle(f, "copying %s", name)
+			}}
+			to, err := copyInto(dir, p, meter)
 			if err != nil {
-				a.logfIdle("!!! copying %s: %v", filepath.Base(p), err)
+				a.logfIdle("!!! copying %s: %v", name, err)
 				continue
+			}
+			if fi, err := os.Stat(to); err == nil {
+				done += fi.Size()
 			}
 			out = append(out, to)
 		}
@@ -208,11 +174,31 @@ func copyFile(src, out string) error {
 	return os.Rename(part, out)
 }
 
+// copyMeter counts the bytes of one copy into a bar over all of them, and tells
+// the bar only when the needle would visibly move: a Write per 32 kB block is
+// hundreds of thousands of GUI round trips on a large file.
+type copyMeter struct {
+	total, done int64
+	last        float64
+	tick        func(float64)
+}
+
+func (m *copyMeter) Write(b []byte) (int, error) {
+	m.done += int64(len(b))
+	if m.total > 0 {
+		if f := float64(m.done) / float64(m.total); f-m.last >= 0.005 {
+			m.last = f
+			m.tick(f)
+		}
+	}
+	return len(b), nil
+}
+
 // copyInto copies one file into dir and answers with its new path. The copy is
 // written to a .part and renamed, so an interrupted copy cannot be mistaken
 // for a source: a half file that plays for ten seconds and stops is the worst
-// way to find out a drive was pulled.
-func copyInto(dir, src string) (string, error) {
+// way to find out a drive was pulled. meter, when given, sees every byte.
+func copyInto(dir, src string, meter io.Writer) (string, error) {
 	fi, err := os.Stat(src)
 	if err != nil {
 		return "", err
@@ -231,7 +217,11 @@ func copyInto(dir, src string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	var w io.Writer = out
+	if meter != nil {
+		w = io.MultiWriter(out, meter)
+	}
+	if _, err := io.Copy(w, in); err != nil {
 		out.Close()
 		os.Remove(part)
 		return "", err

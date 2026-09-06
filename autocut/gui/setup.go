@@ -1234,7 +1234,7 @@ func (a *App) setupDialog() {
 	// smear across the paragraph. The cost is that the endpoints in it can no
 	// longer be dragged out with the mouse; they are in this file and in the
 	// log, and everything else about it is better.
-	head := func(title, why string) *gtk.Box {
+	head := func(title, why string, opt bool) *gtk.Box {
 		l := gtk.NewLabel(title)
 		l.SetXAlign(0)
 		l.AddCSSClass("heading")
@@ -1244,6 +1244,16 @@ func (a *App) setupDialog() {
 		box.SetVAlign(gtk.AlignCenter) // it shares a line with the first row now
 		box.Append(l)
 		box.Append(info)
+		// ...and, on the sections a session can do without, one small word
+		// saying so. Two of these five have to be filled in before anything
+		// runs; the other three are the steps you may simply not use, and a
+		// page of identical headings says nothing about which is which.
+		if opt {
+			o := gtk.NewLabel("")
+			o.SetMarkup("<small>optional</small>")
+			o.AddCSSClass("dim-label")
+			box.Append(o)
+		}
 		return box
 	}
 	// Sections are told apart by a rule across the page, not by a box around
@@ -1259,7 +1269,7 @@ func (a *App) setupDialog() {
 	// as well: what it separates is the same thing the heading beside the
 	// first row already says.
 	row := 0
-	sec := func(title, why string) {
+	sec := func(title, why string, opt bool) {
 		if row > 0 {
 			rule := gtk.NewSeparator(gtk.OrientationHorizontal)
 			rule.SetMarginTop(2)
@@ -1267,7 +1277,7 @@ func (a *App) setupDialog() {
 			grid.Attach(rule, 0, row, 5, 1)
 			row++
 		}
-		grid.Attach(head(title, why), 0, row, 1, 1)
+		grid.Attach(head(title, why, opt), 0, row, 1, 1)
 	}
 	// Five columns: the section, what it is, the value, the verdict, its Test.
 	// The check lands beside the box it judges, before the button that made
@@ -1286,7 +1296,7 @@ func (a *App) setupDialog() {
 		"and GET /v1/models for the Fetch models button. The key is sent as "+
 		"Authorization: Bearer …; leave it empty for a server that wants none. "+
 		"Test asks for one short completion; the Test beside Model shows it a small "+
-		"picture, because describing footage needs a model that can see.")
+		"picture, because describing footage needs a model that can see.", false)
 	grid.Attach(lbl("Server:"), 1, row, 1, 1)
 	grid.Attach(server, 2, row, 1, 1)
 	grid.Attach(llmBadge.stack, 3, row, 1, 1)
@@ -1307,25 +1317,6 @@ func (a *App) setupDialog() {
 	grid.Attach(use, 4, row+3, 1, 1)
 	row += 4
 
-	// one server, two sections: the same server does the listening below
-	sec("Speaking", "The audio.cpp server that speaks the narration.\n\n"+
-		"Expects an OpenAI-compatible speech API: POST /v1/audio/speech, and GET /v1/models "+
-		"to check the model id. Empty means the compose service on loopback. Autocut only "+
-		"ever talks to this server over HTTP -- starting it is the job of whoever runs the "+
-		"stack.\n\nThe TTS model is the id the server lists, not a file: which weights they "+
-		"are, and on which backend, is set in audiocpp-server.json.")
-	grid.Attach(lbl("Server:"), 1, row, 1, 1)
-	grid.Attach(tts, 2, row, 1, 1)
-	grid.Attach(ttsBadge.stack, 3, row, 1, 1)
-	grid.Attach(testTTSBtn, 4, row, 1, 1)
-	grid.Attach(lbl("API key:"), 1, row+1, 1, 1)
-	grid.Attach(ttsKey, 2, row+1, 1, 1)
-	grid.Attach(lbl("TTS model:"), 1, row+2, 1, 1)
-	grid.Attach(ttsm, 2, row+2, 1, 1)
-	grid.Attach(ttsmBadge.stack, 3, row+2, 1, 1)
-	grid.Attach(testTTSMBtn, 4, row+2, 1, 1)
-	row += 3
-
 	// the one local tool here: no API, a binary. Which ffmpeg answers, and what
 	// it was built with, decides whether the render works at all
 	sec("Cutting", "ffmpeg, which every step shells out to, and the firefox the "+
@@ -1336,7 +1327,7 @@ func (a *App) setupDialog() {
 		"Test runs it and checks this build has the filters and encoders the pipeline "+
 		"uses: rubberband, subtitles, loudnorm, atempo, amix, adelay, alimiter, libx264, libx265, "+
 		"aac, libopus. A build missing one works perfectly until the step that needs it, "+
-		"which is minutes into a render.")
+		"which is minutes into a render.", false)
 	grid.Attach(lbl("ffmpeg:"), 1, row, 1, 1)
 	grid.Attach(ff, 2, row, 1, 1)
 	grid.Attach(ffBadge.stack, 3, row, 1, 1)
@@ -1347,23 +1338,36 @@ func (a *App) setupDialog() {
 	grid.Attach(testFxBtn, 4, row+1, 1, 1)
 	row += 2
 
-	// no server of its own: Prepare talks to the one named above. What is left
-	// is which of its models to ask -- what language to ask them in is the
-	// project's, on the Inputs page, where the footage it describes is
-	sec("Listening", "Speech-to-text, diarization -- who said what, and who "+
-		"is who -- and splitting a voice off a recording, all on the same audio.cpp server "+
-		"as Speaking above, so there is no second "+
-		"address to keep.\n\nExpects POST /v1/tasks/run, and GET /v1/models to check the "+
-		"ids.\n\nThese are model ids as the server lists them, not files: which weights they "+
-		"are, and on which backend, is set in audiocpp-server.json. Blank means the built-in "+
-		"default. The server opens the project folder itself, so it has to see it at this "+
-		"same path.")
+	// One server, one section. Speaking and Listening were two of these, with
+	// two Server boxes and two API key boxes for the same audio.cpp -- so the
+	// dialog asked the same address twice and let the answers differ, which is
+	// a way to spend an afternoon on a "server down" that was a typo in the
+	// half nobody looked at.
+	sec("Audio", "The audio.cpp server: it speaks the narration, and it does the "+
+		"speech-to-text, the diarization -- who said what, and who is who -- and the "+
+		"splitting of a voice off a recording. One address for all four.\n\n"+
+		"Expects an OpenAI-compatible speech API (POST /v1/audio/speech), the task API "+
+		"the rest go through (POST /v1/tasks/run), and GET /v1/models to check the ids. "+
+		"Empty means the compose service on loopback. Autocut only ever talks to it over "+
+		"HTTP -- starting it is the job of whoever runs the stack.\n\n"+
+		"The four model boxes are ids as the server lists them, not files: which weights "+
+		"they are, and on which backend, is set in audiocpp-server.json. Blank means the "+
+		"built-in default. The server opens the project folder itself, so it has to see "+
+		"it at this same path.", true)
+	grid.Attach(lbl("Server:"), 1, row, 1, 1)
+	grid.Attach(tts, 2, row, 1, 1)
+	grid.Attach(ttsBadge.stack, 3, row, 1, 1)
+	grid.Attach(testTTSBtn, 4, row, 1, 1)
+	grid.Attach(lbl("API key:"), 1, row+1, 1, 1)
+	grid.Attach(ttsKey, 2, row+1, 1, 1)
+	row += 2
 	for i, r := range []struct {
 		name  string
 		w     *gtk.Entry
 		btn   *gtk.Button
 		badge *testBadge
 	}{
+		{"TTS model:", ttsm, testTTSMBtn, ttsmBadge},
 		{"ASR model:", asrModel, testASRBtn, asrBadge},
 		{"Diarization model:", diarModel, testDiarBtn, diarBadge},
 		{"Voice split model:", sepModel, testSepBtn, sepBadge},
@@ -1373,7 +1377,7 @@ func (a *App) setupDialog() {
 		grid.Attach(r.badge.stack, 3, row+i, 1, 1)
 		grid.Attach(r.btn, 4, row+i, 1, 1)
 	}
-	row += 3
+	row += 4
 
 	// the last step's server. No model row: unlike audio.cpp above, there is
 	// no model id to send per request, so there is nothing here to choose. Test
@@ -1384,7 +1388,7 @@ func (a *App) setupDialog() {
 		"/sdcpp/v1/img_gen for a job id, then GET /sdcpp/v1/jobs/{id} until the picture "+
 		"arrives.\n\nThere is no model box: sd-server loads one model when it starts and "+
 		"nothing Autocut sends can switch it, so Test reports which weights it found "+
-		"instead of holding it to a name.")
+		"instead of holding it to a name.", true)
 	grid.Attach(lbl("Server:"), 1, row, 1, 1)
 	grid.Attach(sd, 2, row, 1, 1)
 	grid.Attach(sdBadge.stack, 3, row, 1, 1)

@@ -45,9 +45,15 @@ type Project struct {
 	// nothing in Produce that exists to carry one. Off is the ordinary answer
 	// and every project written before this reads as off, so an old project
 	// still narrates. See App.narrOff.
-	NoNarration bool   `json:"no_narration,omitempty"`
-	VidDir      string `json:"vid_dir,omitempty"` // where the choosers open, each
-	AudDir      string `json:"aud_dir,omitempty"` // relative to root when it can be
+	NoNarration bool `json:"no_narration,omitempty"`
+	// the sources are referenced where they are rather than copied into the
+	// project when added. Off -- copy -- is the ordinary answer, so a project
+	// is one folder that holds what it needs; on is for the machine that
+	// recorded the footage, where 20 GB of capture does not want a twin.
+	// Stored the wrong way round so every project written before this copies.
+	RefSources bool   `json:"reference_sources,omitempty"`
+	VidDir     string `json:"vid_dir,omitempty"` // where the choosers open, each
+	AudDir     string `json:"aud_dir,omitempty"` // relative to root when it can be
 	// in_dir is read, never written: there was one input folder, which had to
 	// hold input_video/ and input_audio/. A project written back then names it
 	// here, and those two subfolders are where the two folders above start.
@@ -257,6 +263,7 @@ func (a *App) currentProject() Project {
 		AudDir:      a.relToRoot(a.audDir),
 		Context:     a.sessionCtx(),
 		NoNarration: a.narrOff,
+		RefSources:  a.refSources,
 		Produce:     prod,
 		Publish:     a.currentPublish(),
 	}
@@ -712,6 +719,7 @@ func (a *App) applyProject(p Project) {
 	a.adoptProjectPrompts(p.Prompts)
 	a.applySessionCtx(p.Context)
 	a.applyNarrOff(p.NoNarration)
+	a.applyRefSources(p.RefSources)
 	a.migrateHints(p)
 	a.applyProdSettings(p.Produce)
 	a.applyPublish(p.Publish)

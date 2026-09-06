@@ -499,6 +499,11 @@ type App struct {
 	// checkbox writes it, the run refuses when it is set, and Produce hides
 	// what only a narration needs (narrate.go, produce.go).
 	narrOff bool
+	// sources are referenced in place rather than copied into the project
+	// (Project.RefSources); copyTick is the tick on Prepare that says so
+	refSources bool
+	refQuiet   bool // applyRefSources is setting the tick, not the user
+	copyTick   *gtk.CheckButton
 	// the run's own page: its file name, the finished calls' HTML in order, and
 	// how many there have been. One page per run rather than one per call --
 	// what happened is a thread through several calls, and a directory listing

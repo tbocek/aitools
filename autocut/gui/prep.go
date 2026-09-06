@@ -220,9 +220,29 @@ func (a *App) buildSources() *gtk.Box {
 	// now: every one of them ends its tooltip with the whole row (srcRowKey),
 	// so hovering any symbol says what all four are.
 
+	// Where an added file goes, decided once and remembered with the project
+	// rather than asked on every Add: into the project folder, or left where
+	// it is. Copy is the default -- a project is one folder that can be moved
+	// or zipped, and a session whose footage is on the card it was recorded on
+	// is not one thing -- and the tick comes off for the machine that recorded
+	// the footage, where 20 GB of capture does not want a twin.
+	a.copyTick = gtk.NewCheckButtonWithLabel("copy into project")
+	a.copyTick.SetActive(true)
+	a.copyTick.SetTooltipText("Ticked, an added file is copied into the project's sources/ folder, " +
+		"so the project holds everything it needs. Unticked, the file is referenced where it is: " +
+		"nothing is duplicated, and the session breaks if it moves.")
+	a.copyTick.ConnectToggled(func() {
+		if a.refQuiet {
+			return
+		}
+		a.refSources = !a.copyTick.Active()
+		a.saveProjectNow()
+	})
+
 	addRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	addRow.Append(addBtn)
 	addRow.Append(addDirBtn)
+	addRow.Append(a.copyTick)
 
 	listScroll := gtk.NewScrolledWindow()
 	listScroll.SetChild(a.srcList.box)

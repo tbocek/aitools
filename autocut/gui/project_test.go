@@ -915,7 +915,7 @@ func TestAddingASourceAsksWhetherToCopyItIn(t *testing.T) {
 	if err := os.WriteFile(src, []byte("0123456789"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	to, err := copyInto(a.sourcesDir(), src)
+	to, err := copyInto(a.sourcesDir(), src, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -927,16 +927,48 @@ func TestAddingASourceAsksWhetherToCopyItIn(t *testing.T) {
 	}
 	// the same file again costs nothing: same name, same size, already here
 	stat, _ := os.Stat(to)
-	if again, err := copyInto(a.sourcesDir(), src); err != nil || again != to {
+	if again, err := copyInto(a.sourcesDir(), src, nil); err != nil || again != to {
 		t.Errorf("adding the same card twice came back %q, %v", again, err)
 	}
 	if now, _ := os.Stat(to); now.ModTime() != stat.ModTime() {
 		t.Error("the second add copied the file again")
 	}
-	// and both doors ask
+	// both Add buttons go through the one decision...
 	src2 := readSrc(t, "project.go")
 	if n := strings.Count(src2, "a.askImport(paths)"); n != 2 {
-		t.Errorf("%d of the two Add buttons ask where the file should live, want 2", n)
+		t.Errorf("%d of the two Add buttons decide where the file should live, want 2", n)
+	}
+	// ...which is a setting of the project, not a question per file: copy by
+	// default, and the tick beside the buttons turns it off
+	imp := readSrc(t, "project_import.go")
+	if !strings.Contains(funcBody(t, "project_import.go", `func \(a \*App\) askImport\(paths \[\]string\) \{`), "if a.refSources {") {
+		t.Error("Add does not read the project's copy/reference answer")
+	}
+	if strings.Contains(imp, "askCopy(") {
+		t.Error("Add asks the question on every file again")
+	}
+	prep := readSrc(t, "prep.go")
+	for _, want := range []string{
+		`a.copyTick = gtk.NewCheckButtonWithLabel("copy into project")`,
+		"a.copyTick.SetActive(true)", // copy is the default
+		"a.refSources = !a.copyTick.Active()",
+	} {
+		if !strings.Contains(prep, want) {
+			t.Errorf("prep.go no longer has %q", want)
+		}
+	}
+	if !strings.Contains(src2, "RefSources:  a.refSources,") || !strings.Contains(src2, "a.applyRefSources(p.RefSources)") {
+		t.Error("the answer does not ride the project")
+	}
+	// the copy reports its bytes, not its files: one 18 GB capture is one file
+	m := &copyMeter{total: 1000}
+	var got []float64
+	m.tick = func(f float64) { got = append(got, f) }
+	for i := 0; i < 100; i++ {
+		m.Write(make([]byte, 10))
+	}
+	if len(got) < 50 || got[len(got)-1] < 0.99 {
+		t.Errorf("a 1000-byte copy in 10-byte writes reported %d fractions ending at %v", len(got), got)
 	}
 }
 

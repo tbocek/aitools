@@ -125,7 +125,7 @@ func TestEverySettingsSectionSaysWhichAPIItExpects(t *testing.T) {
 	// in it, so the one mark on this page that looks like every other ⓘ
 	// behaved like none of them
 	for _, want := range []string{
-		"head := func(title, why string) *gtk.Box {",
+		"head := func(title, why string, opt bool) *gtk.Box {",
 		`info := gtk.NewImageFromIconName("help-about-symbolic")`,
 		"info.SetTooltipText(why)",
 	} {
@@ -143,7 +143,7 @@ func TestEverySettingsSectionSaysWhichAPIItExpects(t *testing.T) {
 	// a rule between them rather than by a box around each, which would lay
 	// every section's columns out separately
 	for _, want := range []string{
-		"grid.Attach(head(title, why), 0, row, 1, 1)", // ...at column 0, on the section's first row
+		"grid.Attach(head(title, why, opt), 0, row, 1, 1)", // ...at column 0, on the section's first row
 		"rule := gtk.NewSeparator(gtk.OrientationHorizontal)",
 		"grid.Attach(rule, 0, row, 5, 1)", // ...across the whole width
 		`grid.Attach(lbl("Server:"), 1, row, 1, 1)`,
@@ -162,22 +162,50 @@ func TestEverySettingsSectionSaysWhichAPIItExpects(t *testing.T) {
 			t.Errorf("a key box is not in the value column: %q", want)
 		}
 	}
-	// five sections, five titles, and nothing longer than a word or two on
-	// the page itself -- the em-dash subtitles are what moved behind the ⓘ
+	// four sections, four titles, and nothing longer than a word or two on
+	// the page itself -- the em-dash subtitles are what moved behind the ⓘ.
+	// Speaking and Listening were two of them, with two Server boxes and two
+	// API key boxes for the same audio.cpp; they are one section now, Audio.
 	for _, title := range []string{
-		`sec("Writing", `, `sec("Speaking", `, `sec("Cutting", `,
-		`sec("Listening", `, `sec("Drawing", `,
+		`sec("Writing", `, `sec("Cutting", `, `sec("Audio", `, `sec("Drawing", `,
 	} {
 		if strings.Count(s, title) != 1 {
 			t.Errorf("the settings page has %d sections titled %s, want one",
 				strings.Count(s, title), title)
 		}
 	}
+	for _, gone := range []string{`sec("Speaking", `, `sec("Listening", `} {
+		if strings.Contains(s, gone) {
+			t.Errorf("the audio server is asked for twice again: %s", gone)
+		}
+	}
+	// the two a session cannot run without come first, and the rest say they
+	// are optional -- one small word, where a page of identical headings said
+	// nothing about which was which
+	order := []string{`sec("Writing", `, `sec("Cutting", `, `sec("Audio", `, `sec("Drawing", `}
+	for i := 1; i < len(order); i++ {
+		if strings.Index(s, order[i-1]) > strings.Index(s, order[i]) {
+			t.Errorf("%s comes before %s", order[i], order[i-1])
+		}
+	}
+	for _, c := range []struct{ tail, want string }{
+		{`can see.", false)`, "Writing is required"},
+		{`into a render.", false)`, "Cutting is required"},
+		{`same path.", true)`, "Audio is optional"},
+		{`holding it to a name.", true)`, "Drawing is optional"},
+	} {
+		if !strings.Contains(s, c.tail) {
+			t.Errorf("the settings page no longer says %s", c.want)
+		}
+	}
+	if !strings.Contains(s, `o.SetMarkup("<small>optional</small>")`) {
+		t.Error("an optional section is not marked as one")
+	}
 	// each one names the API its boxes are expected to speak
 	for _, api := range []string{
 		"/v1/chat/completions", // Writing
-		"/v1/audio/speech",     // Speaking
-		"/v1/tasks/run",        // Listening
+		"/v1/audio/speech",     // Audio: speaking
+		"/v1/tasks/run",        // Audio: listening
 		"/sdcpp/v1/img_gen",    // Drawing
 		"/sdcpp/v1/capabilities",
 		"/v1/models",
