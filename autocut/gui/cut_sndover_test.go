@@ -185,7 +185,7 @@ func TestTheSoundOverlayIsWired(t *testing.T) {
 			"func (ed *cutEditor) layOverSound(s cutSeg) int {",
 			"if f.isInsert() || t1-t0 < sndMinLn {", // cards and blinks are stepped over
 			"out = append(out, cutSeg{S: t0, E: t1, Ins: s.Ins, Ss: s.Ss + t0 - s.S, Lane: s.Lane})",
-			"n := ed.addSound(a.relToRoot(au.path), at, ed.copyLen, ss, ed.copyAud)",
+			"n := ed.addSound(a.storePath(au.path), at, ed.copyLen, ss, ed.copyAud)",
 			`case insKind(file) == "audio":`, // the chooser's sound goes the same way
 			"n := a.ed.addSound(rel, at, m.dur, 0, m.lane)",
 		},

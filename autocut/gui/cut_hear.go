@@ -234,7 +234,7 @@ func pairSwitchName(bases []string) string {
 // is about.
 func (ed *cutEditor) drawPairSwitches(cr *cairo.Context) {
 	for _, s := range ed.pairSwitches() {
-		hearPlate(cr, s.cx, s.cy, s.on)
+		hearPlate(cr, s.cx, s.cy, s.on, ed.badgeHot(badgeID{kind: badgePair, base: s.bases[0]}))
 	}
 }
 
@@ -478,7 +478,7 @@ func (ed *cutEditor) drawHearBadges(cr *cairo.Context, badges []hearBadge, vx0, 
 		if b.cx < vx0-hearHit || b.cx > vx1+hearHit {
 			continue
 		}
-		hearPlate(cr, b.cx, b.cy, b.on)
+		hearPlate(cr, b.cx, b.cy, b.on, ed.badgeHot(badgeID{kind: badgeHear, base: b.base}))
 	}
 }
 
@@ -487,7 +487,7 @@ func (ed *cutEditor) drawHearBadges(cr *cairo.Context, badges []hearBadge, vx0, 
 // the tape, so they scroll with it (cut_gutter.go).
 func (ed *cutEditor) drawLaneSwitches(cr *cairo.Context) {
 	for _, s := range ed.laneSwitches() {
-		hearPlate(cr, s.cx, s.cy, s.on)
+		hearPlate(cr, s.cx, s.cy, s.on, ed.badgeHot(badgeID{kind: badgeSwitch, base: s.base}))
 	}
 }
 
@@ -495,20 +495,31 @@ func (ed *cutEditor) drawLaneSwitches(cr *cairo.Context) {
 // heard, dark where it is not. Both controls draw it, so the mark means one
 // thing in both places -- a scene's badge and a lane's switch are the same
 // question asked at two sizes.
-func hearPlate(cr *cairo.Context, cx, cy float64, on bool) {
-	litPlate(cr, cx, cy, on)
+func hearPlate(cr *cairo.Context, cx, cy float64, on, hot bool) {
+	litPlate(cr, cx, cy, on, hot)
 	drawSpeaker(cr, cx, cy, on)
 }
 
 // litPlate is the round plate a lane's or a camera's badge sits on: green when
 // the thing is in use, dark when it is not. plate is the bare disc every badge
 // on the page is drawn on (drawKillBadge, foldPlate use it too).
-func litPlate(cr *cairo.Context, cx, cy float64, on bool) {
-	if on {
+func litPlate(cr *cairo.Context, cx, cy float64, on, hot bool) {
+	switch {
+	case hot:
+		hotPlate(cr, cx, cy, hearR+hearPad)
+	case on:
 		plate(cr, cx, cy, hearR+hearPad, 0.15, 0.65, 0.3, 0.95)
-		return
+	default:
+		plate(cr, cx, cy, hearR+hearPad, 0.06, 0.06, 0.07, 0.62)
 	}
-	plate(cr, cx, cy, hearR+hearPad, 0.06, 0.06, 0.07, 0.62)
+}
+
+// hotPlate is the blue a plated control wears under the pointer -- one colour
+// for all of them, so a badge that lights means the same thing wherever it is.
+// The ✕ badges are the exception and light red (drawKillBadge): "this press
+// removes it" is not the promise these make.
+func hotPlate(cr *cairo.Context, cx, cy, r float64) {
+	plate(cr, cx, cy, r, 0.25, 0.55, 0.85, 0.95)
 }
 
 func plate(cr *cairo.Context, cx, cy, r, R, G, B, A float64) {
@@ -740,7 +751,7 @@ func (ed *cutEditor) drawCamBadges(cr *cairo.Context, vx0, vx1 float64) {
 		if b.cx < vx0-hearHit || b.cx > vx1+hearHit {
 			continue
 		}
-		camPlate(cr, b.cx, b.cy, b.on)
+		camPlate(cr, b.cx, b.cy, b.on, ed.badgeHot(badgeID{kind: badgeCam, row: b.row}))
 	}
 }
 
@@ -749,8 +760,8 @@ func (ed *cutEditor) drawCamBadges(cr *cairo.Context, vx0, vx1 float64) {
 // speaker's, because both marks answer "is this row in this scene" and the page
 // should say that once -- and what is ON the plate is what says which half of
 // the question this is, and that a press here is a choice rather than a toggle.
-func camPlate(cr *cairo.Context, cx, cy float64, on bool) {
-	litPlate(cr, cx, cy, on)
+func camPlate(cr *cairo.Context, cx, cy float64, on, hot bool) {
+	litPlate(cr, cx, cy, on, hot)
 	drawLens(cr, cx, cy, on)
 }
 
@@ -767,4 +778,69 @@ func drawLens(cr *cairo.Context, cx, cy float64, on bool) {
 	}
 	cr.Arc(cx, cy, hearR*0.4, 0, 2*math.Pi)
 	cr.Fill()
+}
+
+// ---- the badge under the pointer ---------------------------------------------
+//
+// Every speaker and every lens lights under the pointer, like the rest of the
+// plated controls on this page. One id rather than a field per control, and one
+// hit test asking the press's own questions in the press's own order (cut.go):
+// a hover that answered differently would light a badge the press does not act
+// on.
+type badgeID struct {
+	kind int
+	base string // the recording a speaker is about
+	row  int    // the row a lens is about
+}
+
+const (
+	badgeNone   = iota
+	badgeSwitch // a recording's whole-lane switch, in the band's gutter
+	badgePair   // a camera row's, in the picture band's
+	badgeHear   // one lane's badge on the scene the badges are about
+	badgeCam    // the lens that says which camera a scene is shown from
+)
+
+// badgeAt is the badge under a point in timeline px, or none. src says which
+// band: the two carry different controls at the same x.
+func (ed *cutEditor) badgeAt(px, y float64, src bool) badgeID {
+	if src {
+		if bases := ed.pairSwitchAt(px, y); len(bases) > 0 {
+			return badgeID{kind: badgePair, base: bases[0]}
+		}
+	} else if base := ed.laneSwitchAt(px, y); base != "" {
+		return badgeID{kind: badgeSwitch, base: base}
+	}
+	if base := ed.hearAt(px, y, src); base != "" {
+		return badgeID{kind: badgeHear, base: base}
+	}
+	if src {
+		if r := ed.camBadgeAt(px, y); r >= 0 {
+			return badgeID{kind: badgeCam, row: r}
+		}
+	}
+	return badgeID{}
+}
+
+// badgeHot is whether b is the badge under the pointer.
+func (ed *cutEditor) badgeHot(b badgeID) bool { return ed.badgeHov == b }
+
+// hoverBadges lights the one under the pointer. x below zero means the pointer
+// has left the band, which puts them all out: the two bands share the field
+// because only one of them has the pointer.
+func (ed *cutEditor) hoverBadges(x, y float64, src bool) {
+	var b badgeID
+	if x >= 0 {
+		b = ed.badgeAt(x+ed.viewX, y, src)
+	}
+	if b == ed.badgeHov {
+		return
+	}
+	ed.badgeHov = b
+	if ed.srcArea != nil {
+		ed.srcArea.QueueDraw()
+	}
+	if ed.audArea != nil {
+		ed.audArea.QueueDraw()
+	}
 }

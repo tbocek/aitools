@@ -208,8 +208,8 @@ func TestGreenIsHeardAndGreyIsNot(t *testing.T) {
 	// not reachable from a test, so the branch itself is the claim
 	src := readSrc(t, "cut_hear.go")
 	for _, w := range []string{
-		"if b.on {\n\t\t\tcr.SetSourceRGBA(0.2, 0.85, 0.35, 0.22)",             // the wash over the scene
-		"if on {\n\t\tplate(cr, cx, cy, hearR+hearPad, 0.15, 0.65, 0.3, 0.95)", // and the plate both controls share
+		"if b.on {\n\t\t\tcr.SetSourceRGBA(0.2, 0.85, 0.35, 0.22)",              // the wash over the scene
+		"case on:\n\t\tplate(cr, cx, cy, hearR+hearPad, 0.15, 0.65, 0.3, 0.95)", // and the plate both controls share
 	} {
 		if !strings.Contains(src, w) {
 			t.Errorf("heard is no longer the green branch:\n%s", w)
@@ -585,8 +585,97 @@ func TestTheLaneSwitchIsOnTheNamePlate(t *testing.T) {
 	}
 	// both controls draw the one plate, so the mark cannot mean two things
 	hear := readSrc(t, "cut_hear.go")
-	if strings.Count(hear, "func litPlate(") != 1 || !strings.Contains(hear, "hearPlate(cr, b.cx, b.cy, b.on)") {
+	if strings.Count(hear, "func litPlate(") != 1 || !strings.Contains(hear, "hearPlate(cr, b.cx, b.cy, b.on,") {
 		t.Error("the scene badge and the lane switch no longer share hearPlate")
+	}
+}
+
+// ---- and every one of them lights under the pointer ---------------------------
+
+// The speakers and the lens are buttons, and until now they were the only
+// plated controls on the page that did not say so: the ✕ badges light red under
+// the pointer and the fold's + lights blue, while a switch looked exactly the
+// same whether the hand was on it or a hand's width away.
+func TestEverySpeakerAndLensLightsUnderThePointer(t *testing.T) {
+	ed := hearEd(t)
+
+	// the recorders' band: its switch, and the held scene's own badge
+	sw := ed.laneSwitches()[0]
+	ed.hoverBadges(sw.cx-ed.viewX, sw.cy, false)
+	if !ed.badgeHot(badgeID{kind: badgeSwitch, base: sw.base}) {
+		t.Errorf("the pointer on %s's switch lit %+v", sw.base, ed.badgeHov)
+	}
+	b := ed.hearBadgesAud()[0]
+	ed.hoverBadges(b.cx-ed.viewX, b.cy, false)
+	if !ed.badgeHot(badgeID{kind: badgeHear, base: b.base}) {
+		t.Errorf("the pointer on the scene's badge for %s lit %+v", b.base, ed.badgeHov)
+	}
+	// and the switch is a button to the pointer as well, like the row's own
+	// (wantCursor): it stands in the gutter, where nothing on the tape is
+	if got := ed.wantLaneCursor(sw.cx-ed.viewX, sw.cy); got != "pointer" {
+		t.Errorf("the pointer over a lane's switch is %q, want %q", got, "pointer")
+	}
+
+	// the picture band: the row's switch, and the lens that says which camera
+	ps := ed.pairSwitches()[0]
+	ed.hoverBadges(ps.cx-ed.viewX, ps.cy, true)
+	if !ed.badgeHot(badgeID{kind: badgePair, base: ps.bases[0]}) {
+		t.Errorf("the pointer on row 0's switch lit %+v", ed.badgeHov)
+	}
+	cb := ed.camBadges()[1]
+	ed.hoverBadges(cb.cx-ed.viewX, cb.cy, true)
+	if !ed.badgeHot(badgeID{kind: badgeCam, row: cb.row}) {
+		t.Errorf("the pointer on row %d's lens lit %+v", cb.row, ed.badgeHov)
+	}
+
+	// clear of them all, and off the band, nothing is lit: a badge left
+	// standing blue after the pointer has gone is a button that looks pressed
+	ed.hoverBadges(sw.cx-ed.viewX+3*hearHit, sw.cy, false)
+	if ed.badgeHov != (badgeID{}) {
+		t.Errorf("a point clear of every badge lit %+v", ed.badgeHov)
+	}
+	ed.hoverBadges(ps.cx-ed.viewX, ps.cy, true)
+	ed.hoverBadges(-1, -1, true)
+	if ed.badgeHov != (badgeID{}) {
+		t.Errorf("the pointer left the band and %+v stayed lit", ed.badgeHov)
+	}
+
+	// one blue for all of them, the fold's included, so a lit badge means the
+	// same thing wherever it is
+	hear := readSrc(t, "cut_hear.go")
+	if strings.Count(hear, "func hotPlate(") != 1 {
+		t.Error("the hover colour has been copied instead of shared")
+	}
+	if !strings.Contains(readSrc(t, "cut_fold.go"), "hotPlate(cr, cx, cy, segKillR+segKillPad)") {
+		t.Error("the fold's badge no longer wears the shared hover plate")
+	}
+	// and every one of the four draws asks whether it is the one
+	for _, want := range []string{
+		"hearPlate(cr, s.cx, s.cy, s.on, ed.badgeHot(badgeID{kind: badgeSwitch",
+		"hearPlate(cr, s.cx, s.cy, s.on, ed.badgeHot(badgeID{kind: badgePair",
+		"hearPlate(cr, b.cx, b.cy, b.on, ed.badgeHot(badgeID{kind: badgeHear",
+		"camPlate(cr, b.cx, b.cy, b.on, ed.badgeHot(badgeID{kind: badgeCam",
+	} {
+		if !strings.Contains(hear, want) {
+			t.Errorf("a badge is drawn without asking whether the pointer is on it: %q", want)
+		}
+	}
+}
+
+// The switches are drawn over the lane names. A name is a label and a switch is
+// a button, and the label was painted last -- so a name that reached the gutter
+// was drawn across the button it names.
+func TestTheSwitchesArePaintedOverTheNames(t *testing.T) {
+	src := readSrc(t, "cut_audio.go")
+	name := strings.Index(src, "plateText(cr, laneNameX, y+12, name)")
+	sw := strings.Index(src, "ed.drawLaneSwitches(cr)")
+	if name < 0 || sw < 0 || sw < name {
+		t.Errorf("the band paints its names over its switches (name %d, switch %d)", name, sw)
+	}
+	// the picture band already did, and has to go on doing it
+	cut := readSrc(t, "cut.go")
+	if i, j := strings.Index(cut, "plateText(cr, ed.viewX+laneNameX,"), strings.Index(cut, "ed.drawPairSwitches(cr)"); i < 0 || j < 0 || j < i {
+		t.Errorf("the picture band paints its names over its switches (name %d, switch %d)", i, j)
 	}
 }
 

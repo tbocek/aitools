@@ -55,7 +55,7 @@ func (a *App) laneVideos(lanes []cutLane, vids []tlVideo) []tlVideo {
 			// with no file behind it would resolve to the project folder
 			continue
 		}
-		path := a.fromRoot(l.Src)
+		path := a.loadPath(l.Src)
 		v := tlVideo{base: l.Name, path: path, start: l.At, off: l.Off, dur: l.Dur,
 			wall: zeroWall + l.At - l.Off, fps: 30}
 		if src := videoByPath(vids, path); src != nil {
@@ -184,7 +184,7 @@ func (ed *cutEditor) addLane(src string, off, at, dur float64) string {
 	ed.pushUndo()
 	ed.freezeRows()
 	name := cutLaneName(ed.vids, baseName(src))
-	ed.cutLanes = append(ed.cutLanes, cutLane{Name: name, Src: ed.a.relToRoot(src),
+	ed.cutLanes = append(ed.cutLanes, cutLane{Name: name, Src: ed.a.storePath(src),
 		At: at, Off: off, Dur: dur})
 	// its own row, under everything already there -- read off the rows in use
 	// rather than off laneN, which is floored at one and would leave an empty

@@ -552,6 +552,9 @@ type cutEditor struct {
 	// (cut_lane.go). laneHov is the one whose ✕ is under the pointer.
 	cutLanes []cutLane
 	laneHov  string
+	// badgeHov is the speaker or lens under the pointer, which lights blue
+	// while it is (cut_hear.go)
+	badgeHov badgeID
 	// rowHov is the empty row whose ✕ is under the pointer, -1 for none
 	// (cut_lane.go: an emptied row wears the same badge a cut lane does)
 	rowHov int
@@ -5660,7 +5663,7 @@ func (a *App) pasteSound() {
 	// the copy stays in hand when it had nowhere to go: the paste did not
 	// fail so much as miss, and the answer to missing is to move the red line
 	// and press again, not to go and copy the same seconds a second time
-	n := ed.addSound(a.relToRoot(au.path), at, ed.copyLen, ss, ed.copyAud)
+	n := ed.addSound(a.storePath(au.path), at, ed.copyLen, ss, ed.copyAud)
 	if n == 0 {
 		a.setStatus(fmt.Sprintf("the cut keeps no footage at %s — a sound needs a picture under it", mmss(at)))
 		return
@@ -5875,7 +5878,7 @@ func (a *App) placeInsert(ins string, at float64, m insMode) {
 		m.dur = a.insertLength(ins)
 	}
 	file, q := insSplit(ins)
-	rel := a.relToRoot(file) + q.suffix()
+	rel := a.storePath(file) + q.suffix()
 	was := a.ed.cutLen()
 	how := "over the footage — drag its edges to retime it"
 	switch {
@@ -5944,7 +5947,7 @@ func (a *App) editInsert() {
 	was := *held
 	before := ed.cutLen()
 	file, q := insSplit(was.Ins)
-	path := a.fromRoot(file) + q.suffix()
+	path := a.loadPath(file) + q.suffix()
 	if was.isCopy() {
 		path = was.Ins // not a file: the dialog asks only its mode and seconds
 	}
@@ -6184,10 +6187,15 @@ func (a *App) askInsertParams(verb, path string, fields []svgField, m insMode, o
 	}
 }
 
-// pickLogos adds image files to a list of items. They go in the way a path is
-// kept everywhere else in a project -- relative to it, so the project still
-// works after it is moved -- and as bare paths, which is a chip that is only its
-// logo. Type a name and a bar in front of one to have both.
+// pickLogos adds image files to a list of items, as bare paths, which is a chip
+// that is only its logo. Type a name and a bar in front of one to have both.
+//
+// A logo inside the project is written relative to it and nothing else --
+// no project: prefix here, because this path is not read back by loadPath but
+// by the card being drawn, which looks beside itself and then in the folder
+// above, and that folder is the project (cardLogo). One outside is absolute:
+// a card is baked into frames somewhere else entirely, so there is nothing
+// else for a relative name to be relative to.
 func (a *App) pickLogos(parent *gtk.Window, e *gtk.Entry) {
 	d := gtk.NewFileDialog()
 	d.SetTitle("Logos for this tier")
@@ -6213,7 +6221,8 @@ func (a *App) pickLogos(parent *gtk.Window, e *gtk.Entry) {
 			}
 			f := &gio.File{Object: obj}
 			if p := f.Path(); p != "" {
-				items = append(items, a.relToRoot(p))
+				rel, _ := a.projRel(p)
+				items = append(items, rel)
 			}
 		}
 		e.SetText(strings.Join(items, ", "))

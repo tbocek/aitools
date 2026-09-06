@@ -311,7 +311,7 @@ func (ed *cutEditor) drawFoldBadges(cr *cairo.Context, vx0, vx1 float64) {
 // away.
 func foldPlate(cr *cairo.Context, cx, cy float64, mark string, hot bool) {
 	if hot {
-		plate(cr, cx, cy, segKillR+segKillPad, 0.25, 0.55, 0.85, 0.95)
+		hotPlate(cr, cx, cy, segKillR+segKillPad)
 	} else {
 		plate(cr, cx, cy, segKillR+segKillPad, 0.06, 0.06, 0.07, 0.55)
 	}

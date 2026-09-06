@@ -88,8 +88,9 @@ Voice.
 // ---- what the project keeps -----------------------------------------------------
 
 // pubSettings is the Publish page as the project stores it: decisions the user
-// made or suggestions they let stand, nothing derived. Frames are stored
-// root-relative (relToRoot) so moving the folder moves the session.
+// made or suggestions they let stand, nothing derived. Frames are stored the
+// way every path in a project is (storePath) -- the candidates are written
+// inside the project, so they travel with it.
 type pubSettings struct {
 	// The images, in the order the image model is given them. The FIRST is the
 	// base -- the picture being edited -- and the rest are there to be referred
@@ -746,7 +747,7 @@ func (a *App) currentPublish() *pubSettings {
 	}
 	st := a.pub.snapshot()
 	for i, f := range st.Frames {
-		st.Frames[i] = a.relToRoot(f)
+		st.Frames[i] = a.storePath(f)
 	}
 	// nothing chosen and nothing written is not worth a key in the file
 	if len(st.Frames) == 0 && st.Crop == nil && len(st.Texts) == 0 && !st.Own &&
@@ -770,7 +771,7 @@ func (a *App) applyPublish(st *pubSettings) {
 	// touches the list
 	c := st.migrate()
 	for i, f := range c.Frames {
-		c.Frames[i] = a.fromRoot(f)
+		c.Frames[i] = a.loadPath(f)
 	}
 	a.pub.apply(c)
 	a.pub.showShot()

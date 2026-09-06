@@ -572,12 +572,12 @@ func TestThePublishPageIsSavedWithTheProject(t *testing.T) {
 		}
 	}
 	body := funcBody(t, "publish.go", `func \(a \*App\) currentPublish\(\) \*pubSettings \{`)
-	if !strings.Contains(body, "a.relToRoot(f)") {
-		t.Error("the frames are stored absolute; moving the autocut folder would break them")
+	if !strings.Contains(body, "a.storePath(f)") {
+		t.Error("the frames are stored absolute; moving the project would break them")
 	}
 	if !strings.Contains(funcBody(t, "publish.go", `func \(a \*App\) applyPublish\(st \*pubSettings\) \{`),
-		"a.fromRoot(f)") {
-		t.Error("stored frames are not resolved back through root on load")
+		"a.loadPath(f)") {
+		t.Error("stored frames are not resolved back on load")
 	}
 
 	// and the words themselves survive the trip, which is what makes ▶ cheap:

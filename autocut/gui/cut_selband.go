@@ -375,6 +375,7 @@ func (ed *cutEditor) hoverTracks(x, y float64) {
 	ed.hoverFold(x, y)
 	ed.hoverFoldAll(x, y)
 	ed.hoverLaneKill(x, y)
+	ed.hoverBadges(x, y, true)
 	ed.hoverEdge(x, x >= 0 && ed.hitPics(y))
 	ed.setCursor(ed.srcArea, ed.wantCursor(x, y))
 }
@@ -383,15 +384,26 @@ func (ed *cutEditor) hoverTracks(x, y float64) {
 // in it: the lanes are this timeline seen as sound, the cut points run through
 // them, and there is nothing else down there to take hold of.
 func (ed *cutEditor) hoverLanes(x, y float64) {
-	_ = y // every row of the lanes is the same row, as far as the cut goes
-	name := ""
-	if x >= 0 {
-		if _, _, ok := ed.edgeAt(x + ed.viewX); ok {
-			name = "ew-resize"
-		}
-	}
+	ed.hoverBadges(x, y, false)
 	ed.hoverEdge(x, x >= 0)
-	ed.setCursor(ed.audArea, name)
+	ed.setCursor(ed.audArea, ed.wantLaneCursor(x, y))
+}
+
+// wantLaneCursor is what a press in the recorders' band would do, said in the
+// pointer: a button over the switch standing in the gutter, which is the one
+// part of this band that is not the tape (cut_fold.go), and the resize arrow
+// wherever a border can be trimmed.
+func (ed *cutEditor) wantLaneCursor(x, y float64) string {
+	if x < 0 {
+		return ""
+	}
+	if ed.laneSwitchAt(x+ed.viewX, y) != "" {
+		return "pointer"
+	}
+	if _, _, ok := ed.edgeAt(x + ed.viewX); ok {
+		return "ew-resize"
+	}
+	return ""
 }
 
 // hoverEdge highlights the clip border a press would take hold of. This is the

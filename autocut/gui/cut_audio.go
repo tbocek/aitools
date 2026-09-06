@@ -571,10 +571,9 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 		}
 		y += waveGap
 	}
-	// the black strip at the head of the tape, and the whole-lane switches
-	// standing in it (cut_gutter.go)
+	// the black strip at the head of the tape; the switches standing in it are
+	// drawn last, over the names (cut_fold.go)
 	ed.drawGutter(cr, 0, fh)
-	ed.drawLaneSwitches(cr)
 	// What the cut keeps, in green, as over the thumbnails: sound is chosen here,
 	// so the band has to show the cut. Fainter than the tint on the pictures -- a
 	// waveform IS the reading, and a heavy wash would take it with it.
@@ -705,6 +704,14 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 		}
 		y += waveGap
 	}
+
+	// and the switches over the names: a name is a label and a switch is a
+	// button, and the button is the one a label may not bury. Back in the
+	// tape's own coordinates, which is where the gutter they stand in is.
+	cr.Save()
+	cr.Translate(-ed.viewX, 0)
+	ed.drawLaneSwitches(cr)
+	cr.Restore()
 }
 
 // laneName says which channel a lane is: lanes of them, out of chans recorded.

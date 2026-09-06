@@ -53,7 +53,7 @@ type Project struct {
 	// Stored the wrong way round so every project written before this copies.
 	RefSources bool   `json:"reference_sources,omitempty"`
 	VidDir     string `json:"vid_dir,omitempty"` // where the choosers open, each
-	AudDir     string `json:"aud_dir,omitempty"` // relative to root when it can be
+	AudDir     string `json:"aud_dir,omitempty"` // stored the way every path is (storePath)
 	// in_dir is read, never written: there was one input folder, which had to
 	// hold input_video/ and input_audio/. A project written back then names it
 	// here, and those two subfolders are where the two folders above start.
@@ -129,35 +129,45 @@ func (a *App) relToRoot(dir string) string {
 // the pruned list back.
 const projPrefix = "project:"
 
-// storePath is how a path goes into the project file: relative to the project
-// when it is inside it, relative to the root when it is under that, and
-// absolute otherwise.
+// projRel is a path as the project folder sees it, and whether it is in there
+// at all. Slash-separated, because a stored path is read on whatever machine
+// the folder is opened on.
+func (a *App) projRel(p string) (string, bool) {
+	if a.outDir == "" {
+		return p, false
+	}
+	rel, err := filepath.Rel(a.outDir, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return p, false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+// storePath is how ANY file path goes into a project's files -- autocut.json,
+// cut.json, the publish record: relative to the project when it is inside it,
+// relative to the root when it is under that, and absolute otherwise. Every
+// writer goes through here, because a path stored the other way is a file the
+// project loses the moment the folder is renamed or moved.
 func (a *App) storePath(p string) string {
-	if a.outDir != "" {
-		if rel, err := filepath.Rel(a.outDir, p); err == nil && !strings.HasPrefix(rel, "..") {
-			return projPrefix + filepath.ToSlash(rel)
-		}
+	if rel, ok := a.projRel(p); ok {
+		return projPrefix + rel
 	}
 	return a.relToRoot(p)
 }
 
-// loadPath is its inverse.
+// loadPath is its inverse, and the one reader: a project written before this
+// stores those same files relative to the root, which is what the last two
+// cases are. An empty value means the root itself.
 func (a *App) loadPath(p string) string {
-	if rest, ok := strings.CutPrefix(p, projPrefix); ok {
-		return filepath.Join(a.outDir, filepath.FromSlash(rest))
-	}
-	return a.fromRoot(p)
-}
-
-// fromRoot is its inverse, with an empty value meaning "the root itself".
-func (a *App) fromRoot(rel string) string {
 	switch {
-	case rel == "":
+	case p == "":
 		return a.root
-	case filepath.IsAbs(rel):
-		return rel
+	case strings.HasPrefix(p, projPrefix):
+		return filepath.Join(a.outDir, filepath.FromSlash(strings.TrimPrefix(p, projPrefix)))
+	case filepath.IsAbs(p):
+		return p
 	default:
-		return filepath.Join(a.root, rel)
+		return filepath.Join(a.root, p)
 	}
 }
 
@@ -231,8 +241,8 @@ func (a *App) currentProject() Project {
 		// when it is the shipped default, so that "this project is General"
 		// and "this project predates the field" stay different answers -- the
 		// first has to be able to switch a machine back off Showcase.
-		VidDir:      a.relToRoot(a.vidDir),
-		AudDir:      a.relToRoot(a.audDir),
+		VidDir:      a.storePath(a.vidDir),
+		AudDir:      a.storePath(a.audDir),
 		Context:     a.sessionCtx(),
 		NoNarration: a.narrOff,
 		RefSources:  a.refSources,
@@ -271,7 +281,7 @@ func (a *App) projectSources(p Project) []sourceItem {
 		footage bool
 	}{{a.vidDir, p.Videos, true}, {a.audDir, p.Audios, false}} {
 		for i, f := range l.files {
-			path := a.fromRoot(f)
+			path := a.loadPath(f)
 			if inDir := filepath.Join(l.dir, filepath.Base(f)); !exists(path) && exists(inDir) {
 				path = inDir
 			}
@@ -637,9 +647,9 @@ func (a *App) loadProjectFrom(path string) {
 	// ...and then the rest of what opening a project means: the pages that
 	// read the folder, the voice, the autosave's target.
 	a.setProject(path)
-	if p.OutDir != "" && a.fromRoot(p.OutDir) != a.outDir {
+	if p.OutDir != "" && a.loadPath(p.OutDir) != a.outDir {
 		a.logf("!!! this project used to write into %s and now writes into %s -- "+
-			"the old folder is untouched", a.fromRoot(p.OutDir), a.outDir)
+			"the old folder is untouched", a.loadPath(p.OutDir), a.outDir)
 	}
 	a.rememberProject(a.projPath)
 	a.projSaved = a.projectJSON()

@@ -346,7 +346,7 @@ func TestThePreviewHushesTheSameSecondsTheRenderDoes(t *testing.T) {
 		}
 		want := ""
 		if c.voice != "" {
-			want = ed.a.fromRoot(c.voice) // the preview opens it where it lies
+			want = ed.a.loadPath(c.voice) // the preview opens it where it lies
 		}
 		if got := ed.cardVoice(&s); got != want {
 			t.Errorf("%s: the card plays %q, want %q", c.what, got, want)

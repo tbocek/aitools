@@ -24,7 +24,7 @@ func TestFolderRoundTripsThroughRoot(t *testing.T) {
 		"/mnt/recordings",
 	} {
 		stored := a.relToRoot(dir)
-		if got := a.fromRoot(stored); got != dir {
+		if got := a.loadPath(stored); got != dir {
 			t.Errorf("%s stored as %q came back as %s", dir, stored, got)
 		}
 	}
@@ -43,7 +43,7 @@ func TestFolderRoundTripsThroughRoot(t *testing.T) {
 // before the folders were settable looks like.
 func TestEmptyFolderMeansRoot(t *testing.T) {
 	a := &App{root: "/home/x/autocut"}
-	if got := a.fromRoot(""); got != a.root {
+	if got := a.loadPath(""); got != a.root {
 		t.Fatalf("empty folder resolved to %s, want the root", got)
 	}
 }
@@ -130,7 +130,7 @@ func TestOldProjectsKeepTheirSourceFolders(t *testing.T) {
 	// root twice -- that is the case that would silently list nothing
 	a := &App{root: "/home/x/autocut"}
 	v, _ := srcDirs(Project{})
-	if got, want := a.fromRoot(v), "/home/x/autocut/input_video"; got != want {
+	if got, want := a.loadPath(v), "/home/x/autocut/input_video"; got != want {
 		t.Fatalf("a project with no folders at all opens on %s, want %s", got, want)
 	}
 }
@@ -1009,9 +1009,69 @@ func TestASourceInsideTheProjectMovesWithIt(t *testing.T) {
 			t.Errorf("the project file does not go through the pair: %q", want)
 		}
 	}
+
 	// and a project adopted from an older build has its old .data paths
 	// rewritten to it, or the first open after the upgrade prunes them
 	if !strings.Contains(funcBody(t, "project.go", `func \(a \*App\) adoptLegacy\(`), `"`+"`"+`+path+".data"`) {
 		t.Error("adopting an older project leaves paths pointing into the folder it renamed")
+	}
+}
+
+// ...and so does everything else the project writes down. A source was the
+// first path to move inside the project and it is not the only one: the cut
+// names the lanes and the cards it was given, the publish record names the
+// frames it drew from, and all three of those live in the project folder now.
+// Any one of them stored root-relative is a file the project loses the moment
+// the folder is renamed -- silently, because the reader resolves it against a
+// root that still exists.
+func TestEveryPathAProjectWritesIsRelativeToIt(t *testing.T) {
+	root := t.TempDir()
+	a := &App{root: root, outDir: filepath.Join(root, "tom"+projExt)}
+	moved := &App{root: root, outDir: filepath.Join(root, "jan"+projExt)}
+
+	for _, in := range []string{
+		filepath.Join(a.outDir, "sources", "cam.mkv"),   // copied in by Add
+		filepath.Join(a.outDir, "assets", "tier.svg"),   // a card the project ships
+		filepath.Join(a.outDir, "produce", "shot4.jpg"), // a thumbnail candidate
+	} {
+		stored := a.storePath(in)
+		if !strings.HasPrefix(stored, projPrefix) {
+			t.Errorf("%s is stored as %q, which does not travel with the project", in, stored)
+		}
+		want := filepath.Join(moved.outDir, filepath.Base(filepath.Dir(in)), filepath.Base(in))
+		if got := moved.loadPath(stored); got != want {
+			t.Errorf("after a rename %q reads as %q, want %q", stored, got, want)
+		}
+	}
+
+	// every writer goes through the one function, so a path cannot be written
+	// the old way by a page that has not heard about the project folder
+	for _, w := range []struct{ file, call string }{
+		{"cut_lane.go", "Src: ed.a.storePath(src)"},          // a lane cut from a file
+		{"cut.go", "rel := a.storePath(file) + q.suffix()"},  // an insert, card parameters and all
+		{"cut.go", "ed.addSound(a.storePath(au.path)"},       // a pasted stretch of sound
+		{"publish.go", "st.Frames[i] = a.storePath(f)"},      // the frames the thumbnail was drawn from
+		{"project.go", "VidDir:      a.storePath(a.vidDir)"}, // and where the choosers open
+	} {
+		if !strings.Contains(readSrc(t, w.file), w.call) {
+			t.Errorf("%s writes a path without storePath: want %q", w.file, w.call)
+		}
+	}
+	// relToRoot is storePath's own fallback and nothing else's: called
+	// directly, it is exactly the bug above
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f == "project.go" || strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		if strings.Contains(readSrc(t, f), "relToRoot(") {
+			t.Errorf("%s stores a path with relToRoot instead of storePath", f)
+		}
+	}
+	if n := strings.Count(readSrc(t, "project.go"), "a.relToRoot("); n != 1 {
+		t.Errorf("relToRoot is called %d times in project.go, want the one in storePath", n)
 	}
 }

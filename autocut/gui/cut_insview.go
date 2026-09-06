@@ -269,7 +269,7 @@ func (ed *cutEditor) cardVoice(s *cutSeg) string {
 		return ""
 	}
 	file, _ := insSplit(s.Ins)
-	return ed.a.fromRoot(file)
+	return ed.a.loadPath(file)
 }
 
 // showInsert puts the card under the playhead on the preview, or takes it away
@@ -389,7 +389,7 @@ func (a *App) newFilm(ins string) *insFilm {
 		f.fps = insPreviewFPS
 	case "svg":
 		file, q := insSplit(ins)
-		if src, _, err := insSVG(a.fromRoot(file) + q.suffix()); err == nil && svgAnimated(src) {
+		if src, _, err := insSVG(a.loadPath(file) + q.suffix()); err == nil && svgAnimated(src) {
 			f.fps = insPreviewFPS
 		}
 	}
@@ -469,7 +469,7 @@ func (a *App) insPNG(ins string, at float64) (png []byte, file string, err error
 		return out, "", err
 	}
 	src, q := insSplit(ins)
-	path := a.fromRoot(src)
+	path := a.loadPath(src)
 	switch insKind(ins) {
 	case "still":
 		return nil, path, nil

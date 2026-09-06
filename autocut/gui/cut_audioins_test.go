@@ -144,7 +144,7 @@ func TestThePreviewPlaysTheFileAndKeepsThePicture(t *testing.T) {
 	ed.hold.on = true // something is playing; sound follows the transport
 
 	s := cutSeg{S: 40, E: 40, Ins: "sting.mp3", Dur: 5}
-	if got := ed.cardVoice(&s); got != a.fromRoot("sting.mp3") {
+	if got := ed.cardVoice(&s); got != a.loadPath("sting.mp3") {
 		t.Errorf("an audio insert is heard from %q, want the file itself", got)
 	}
 	still := cutSeg{S: 40, E: 40, Ins: "logo.png", Dur: 5}

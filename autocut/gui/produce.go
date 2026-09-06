@@ -1436,7 +1436,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			// selection -- and the file replaces the session's sound for the
 			// slot (encodeClip routes snd where the capture's sound was)
 			file, _ := insSplit(s.Ins)
-			path := a.fromRoot(file)
+			path := a.loadPath(file)
 			if !exists(path) {
 				a.logfIdle("clip %d: %s is not there any more — skipped", i+1, file)
 				continue
@@ -1459,7 +1459,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 			// what is on disk is a picture the parameters are applied TO, and
 			// only the part before the "?" is a path at all
 			file, q := insSplit(s.Ins)
-			path := a.fromRoot(file)
+			path := a.loadPath(file)
 			if !exists(path) {
 				a.logfIdle("clip %d: %s is not there any more — skipped", i+1, file)
 				continue
