@@ -722,7 +722,7 @@ func TestTheRedrawDrawsAndNothingElse(t *testing.T) {
 			t.Errorf("publishRedraw no longer reads %q before its goroutine", want)
 		}
 	}
-	if !strings.Contains(body, "if a.running {") {
+	if !strings.Contains(body, "if a.busy() {") {
 		t.Error("the redraw can start on top of a run")
 	}
 	if !strings.Contains(body, `a.publishDone("thumbnail drawn", failed)`) {
@@ -843,7 +843,7 @@ func TestAnImageCanBeUsedAsTheThumbnailAsItIs(t *testing.T) {
 		"pubWriteCropped(",
 		"p.a.thumbPlain()", // written as the plain copy, by the one name for it
 		"p.recomposite()",
-		"if p.a.running {",
+		"if p.a.busy() {",
 		"st.Own = true",
 	} {
 		if !strings.Contains(body, want) {

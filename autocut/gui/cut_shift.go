@@ -9,25 +9,12 @@ import (
 
 // ---- moving a recording, and moving the cut on it ---------------------------
 //
-// Two clocks are never the same clock. A second camera started by hand, a
-// phone a minute out, a recorder that writes no date at all: srcClock puts
-// every file on one wall clock off its name, which is roughly right about the
-// seconds for anything that names a moment and is an outright guess -- the
-// session's own start -- for anything that does not. The lanes are what make
-// that visible: the same shout in two waveforms, a column apart. Nothing else
-// on this page can fix it, because everything else on this page is measured
-// against exactly the placement that is wrong.
-//
-// So the right button drags. On the pictures it drags a whole row along the
-// timeline until the waveforms line up; on a lane it drags that one recording.
-// The offset is remembered per source in cut.json and re-applied on every load:
-// the file itself is untouched, and the render re-derives the same placement
-// from the same map, so what you lined up is what gets cut.
-//
-// Over a selection the same button means the other thing you would want to drag
-// along the timeline: the KEPT spans inside it. There the footage stays put and
-// the green slides across it -- the same scene a beat later, which is moving the
-// cut rather than moving the camera.
+// srcClock places files by name and guesses for the rest, so two waveforms of
+// one shout can sit a column apart. The right button drags: on the pictures a
+// whole row, on a lane one recording, until they line up. The offset is kept
+// per source in cut.json and re-applied on load; the render derives the same
+// placement. Over a selection the same button slides the KEPT spans across the
+// footage instead -- moving the cut rather than the camera.
 
 // shiftOf is one source's correction, and zero for a source that has none.
 func (ed *cutEditor) shiftOf(base string) float64 { return ed.shift[base] }
@@ -42,16 +29,11 @@ func (ed *cutEditor) applyShift() {
 	}
 }
 
-// slideSrc moves everything that belongs to one source along the timeline: the
-// footage, the sound that came out of the same file, and the speech-gap points
-// that were worked out against it. It does NOT touch ed.shift -- applyShift
-// calls it with what is already in there, and the drag calls it with a delta and
-// writes the new total itself.
-//
-// The gap hints another camera derived partly from this one's speech are left
-// where they were. They are hints for a snap, they cost a transcript re-read
-// each, and a drag that stopped to re-read three TSVs per frame would not be a
-// drag.
+// slideSrc moves everything that belongs to one source along the timeline:
+// footage, the sound from the same file, the speech-gap points worked out
+// against it. It does NOT touch ed.shift (applyShift and the drag do). Gap
+// hints another camera derived from this one's speech stay put -- re-reading
+// TSVs per frame is not a drag.
 func (ed *cutEditor) slideSrc(base string, d float64) {
 	if d == 0 {
 		return
@@ -91,15 +73,9 @@ func (ed *cutEditor) laneSrcs(lane int) []string {
 }
 
 // setShift puts one source's correction at exactly want seconds and moves the
-// source to match. Absolute rather than by a delta on purpose: a drag is a
-// hundred updates and each one carries the whole gesture so far, so nothing
-// accumulates, the clamp cannot eat its way inwards, and letting go where you
-// started leaves the timeline exactly as it was found.
-//
-// The rows are frozen first. A shift changes which recordings overlap, and the
-// rows are worked out FROM the overlaps -- without this, two cameras dragged
-// apart until they no longer overlap would quietly collapse onto one row, and
-// every scene that said "camera 2" would point at a row that is not there.
+// source to match. Absolute, so a hundred drag updates accumulate nothing and
+// letting go where you started leaves the timeline as found. Rows are frozen
+// first: they are worked out FROM the overlaps a shift changes.
 func (ed *cutEditor) setShift(base string, want float64) {
 	want = ed.clampShift(want)
 	cur := ed.shift[base]
@@ -145,16 +121,10 @@ func (ed *cutEditor) shiftTo(srcs []string, from map[string]float64, d float64) 
 	ed.relayout()
 }
 
-// followCopies drags the copied stretches along with the footage they were
-// copied from. A copy is stored as the session second its footage starts at
-// (copyScheme), and that second only means anything relative to where the
-// recording sits -- so moving the recording and leaving the copy behind would
-// quietly repoint it at whatever is under that second now.
-//
-// Only when the WHOLE row moved: a copy names a camera, not a file, and a row
-// half of which was corrected is a row where "the second the footage starts at"
-// no longer has one answer. And by the delta actually applied, so a drag that
-// hit the bound moves the copies not at all rather than out of step.
+// followCopies drags copied stretches along with the footage they were copied
+// from: a copy is stored as the session second its footage starts at
+// (copyScheme), which only means anything relative to the recording. Only when
+// the WHOLE row moved, and by the delta actually applied.
 func (ed *cutEditor) followCopies(rows map[int]bool, srcs []string, d float64) {
 	if d == 0 {
 		return
@@ -208,26 +178,11 @@ func (ed *cutEditor) freezeRows() {
 	}
 }
 
-// slideGreen moves the kept scenes inside the selection by d seconds, and only
-// those: the footage stays where it is and the cut travels across it. from is
-// the cut as it was when the drag began, so every update is computed from the
-// same starting point rather than from the last one -- a drag is a hundred
-// updates, and one that clamped its way inwards a hundred times would not come
-// back when the hand came back.
-//
-// They move as a GROUP and they keep their lengths. Every scene may only travel
-// as far as the recording it was cut from allows -- its frames are that file's
-// frames, the same rule a left-dragged clip obeys -- and the shortest of those
-// allowances is the one the whole set gets, because "these scenes, a beat later"
-// means the beat between them as well. One scene stopping at the end of its
-// camera while the others walked on would not be moving the cut; it would be
-// rewriting it.
-//
-// Only what is WHOLLY inside travels, and the cards inside travel with the
-// scenes: a scene half in the selection would have to be split to move, and a
-// right drag that quietly cut the cut in two is not what the hand asked for --
-// while a card left standing where the scenes around it walked away would come
-// out somewhere else in the finished video than where it was put.
+// slideGreen moves the kept scenes wholly inside the selection by d seconds
+// over footage that stays put. from is the cut at drag start, so a hundred
+// updates do not clamp cumulatively. They move as a GROUP keeping lengths: the
+// tightest recording bound wins for all. Cards inside travel with them; a
+// half-covered scene is left alone rather than split.
 func (ed *cutEditor) slideGreen(from []cutSeg, d float64) bool {
 	a, b := ed.selSpan()
 	in := func(s cutSeg) bool { return s.S >= a-1e-9 && s.E <= b+1e-9 }
@@ -307,21 +262,11 @@ func (ed *cutEditor) rowFits(srcs []string, to int) bool {
 	return true
 }
 
-// moveRow puts the dragged sources onto row `to`, when there is room. The row
-// is pinned (freezeRows) for the reason every hand-placed row is: cutSeg.Cam
-// is a row number, and a derived colouring would put the part right back the
-// moment the overlaps said so.
-//
-// The kept scenes that showed the moved footage go on showing it: a scene
-// wholly inside a moved source's stretch, naming the row that source is
-// leaving, is repointed at the row it lands on. A time drag deliberately does
-// NOT do this -- sliding a clock under the cut is what that gesture is FOR --
-// but a row drag changes no seconds, so a scene left behind would show a hole
-// where its own footage used to be, and nobody dragged it to mean that.
-//
-// The row left behind may come out empty. It stays: the drag that emptied it
-// can be dragged back, and closing it would renumber every scene on the rows
-// below (killLane does that work, on purpose, when a row is actually killed).
+// moveRow puts the dragged sources onto row `to` when there is room; the row is
+// pinned (freezeRows) since cutSeg.Cam is a row number. Scenes wholly inside a
+// moved source's stretch that named its old row are repointed -- unlike a time
+// drag, a row drag changes no seconds, so a scene left behind would show a
+// hole. An emptied row stays (killLane renumbers on purpose).
 func (ed *cutEditor) moveRow(srcs []string, to int) bool {
 	if !ed.rowFits(srcs, to) {
 		return false
@@ -361,16 +306,11 @@ func (ed *cutEditor) moveRow(srcs []string, to int) bool {
 
 // ---- snapping the drag ------------------------------------------------------
 
-// slideSnapSet is worked out once, at the press: which session seconds this
-// drag MOVES, and which still ones it might want to land exactly on. The
-// moving set is the edges of the dragged recordings -- or, on a green drag,
-// the borders of the scenes that will travel -- and the still set is
-// everything else a hand lines things up against: the selection's two edges
-// (the reason this exists: a part dragged along one row wants to start where
-// the selection above it does), the playhead, the effects' bands, and the
-// edges of every recording and scene that is staying put. Both are frozen
-// here because the drag recomputes from the press each update -- a target
-// that moved with the drag would drag the snap along with it.
+// slideSnapSet is worked out once, at the press: the session seconds this drag
+// MOVES (the dragged recordings' edges, or the travelling scenes' borders) and
+// the still ones to land on (the selection's edges, the playhead, effect bands,
+// every staying recording and scene). Frozen, since the drag recomputes from
+// the press each update.
 func (ed *cutEditor) slideSnapSet(srcs []string, green bool) (edges, targets []float64) {
 	// the session's own start, always: everything else here is only a target
 	// while something still sits on it, and the one recording that anchors 0
@@ -502,14 +442,11 @@ func sameRows(a, b map[string]int) bool {
 	return true
 }
 
-// sessionRows is the session timeline every step reads, put onto the timeline
-// the cut is actually made against. session.tsv is written by Prepare off
-// the raw file clocks, and a clock corrected by hand afterwards is exactly the
-// thing it cannot know about: a line it places at 4:10 is where that recording
-// USED to be, so Suggest would be told the wrong seconds, and Narrate and
-// the upload text would gather the wrong lines under each clip. Which recording each
-// line came off is in the file (tsvRow.src), so the correction is one addition
-// per line.
+// sessionRows is the session timeline put onto the timeline the cut is made
+// against: session.tsv is written off the raw file clocks, and a clock
+// corrected by hand afterwards would leave Suggest, Narrate and the upload
+// text reading the wrong seconds. tsvRow.src says which recording each line
+// came off, so the correction is one addition per line.
 func (a *App) sessionRows() []tsvRow {
 	rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv"))
 	shift := a.produceCut().Shift

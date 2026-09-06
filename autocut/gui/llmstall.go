@@ -1,24 +1,11 @@
 package main
 
-// How a chat call is judged still alive, and what it says while it runs.
-//
-// The old rule was one deadline over the whole call: ten minutes from the POST
-// to the last byte of the answer, whether or not anything was arriving. That
-// cannot tell a server that has hung from a model that is thinking hard and
-// writing steadily, and it killed the second at the same minute as the first.
-// An audit of a half-hour session died that way -- ten minutes exactly, not one
-// byte of reply, and no way from the log to know which of the two it had been.
-//
-// So the rule is silence instead of length: a call may take as long as it
-// takes, and is given up on when nothing at all has arrived for llmStall. That
-// is only a rule a STREAMED call can be held to -- an unstreamed one says
-// nothing until it says everything, so silence proves nothing about it and it
-// keeps a whole-call ceiling (llmWhole).
-//
-// The other half is the log. A call that is alive now says so every llmTick,
-// with the sizes and the last of what arrived, because "it is still going" and
-// "it is producing garbage" look identical from outside and the second is worth
-// finding out about in the first minute rather than the tenth.
+// Liveness of a chat call is judged by SILENCE, not length: a streamed call may
+// run as long as it takes and is given up when nothing arrives for llmStall.
+// An unstreamed call says nothing until it says everything, so it keeps a
+// whole-call ceiling (llmWhole). A live call logs sizes and the tail of what
+// arrived every llmTick, so "still going" and "producing garbage" can be told
+// apart.
 
 import (
 	"context"

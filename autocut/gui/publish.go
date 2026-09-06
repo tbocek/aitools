@@ -1,67 +1,23 @@
 package main
 
-// The thumbnail half of the Produce page -- once a Publish step of its own.
-// The two things a finished video still needs before anyone can watch it: a
-// thumbnail, and the text under it on the YouTube page.
+// The thumbnail half of Produce: a picture and the words under it.
 //
-// The thumbnail is usually an EDIT of a real frame of the session, which is
-// the whole reason this talks to sd.cpp's native API rather than its
-// OpenAI-shaped one (sdcpp.go): ref_images is what keeps the picture
-// recognizably THIS video instead of a stock illustration of the genre.
-//
-// "Usually", because the row of images is a list the user owns -- add to it,
-// remove from it, promote any of them to the front. The first is the picture
-// being edited and the rest are references the instruction can name by
-// position; an empty row is allowed and falls back to drawing from the
-// instruction alone.
-//
-// The distinction matters more than it sounds. This page used to run img2img
-// against Krea-2 -- one init_image and a strength dial -- and img2img has no
-// way to say "change this and leave that": strength renoises the whole frame
-// and resamples it, so a green ghost came back as purple mush and there was no
-// value that did not do it. An edit model is given an instruction and touches
-// only what the instruction names, and it takes any number of references, so
-// an instruction may compose one picture out of all of them.
-//
-// No words come from the model. The title and any marked texts are printed
-// onto the picture locally after the draw (publish_text.go), so rewording
-// them never costs a GPU run -- and the instruction tells the model to keep
-// the part of the frame the title lands in calm, and to letter nothing
-// (editInstruction).
-//
-// One model job, and its prompt lives on Prepare with all the others
-// (prepedit.go) -- this page shows only the two boxes that describe THIS
-// picture, because they are about the frame in front of you rather than about
-// the video. The job writes the title, the edit instruction and the
-// description in one reply.
-//
-// The instruction used to be typed and only typed. A separate job once picked
-// a frame AND wrote an instruction for it, and it was removed because it did
-// neither well -- the pick was guesswork and the instruction was worse than
-// one you would have typed. What is different now is that the job already
-// reads the whole session to write the title: asking the same reply for one
-// more line costs nothing, it knows what the clips actually contain, and it
-// starts the box off with something to edit instead of an empty field.
-//
-// What comes back is a suggestion in an editable field, never a decision --
-// the title, the instruction and the description are all yours to rewrite, and
-// ▶ pressed again redraws from what the boxes say rather than asking again.
-//
-// The page is two columns. Left is the picture and everything that makes it:
-// the images, the edit instruction, the negative prompt, the result. Right is
-// the words: the title and the description. They are worked on separately --
-// rewording the instruction and redrawing has nothing to do with the
-// description -- so they do not share a column and fight for its height.
+// The picture is an EDIT of real frames through sd.cpp's native API (sdcpp.go):
+// ref_images keep it recognizably this video, and an edit model changes only
+// what the instruction names (img2img renoised everything). The row of images
+// is the user's; the first is the base, the rest are references named by
+// position; an empty row draws from the instruction alone. No words come from
+// the model: the title and marked texts are printed locally (publish_text.go),
+// and the instruction asks for no lettering. One model job writes the title,
+// the edit instruction and the description in one reply (prompt on Prepare).
 //
 // publish/thumbnail.png        the upload: the picture with the words printed on
-// publish/thumbnail-plain.png  the picture as the model drew it, no words --
-//                            what every rewording re-prints from
+// publish/thumbnail-plain.png  the picture as drawn, no words -- what re-prints start from
 // publish/description.txt      the YouTube description
-// publish/publish.json         all of it as data, beside the files
+// publish/publish.json         all of it as data
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -73,7 +29,6 @@ import (
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
-	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
@@ -132,14 +87,9 @@ Voice.
 
 // ---- what the project keeps -----------------------------------------------------
 
-// pubSettings is the Publish page as the project file stores it. Everything
-// here is either a decision the user made or a suggestion they let stand;
-// nothing is derived, because a derived value in a project file is a value
-// that goes stale silently.
-//
-// Frames are stored root-relative when they can be, like every other path in
-// the project (relToRoot) -- the whole point is that moving the autocut folder
-// moves the session with it.
+// pubSettings is the Publish page as the project stores it: decisions the user
+// made or suggestions they let stand, nothing derived. Frames are stored
+// root-relative (relToRoot) so moving the folder moves the session.
 type pubSettings struct {
 	// The images, in the order the image model is given them. The FIRST is the
 	// base -- the picture being edited -- and the rest are there to be referred
@@ -160,16 +110,9 @@ type pubSettings struct {
 	// box existed must not read as "pushed into the top-left corner".
 	Crop *pubPoint `json:"crop,omitempty"`
 
-	// Own says the thumbnail is a picture chosen from the row rather than one
-	// the model drew (pubSlot.useAsThumbnail). While it is set, ▶ writes the
-	// words and leaves the picture alone: choosing a frame IS the answer to
-	// "what should the thumbnail be", and redrawing over it on the next run
-	// would be the tool overruling it -- which is exactly what happened, since
-	// ▶ draws whenever the record says nothing.
-	//
-	// Cleared by ↻ over the thumbnail, which is the one thing that means
-	// "draw over this". Nothing else touches it: rewording the title reprints
-	// the words on whatever is there, drawn or chosen.
+	// Own says the thumbnail is a picture chosen from the row, not one the model
+	// drew (pubSlot.useAsThumbnail); while set, ▶ prints the words and leaves the
+	// picture alone. Cleared only by ↻ over the thumbnail.
 	Own bool `json:"own,omitempty"`
 
 	// Where the title is printed, when it is not in the default band
@@ -178,16 +121,10 @@ type pubSettings struct {
 	// Text is never read and never written.
 	TitleBox *pubText `json:"title_box,omitempty"`
 
-	// ...and the WORDS in it, which are the picture's own.
-	//
-	// They start as the video's title and stop being it the moment either one
-	// is edited: a thumbnail's line is read at the size of a phone's sidebar
-	// and a YouTube title is read in a list, so the two are the same sentence
-	// only until somebody improves one of them. The first thumbnail to exist
-	// -- drawn, or chosen from the row -- takes the title as its words
-	// (seedThumbTitle) and nothing seeds them again, so a title reworded
-	// afterwards leaves the picture alone and a picture reworded leaves the
-	// upload alone.
+	// ...and the WORDS in it, the picture's own. They start as the video's title
+	// (seedThumbTitle, once, when the first thumbnail exists) and part ways the
+	// moment either is edited: a thumbnail's line and a YouTube title are read at
+	// different sizes.
 	ThumbTitle string `json:"thumb_title,omitempty"`
 	// ...and whether that has happened, which is not the same as the words
 	// being empty: a line taken off the picture on purpose must not come back
@@ -341,27 +278,18 @@ func (a *App) publishDir() string {
 	return filepath.Join(a.produceDir(), "publish")
 }
 
-// publishRecorded reports whether the model has already written this session's
-// text. publish.json is that record: writePublishFiles lays it down as soon as
-// the words exist and before anything is drawn, so a draw that fails still
-// leaves the thinking paid for.
-//
-// It is deliberately a file on disk and not a flag in the project. The project
-// is what the boxes say and the user may edit it to nothing; the folder is what
-// the session has produced, and removing it is the one gesture that means start
-// this step over -- the same gesture that already resets every other step.
+// publishRecorded reports whether the model has written this session's text:
+// publish.json, laid down before anything is drawn so a failed draw keeps the
+// thinking. A file, not a project flag: removing the folder is the gesture
+// that means start this step over.
 func (a *App) publishRecorded() bool {
 	return exists(filepath.Join(a.publishDir(), "publish.json"))
 }
 
 // buildPublishPanes is the thumbnail-and-words half of the Produce page, in
-// parts: the drawing column (the images, the instruction, the picture they
-// make), the written column (the title and the description), and the row
-// saying what is on disk. It was a page of its own -- the Publish step -- and
-// it is handed back in pieces now because Produce owns the page: the drawing
-// goes left, the words top right above the encoder settings, and one ▶ makes
-// everything the upload needs. No Inputs row of its own any more either --
-// the page's row (Produce's) already says what both halves read.
+// parts: the drawing column, the written column (title, description) and the
+// on-disk row. It was a page of its own; Produce owns the page now and one ▶
+// makes everything the upload needs.
 func (a *App) buildPublishPanes() (draw, said gtk.Widgetter) {
 	p := &publisher{a: a}
 	a.pub = p
@@ -403,14 +331,10 @@ func (a *App) buildPublishPanes() (draw, said gtk.Widgetter) {
 	// the same place you asked for it.
 	p.shot = gtk.NewPicture()
 	p.shot.SetCanShrink(true)
-	// no fixed height. It asked for 320 px and got exactly that forever: this
-	// column scrolls, and a scrolling column hands its child the child's own
-	// natural height and scrolls the rest -- so vexpand bought nothing and the
-	// request was the whole answer. Left to itself a GtkPicture takes the
-	// width it is given and asks for the height that width implies, which is
-	// the thumbnail growing and shrinking with the pane. The floor is for the
-	// empty state alone: with nothing drawn there is no picture to measure,
-	// and the frame would be a black hairline.
+	// no fixed height: this column scrolls, so a request was the whole answer and
+	// the picture never resized. Left alone a GtkPicture asks for the height its
+	// width implies. The floor is for the empty state, where there is no picture
+	// to measure.
 	p.shot.SetSizeRequest(-1, 120)
 	shotFrame := videoFrame(p.textOverlay(p.shot))
 	shotFrame.SetMarginTop(4)
@@ -464,16 +388,9 @@ func (a *App) buildPublishPanes() (draw, said gtk.Widgetter) {
 	drawScroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	drawScroll.SetVExpand(true)
 
-	// RIGHT: everything the language model writes, with the prompt that writes
-	// it directly above -- the same arrangement as Describe, for the same
-	// reason: what the model was told is not something to go looking for behind
-	// a disclosure triangle, and its answer sitting under it is what makes an
-	// edit to the wording something you can judge.
-	//
-	// The title lives here rather than beside the drawing even though it is
-	// printed onto the picture, because this is what writes it and this is
-	// where it is read from: it is the YouTube title first and the words on
-	// the thumbnail second.
+	// RIGHT: everything the language model writes. The title lives here rather
+	// than beside the drawing: this is what writes it and where it is read -- it
+	// is the YouTube title first and the words on the thumbnail second.
 	p.title = gtk.NewEntry()
 	p.title.SetHExpand(true)
 	p.title.SetPlaceholderText("the video's title, also printed on the thumbnail — ▶ suggests one")
@@ -545,15 +462,8 @@ func (a *App) heading(title, tip string, extra ...gtk.Widgetter) *gtk.Box {
 }
 
 // textBox is one of the editable result fields, floored at lines of text.
-//
-// Monospace, like every editable box in the app -- the prompts, the context,
-// the narration lines, the log. These three were the exception, in the
-// proportional font, so the one page that shows a prompt's ANSWER beside the
-// prompts themselves showed them in two different typefaces.
-//
-// The floor is measured in monospace lines for the same reason: it is a few
-// pixels taller per line than the other font, so a box floored at eight of
-// them in the old arithmetic came out short of eight.
+// Monospace, like every editable box in the app, and the floor is measured in
+// monospace lines (a few px taller than the proportional font).
 func (p *publisher) textBox(lines int, tip string) (*gtk.TextView, *gtk.ScrolledWindow) {
 	tv := gtk.NewTextView()
 	tv.SetMonospace(true)
@@ -654,8 +564,7 @@ func (p *publisher) addImage() {
 // letterboxed by whatever showed it.
 func (s *pubSlot) useAsThumbnail() {
 	p := s.p
-	if p.a.running {
-		p.a.setStatus("a run is already active — stop it first (⏹)")
+	if p.a.busy() {
 		return
 	}
 	dir := p.a.publishDir()
@@ -696,17 +605,9 @@ func (s *pubSlot) build() gtk.Widgetter {
 	// the base wears the thumbnail's own frame, draggable (publish_crop.go)
 	pf := videoFrame(s.cropOverlay(pic))
 
-	// Which file it is, on the row of buttons under the picture rather than on
-	// a heading over it.
-	//
-	// That heading read "Base 2026-08-30_17-11-19" -- a word for the image
-	// model's benefit ("Base", "Ref 2": what it does with each picture, and
-	// what the instruction calls them) in front of a name for the user's, on a
-	// line of its own above every picture in the row. What the word means is
-	// not guessable from it, and the row already says it: the base is the one
-	// with no "Make base" button on it. So the word goes to the tooltip, where
-	// the explanation was all along, and the name goes down with the buttons
-	// that act on the file it names.
+	// Which file it is, on the row of buttons under the picture rather than on a
+	// heading over it; the role word ("Base", "Ref 2") is the tooltip's -- the
+	// row already shows it (the base has no "Make base" button).
 	name := gtk.NewLabel(strings.TrimSuffix(filepath.Base(s.path), filepath.Ext(s.path)))
 	name.SetXAlign(0)
 	name.SetHExpand(true)
@@ -790,26 +691,7 @@ func (p *publisher) pickImage(title, start string, done func(string)) {
 			}
 		}
 	}
-	d := gtk.NewFileDialog()
-	d.SetTitle(title)
-	if exists(start) {
-		d.SetInitialFolder(gio.NewFileForPath(start))
-	}
-	filt := gtk.NewFileFilter()
-	filt.SetName("Images")
-	for _, e := range []string{"jpg", "jpeg", "png", "webp"} {
-		filt.AddSuffix(e)
-	}
-	filters := gio.NewListStore(gtk.GTypeFileFilter)
-	filters.Append(filt.Object)
-	d.SetFilters(filters)
-	d.Open(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.OpenFinish(res)
-		if err != nil || f == nil {
-			return // dismissed
-		}
-		done(f.Path())
-	})
+	a.pickFile(title, start, extFilter("Images", "jpg", "jpeg", "png", "webp"), done)
 }
 
 // ---- reading and writing the page ------------------------------------------------
@@ -1010,15 +892,10 @@ func (a *App) publishShots() []pubShot {
 	return out
 }
 
-// pickShots chooses n candidate frames. Frames the cut kept come first -- they
-// are the only ones a viewer will ever see, and a thumbnail painted over a
-// moment that was edited out promises a video that does not exist -- and
-// within those the picks are spread evenly, so the candidates come from
-// different parts of the video rather than a few seconds of the same one.
-//
-// The very start and the very end are avoided by taking the middle of each of
-// n equal bands rather than the endpoints: a video's first frame is usually a
-// loading screen and its last is usually a fade.
+// pickShots chooses n candidate frames: frames the cut kept first (a thumbnail
+// of an edited-out moment promises a video that does not exist), spread evenly
+// as the middles of n equal bands -- the first frame is usually a loading
+// screen, the last a fade.
 func pickShots(shots []pubShot, segs []cutSeg, n int) []string {
 	if n <= 0 || len(shots) == 0 {
 		return nil
@@ -1111,26 +988,10 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 
 // ---- the model job ----------------------------------------------------------
 
-// writeUpload asks for everything this page's words are: the title, the
-// instruction for the picture, and the description, in one reply. No JSON on
-// purpose -- the description IS prose, and wrapping prose in JSON only adds a
-// way for a reply that is otherwise perfectly good to be thrown away over an
-// unescaped quote. The other two ride in front of it on labelled lines, which
-// costs one string operation and cannot fail that way.
-//
-// The instruction used to be excluded on principle. A second call, with the
-// images attached, once picked which frame to edit AND wrote the instruction
-// for it, and it was removed because it did neither well -- the frame it chose
-// was rarely the one a person would, and the instructions it wrote described
-// pictures instead of asking for changes.
-//
-// Picking the frame is still the user's, and that is the half that mattered:
-// the page is built around choosing a base image by eye. The instruction came
-// back because this call is not that call. It reads the whole session in order
-// to write the title, so it knows what the clips contain, and asking the same
-// reply for one more line costs nothing and starts the box off with something
-// to edit rather than empty. It is a suggestion in a box, like the title above
-// it -- rewrite it and press ▶ again.
+// writeUpload asks for the title, the edit instruction and the description in
+// one reply: labelled lines in front of the prose, no JSON, so an unescaped
+// quote cannot throw a good reply away. The instruction is a suggestion in an
+// editable box; picking the base frame stays the user's.
 func (a *App) writeUpload(brief string) (title, instr, desc string, err error) {
 	msgs := []map[string]any{
 		msg("system", a.sysPrompt("youtube")),
@@ -1151,15 +1012,10 @@ func (a *App) writeUpload(brief string) (title, instr, desc string, err error) {
 	return title, instr, desc, nil
 }
 
-// splitUpload peels the labelled lines off the front of the reply: the title,
-// and the instruction for the picture. A reply missing either is not an error --
-// the description is the part that matters, and an empty box is easier to notice
-// and to fill than a wrong line is to spot. The rest goes through
-// cleanDescription either way.
-//
-// Order-insensitive, because it costs one loop and the alternative is a run
-// thrown away over a model that answered with its two headers the other way
-// round.
+// splitUpload peels the labelled lines off the front of the reply: the title
+// and the picture instruction, in either order. Missing either is not an error
+// -- an empty box is easier to notice than a wrong line. The rest goes through
+// cleanDescription.
 func splitUpload(reply string) (title, instr, desc string) {
 	// A fenced reply puts the fence before the labelled lines, so it has to come
 	// off here rather than in cleanDescription: by the time they are peeled the
@@ -1232,20 +1088,10 @@ func cleanDescription(reply string) string {
 
 // ---- the run --------------------------------------------------------------------
 
-// publishSuggest is the "Suggest again" button beside the title: one LLM call
-// rewrites the title, the thumbnail instruction and the description, and
-// nothing is drawn or rendered. It is the only thing that rewrites them -- ▶
-// (produceClicked) writes them once and then never touches them again.
-// publishRedraw draws the thumbnail again and nothing else: the images and the
-// instruction as the boxes have them, through sd.cpp, with the title printed on
-// afterwards. No model call -- the words are not touched -- and no render.
-//
-// It is the picture half of publishStage with needText false, which is the same
-// path ▶ takes; there is no second way to draw a thumbnail, so a fix to how one
-// is drawn cannot reach one button and miss the other.
+// publishRedraw draws the thumbnail again and nothing else: the picture half
+// of publishStage with needText false, the same path ▶ takes.
 func (a *App) publishRedraw() {
-	if a.running {
-		a.setStatus("a run is already active — stop it first (⏹)")
+	if a.busy() {
 		return
 	}
 	p := a.pub
@@ -1269,13 +1115,7 @@ func (a *App) publishRedraw() {
 	written := a.publishRecorded()
 	a.saveProjectNow()
 
-	a.running = true
-	a.stopFlag.Store(false)
-	a.pauseFlag.Store(false)
-	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.qReset()
-	a.updateRunControls()
-	a.logExp.SetExpanded(true)
+	a.startRun()
 	a.logf(">>> publish: drawing the thumbnail again — one sd.cpp call, nothing rewritten")
 	a.qJob(trackSTT, "publish", 0, 0)
 	a.prog(trackSTT, 0, "drawing")
@@ -1288,9 +1128,11 @@ func (a *App) publishRedraw() {
 	}()
 }
 
+// publishSuggest is "Suggest again": one LLM call rewrites the title, the
+// thumbnail instruction and the description; nothing drawn or rendered. It is
+// the only thing that rewrites them.
 func (a *App) publishSuggest() {
-	if a.running {
-		a.setStatus("a run is already active — stop it first (⏹)")
+	if a.busy() {
 		return
 	}
 	p := a.pub
@@ -1310,13 +1152,7 @@ func (a *App) publishSuggest() {
 	written := a.publishRecorded()
 	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
 
-	a.running = true
-	a.stopFlag.Store(false)
-	a.pauseFlag.Store(false)
-	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.qReset()
-	a.updateRunControls()
-	a.logExp.SetExpanded(true)
+	a.startRun()
 	a.logf(">>> publish: rewriting the title, instruction and description — one LLM call")
 	a.qJob(trackSTT, "publish", 0, 0)
 	a.prog(trackSTT, 0, "thinking")
@@ -1329,27 +1165,8 @@ func (a *App) publishSuggest() {
 	}()
 }
 
-// publishStage is the writing-and-drawing half of a run, on the runner's
-// goroutine: fill the image row the first time, write the upload text, land
-// it, then draw the thumbnail. The order matters -- the text is written and
-// landed on the page before anything is drawn, so an sd.cpp that is down or
-// busy costs the picture and not the model calls that were already paid for.
-// textOnly stops before the drawing; that is Suggest again.
-//
-// The model writes the text -- the title, the instruction and the description
-// -- once per project and then never again (needText, which ▶ passes as "has
-// the publish record never been written"). ▶ after that redraws and re-renders:
-// press it as often as you like with the instruction reworded or the images
-// changed, and it costs GPU time and no thinking. The record is the folder,
-// not the boxes. Gating on "is the title empty" meant clearing a field you
-// did not like silently bought you a fresh model call on the next ▶, and it
-// also meant a run that failed at the drawing rewrote the words it had just
-// written. Deleting publish/ is the deliberate way to start the text over, and
-// "Suggest again" is the way to do it without losing the pictures.
-// drawStamp is what a drawn thumbnail is made of: the images, the instruction,
-// what must stay out of it, the crop and the shape. The words printed on top
-// are not in it -- they are printed onto the plain copy afterwards and cost
-// nothing to redo (printPubWords).
+// drawStamp is what a drawn thumbnail is made of: images, instruction,
+// negative, crop and shape. The printed words are not in it.
 func (a *App) drawStamp(st pubSettings, aspect string) string {
 	var b strings.Builder
 	for _, f := range st.Frames {
@@ -1378,16 +1195,14 @@ func (a *App) drawStale(st pubSettings, aspect string) bool {
 	return err != nil || strings.TrimSpace(string(b)) != a.drawStamp(st, aspect)
 }
 
+// publishStage is the writing-and-drawing half of a run: fill the image row the
+// first time, write the text (once per project -- the gate is the record on
+// disk, not the boxes) and land it before anything is drawn, then draw. textOnly
+// stops before the drawing (Suggest again); force draws even when unchanged.
 func (a *App) publishStage(track int, st pubSettings, aspect string, segs []cutSeg,
 	entries []narrEntry, needText, written, textOnly, force bool) error {
-	// A starting image on the very first run, so the row is not empty the
-	// first time the page is opened. Nothing chooses between them any more
-	// -- the first is simply the base -- so this is a convenience, not a
-	// decision: swap them, add to them, or empty the row entirely.
-	//
-	// Not on a redraw. A row the user has emptied is a decision ("draw it
-	// from the instruction alone"), not a gap to quietly refill with frames
-	// they threw away.
+	// A starting image on the very first run so the row is not empty; the first
+	// is simply the base. Not on a redraw: a row the user emptied is a decision.
 	if len(st.Frames) == 0 && !written {
 		a.logfIdle("    publish: no images chosen — taking %d from the cut", defPubFrames)
 		if st.Frames = pickShots(a.publishShots(), segs, defPubFrames); len(st.Frames) > 0 {
@@ -1525,26 +1340,10 @@ func editInstruction(st pubSettings) string {
 	return edit + "\n\n" + fmt.Sprintf(pubNoLettering, pubTitleWhere(st.titleBox()))
 }
 
-// drawThumbnail is the sd.cpp half: hand the model the chosen frame, the other
-// frame, and the instruction, and write what comes back.
-//
-// Both frames go in the request whether or not the instruction mentions the
-// second one. That is what makes "add the ship from the second image" a thing
-// the user can type into the box without also having to arrange for it to be
-// sent -- an edit model ignores a reference nothing refers to.
-//
-// The result is written to thumbnail-plain.png as it came back -- no words --
-// and then the title and the marked texts are printed onto a copy, which is
-// thumbnail.png, the upload (drawPubTexts). The plain one is what every later
-// rewording re-prints from, and what the page shows while a new one is being
-// made; losing the previous render to a failed re-roll is worse than a few
-// hundred kB.
-//
-// aspect is the cut's, and it decides both halves of the shape question: the
-// frame the model draws into, and how much of the base frame is handed to it
-// (publish_crop.go). Sending a widescreen frame and asking for a portrait
-// picture is asking the model to choose the crop, and it chooses badly and
-// differently every time.
+// drawThumbnail hands sd.cpp every frame in the row and the instruction, writes
+// the result as thumbnail-plain.png and prints the words onto thumbnail.png
+// (drawPubTexts). aspect decides the frame drawn into and the crop handed in
+// (publish_crop.go): asking a model to choose the crop goes badly.
 func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 	// An empty row is allowed: with no references this is plain text-to-image,
 	// which is what a session with nothing worth editing actually wants. What
@@ -1567,14 +1366,9 @@ func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 	w, h := pubBox(aspect)
 	outA := float64(w) / float64(h)
 
-	// In row order, which IS the answer: the first is the picture being edited
-	// and the rest are what "the second image" in the instruction refers to.
-	// A reference that has gone missing is skipped rather than fatal -- it is
-	// only ever named in passing, and losing the mention beats losing the run.
-	//
-	// The crop is applied to the FIRST one alone. That is the picture being
-	// composed; a reference is there to be named in a sentence, and cutting it
-	// down would only take away the part of it the sentence might mean.
+	// In row order, which IS the answer: the first is the picture being edited,
+	// the rest are what "the second image" refers to. A missing reference is
+	// skipped. The crop applies to the FIRST alone.
 	var imgs []string
 	cropped := ""
 	for i, f := range st.Frames {
@@ -1678,23 +1472,8 @@ func (p *publisher) exportThumb() {
 		a.setStatus("nothing to export yet — draw a thumbnail, or use one of the images")
 		return
 	}
-	d := gtk.NewFileDialog()
-	d.SetTitle("Export the thumbnail")
-	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
-	d.SetInitialName(strings.TrimSuffix(filepath.Base(a.projPath), filepath.Ext(a.projPath)) + "-thumbnail.jpg")
-	filt := gtk.NewFileFilter()
-	filt.SetName("JPEG")
-	filt.AddSuffix("jpg")
-	filt.AddSuffix("jpeg")
-	filters := gio.NewListStore(gtk.GTypeFileFilter)
-	filters.Append(filt.Object)
-	d.SetFilters(filters)
-	d.Save(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.SaveFinish(res)
-		if err != nil || f == nil {
-			return // dismissed
-		}
-		out := f.Path()
+	name := strings.TrimSuffix(filepath.Base(a.projPath), filepath.Ext(a.projPath)) + "-thumbnail.jpg"
+	a.saveAs("Export the thumbnail", filepath.Dir(a.projPath), name, extFilter("JPEG", "jpg", "jpeg"), func(out string) {
 		if e := strings.ToLower(filepath.Ext(out)); e != ".jpg" && e != ".jpeg" {
 			out += ".jpg" // a JPEG named .png is a file every uploader argues about
 		}
@@ -1710,13 +1489,8 @@ func (p *publisher) exportThumb() {
 }
 
 // writeJPEGUnder encodes src as a JPEG at out, dropping quality until the file
-// is at most max bytes, and answers how big it came out.
-//
-// Quality first and size second: a thumbnail is read at the size of a phone's
-// sidebar, and 1280x720 is already the size YouTube wants, so scaling it down
-// to save bytes would be losing the thing rather than compressing it. The
-// steps stop at 40 -- below that the picture is worse than a slightly large
-// file, and 1280x720 at 40 is far under a megabyte anyway.
+// is at most max bytes, and answers how big it came out. Quality first, never
+// scale: 1280x720 is already the size wanted. Stops at 40.
 func writeJPEGUnder(src, out string, max int64) (int64, error) {
 	img, err := pubDecode(src)
 	if err != nil {
@@ -1743,8 +1517,7 @@ func writeJPEGUnder(src, out string, max int64) (int64, error) {
 // but "rewritten" over a redraw is a line that lies about what just happened.
 func (a *App) publishDone(what string, err error) {
 	glib.IdleAdd(func() {
-		a.running = false
-		a.updateRunControls()
+		a.endRun()
 		if p := a.pub; p != nil {
 			p.refresh()
 		}

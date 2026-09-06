@@ -119,9 +119,12 @@ func TestAnEmptyAnswerIsNamedAndNotEchoedBack(t *testing.T) {
 		if !strings.Contains(src, "msgs = retryTurn(msgs, reply, problem)") {
 			t.Errorf("%s builds its own retry turn again", f)
 		}
-		if !strings.Contains(src, "problem := noAnswer(reply)") {
-			t.Errorf("%s reports an empty answer as a JSON problem again", f)
+		if !strings.Contains(src, "jsonReply(reply, &out)") {
+			t.Errorf("%s parses a reply on its own again", f)
 		}
+	}
+	if src := readSrc(t, "llm.go"); !strings.Contains(src, "problem := noAnswer(reply)") {
+		t.Error("jsonReply reports an empty answer as a JSON problem again")
 	}
 }
 
@@ -207,11 +210,9 @@ func TestATruncatedReplyIsNamedAsOne(t *testing.T) {
 	if p := cutOff("", errors.New("unexpected end of JSON input")); p != "" {
 		t.Error("an empty answer was called truncated -- noAnswer is the one that names that")
 	}
-	// both loops ask before falling back to the parser's own words
-	for _, f := range []string{"cut_suggest.go", "narrate.go"} {
-		src := readSrc(t, f)
-		if !strings.Contains(src, "if problem = cutOff(reply, err); problem == \"\" {") {
-			t.Errorf("%s reports a truncated answer as an ordinary parse error", f)
-		}
+	// the one reader every loop goes through asks before falling back to the
+	// parser's own words
+	if src := readSrc(t, "llm.go"); !strings.Contains(src, "if problem = cutOff(reply, err); problem == \"\" {") {
+		t.Error("jsonReply reports a truncated answer as an ordinary parse error")
 	}
 }

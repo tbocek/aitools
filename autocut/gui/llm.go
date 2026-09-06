@@ -1,16 +1,10 @@
 package main
 
-// Chat client for the llama-server configured in llm.conf (the gear dialog).
-// Two parameter sets: "thinking" for judgment-heavy calls
-// (alignment, later the cut selection), "execute" with thinking disabled for
-// the high-volume mechanical calls (frame description -- measured 32 s vs 2 s
-// per request on the same prompt).
-//
-// A call may offer tools (llmChatTools): the OpenAI shape, a list of function
-// schemas in the request and tool_calls in the reply, answered with one tool
-// message per call and asked again, until the model answers with words. Every
-// round is its own recorded exchange, so the log shows what the model asked
-// the web and what the web said (websearch.go) as plainly as it shows the cut.
+// Chat client for the llama-server in llm.conf. Two parameter sets: "thinking"
+// for judgment calls, "execute" with thinking off for mechanical ones (32 s vs
+// 2 s per frame description). A call may offer tools (llmChatTools): OpenAI
+// shape, one tool message per call, asked again until the model answers with
+// words; every round is its own recorded exchange (websearch.go).
 
 import (
 	"bufio"
@@ -59,14 +53,9 @@ type toolCall struct {
 	} `json:"function"`
 }
 
-// How much the server may write in one answer, reasoning included.
-//
-// The thinking ceiling is the one that has been hit: a cut over a 28-minute
-// session came back with 68 kB of reasoning that stopped mid-sum and no answer
-// at all -- the model was still working, and the budget ran out under it.
-// Reasoning is where a long timeline gets read, and a job that reasons its way
-// through a thousand stamped lines needs room to; a plain answer is a page of
-// JSON and has never come close to its own.
+// How much the server may write in one answer, reasoning included. The
+// thinking ceiling is the one that gets hit: a cut over a 28-minute session
+// once stopped mid-sum at 68 kB of reasoning with no answer.
 const (
 	thinkTokens = 65536
 	plainTokens = 8192
@@ -121,23 +110,12 @@ func (a *App) llmChat(step string, msgs []map[string]any, thinking bool) (string
 	return a.llmChatOn(step, msgs, thinking, nil)
 }
 
-// llmChatOn is llmChat with the reply readable while it is still being written.
-// Pass an onText and the request is streamed: onText is called with everything
-// received so far, every time more arrives, on the calling goroutine. Pass nil
-// and this is exactly the old single-response call.
-//
-// The point of it is the bar. A narration is one request that thinks for a
-// minute and then writes nine clips, and from the outside that is a spinner and
-// a promise; streamed, the clips can be counted as they close (see
-// narrEntriesDone), and the same bar that counts the speaking counts the
-// writing. Nothing else changes: a caller with no callback is not streamed, so
-// the steps that ask for one JSON object and parse it whole are untouched.
-//
-// Every call is also written down: what went out, what came back, how long it
-// took -- the recorder keeps the exchange as an HTML page under llm/, request
-// first and the reply folded in when it lands, and puts a
-// preview in the log, because "2 LLM calls ran" was all the log used to say
-// about the step where all the judgment happens.
+// llmChatOn is llmChat with the reply readable as it arrives: onText gets
+// everything received so far on every chunk, on the calling goroutine; nil
+// means the old single-response call. Streaming is what lets the bar count
+// narration clips as they close (narrEntriesDone). Every call is recorded as
+// an HTML page under llm/ (request first, reply folded in) with a preview in
+// the log.
 func (a *App) llmChatOn(step string, msgs []map[string]any, thinking bool, onText func(string)) (string, error) {
 	rep, err := a.chatRound(step, msgs, thinking, nil, onText)
 	return rep.Content, err
@@ -216,14 +194,9 @@ func (a *App) chatRound(step string, msgs []map[string]any, thinking bool,
 	return rep, err
 }
 
-// recorded is the reply as the exchange log shows it: the thinking, the words,
-// and after them the calls -- a round that only called a tool, or only
-// reasoned, is otherwise an empty page in the log.
-//
-// The reasoning is wrapped in <think> tags rather than kept in a field of its
-// own, because that is how a model that inlines its thinking already arrives
-// and the page folds it away by that very marker (chatHTML). One spelling on
-// the page, whichever way the server sent it.
+// recorded is the reply as the exchange log shows it: thinking, words, then
+// the calls. Reasoning is wrapped in <think> tags -- how an inlining model
+// arrives anyway, and what chatHTML folds away -- so the page has one spelling.
 func (r chatReply) recorded() string {
 	body := r.Content
 	if strings.TrimSpace(r.Think) != "" && !strings.Contains(body, "</think>") {
@@ -339,13 +312,9 @@ func (a *App) llmChatPost(step string, msgs []map[string]any, thinking bool,
 }
 
 // readChatStream assembles a server-sent-event reply, handing the caller the
-// text so far as each piece lands. Read with a bufio.Reader rather than a
-// Scanner: one event carrying a long chunk is a line of any length, and a
-// Scanner would stop dead at its 64 kB limit halfway through a narration.
-//
-// A tool call arrives in pieces too -- its name in one delta, its arguments
-// spread over the ones after, each stamped with the call's index -- and is
-// put back together by that index.
+// text so far as each piece lands. bufio.Reader, not Scanner: one event can be
+// a line of any length. A tool call arrives in pieces stamped with its index
+// and is reassembled by it.
 func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (chatReply, error) {
 	br := bufio.NewReader(r)
 	var b, think strings.Builder
@@ -362,15 +331,9 @@ func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (ch
 				Choices []struct {
 					Delta struct {
 						Content string `json:"content"`
-						// what the model tells itself on the way to the
-						// answer. This server keeps it out of content
-						// entirely, so a call that is thinking hard sends
-						// nothing here that the old parser could see -- and
-						// looked, from the log and from the bar, exactly like
-						// one that had hung. It is read to be counted and
-						// shown, and goes nowhere near the reply: onText feeds
-						// the progress bar and the recorded page, and both are
-						// about the answer.
+						// the model's reasoning. This server keeps it out of content, so a call
+						// thinking hard used to look hung; it is counted and shown (onText feeds the
+						// bar and the recorded page) and goes nowhere near the reply.
 						Reasoning string `json:"reasoning_content"`
 						ToolCalls []struct {
 							Index    int    `json:"index"`
@@ -432,23 +395,11 @@ func (a *App) readChatStream(r io.Reader, onText func(string), w *chatWatch) (ch
 	}
 }
 
-// jsonItemsDone reads a reply that is still arriving: how many objects have
-// closed inside the last "<key>": [ , and how far into the session the last one
-// to close reaches, for the shapes that carry an "end" in seconds. Only what is
-// complete counts, so a bar never claims an item the model is still writing.
-//
-// It starts at the LAST "<key>": [ in the text, because everything before the
-// answer is the model thinking, out loud, about the answer -- braces, quotes,
-// the key's own name and all. Requiring the key's punctuation is what keeps a
-// mention of it in that thinking from starting the count early; a worked
-// example in there would still fool it, and the cost of that is one reading of
-// a progress bar, which is the right price for not parsing prose.
-//
-// The second return is what makes a bar out of a reply whose length nobody
-// knows in advance. How many moments a cut has is the model's decision, so
-// there is no denominator to count against -- but the order is not its
-// decision: it walks the session from the front, so the end time of the last
-// finished item is how far through the session, and through the job, it is.
+// jsonItemsDone reads a reply still arriving: how many objects have closed
+// inside the LAST "<key>": [ (everything before is thinking, which may mention
+// the key), and the "end" of the last closed one for shapes that carry it.
+// Only complete items count. The end time is the bar's denominator-free
+// progress: the model walks the session from the front.
 func jsonItemsDone(s, key string) (done int, through float64) {
 	q := `"` + key + `"`
 	i := -1
@@ -517,14 +468,9 @@ func jsonEnd(obj string) (float64, bool) {
 // ---- what a rejected answer does to the conversation -------------------------
 
 // noAnswer names the failure a JSON parser cannot: a reply with no answer in
-// it at all.
-//
-// A thinking model can spend the whole budget reasoning and stop without
-// writing a word, and the reasoning is kept out of the reply on purpose
-// (readChatStream) -- so what the caller parses is the empty string, and
-// json's "unexpected end of JSON input" is a true sentence that sends the
-// reader looking for a JSON bug in a reply that was never written. Empty means
-// empty, and the model is told that instead.
+// it at all -- the thinking budget spent and not a word written (reasoning is
+// kept out of the reply, readChatStream), which json would report as
+// "unexpected end of JSON input".
 func noAnswer(reply string) string {
 	if _, answer := splitThink(reply); strings.TrimSpace(answer) != "" {
 		return ""
@@ -533,31 +479,17 @@ func noAnswer(reply string) string {
 		"Think briefly, then write the complete JSON: every segment and every effect, not a sample"
 }
 
-// thinkAgain is whether the NEXT attempt should still be allowed to think.
-//
-// A model that answered nothing spent the whole budget reasoning and was cut
-// off inside it -- 32768 tokens of thinking and no words, which the log reports
-// as "0 B came back" after ten minutes. Asking the same question the same way
-// gets the same answer, three times, and half an hour goes by before the step
-// gives up. So the attempt after an empty one is asked with thinking off: the
-// server is told enable_thinking false and given the shorter ceiling
-// (llmChatPost), which is the one change that makes the words arrive.
-//
-// Only after an EMPTY answer. A reply that came out as bad JSON or as the
-// wrong shape is a model that is writing and getting it wrong, and taking its
-// reasoning away would not help it get it right.
+// thinkAgain: whether the NEXT attempt may still think. An EMPTY answer means
+// the thinking budget was spent with no words -- the same question asked the
+// same way answers the same -- so the retry sends enable_thinking false with
+// the shorter ceiling (llmChatPost). Bad JSON or the wrong shape keeps
+// thinking: that model is writing and getting it wrong.
 func thinkAgain(think bool, reply string) bool { return think && noAnswer(reply) == "" }
 
 // cutOff names the other failure a JSON parser cannot: an answer that stopped
-// in the middle because the model ran into its token ceiling.
-//
-// json says "unexpected end of JSON input" either way, so a reply that was cut
-// off reads exactly like one that was malformed -- and the correction the
-// model gets back matters, because the two want opposite fixes. A malformed
-// answer wants care; a truncated one wants a SHORTER answer, and telling it to
-// "return corrected strict JSON" invites it to write the same too-long reply
-// again. One run answered with four hundred segments marching past the end of
-// the session and was chopped mid-number three times over.
+// at the token ceiling. json says "unexpected end of JSON input" either way,
+// and the two want opposite fixes -- a malformed answer wants care, a
+// truncated one wants a SHORTER answer.
 func cutOff(reply string, err error) string {
 	if strings.TrimSpace(reply) == "" || err == nil {
 		return ""
@@ -583,6 +515,27 @@ func retryTurn(msgs []map[string]any, reply, problem string) []map[string]any {
 	}
 	return append(msgs, msg("user",
 		"Your answer failed validation: "+problem+". Return corrected strict JSON only."))
+}
+
+// jsonReply reads a model's answer into out: the JSON object after any
+// preamble, code fences stripped. The problem string is the correction to send
+// back, "" when it parsed.
+func jsonReply(reply string, out any) string {
+	problem := noAnswer(reply)
+	if problem != "" {
+		return problem
+	}
+	clean := strings.TrimSpace(reply)
+	if i := strings.Index(clean, "{"); i >= 0 {
+		clean = clean[i:]
+	}
+	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
+	if err := json.Unmarshal([]byte(clean), out); err != nil {
+		if problem = cutOff(reply, err); problem == "" {
+			problem = "not valid JSON: " + err.Error()
+		}
+	}
+	return problem
 }
 
 func (a *App) llmChatRetry(step string, msgs []map[string]any, thinking bool) (string, error) {

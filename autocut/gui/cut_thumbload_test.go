@@ -106,7 +106,7 @@ func TestTheThumbnailsAreLoadedOffTheDraw(t *testing.T) {
 	if strings.Contains(src, "gdk.CairoSetSourcePixbuf") {
 		t.Error("the draw still converts a pixbuf into a surface on every paint")
 	}
-	load := readSrc(t, "cut_thumbs.go")
+	load := readSrc(t, "cut_draw.go")
 	for _, want := range []string{
 		"go func() {", // off the GTK thread
 		"pb, err := gdkpixbuf.NewPixbufFromFileAtScale(p, -1, h, true)",

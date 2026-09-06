@@ -1,36 +1,16 @@
 package main
 
-// Cards: the pictures the app draws itself.
-//
-// An insert is a file, and a file is fixed -- which is fine for "a few moments
-// later" and wrong for a tier list, where the picture IS the content and the
-// content is different every session. Copying tier.svg per project and editing
-// the text by hand is the alternative, and it is the kind of chore that ends
-// with the wrong ranking on screen.
-//
-// So an insert path may carry parameters after a "?", exactly as a URL does:
+// Cards: the pictures the app draws itself. An insert path may carry
+// parameters after a "?", as a URL does:
 //
 //	assets/tier.svg?S=Dust II,Mirage|logos/mirage.png&A=Nuke&title=Best maps
 //	assets/s.svg?label=S&item=Dust II
 //
-// The path is still a path -- everything before the "?" is the file, and it has
-// to exist -- and the parameters are applied to it in one of two ways:
-//
-//   - a document with {{name}} placeholders in it has them filled in. This is
-//     for SVGs the user wrote: nothing here needs to know what the file means.
-//   - a document stamped data-autocut="tier" was drawn by one of the cards
-//     below, and is drawn again from the parameters. This is what puts pictures
-//     on a board: the file says where every place on it is, and the card fills
-//     in what is in them, when each one arrives, and the logo's own bytes.
-//
-// The stamp also carries the parameters the file was drawn with
-// (data-autocut-args), so the file on disk is a complete statement of itself:
-// what drew it, and what with. The "?" overrides those, key by key.
-//
-// Nothing here plays anything. The animation in these cards is SMIL, and SMIL
-// is what svganim.go evaluates -- see the header there. No browser is involved
-// at any point: Produce bakes the card to one static SVG per frame and librsvg
-// draws them like any other still.
+// The part before "?" must exist. A document with {{name}} placeholders has
+// them filled in; one stamped data-autocut="tier" is drawn again by that card
+// from the parameters, the file saying where every place is. The stamp also
+// carries the parameters it was drawn with (data-autocut-args), overridden key
+// by key by the "?". Animation is SMIL, baked per frame by svganim.go.
 
 import (
 	"bytes"
@@ -245,21 +225,15 @@ func svgHoles(src []byte) []svgField {
 
 // ---- what a document asks for, in the document's own words -------------------
 //
-// A card says what its parameters are in the file, one comment per parameter:
+// A card declares its parameters in comments, one per parameter:
 //
 //	<!-- Input: title | Title | over the board, empty for none -->
 //	<!-- Input: S[keep logo] | Tier S | what is in it, comma separated -->
 //
-// The key, then what to call it in the dialog, then what it says under the box.
-// The brackets are the flags -- keep and logo, the two lines of svgField below
-// -- and everything after the second bar is the hint, bars and all, so a hint
-// can say "Name|logo.png" without being cut in half.
-//
-// The point of writing it in the file is that the dialog then comes out of the
-// file: an SVG somebody else wrote -- by hand, or by asking a model for one --
-// gets a form with labels and hints, and this package does not have to know what
-// the picture is. assets/CARDS.md is the same story told to whoever writes the
-// SVG, and it is written into every project beside the cards.
+// Key, dialog label, hint (everything after the second bar, bars included).
+// Brackets are the flags: keep, logo (svgField). The dialog comes out of the
+// file, so a hand-written SVG gets a form; assets/CARDS.md documents this for
+// whoever writes one.
 var svgInput = regexp.MustCompile(`(?s)<!--\s*Input:\s*(.*?)-->`)
 
 func svgInputs(src []byte) []svgField {
@@ -439,18 +413,11 @@ func insForm(path string, q svgQuery) ([]svgField, bool) {
 	return nil, false
 }
 
-// svgCard is a picture the app draws rather than reads. draw gets the file's
-// own parameters with the path's laid over them, the folder the card lives in
-// (which is what a logo written on it is relative to), and the file itself:
-// a card is drawn FROM its document, so a board somebody has restyled stays
-// restyled. tmpl is that document as it starts out -- the template written into
-// a project's assets folder, with the row and chip blocks still in it.
-//
-// form is what to ask for, which for a tier board depends on the parameters
-// already there: the rows are the parameters. form is handed the document as
-// well, because what to call a parameter and what to say about it are written in
-// the file: the card works out WHICH fields there are, the file says what they
-// look like.
+// svgCard is a picture the app draws. draw gets the file's parameters with the
+// path's laid over them, the card's folder (what a logo is relative to) and
+// the document itself, so a restyled board stays restyled. tmpl is the
+// document as shipped. form is what to ask for, handed the document because
+// labels and hints are written in it.
 type svgCard struct {
 	name string
 	what string
@@ -701,24 +668,16 @@ func tierIsNew(names []string, it tierItem) bool {
 
 // ---- what the board is being shown for ----------------------------------------
 //
-// A tier board is almost never shown for its own sake: it is shown because one
-// more thing has just been ranked, and that thing is what the shot is about. The
-// "new" parameter is that list, and it says three things about each arrival --
-// which row it lands in, when it starts, and what it is:
+// The "new" parameter lists the arrivals the shot is about -- which row, when,
+// what:
 //
 //	Mirage                        an item already on the board, in turn
 //	D[1.1s]: logos/bla.svg, Test  into row D, 1.1 s in, the logo with Test under it
 //	S[2s]: Nuke, D: Vertigo       two arrivals, each in its own row
 //
-// The commas separate the list exactly as they separate a row's items, and the
-// prefix is what starts a new entry -- so everything after "D[1.1s]:" up to the
-// next prefix belongs to that arrival. Within one entry a logo and a name beside
-// each other are one chip (the logo with the name under it, which is what
-// "Name|logo.png" spells elsewhere); two names are two chips, the same as they
-// are in a tier's own field.
-//
-// A row that is named but not on the board is added to it. Flying something into
-// D is a statement that there is a D.
+// Commas separate as in a row's items; a prefix starts a new entry. A logo and
+// a name beside each other are one chip. A row named but not on the board is
+// added.
 type tierNew struct {
 	tier string  // "" is an item already on the board somewhere, found by name
 	at   float64 // when it starts, in seconds; below zero is "after the recap"
@@ -799,15 +758,11 @@ func parseDelay(s string) (float64, bool) {
 	return v * mul, true
 }
 
-// tierBoard is the board as it will be drawn: the six tiers with what is in
-// them, and which place in which tier is arriving now, with the moment it was
-// given or below zero for "in turn".
-//
-// This is where the "new" list stops being text: an arrival names a tier and the
-// tier gets it, put in the first place it has free. Naming something that IS
-// already up there singles it out instead, which is what a bare name has always
-// done here. A tier that is not on the board, and a tier with no room left in
-// it, are both nothing this can draw -- tierNote is where they are said out loud.
+// tierBoard is the board as it will be drawn: the six tiers with their
+// contents, and which place is arriving now with its moment (below zero for
+// "in turn"). An arrival names a tier and takes its first free place; naming
+// something already up there singles it out. A tier not on the board or with
+// no room is said in tierNote.
 func tierBoard(q svgQuery) ([]tierRow, map[[2]int]float64) {
 	rows := tierRowsOf(q)
 	arrive := map[[2]int]float64{}
@@ -982,17 +937,11 @@ func cardOwnHole(key string) bool {
 
 // ---- the animation a card is written in --------------------------------------
 //
-// Every animation in a card begins at 0 and runs the card's whole length, with
-// the waiting written into keyTimes instead of into begin. That is not a style
-// choice: before an animation begins, SMIL says the static attribute stands, so
-// a row parked off-screen by a static transform is a row that is off-screen in
-// every renderer that does not animate -- and the ones that do not animate are
-// the file manager's thumbnail, the insert chooser's preview, an SVG editor,
-// and this app's own fallback when a document turns out not to bake.
-//
-// With the delay inside the animation, the static document is the FINISHED card.
-// A viewer that ignores SMIL shows the completed board, which is exactly what
-// that viewer should show, and the baker still gets the fly-in from t=0.
+// Every animation begins at 0 and runs the card's whole length, the waiting in
+// keyTimes rather than begin: before an animation begins the static attribute
+// stands, so the static document is the FINISHED card and a viewer that
+// ignores SMIL (thumbnailer, chooser preview, the fallback) shows the
+// completed board.
 
 // animStop is one value and the moment the card reaches it.
 type animStop struct {
@@ -1072,21 +1021,10 @@ func isImageFile(p string) bool {
 	return ok
 }
 
-// cardLogo turns a logo written on a card into something a renderer will
-// actually load: the file's bytes, base64, in the href itself.
-//
-// A path would be simpler and does not work. The baked frames are written to a
-// folder somewhere else entirely and handed to ffmpeg one at a time, so librsvg
-// sees a document with no idea where it came from: a relative href resolves
-// against nothing, and an absolute one is refused by any renderer that does not
-// allow a document to reach into the filesystem. Embedded, a card is one
-// self-contained document wherever it ends up -- at the cost of carrying the
-// image in every baked frame, which is why a logo wants to be a logo and not a
-// photograph.
-//
-// The file is looked for beside the card, then in the folder above it -- which
-// is the project, for the cards in assets, so a logo can be kept anywhere in it
-// and written the way the rest of the project writes a path.
+// cardLogo embeds a logo's bytes base64 in the href: baked frames are written
+// elsewhere, so a relative href resolves against nothing and an absolute one
+// is refused. Looked for beside the card, then in the folder above (the
+// project).
 func cardLogo(dir, p string) (string, bool) {
 	if strings.TrimSpace(p) == "" {
 		return "", false
@@ -1197,14 +1135,10 @@ func badgeSVG(q svgQuery, _ string, _ []byte) []byte {
 	return cardDoc("badge", q, badgeInputs, b.String())
 }
 
-// cardDoc wraps a card's body in the document every card has: the frame, the
-// background, the stamp that says what drew it and with what, and the card's
-// form written out as Input comments. The stamp is what makes the file on disk a
-// complete statement of itself -- insSVG reads it back to redraw the card from a
-// path's parameters -- and the comments are what make the dialog come out of the
-// file rather than out of this package: edit a label there and the box is called
-// that. They are comments, so no renderer ever sees them, and the baker drops
-// them on the way to a frame.
+// cardDoc wraps a card's body in the document every card has: frame,
+// background, the stamp saying what drew it and with what (insSVG reads it
+// back), and the card's form as Input comments, which the dialog is built
+// from. Comments, so no renderer sees them and the baker drops them.
 func cardDoc(name string, args svgQuery, inputs []svgField, body string) []byte {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")

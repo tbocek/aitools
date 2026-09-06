@@ -1,28 +1,10 @@
 package main
 
-// The selection band: the row between the ruler's clock and the thumbnails.
-//
-// The selection has always existed -- drag across the pictures, and Add keeps
-// what you dragged over while Remove throws it away -- but it existed only as a
-// tint over the thumbnails, and a tint is not a thing. You could make one and
-// you could act on one, and that was the whole of it: a selection three seconds
-// too short had to be drawn again from scratch, because there was nothing on
-// the page to take hold of.
-//
-// So it gets a row of its own. In its row it is an object like every other
-// object on this page: press it to pick it up, drag its middle to slide it,
-// drag either end to move that end, ✕ to throw it away. The verbs are the ones
-// the clips and the effects already answer to, and the ends snap to the same
-// landmarks a dragged clip does -- the borders of the cut, the seams between
-// recordings, the playhead -- because a selection is nearly always meant to
-// start or stop at something, and lining it up by hand at 4 px per second is
-// not a thing anyone should be asked to do.
-//
-// It is a row rather than a taller tint because the tint has a job the band
-// cannot do. Over the pictures, the blue says WHICH FOOTAGE -- it is drawn on
-// the frames it covers, and that is how you tell you have the right three
-// seconds. The band says where the selection begins and ends and offers the
-// handles. Both are drawn: the answer and the control.
+// The selection band: the row between the ruler and the thumbnails where the
+// selection is an object -- press to pick up, drag the middle to slide, drag an
+// end to move it, ✕ to throw away; ends snap to cut borders, seams and the
+// playhead. The tint over the pictures still says WHICH FOOTAGE; the band says
+// where it begins and ends and offers the handles.
 
 import (
 	"fmt"
@@ -44,18 +26,9 @@ const (
 const (
 	selGripPx = 6.0  // px either side of an end that grabs that end
 	selKillW  = 12.0 // the blue band's ✕ target, narrower than a plated one's
-	// ...and centred at killIn from the right end, which is where every other
-	// ✕ on the page sits (cut_segkill.go). The mark itself stays the blue's
-	// own -- two flat strokes, no plate -- because it throws away a SELECTION
-	// and the plated ones remove footage, and the two must not be the same
-	// button. Where it sits is not part of that difference: two ✕ in one row
-	// at two distances from their edges is the row looking untidy for no
-	// reason anybody can read.
-	//
-	// under selMinBand the band has no middle worth aiming at, so it is all
-	// grips and the ✕ is not drawn: a selection of a few frames is moved by
-	// its ends or thrown away with Esc. The floor is the badges' own rule --
-	// twice the reach of the target, so the band's middle is never inside it.
+	// ...and centred at killIn from the right end like every other ✕. Two flat
+	// strokes, no plate: it throws away a SELECTION, the plated ones remove
+	// footage. Under selMinBand the band is all grips and the ✕ is not drawn.
 	selMinBand = 2*(killIn+selKillW/2) + 6
 	// the GREEN bar's ✕ is the plated badge the lanes and the effects wear
 	// (drawKillBadge), because it is the same verb they answer -- and it sits
@@ -163,24 +136,11 @@ func (ed *cutEditor) bandBars() []int {
 	return out
 }
 
-// bandKillAt is the kept clip whose ✕ is under a press at timeline-x px, or -1.
-//
-// EVERY bar wears one, and every one of them is live -- not just the bar the
-// hand can trim and move. That is the difference between a control and a
-// control you have to unlock: with the ✕ on one bar only, dropping the third
-// clip of a cut meant putting the red line in it first, which is a press whose
-// only purpose is to make the next press possible. The effects lane has never
-// worked that way (cut_fxkill.go): every band there carries its own ✕ and
-// pressing it drops that band, whatever is selected. This is the same rule for
-// the same reason.
-//
-// Trimming and moving are still the tall bar's alone. They are drags with an
-// anchor -- what a clip's border may move to depends on the clip in hand -- and
-// the row says which bar that is by drawing it taller with handles on its ends.
-// Removing needs no anchor: the thing pressed is the thing that goes.
-//
-// The target is the badge's own, a square around the plate segKillHit either
-// side, and only on a bar with the room for it (killMin).
+// bandKillAt is the kept clip whose ✕ is under timeline-x px, or -1. EVERY
+// bar's ✕ is live, not just the held bar's -- like the effects lane. Trimming
+// and moving stay the tall bar's alone, since a drag needs an anchor; removing
+// does not. Target: segKillHit either side of the plate, on bars with room
+// (killMin).
 func (ed *cutEditor) bandKillAt(px float64) int {
 	for _, i := range ed.bandBars() {
 		s := ed.segs[i]
@@ -193,36 +153,11 @@ func (ed *cutEditor) bandKillAt(px float64) int {
 }
 
 // bandClipPartAt is what a press at timeline-x px takes hold of on the green
-// bar: which clip, and which part of it. The parts are the blue bar's own --
-// ends first, then the ✕, then the middle -- because the two bars share a row
-// and have to answer the hand the same way. The blue bar is asked before this
-// one everywhere (press, cursor, hover), exactly as it is drawn on top.
-//
-// The ✕ removes the clip. It was left off this bar at first on the grounds
-// that deleting footage is not the cheap, undoable nothing that throwing away
-// a selection is, and that a badge on every green stretch over the thumbnails
-// already offered the verb -- but a bar that answers every other verb of the
-// blue's and not this one is the odd one out, and two marks for one verb, one
-// of them on footage it could not stay legible over, was worse than either
-// alone. The badge over the pictures is gone and this is the survivor
-// (cut_segkill.go): same undo, same sentence in the status.
-//
-// EVERY bar answers, not just the one the red line is in.
-//
-// It used to be that one alone: its ends were drawn as handles and the rest
-// were flat stripes, so trimming the third clip of a cut meant first putting
-// the line inside it -- a press whose only purpose was to make the next press
-// possible. The ✕ stopped working that way long ago (bandKillAt) for exactly
-// that reason, and the picture band never worked that way at all: every kept
-// stretch there is drawn with its two borders and either can be taken. This is
-// the same rule in the row above, and the drawing says so -- every bar wears
-// its handles (drawSelBand).
-//
-// The ends come first, over all the bars, and the bar in reach first among
-// them: two scenes that touch share a border to the pixel, and the one being
-// worked on is the one the hand means. Then the ✕, then the middles -- in that
-// order the outer few px of a bar stay the grip that trims it, and a hand
-// aiming at "a bit shorter" cannot find "gone".
+// bar: which clip and which part. Same order as the blue bar -- ends first
+// (over ALL bars, the bar in reach first, since touching scenes share a border
+// to the pixel), then the ✕, then the middles -- so the outer px stay the grip
+// that trims and "a bit shorter" cannot find "gone". EVERY bar answers, not
+// just the one under the line. The blue bar is asked before this everywhere.
 func (ed *cutEditor) bandClipPartAt(px float64) (int, int) {
 	bars := ed.bandBars()
 	if cur := ed.bandClipIdx(); cur >= 0 {
@@ -278,17 +213,10 @@ func (ed *cutEditor) holdBandClip(i, part int) {
 
 // ---- moving it --------------------------------------------------------------
 
-// snapMarks are the landmarks a dragged selection lands on: every border of the
-// cut, every seam between recordings, the ends of every effect's band, and the
-// playhead.
-//
-// The cut's borders are the important ones. A selection is made in order to
-// keep something or drop something, and what it is nearly always aimed at is a
-// cut that already exists -- "drop from here to where that clip starts". The
-// seams matter because a recording's first and last frame are the two moments
-// no amount of dragging finds by hand. The effects are there because a
-// selection is often about them -- "cut away exactly where the zoom ends".
-// The playhead is there because it is where you just were.
+// snapMarks are the landmarks a dragged selection lands on: every border of
+// the cut (what a selection is nearly always aimed at), every seam between
+// recordings (first and last frames nobody finds by hand), the ends of every
+// effect's band, and the playhead.
 func (ed *cutEditor) snapMarks() []float64 {
 	out := make([]float64, 0, 2*len(ed.segs)+2*len(ed.vids)+2*len(ed.fx)+1)
 	for _, s := range ed.segs {
@@ -417,14 +345,10 @@ func (ed *cutEditor) holdSel(part int) {
 	ed.redrawTracks()
 }
 
-// hoverTracks answers the pointer for a whole band: which effect a press would
-// take hold of, which clip border it would trim, whether it is over the
-// selection row, and what the cursor should therefore be. One handler rather
-// than four, because the cursor is one thing and two controllers setting it
-// would fight over it.
-//
-// x below zero means the pointer has left: everything it was highlighting
-// stops being highlighted.
+// hoverTracks answers the pointer for a whole band -- which effect a press
+// would take, which border it would trim, whether it is over the selection
+// row, and the cursor -- in one handler, since two would fight over the cursor.
+// x below zero means the pointer has left.
 func (ed *cutEditor) hoverTracks(x, y float64) {
 	ed.hoverFx(x, y)
 	ed.hoverFxKill(x, y)
@@ -500,15 +424,10 @@ func (ed *cutEditor) hoverEdge(x float64, cut bool) {
 	}
 }
 
-// wantCursor is what a press at this point would do, said in the pointer.
-//
-// This is the important half of hovering a band. The three things the selection
-// row does live in the same sixteen pixels and are told apart by which twelve
-// pixels along the press lands in, which is not something a picture of a blue
-// bar can communicate. A resize cursor over an end and an open hand over a
-// middle say "this edge moves" and "this whole thing moves" before anything has
-// been committed to, and that is the difference between a handle and a hazard.
-// The effects lane answers the same way for the same reason.
+// wantCursor is what a press at this point would do, said in the pointer: the
+// three things the selection row does live in the same sixteen pixels, and a
+// resize cursor over an end and an open hand over a middle tell them apart
+// before anything is committed. The effects lane answers the same way.
 func (ed *cutEditor) wantCursor(x, y float64) string {
 	if x < 0 {
 		return ""
@@ -614,40 +533,17 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 		cr.Rectangle(v.pxOrigin, y, v.dur*ed.pps, selBandH)
 	}
 	cr.Fill()
-	// the clip under the red line, said in the band. The green tint over the
-	// thumbnails says WHICH FOOTAGE the cut keeps; this bar says where the
-	// kept clip the playhead sits in begins and ends -- the same sentence the
-	// blue bar speaks for a selection, and what makes the clip's extent a
-	// matter of reading one row rather than hunting the tint's edges. Drawn
-	// first, so an actual selection lands on top of it. And it answers the
-	// blue's verbs (bandClipPartAt), so it wears the blue's clothes: end
-	// handles, and the same rings for held and hovered.
-	//
-	// Every kept scene, in the band, always. The green tint that says "kept"
-	// is drawn over the thumbnails, which means it is green over whatever the
-	// footage happens to be -- and on a dark game capture that is green on
-	// black: findable if you already know where to look, and invisible if you
-	// do not. The band has a flat ground of its own, so a bar on it answers
-	// "what does the cut keep" for the WHOLE timeline at a glance, which is
-	// the question this row is read for.
-	//
-	// Dimmer than the bar for the scene the hand can reach, and a pixel short
-	// of its own right edge so two scenes that touch read as two. Dimmer and
-	// not plainer: every bar answers the hand (bandClipPartAt), so every bar
-	// wears the handles that say so, and what the brighter one says is which
-	// scene the arrow keys and the toolbar are about.
+	// Every kept scene as a bar, always: the green tint over dark footage is
+	// invisible, the band's flat ground answers "what does the cut keep" at a
+	// glance. The clip under the red line is drawn brighter with end handles (it
+	// is what the arrows and toolbar act on); the rest dimmer, a pixel short of
+	// their right edge so touching scenes read as two. Drawn first so a selection
+	// lands on top.
 	cur := ed.bandClipIdx()
-	// A pixel short of its own right edge so two clips that touch read as two,
-	// and deep enough to hold a badge: every bar carries the ✕, so no bar can
-	// be a stripe the plate hangs off either side of.
-	//
-	// And every bar wears its END HANDLES. They used to be the reachable bar's
-	// alone, drawn to say "these two borders can be dragged" -- which was true
-	// of every bar in the row and offered on one, so a clip you could trim
-	// looked like a clip you could not until the red line was put inside it
-	// first. The picture band draws every kept stretch's borders; this is the
-	// same sentence in the row above, and bandClipPartAt answers for every bar
-	// to match.
+	// A pixel short of its own right edge so touching clips read as two, deep
+	// enough to hold a badge. Every bar wears END HANDLES, because every bar
+	// answers the hand (bandClipPartAt) -- as the picture band draws every kept
+	// stretch's borders.
 	for _, i := range ed.bandBars() {
 		s := ed.segs[i]
 		gx0, gx1 := ed.xOf(s.S), ed.xOf(s.E)

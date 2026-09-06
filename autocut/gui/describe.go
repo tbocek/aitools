@@ -1,13 +1,9 @@
 package main
 
-// Describe: every footage source's stored frames (inputs/frames/<v>/) go to the
-// vision LLM in small batches together with the game-audio words heard during
-// those seconds and a little either side of them, marked as context; a rolling
-// "state of the game" plus the last events make each batch a description of
-// what is HAPPENING, not stills.
-// Output: prepare/describe/<video>/events.tsv, resumable per chunk.
-//
-// The page is prep.go -- this half and the fixer (transcript.go) share it.
+// Describe: each footage source's frames (inputs/frames/<v>/) go to the vision
+// LLM in small batches with the words heard around those seconds and a rolling
+// state, so each batch describes what is HAPPENING. Output:
+// prepare/describe/<video>/events.tsv, resumable per chunk. Page: prep.go.
 
 import (
 	"errors"
@@ -26,14 +22,9 @@ const framesPerReq = 4 // frames per vision request
 // page states both numbers, so they are named rather than typed twice.
 const recentEvents = 3
 
-// The primer stays empty of game knowledge on purpose: whatever is specific
-// about this footage goes into the prompt box on the page, which replaces this
-// wholesale rather than being appended to it.
-//
-// One paragraph, one line -- long ones, and deliberately so. This text is not
-// read here, it is read in a wrapping text box, and a hard wrap at 80 columns
-// gets wrapped again by that box into ragged half-lines. The Go source pays for
-// the box being right.
+// The primer holds no game knowledge: what is specific to this footage goes in
+// the prompt box, which replaces this wholesale. One paragraph per line, long
+// on purpose -- it is read in a wrapping text box, and a hard wrap wraps twice.
 const describeSystem = `You describe screen-recorded footage for a video editor.
 
 You will never see these frames or any earlier ones again: your two lines are your only memory, so write them for a reader who has seen nothing.
@@ -65,16 +56,10 @@ type tsvRow struct {
 // tlLabel is who a line belongs to, in the one vocabulary every step uses:
 //
 //	EVENT       what the picture showed
-//	NARRATOR    the narrator's own microphone -- the one recording the
-//	            finished video never plays, so only the voice-over carries it
+//	NARRATOR    the narrator's own microphone, which the video never plays
 //	SPEAKER_nn  a voice the video does play
 //
-// Four prompts describe the material they are given, and they used to describe
-// it four different ways: a recording's file name here, "[heard in NAME]"
-// there, "[base SPEAKER_00]" in the session timeline. Nothing was wrong with
-// any of them alone; together they made every step a new format to learn, on a
-// model with no room to spare for that. narr is narratorMic, blank when nobody
-// is exempt.
+// narr is narratorMic, blank when nobody is exempt.
 func tlLabel(r tsvRow, narr string) string {
 	switch {
 	case r.spk == "EVENT":
@@ -87,14 +72,9 @@ func tlLabel(r tsvRow, narr string) string {
 	return r.spk
 }
 
-// sessionText renders the whole merged timeline the way the cut and the audit
-// read it: one line each, stamped [mm:ss] from the start of the session, then
-// the label, then what was said or seen. The minutes keep counting past 59, so
-// the stamp is never ambiguous about which hour it is in.
-//
-// It is built from session.tsv at request time rather than read off
-// session.txt, so a change here reaches a project that was transcribed before
-// it without anyone re-running an LLM pass over an hour of speech.
+// sessionText renders the merged timeline as the cut reads it: one line each,
+// [mm:ss] from the session start (minutes past 59), label, text. Built from
+// session.tsv at request time, so a change here reaches old projects.
 func sessionText(rows []tsvRow, narr string) string {
 	var b strings.Builder
 	for _, r := range rows {
@@ -111,15 +91,11 @@ const (
 	ctxWindow = 10.0 // seconds between the chunk and a context segment
 )
 
-// electSpeech splits a recording's own transcript into what was said during a
-// chunk of frames and a little either side of it, for reference.
-//
-// The three sets are disjoint and between them hold every segment, which is
-// the point: a segment overlapping the chunk at all belongs to during, IN
-// FULL -- never clipped at the boundary, and so never able to appear as
-// context as well. Whatever is left is entirely before the chunk or entirely
-// after it, and is kept only if it is close enough and near enough the front
-// of its queue.
+// electSpeech splits a recording's transcript into what was said during a
+// chunk of frames and a little either side. The three sets are disjoint and
+// cover every segment: anything overlapping the chunk is during, IN FULL; the
+// rest is before or after and kept only if close and near the front of its
+// queue.
 func electSpeech(rows []tsvRow, chunkStart, chunkEnd float64) (before, during, after []tsvRow) {
 	for _, r := range rows {
 		switch {
@@ -164,24 +140,11 @@ type spoken struct {
 }
 
 // speechBlock is what the model is told was said around these frames. All
-// three sections are always emitted, empty ones included: a missing heading is
-// indistinguishable from a broken pipeline, and "nobody spoke" has to be
-// readable as itself rather than as speech having been dropped.
-//
-// One rule for the times, so the model never has to work out which end a
-// number is measured from: seconds from the chunk's first frame, signed.
-// Before the chunk is negative, during and after it positive. The frames
-// themselves are labelled on that same clock, which is what lets a line be
-// matched to a picture at all.
-//
-// Every source is elected separately and the results merged in time order, so
-// the two-a-side context cap is per speaker: one talkative track cannot crowd
-// another out of its own context, which is what a single merged election would
-// have done.
-//
-// Segments are emitted one per line, never merged: the boundaries are where
-// the ASR heard pauses, and the pauses carry meaning. The text goes through
-// untouched -- no trimming, no case or punctuation repair.
+// three sections are always emitted, empty included, so "nobody spoke" is not
+// read as speech dropped. Times are seconds from the chunk's first frame,
+// signed, the same clock the frames are labelled on. Each source is elected
+// separately and merged in time order, so the two-a-side cap is per speaker.
+// Segments stay one per line, text untouched: the ASR's pauses carry meaning.
 func speechBlock(srcs []speechSrc, narr string, chunkStart, chunkEnd float64) string {
 	var before, during, after []spoken
 	tag := func(dst *[]spoken, rows []tsvRow, src string) {
@@ -214,18 +177,10 @@ func speechBlock(srcs []speechSrc, narr string, chunkStart, chunkEnd float64) st
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// loadTSVRows reads either of the two timeline files this app writes: a single
-// recording's transcript (start, end, speaker, text) and the merged session
-// timeline (start, end, RECORDING, speaker, text), which also carries the EVENT
-// lines describing the screen.
-//
-// It used to take column 4 as the text, which is the text in the four-column
-// file and the SPEAKER/EVENT label in the five-column one. Nothing crashed:
-// Narrate built every narration request out of a column of the words
-// "SPEAKER_00" and "EVENT", so the model was asked to narrate clips it had been
-// told nothing about, and wrote what such a session usually contains -- which
-// is how a line about digging up something shiny ends up over a clip where
-// nobody has picked up a pickaxe yet.
+// loadTSVRows reads both timeline files: a recording's transcript (start, end,
+// speaker, text) and the session timeline (start, end, RECORDING, speaker,
+// text, incl. EVENT lines). Text is the LAST column -- column 4 of the five is
+// the label, and reading it as text once fed Narrate the word "SPEAKER_00".
 func loadTSVRows(path string) []tsvRow {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -301,21 +256,11 @@ func (a *App) planVideo(video, descDir string) (*videoPlan, error) {
 	return p, nil
 }
 
-// commentary puts every other recording's words on this video's clock, so the
-// person who was talking through the session is heard against the frames they
-// were talking about. Same clock Cut lays its timeline out on (srcClock): a
-// filename stamp when there is one, and the earliest moment anything here
-// names when there is not.
-//
-// Speech against the wrong frames is worse than no speech: the prompt tells the
-// model to trust the words over its own reading of a picture in every case
-// except outright contradiction, so a wrong offset is believed. That is why an
-// unstamped recording is put at the session's start and nowhere else -- it is
-// the one guess that is visible and correctable on the Cut page, by ear, with
-// the right drag.
-//
-// The offsets are logged for the same reason Cut logs them: when a
-// description talks about the wrong thing, this is the number to look at.
+// commentary puts every other recording's words on this video's clock
+// (srcClock). The prompt trusts words over pictures, so a wrong offset is
+// believed; an unstamped recording therefore goes at the session start, the
+// one guess visible and correctable on Cut by the right drag. Offsets are
+// logged: when a description is about the wrong thing, this is the number.
 func (a *App) commentary(video string, audios []string) []speechSrc {
 	if len(audios) == 0 {
 		return nil
@@ -384,19 +329,11 @@ func (a *App) describeAll(videos, audios []string, span float64) error {
 	return nil
 }
 
-// resetDescribe undoes the resume below: every source's event log and rolling
-// STATE go, and the next run describes the footage from t=0 again.
-//
-// What it does NOT touch is .llmframes beside them. Those are scaled pixels,
-// not results -- keeping them means starting over costs the vision model again
-// but not the minutes of ffmpeg that scaling an hour of frames takes. Nor does
-// it touch prepare/transcript: the fixer never resumes, so every run of it
-// already starts from the first block.
-//
-// Every folder under prepare/describe/ is cleared, not just the sources selected
-// now: "start from the start" is about the step, and a log left behind by a
-// recording that has since been deselected is exactly the stale half-run this
-// is here to get rid of.
+// resetDescribe drops every source's event log and rolling STATE so the next
+// run describes from t=0. It keeps .llmframes (scaled pixels, minutes of
+// ffmpeg) and prepare/transcript (the fixer never resumes). Every folder under
+// prepare/describe/ goes, not just the selected sources -- a deselected
+// recording's log is exactly the stale half-run this removes.
 func (a *App) resetDescribe() error {
 	ents, err := os.ReadDir(a.describeDir())
 	if err != nil {

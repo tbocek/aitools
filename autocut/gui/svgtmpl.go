@@ -1,25 +1,13 @@
 package main
 
-// Filling a card in.
+// Filling a card in: the drawing lives in the file, the numbers come from
+// here. Holes in the document:
 //
-// A card used to be a Go function that printed an SVG. That works and it is
-// wrong in one specific way: the picture is then in the code, so everything
-// about how a board LOOKS -- the corner radius, where the letter sits, what a
-// place on a row is made of -- is a Go edit and a rebuild, and the file in
-// assets is only ever an output. Nobody can restyle it and no model can be
-// asked to.
+//	{{name}}                     filled in, or nothing
+//	{{name|what it says instead}} filled in, or that
 //
-// So the drawing lives in the file and the numbers come from here. The file is
-// an ordinary SVG with every row and every place written out in it, and holes
-// where the app has something to say:
-//
-//	{{name}}                     filled in, and nothing if there is nothing
-//	{{name|what it says instead}} filled in, or that, when nobody says otherwise
-//
-// The holes are the contents of a place, the size the name has to be to fit, and
-// every animation's own values and keyTimes -- so the moment something arrives
-// is a number in the document rather than a number in a printf. Everything else,
-// including where all of it is, is in the file and only in the file.
+// The holes are a place's contents, the fitted name size, and every
+// animation's values and keyTimes. Everything else is in the file only.
 
 import (
 	"bytes"

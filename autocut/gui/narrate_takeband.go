@@ -1,26 +1,11 @@
 package main
 
-// The picture of the narrator's recording, under the video on the Narrate step,
-// and the way the seconds cloned from it are chosen (narrate_take.go holds what
-// a take IS; this is how one gets made).
-//
-// It is the Cut page's audio lane, deliberately: the same envelope, the same
-// meter curve, the same blue, the same wheel-zooms-around-the-cursor, and the
-// same green for "this is kept". Somebody who has spent an afternoon on the
-// timeline already knows how to work this band, and a second waveform idiom in
-// one app would be two things to learn for one thing to do.
-//
-// What it is NOT is a timeline. There is one recording here and it is drawn on
-// its OWN clock, from its first second to its last -- not placed on the
-// session's axis with the ends that hang off trimmed away, which is what the
-// Cut page does and is exactly wrong here. The question this band answers is
-// "where in this file does this person sound most like themselves", and the
-// minutes before the capture card started are as good an answer as any other.
-//
-// Only for a narrator slot. A wav out of the voices folder is a reference
-// already -- it is used whole, and cutting it up here would be editing a file
-// that other projects also point at -- and "no audio" has no voice to pick
-// from. In both cases the band and its three buttons are simply not there.
+// The narrator recording's waveform under the video on Narrate, and how a take
+// is chosen on it (narrate_take.go says what a take IS). Deliberately the Cut
+// page's audio lane idiom -- envelope, meter, blue, wheel zoom, green for kept.
+// NOT a timeline: one recording on its OWN clock, first second to last. Only
+// for a narrator slot; a voices-folder wav is used whole and "no audio" has
+// nothing to pick from.
 
 import (
 	"fmt"
@@ -487,14 +472,9 @@ func (b *takeBand) stopWalk() {
 	b.redraw()
 }
 
-// syncPlayBtn draws that one button in its two faces. ⏹ and not the ⏸ every
-// other play button in the app wears (setPlayIcon), because there is nothing
-// here to resume: the walk cues each take from its own start, so a second
-// press can only mean "enough".
-//
-// It reads the QUEUE, not the player. The player pauses at the end of every
-// take before the next is cued, so a face drawn from Playing() would blink
-// back to ▶ at each join of a walk that never stopped.
+// syncPlayBtn draws the button's two faces: ⏹, not ⏸, since a walk cues each
+// take from its own start and a second press can only mean "enough". It reads
+// the QUEUE, not the player, which pauses at every join.
 func (b *takeBand) syncPlayBtn() {
 	if b == nil || b.playBtn == nil {
 		return
@@ -508,16 +488,10 @@ func (b *takeBand) syncPlayBtn() {
 	b.playBtn.SetTooltipText(takePlayTip)
 }
 
-// takeQueue is what ▶ plays, and the whole of that decision: the takes from the
-// red bar onward, with the one the bar lands inside trimmed to begin exactly
-// there. With no bar set that is all of them, which is what ▶ has always done,
-// so putting a start on it took nothing away.
-//
-// The bool says whether those ARE takes. A bar past the last one -- or a
-// recording nobody has picked from at all -- leaves none to play, and then the
-// press can only mean the other thing it could mean: play the recording from
-// there. That is how the seconds worth picking get found in the first place,
-// and refusing it because the picking has not happened yet is backwards.
+// takeQueue is what ▶ plays: the takes from the red bar onward, the one the bar
+// lands inside trimmed to begin there; all of them with no bar. The bool says
+// whether those ARE takes -- a bar past the last, or no takes at all, means
+// play the recording from there, which is how takes get found.
 func takeQueue(ts []voiceTake, at, dur float64) ([]voiceTake, bool) {
 	var out []voiceTake
 	for _, t := range ts {
@@ -543,14 +517,9 @@ func (b *takeBand) cue() {
 	b.vp.player.PlaySegment(b.src, t.S, t.E, true)
 }
 
-// chainOn is hung on the player's OnState, which is where a segment reaching
-// its end arrives (the bus watch pauses on EOS and reports it). Polling the
-// position would work and would also be a timer running for the whole life of
-// the page to notice something the player already says.
-//
-// It drops the chain whenever the player is holding anything but this
-// recording, which is how playing a sample cancels it without the sample
-// having to know this band exists.
+// chainOn hangs on the player's OnState, where a segment's end arrives (the
+// bus watch pauses on EOS). It drops the chain whenever the player holds
+// anything but this recording, so playing a sample cancels it.
 func (b *takeBand) chainOn() {
 	if b == nil || len(b.queue) == 0 {
 		return

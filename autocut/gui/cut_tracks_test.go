@@ -399,7 +399,7 @@ func TestOnlyAMultiTrackFileGetsAChoiceOnItsRow(t *testing.T) {
 	if !strings.Contains(readSrc(t, "sources.go"), "if tb := s.trackButton(i); tb != nil {") {
 		t.Error("the source row no longer asks trackButton for a track menu")
 	}
-	if !strings.Contains(readSrc(t, "cut_tracks.go"), "if len(tr) < 2 {\n\t\treturn nil\n\t}") {
+	if !strings.Contains(readSrc(t, "cut_draw.go"), "if len(tr) < 2 {\n\t\treturn nil\n\t}") {
 		t.Error("trackButton no longer refuses a file with one track — every ordinary " +
 			"recording would grow a control it cannot use")
 	}

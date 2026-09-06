@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -99,7 +100,7 @@ func TestTheSplitToggleSitsBeforeTheTrashAndSaysWhatTheRowIs(t *testing.T) {
 	}
 	// every symbol on the row carries the key, not just this one: whichever
 	// one the hand is over is the one that has to answer
-	if n := strings.Count(readSrc(t, "sources.go"), "+ srcRowKey)"); n != 4 {
+	if n := len(regexp.MustCompile(`\+ ?srcRowKey[,)]`).FindAllString(readSrc(t, "sources.go"), -1)); n != 4 {
 		t.Errorf("%d of the row's four symbols name the others, want all of them", n)
 	}
 	// ...and the key says what each one DOES, which is what the legend it

@@ -1,34 +1,10 @@
 package main
 
-// The prompt bench: one box on Prepare that holds everything the models are
-// told.
-//
-// The prompts used to be spread over the pages that send them -- two here, two
-// behind a dropdown on Cut, one on Narrate, one on Publish -- each page with its
-// own picker, its own Edit button, and its own way of showing the editor (a
-// column on Cut, a window everywhere else). That put a prompt next to the run
-// that sends it, which sounds right and was not: a prompt is read once, edited
-// before the first run, and then left alone for the whole project, while the
-// pages it sat on are where the actual work happens. So every page paid, all
-// session, for a control used in the first ten minutes.
-//
-// They are all here now, in the order the pipeline sends them, behind one menu
-// in one box. Prepare is where a project is set up -- the sources, the language,
-// what the editor knows -- and setting up what the models are told is the same
-// job at the same moment. It also puts the whole chain in one list: reading down
-// the menu is reading the run, which is a thing no page could show while each
-// page owned one prompt.
-//
-// The context is the first row and it is not a prompt: it is what the editor
-// knows about THIS session, and every request carries it (context.go). It comes
-// first because it is the one row a session actually has to write, and it sits
-// among the prompts because writing it beside them is what stops it being
-// written INTO them.
-//
-// One editor, one registration. Because this box is the only place a prompt is
-// shown, promptViews/promptRows hold exactly the row on screen -- there is no
-// second editor for the same key to fight with, which is what the old
-// open/closed/forget dance existed to prevent.
+// The prompt bench: one box on Prepare holding everything the models are told,
+// in the order the pipeline sends it, behind one menu. The context is the
+// first row and is not a prompt: what the editor knows about THIS session,
+// carried by every request (context.go). One editor per key:
+// promptViews/promptRows hold exactly the row on screen.
 
 import (
 	"fmt"
@@ -119,19 +95,10 @@ func (a *App) prepEditNames() []string {
 	return out
 }
 
-// prepEditor is the right-hand half of the Prepare page: one box, and in its
-// heading the menu for what the box shows plus the controls that belong to a
-// prompt -- save this as a new wording, put the built-in back. Which wording
-// the box shows is not chosen here: the Style dropdown on the bottom row sets
-// it: there is one wording per job, and the box is it.
-//
-// There is nothing to save before switching away: every keystroke writes
-// through, to the context cache or through setPrompt to the picked wording. And
-// nothing to close: the box IS the editor, so a project load, a wording added
-// and a wording deleted all land in the same place.
-//
-// Still editorBody, like every text box on a step page: same font, same frame,
-// same floor, same heading height (see prompts.go).
+// prepEditor is the right half of Prepare: one box, its heading holding the
+// menu for what it shows and the prompt controls (save as new wording, reset).
+// Every keystroke writes through, so there is nothing to save or close on a
+// switch. editorBody like every text box on a step page (prompts.go).
 func (a *App) prepEditor() gtk.Widgetter {
 	rows := prepRows()
 

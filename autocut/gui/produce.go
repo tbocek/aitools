@@ -1,23 +1,16 @@
 package main
 
-// Produce. Cuts every clip from ITS OWN source recording, lays the
-// narration over ducked game audio, joins, normalizes loudness and writes the
-// upload -- plus subtitles, burned in, muxed as a track or as a sidecar .srt.
-//
-// A clip grows (up to maxExtend) when its narration needs more room; if the
-// line still does not fit, the narration is sped up to at most maxTempo. Both
-// are logged, never silent.
-//
-// Encoding happens ONCE, per clip: the join is a stream copy and the loudness
-// pass copies the video. Burned subtitles therefore go into the clip encode,
-// not into a second full-video pass.
+// Produce: every clip cut from its own recording, narration over ducked game
+// audio, joined by stream copy, loudness-normalized. A clip grows (maxExtend)
+// or the narration speeds up (maxTempo) when a line does not fit; both are
+// logged. Encoding happens once, per clip -- burned subtitles go into that
+// encode.
 //
 // produce/clips/c000.<ext>   per-clip encodes
 // produce/final.srt          subtitles on the produced timeline
-// <output file>            the upload
+// produce/final.<container>  the upload
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +23,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
@@ -42,26 +34,12 @@ const (
 	maxExtend = 4.0  // seconds a clip may grow to fit its line
 	maxTempo  = 1.25 // ... and how much the line may be sped up after that
 	loudFlt   = "loudnorm=I=-14:TP=-1.5:LRA=11"
-	// clipCeil is the last thing every clip's audio passes through before the
-	// encoder. The mix keeps every lane at the level it was recorded at
-	// (normalize=0, below), which is what a hand on a desk would do -- switching
-	// a second lane on must not duck the first. But two lanes at their own level
-	// ARE louder than one, and while the filter graph is float and does not care,
-	// the AAC encode of each clip happens right here, long before the loudnorm
-	// pass over the joined file (produceFinal) could undo anything. So the peaks
-	// are caught at the one point that is too late to fix afterwards.
-	//
-	// level=disabled matters and is not a detail: alimiter's default is to scale
-	// its output back up by 1/limit, which hands straight back the headroom the
-	// limit just made -- the ceiling lands at 0 dBFS again and the whole filter
-	// buys nothing. Disabled, it is a pass-through below the ceiling, which is
-	// the other thing wanted here: a quiet scene has to STAY quieter than a loud
-	// one, or the loudnorm pass at the end is handed a file whose moments no
-	// longer agree with each other.
-	//
-	// It is on EVERY clip and not only the mixed ones, for the same reason audFmt
-	// is: the clips are joined by copying, so a filter some of them went through
-	// is a seam.
+	// clipCeil limits every clip's audio before its AAC encode: lanes are mixed
+	// at their recorded levels (normalize=0), so two lanes are louder than one,
+	// and the loudnorm pass over the joined file comes too late to undo a
+	// clipped encode. level=disabled keeps alimiter from scaling back up to 0
+	// dBFS. On every clip, not only mixed ones: the join is a copy, so a filter
+	// some clips went through is a seam.
 	clipCeil = "alimiter=limit=0.891:level=disabled" // -1 dBFS
 )
 
@@ -207,17 +185,10 @@ func defaultProdSettings() prodSettings {
 		Height: 1080, FPS: 30, AudioKbps: 128, GameVol: 0.22, Subs: "sidecar"}
 }
 
-// UnmarshalJSON seeds the defaults before decoding, so that an ABSENT game_vol
-// and a stored 0 stop meaning the same thing. They are different answers: a
-// project written before the setting existed has no key at all and has to keep
-// getting 0.22, the way Bare's inverted tag keeps the blurred backdrop, while a
-// stored 0 is a deliberate pick -- silence the game entirely under the voice,
-// which is what a talking head over gameplay wants. The page used to tell them
-// apart with "if st.GameVol > 0", which read that 0 as "never set" and sprang
-// the slider back to 0.22 on the next load, quietly un-silencing the game.
-//
-// Only GameVol is seeded. CRF's guard is left alone because it cannot be wrong:
-// its slider starts at 14, so the 0 it tests for is not a value anyone can save.
+// UnmarshalJSON seeds the defaults before decoding so an ABSENT game_vol (an
+// older project: keep 0.22) and a stored 0 (a deliberate pick: silence the
+// game) stop meaning the same thing. Only GameVol: CRF's slider starts at 14,
+// so its 0 guard cannot be wrong.
 func (s *prodSettings) UnmarshalJSON(b []byte) error {
 	type raw prodSettings // a defined type carries no methods, so no recursion
 	v := raw{GameVol: defaultProdSettings().GameVol}
@@ -359,28 +330,16 @@ func (a *App) buildProduce() gtk.Widgetter {
 	grid.SetColumnSpacing(10)
 	grid.SetRowSpacing(6)
 	grid.SetColumnHomogeneous(false)
-	// The second grid: the same rows, two across instead of three.
-	//
-	// A form is read down its columns, and a column only holds together when
-	// its rows are the same KIND of thing. The six menus are one kind and fit
-	// three across; what follows them -- a dropdown with a slider, a slider
-	// with a tick, two ticks -- is wider per item and there are six of those
-	// too, so they are three rows of two. Both blocks in one grid meant one
-	// set of columns for two different widths, which is what put the ticks
-	// against the far edge of the page with a hand's width of nothing before
-	// them.
+	// The second grid: the same rows, two across. The six menus are one kind of
+	// thing and fit three across; a dropdown with a slider, a slider with a tick
+	// and two ticks are wider, so three rows of two. One grid for both put the
+	// ticks against the far edge with a hand's width of nothing before them.
 	low := gtk.NewGrid()
 	low.SetColumnSpacing(10)
 	low.SetRowSpacing(6)
-	// One width per label column, shared by both grids, and every label flush
-	// left in it.
-	//
-	// They were right-aligned, which is the usual thing for a form of one
-	// column -- and this is two grids of three and two, so the labels came out
-	// on four different left edges under a heading that starts at one: nothing
-	// on the block lined up with anything else on it. Left-aligned and sized
-	// together, every row starts where "Transcode" does and every control
-	// starts where the control above it does.
+	// One width per label column, shared by both grids, every label flush left:
+	// right-aligned across two grids of different widths, the labels came out on
+	// four different left edges.
 	var lblCol [3]*gtk.SizeGroup
 	// a label and the thing it names, in whichever grid the caller is filling
 	lbl := func(g *gtk.Grid, col, row int, label string, w gtk.Widgetter) *gtk.Label {
@@ -405,16 +364,9 @@ func (a *App) buildProduce() gtk.Widgetter {
 	at := func(col, row int, label string, w gtk.Widgetter) *gtk.Label {
 		return lbl(grid, col, row, label, w)
 	}
-	// a tick is a row like any other: the subject in the label column, dim,
-	// and the answer on the control. It used to carry the whole sentence on
-	// itself with the label column left empty -- "[x] Set audio to mono" --
-	// which read as a different kind of thing from every row above it, and
-	// started a finger's width to their left because nothing named it.
-	//
-	// The tick's own words are NOT dimmed, any more than a dropdown's are.
-	// Dim is what this app draws a dead control in (the greyed ＋ Add, a
-	// switch with nothing to switch), so a dimmed tick beside a lit checkbox
-	// says the two disagree about whether it works.
+	// a tick is a row like any other: the subject in the dim label column, the
+	// answer on the control. The tick's own words are NOT dimmed -- dim is what
+	// this app draws a dead control in.
 	check := func(col, row int, name string, w *gtk.CheckButton) {
 		lbl(low, col, row, name, w)
 	}
@@ -460,14 +412,10 @@ func (a *App) buildProduce() gtk.Widgetter {
 		"the capture's two sides carry the same signal — the same bitrate then goes on " +
 		"one channel instead of two. Leave it off for anything with a real stereo image.")
 
-	// What fills the frame where the picture does not reach: a camera pulled
-	// back past the edge of the recording, a portrait cut of widescreen
-	// footage, a card that is not the video's shape. On by default because
-	// black bars read as a fault in the video rather than as a choice.
-	//
-	// It is a toggle rather than a setting the cut carries because the preview
-	// cannot draw it -- the timeline paints those edges black -- so this is
-	// also how you make the finished video match what you were shown.
+	// What fills the frame where the picture does not reach (a camera pulled back
+	// past the edge, a portrait cut of widescreen footage). On by default: black
+	// bars read as a fault. A toggle here rather than on the cut because the
+	// preview paints those edges black.
 	p.blur = gtk.NewCheckButtonWithLabel("blurred")
 	p.blur.SetActive(true)
 	p.blur.SetTooltipText("Fill the empty edges of the frame with a blown-up, blurred " +
@@ -475,15 +423,9 @@ func (a *App) buildProduce() gtk.Widgetter {
 		"which is also what the Cut preview draws, so turn it off if you want the " +
 		"finished video to look exactly like the preview did.")
 
-	// The two sliders, in the shape every slider in the app wears
-	// (formSlider): its own width, its value beside the trough, one line tall.
-	// A grid stretches what it holds, so these filled two columns each -- half
-	// the form's width to choose one number between 14 and 34.
-	//
-	// The mark is the CRF's alone, and unlabelled: it carried the default's
-	// number under the trough, which made the row three lines deep -- a
-	// reading, a trough and a legend -- for a control that is set once. Where
-	// the default was is worth finding again; what it says is the tooltip's.
+	// The two sliders in the app's one shape (formSlider): own width, value
+	// beside the trough, one line tall -- a grid would stretch each over two
+	// columns. The CRF mark is unlabelled; what it says is the tooltip's.
 	p.crf = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 14, 34, 1)
 	p.crf.SetValue(24)
 	formSlider(p.crf, "quality: lower is better and bigger (18–24 is the usual range; 24 is the default, marked)")
@@ -493,21 +435,8 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.gvol.SetValue(0.22)
 	formSlider(p.gvol, "how loud the original game audio sits under the narration")
 
-	// One word a label wherever one will do -- "Encoder preset" is a preset,
-	// "Audio bitrate" is the audio, and the three words they cost were three
-	// words of width in every column. What each one means is its dropdown's
-	// tooltip.
-	//
-	// Three columns, and as few rows as the things fill: the six settings
-	// every render has are two rows of three, the three the narration adds are
-	// the row under them, and the two sliders and four ticks are the two rows
-	// under that.
-	//
-	// It was three columns of four -- one subject per column -- which left the
-	// dropdowns in three tall rows with a slider in each, and every dropdown
-	// stretched to its slider's height. The subject that owns a column is the
-	// wrong thing to lay a form out by when the column's rows are not the same
-	// height: what the eye reads here is rows of one kind of control.
+	// Two grids: the six menus three across, then the rest two across (each row
+	// one kind of control), with one shared width per label column.
 	at(0, 0, "Container:", p.container)
 	at(1, 0, "Codec:", p.codec)
 	at(2, 0, "Preset:", p.preset)
@@ -529,14 +458,8 @@ func (a *App) buildProduce() gtk.Widgetter {
 	check(0, 2, "Channels:", p.mono)
 	check(1, 2, "Frame edges:", p.blur)
 
-	// Where the video is written is not a question any more: produce/final,
-	// with the extension the container above chose (syncExt).
-	//
-	// It was a Choose… button and a path across the foot of the settings -- a
-	// file chooser for a name that was "final.mp4" in every project anybody
-	// ever made, and a line of chrome repeating a folder the Outputs group
-	// already opens. One folder holds everything this step writes; the file in
-	// it has the one name.
+	// Where the video is written is not a question: produce/final with the
+	// container's extension (syncExt). The Outputs group already opens the folder.
 	p.setOut(filepath.Join(a.produceDir(), "final.mp4"))
 
 	// No buttons of its own down here. Rendering is what this page does, so it
@@ -612,10 +535,7 @@ func (a *App) buildProduce() gtk.Widgetter {
 	// the words ended 24 from the window and the settings 12.
 	right := gtk.NewBox(gtk.OrientationVertical, 6)
 	right.SetSizeRequest(360, -1)
-	right.SetMarginStart(6)
-	right.SetMarginEnd(12)
-	right.SetMarginTop(8)
-	right.SetMarginBottom(8)
+	margins(right, 8, 8, 6, 12)
 	right.Append(said)
 	right.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
 	right.Append(scroll)
@@ -639,14 +559,10 @@ func (a *App) buildProduce() gtk.Widgetter {
 	return page
 }
 
-// exportVideo copies the finished video out of the project. A copy and not a
-// move: produce/final is what the stamp is about (produce_stamp.go), and a
-// project whose video had been carried off would encode it again on the next
-// ▶ for no reason anybody could see.
-//
-// The copy runs on a goroutine -- these are hundreds of megabytes -- through
-// the same io.Copy every source import uses, so an interrupted one leaves a
-// .part and not half a video (copyInto).
+// exportVideo copies the finished video out of the project. A copy, not a
+// move: produce/final is what the stamp is about (produce_stamp.go). On a
+// goroutine, through the same copyInto every import uses, so an interrupted
+// copy leaves a .part.
 func (a *App) exportVideo() {
 	p := a.prod
 	if p == nil {
@@ -656,19 +572,11 @@ func (a *App) exportVideo() {
 		a.setStatus("nothing to save yet — ▶ renders the video first")
 		return
 	}
-	d := gtk.NewFileDialog()
-	d.SetTitle("Save the video")
-	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
 	// named for the project rather than "final": the folder it came out of
-	// says which project it is and the copy is leaving that folder
-	d.SetInitialName(strings.TrimSuffix(filepath.Base(a.projPath), filepath.Ext(a.projPath)) +
-		filepath.Ext(p.outFile))
-	d.Save(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.SaveFinish(res)
-		if err != nil || f == nil {
-			return // dismissed
-		}
-		out, src := f.Path(), p.outFile
+	// says which project it is, and the copy is leaving that folder
+	name := strings.TrimSuffix(filepath.Base(a.projPath), filepath.Ext(a.projPath)) + filepath.Ext(p.outFile)
+	a.saveAs("Save the video", filepath.Dir(a.projPath), name, nil, func(out string) {
+		src := p.outFile
 		a.setStatus("saving " + filepath.Base(out) + "…")
 		go func() {
 			err := copyFile(src, out)
@@ -765,14 +673,8 @@ func (p *producer) updateInputs() {
 	p.inputs.SetTooltipText(strings.TrimSpace(detail))
 }
 
-// updateOut is the line every step ends on, and here it is one folder like
-// everywhere else: how many files and how big.
-//
-// It was two readings side by side -- the finished video by name, size and
-// age, then produce/ counted, then a second folder button for the thumbnail --
-// three answers to one question, on the one page that also shows you the file
-// it made. Everything this step writes is under produce/ now (produceDir,
-// publishDir), so there is one folder to name and one number to read.
+// updateOut is the line every step ends on: one folder, how many files, how
+// big. Everything this step writes is under produce/ (produceDir, publishDir).
 func (p *producer) updateOut() {
 	if p == nil || p.out == nil {
 		return
@@ -819,15 +721,10 @@ func (a *App) produceSegs() []cutSeg {
 	return applyFx(segs, c.Fx)
 }
 
-// produceCut is the whole cut file the render works from -- the live editor
-// when it has one, what is saved otherwise. Everything above the segment level
-// (the camera, the output frame, the microphone, the timeline's own
-// corrections) reads it through here so it cannot disagree with produceSegs.
-//
-// The editor counts as having a cut when it has segments, a correction to the
-// timeline, or a row of its own: shifting a lane or adding one before cutting
-// anything is a real edit of a real project, and reading past it to a stale file
-// would render the old placement.
+// produceCut is the whole cut file the render works from: the live editor when
+// it has one, what is saved otherwise; everything above the segment level reads
+// it here so it cannot disagree with produceSegs. The editor counts as having a
+// cut when it has segments, a timeline correction or a row of its own.
 func (a *App) produceCut() cutFile {
 	if ed := a.ed; ed != nil && (len(ed.segs) > 0 || len(ed.shift) > 0 || len(ed.cutLanes) > 0) {
 		return cutFile{Segs: ed.segs, Aspect: ed.aspect, Fx: ed.fx, Shift: ed.shift,
@@ -1004,14 +901,10 @@ type prodClip struct {
 	// capture's place. Spliced, the picture is one held frame (freeze below);
 	// over a selection, it keeps running.
 	snd string
-	// where in that file the sound starts. Nought for a file chosen from
-	// disk, which plays from its own beginning; the copied second for a
-	// stretch of a lane copied out of the session, which plays from there.
-	//
-	// snd is not only for audio inserts. It says "the sound comes from HERE,
-	// not from the input the picture came from", and an insert covering the
-	// picture alone (cutSeg.Mute) is the mirror case: the recording underneath
-	// goes in this slot, so what is heard carries on while the frames change.
+	// where in that file the sound starts: nought for a file from disk, the
+	// copied second for a stretch copied out of the session. snd says "the sound
+	// comes from HERE, not the picture's input"; an insert covering the picture
+	// alone (cutSeg.Mute) puts the recording underneath in this slot.
 	sndAt float64
 	// this clip brings no sound of its own -- an insert placed by a selection
 	// scoped to the picture alone. Spliced, that means silence, and this is
@@ -1117,22 +1010,10 @@ type stillCue struct {
 	w, h int
 }
 
-// bdrop is what a clip owes the parts of its frame the picture does not
-// reach. Three things leave a frame bare -- a camera pulled back past the edge
-// of the recording, a recording that is not the shape of the finished video,
-// and an insert or a card that is not either -- and all three used to be
-// filled with black, which reads as a fault in the video rather than as a
-// choice. A blown-up, blurred copy of the picture itself reads as depth.
-//
-// w,h is the finished frame. fit says the picture has to be scaled down until
-// it fits and centred on that frame -- an insert, whose own size is nobody's
-// business; otherwise the picture goes on at its own size with its top-left
-// corner at x,y, which is exactly where pad would have put it.
-//
-// bare is the Produce toggle turned off: the same region, filled with black.
-// It stays a bdrop rather than becoming a branch at every call site, because
-// what fills a bare edge is one question with two answers, and the region it
-// covers is worked out the same way either way.
+// bdrop fills the parts of the frame the picture does not reach with a
+// blown-up, blurred copy of itself (or black when bare). fit scales the
+// picture into the frame (inserts); otherwise it goes on at its own size at
+// x,y.
 type bdrop struct {
 	w, h int
 	x, y int
@@ -1199,17 +1080,11 @@ type clipSize struct {
 	w, h int
 }
 
-// joinMismatch is what to say about clips that will break the join. The clip
-// list goes into the concat demuxer as a stream copy: it does not scale, and
-// -- this is the part worth guarding -- it does not refuse either. A clip of
-// another size is written into the finished file and the decoder comes apart
-// on it, so the video plays as blocks and smears from that point on instead
-// of failing anywhere a person can see it.
-//
-// Every branch of encodeClip pins the size it comes out at, so a mismatch
-// here means one of them stopped doing it. Measured against the FIRST clip,
-// because that is the size the decoder is set up on, and reported by name so
-// the offending file in the clips folder can be looked at.
+// joinMismatch is what to say about clips that will break the join: the concat
+// demuxer stream-copies and does not refuse a clip of another size -- the
+// decoder comes apart on it and the video smears from there. Every branch of
+// encodeClip pins its size, so a mismatch means one stopped. Measured against
+// the FIRST clip, reported by name.
 func joinMismatch(made []clipSize) []string {
 	var out []string
 	for i, c := range made {
@@ -1315,21 +1190,10 @@ func (c prodClip) name() string {
 	return c.video.base
 }
 
-// produceClicked is ▶ on this page: everything the upload needs, in the order
-// it can be lost. The upload text is written once and the thumbnail is drawn
-// (publishStage -- seconds, and the part a dead server fails fast), and only
-// then is the video rendered -- minutes that must not be paid before the cheap
-// half has succeeded, and must not be re-paid to get a reworded thumbnail.
-// produceClicked is ▶ on this page: the video, the upload text and the
-// thumbnail. transcodeClicked is the ↻ on the Transcode heading: the video
-// alone, from the cut and the settings as they stand.
-//
-// Both ask first when there is already a file to overwrite. The video is
-// minutes of encoding and the one thing on this page that cannot be undone --
-// and "produce/final.mp4" is a name every run in every project writes, so the
-// file standing there is not obviously last week's rather than this hour's.
-// ...and ▶ asks nothing when there is nothing to overwrite: a video that is
-// already the video this page describes is not encoded again (renderStale).
+// produceClicked is ▶: the video, the upload text and the thumbnail.
+// transcodeClicked is the ↻ on the Transcode heading: the video alone. Both
+// ask before overwriting a file (minutes of encoding, no undo); ▶ asks nothing
+// when the video is already what the page describes (renderStale).
 func (a *App) produceClicked() {
 	if !a.renderWanted() {
 		a.produceRun(true)
@@ -1366,8 +1230,7 @@ func (a *App) askOverwrite(run func()) {
 }
 
 func (a *App) produceRun(words bool) {
-	if a.running {
-		a.setStatus("a run is already active — stop it first (⏹)")
+	if a.busy() {
 		return
 	}
 	if a.pub == nil {
@@ -1388,12 +1251,7 @@ func (a *App) produceRun(words bool) {
 	written := a.publishRecorded()
 	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
 
-	a.running = true
-	a.stopFlag.Store(false)
-	a.pauseFlag.Store(false)
-	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.updateRunControls()
-	a.logExp.SetExpanded(true)
+	a.startRun()
 	// ▶ leaves an up-to-date video alone; ↻ Transcode is the press that means
 	// "encode it anyway", so it never asks this question.
 	encode := !words || a.renderStale(segs, entries, st, vids, auds)
@@ -1413,7 +1271,6 @@ func (a *App) produceRun(words bool) {
 		a.logf(">>> producing %s: %d clips at %s/%s crf %d, and the upload text and thumbnail written beside them",
 			filepath.Base(st.OutFile), len(segs), st.Container, st.Codec, st.CRF)
 	}
-	a.qReset()
 	// two halves, side by side. The render owns the fraction -- it is minutes
 	// where the other is seconds, so the needle IS the render's progress --
 	// and the words-and-picture half owns the second line of the bar, which
@@ -1471,8 +1328,7 @@ func (a *App) produceRun(words bool) {
 			err = pubErr
 		}
 		glib.IdleAdd(func() {
-			a.running = false
-			a.updateRunControls()
+			a.endRun()
 			a.updateGates()
 			if err != nil {
 				if !errors.Is(err, errStopped) {
@@ -2035,14 +1891,9 @@ func (a *App) clipInput(c prodClip, st prodSettings) ([]string, bool, error) {
 				"-t", "0.5", "-i", c.video.path,
 			}, false, nil
 		}
-		// input seconds: a slowed clip reads rate·length of footage and
-		// stretches it to length on the way out.
-		//
-		// Its own sound is that input's FIRST track and no other, because it is
-		// read straight off the picture's input ([0:a], encodeClip) -- so a row
-		// that asked for the second track and not the first has nothing to put
-		// there, and that track reaches the clip as a lane in the mix like any
-		// other recording (ownTrack, cut_tracks.go).
+		// input seconds: a slowed clip reads rate·length of footage. Its own sound is
+		// that input's FIRST track only ([0:a], encodeClip); a chosen second track
+		// reaches the clip as a lane in the mix (ownTrack).
 		return []string{
 			"-ss", fmt.Sprintf("%.3f", math.Max(0, c.local)),
 			"-t", fmt.Sprintf("%.3f", c.length*c.speed()), "-i", c.video.path,
@@ -2136,13 +1987,9 @@ func safeStem(path string) string {
 }
 
 // clipBox is the frame every insert has to fill: the size the footage clips
-// come out at, since the join is a stream copy and a clip of another size is
-// simply refused. Taken from the first recording actually used rather than from
-// the settings, because the settings only name a height -- the width follows the
-// footage's aspect, and an insert has to follow it too.
-//
-// A cut of nothing but inserts has no footage to ask, so it falls back to the
-// output height at 16:9, which is the shape a video is unless told otherwise.
+// come out at (the join is a stream copy), from the first recording used
+// rather than the settings, which only name a height. A cut of nothing but
+// inserts falls back to the output height at 16:9.
 func clipBox(clips []prodClip, st prodSettings) (int, int) {
 	for _, c := range clips {
 		if c.video == nil {
@@ -2184,29 +2031,12 @@ func outSize(w0, h0, height int) (int, int) {
 	return int(math.Round(float64(w0)*k/2)) * 2, int(math.Round(float64(h0)*k/2)) * 2
 }
 
-// clipMixes is the stretch of every separate recording that was running while
-// this clip was, in the clip's own time.
-//
-// The footage is the master here exactly as it is on the cut page: the clip
-// occupies a stretch of the session clock, and a recording is heard for the
-// part of that stretch it overlaps -- from its own middle if it started first
-// (which is the usual case: the recorder is running before the capture card
-// is), and after a wait if it started later. A recording that was not running
-// at all is not in the list, so a clip is never silently padded with somebody
-// else's audio.
-//
-// Inserts are left alone. A card is not a moment of the session -- it is time
-// added to the cut -- so there is no stretch of any recording that belongs
-// under it, and dropping the room audio in there would play a sentence that
-// was said somewhere else. A freeze is the same kind of thing: a held frame is
-// added time, not a stretch of the session, so nothing was recorded under it.
-//
-// A slowed clip covers length·rate session seconds, and what was heard in
-// them is stretched to match the picture (atempo, in encodeClip) -- so the
-// numbers here are: the session span through the rate for where the clip
-// ends, the placement divided by it (a recording that came in 3 s into the
-// footage comes in 6 s into the half-speed clip), and dur left in file
-// seconds, because it is an input trim and the stretch happens in the graph.
+// clipMixes is the stretch of every separate recording running while this
+// clip was, in the clip's own time; a recording not running at all is absent.
+// Inserts and freezes get none (added time, nothing was recorded under them).
+// On a slowed clip the session span is the length through the rate, the
+// placement is divided by it, and dur stays in file seconds (the stretch
+// happens in the graph, atempo).
 func clipMixes(c prodClip, recs []tlAudio) []prodMix {
 	var out []prodMix
 	if c.dropLane != "" && c.snd != "" {
@@ -2246,23 +2076,10 @@ func clipMixes(c prodClip, recs []tlAudio) []prodMix {
 // one it refuses outright.
 const laneMinMix = 0.1
 
-// laneReport is what the run has to say about each recording: whether it is in
-// the video at all, and when it is not, which of the two reasons it is out for.
-// Per recording rather than per clip -- a hundred-clip cut would otherwise bury
-// the run in a line each, and the only thing worth saying about a recording is
-// whether it reached the render.
-//
-// The two ways to be out are not the same news, and telling them apart is the
-// whole point of this being a function of its own. A recording that was running
-// at another time of day is a placement to go and look at; one the SCENES
-// silenced -- or whose sound a card was dropped over -- is the cut doing
-// exactly what it was told, which is what a split-off narrator track is. Both
-// used to print "was not running while any clip was", a sentence that sent you
-// hunting a timeline problem that was not there.
-//
-// Which reason a clip left it out for is deliberately not asked: whatever
-// clipMixes decided is the answer, so a lane the mix drops for a reason added
-// later still lands in the right sentence instead of quietly in the wrong one.
+// laneReport says per recording whether it reached the render and, if not,
+// which of the two reasons: not running while any clip was (a placement to
+// look at), or silenced by the scenes (the cut doing what it was told). It
+// reads clipMixes' decision rather than re-deciding.
 func laneReport(clips []prodClip, recs []tlAudio) []string {
 	var out []string
 	for _, au := range recs {
@@ -2298,15 +2115,9 @@ func laneReport(clips []prodClip, recs []tlAudio) []string {
 }
 
 // laneOverlap is the session stretch a clip and a recording were both running
-// in, empty when they were not. Its own function because two places ask: the
-// mix, which puts the overlapping seconds in, and the run's report, which has
-// to tell a recording that was somewhere else apart from one every scene
-// silenced -- and a second copy of these four lines could disagree with the
-// first about which of the two a track was.
-//
-// A freeze and a card have no overlap with anything by construction: a held
-// frame and an insert are time ADDED to the session, not a stretch of it, so
-// nothing was recorded underneath them.
+// in, empty when they were not; shared by the mix and the run's report so the
+// two cannot disagree. A freeze and a card overlap nothing: they are time
+// ADDED to the session.
 func laneOverlap(c prodClip, au tlAudio) (float64, float64) {
 	if c.freeze || c.noLanes {
 		return 0, 0
@@ -2531,20 +2342,10 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 		}
 		vf = append(vf, c.cam.chainOn(bd.on())...)
 	case c.boxW > 0 && c.boxH > 0:
-		// Plain footage, and it comes out at exactly the finished frame -- not
-		// at whatever this particular recording happens to be. The join is a
-		// stream copy, so a clip whose size differs from the one before it is
-		// not something the concat demuxer will take (the insert branch above
-		// says the same thing for the same reason), and a second camera at
-		// another size or another shape is exactly how that happens.
-		//
-		// Fitted rather than stretched, and so the same treatment the edges of
-		// an insert get: a 4:3 webcam among 16:9 gameplay keeps its shape on a
-		// blurred blow-up of itself instead of being pulled wide. Footage
-		// already of the frame's shape -- which is every ordinary session --
-		// takes the plain scale instead: the backdrop under it would be
-		// covered to the last pixel, and a split, a blow-up and a gaussian
-		// blur per frame is not a free way to render something nothing sees.
+		// Plain footage comes out at the finished frame: the join is a stream
+		// copy, so every clip must match. Fitted onto a backdrop, not stretched
+		// (a 4:3 webcam keeps its shape); footage already the frame's shape takes
+		// the plain scale, since the backdrop would be fully covered.
 		if fitsFrame(c.video, c.boxW, c.boxH) {
 			vf = append(vf, fmt.Sprintf("scale=%d:%d", c.boxW, c.boxH))
 		} else {
@@ -2647,27 +2448,19 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 		game = "hush"
 	}
 	if c.snd != "" || c.audOwn {
-		// a file shorter than its slot must not end the clip's sound early --
-		// the join is a stream copy, and a short audio track in one clip puts
-		// every clip after it out of step with its picture. Padded with silence
-		// out past the slot; the output -t below is what makes the length exact.
-		//
-		// The sound off the picture's clock needs it for the same reason from
-		// the other end: under slow motion it reads AHEAD of the picture, so
-		// near the end of a recording it asks for seconds the file has not
-		// got (cut_fxsound.go).
+		// a file shorter than its slot must not end the clip's sound early -- the
+		// join is a stream copy, and a short track puts every later clip out of step.
+		// Padded with silence past the slot; the output -t makes the length exact.
+		// Sound off the picture's clock needs it too: under slow motion it reads
+		// AHEAD and may ask for seconds the file has not got (cut_fxsound.go).
 		fc += fmt.Sprintf("[%s]%s,apad[snd];", game, audFmt(st))
 		game = "snd"
 	}
-	// The bed is everything that was there: the picture's own sound, plus every
-	// separate recording that was running under it. They are one thing from
-	// here on -- ducked together under the narration, or heard as they are when
-	// there is none -- because they are the same moment recorded twice.
-	//
-	// duration=first pins the mix to the picture's sound, so a recording that
-	// stops in the middle of the clip leaves the clip its full length instead of
-	// ending it early, and normalize=0 keeps the game at the level it was
-	// recorded at rather than halving it for the company.
+	// The bed is everything that was there: the picture's own sound plus every
+	// recording running under it, ducked together under the narration.
+	// duration=first pins the mix to the picture's sound so a recording stopping
+	// mid-clip does not end it early; normalize=0 keeps the game at its recorded
+	// level.
 	if len(c.mix) > 0 {
 		seps := ""
 		for k, m := range c.mix {
@@ -2706,15 +2499,9 @@ func (a *App) encodeClip(c prodClip, out, cueFile string, st prodSettings) error
 	if len(spoken) > 0 {
 		nrs := ""
 		for k, ln := range spoken {
-			// MILLISECONDS, as a whole number, and nothing else. adelay takes an
-			// integer per channel; a seconds suffix on a fraction ("13.09s") is
-			// not read as 13.09 s and is not rejected either -- ffmpeg drops the
-			// value and delays by nothing, so the line played from the top of its
-			// clip. Every line whose placement was fractional -- which is every
-			// line dropped by hand or moved by the wheel -- started at zero, all
-			// of them together, which is the overlapping narration. An integer
-			// number of seconds ("40s") happened to survive, so the fault looked
-			// intermittent.
+			// MILLISECONDS, as a whole number: adelay takes an integer per channel, and a
+			// fractional seconds suffix ("13.09s") is silently dropped -- every hand-placed
+			// line then started at zero, together, which was the overlapping narration.
 			fc += fmt.Sprintf("[%d:a]atempo=%.3f,aresample=48000,%s,adelay=%d:all=1[nr%d];",
 				voiceBase+k, math.Max(0.5, c.tempo), voicePan(st), delayMS(ln.delay), k)
 			nrs += fmt.Sprintf("[nr%d]", k)
@@ -2774,30 +2561,10 @@ func codecArgs(st prodSettings) []string {
 		return []string{"-c:v", "libvpx-vp9", "-crf", strconv.Itoa(st.CRF), "-b:v", "0",
 			"-row-mt", "1", "-cpu-used", vp9Speed(st.Preset), "-pix_fmt", "yuv420p"}
 	default:
-		// -refs is the whole of what keeps this playable on hardware.
-		//
-		// x264's slower presets ask for 16 reference frames. At 4K that is a
-		// decoded picture buffer no H.264 level below 6.0 can hold, so x264
-		// stamps the stream Level 6.0 -- and no consumer hardware decoder
-		// implements 6.0. The common ones stop at 5.1, whose buffer at
-		// 3840x2160 is five frames. So a veryslow render came out a file
-		// ffmpeg decodes perfectly in software and every hardware decoder
-		// tears into blocks: the static parts right, everything moving wrong,
-		// worst where the motion is. It looks exactly like a compression
-		// fault and is not one -- the encode is fine, it is addressed to a
-		// decoder that does not exist. Measured: veryslow at 4K declares
-		// level 6.0, and the same encode with this declares 5.1.
-		//
-		// Four rather than five: five is the ceiling at 4K and a ceiling is
-		// not a place to sit -- an output a little wider would be over it
-		// again. Everything else the preset does, the motion search and the
-		// trellis and the subpixel, is untouched, which is what the preset
-		// was chosen for.
-		//
-		// The level itself is left to x264. With the buffer inside 5.1 it
-		// computes one that fits, and computing it beats naming one: a level
-		// declared higher than the picture needs is the same refusal on a
-		// small output that 6.0 is on a large one.
+		// -refs 4: x264's slow presets ask for 16 reference frames, which at 4K
+		// forces Level 6.0, and no consumer hardware decoder implements 6.0 --
+		// the file plays in software and tears on every GPU. Four keeps the
+		// buffer inside 5.1 with margin; the level itself is left to x264.
 		return []string{"-c:v", "libx264", "-preset", st.Preset,
 			"-crf", strconv.Itoa(st.CRF), "-pix_fmt", "yuv420p", "-refs", "4"}
 	}
@@ -2847,30 +2614,20 @@ func audioArgs(st prodSettings) []string {
 	return append([]string{"-c:a", "aac", "-b:a", br}, ac...)
 }
 
-// insClip is the whole of what an insert becomes: its own picture, stretched to
-// exactly the slot the cut gave it, and -- when it covers the picture alone --
-// the sound of the recording it was laid over. The note is soundUnder's, to be
-// logged by the caller, which is the only part of this that needs the App.
-// copyClip is what a pasted stretch of footage becomes. Mute here is a copy
-// taken at the picture-alone scope: the frames were copied WITHOUT the sound
-// filmed with them, so neither the recording's own track nor the lanes that
-// were running with it come along -- which is the paste going silent, not a
-// failure. Both have to be said, because they are two different silences: mute
-// stops the recording's own track reaching the mixer, noLanes stops every
-// separate recording being mixed in under it.
+// copyClip is what a pasted stretch of footage becomes. Mute here is a copy at
+// the picture-alone scope: two silences, mute stops the recording's own track
+// reaching the mixer and noLanes stops every separate recording being mixed
+// under it.
 func copyClip(i int, s cutSeg, from float64, v *tlVideo) prodClip {
 	return prodClip{idx: i, video: v, local: v.at(from), tempo: 1, rate: 1,
 		length: s.length(), mute: s.Mute, noLanes: s.Mute}
 }
 
-// sndClip is a sound laid over the session: the picture is the session's own --
-// held on one frame when the file is spliced in, kept running when it covers a
-// selection -- and the file takes the place of what the scope settled when it
-// was laid down (cutSeg.Lane). Unnamed, it stands in for everything audible,
-// which is what overwriting the sound has always meant. Named, it stands in for
-// that one recording and the rest play on -- and the capture's own track is a
-// lane on the cut page like any other, so naming it is simply not naming a
-// separate recording, and laneRecorded is what tells the two apart.
+// sndClip is a sound laid over the session: the picture is the session's own
+// (held under a splice, running over a selection) and the file replaces what
+// the scope settled (cutSeg.Lane). Unnamed, it stands in for everything
+// audible; named, for that one recording, and laneRecorded tells the capture's
+// own track from a separate recording.
 func sndClip(i int, s cutSeg, path string, v *tlVideo, recs []tlAudio) prodClip {
 	c := prodClip{idx: i, video: v, local: v.at(s.S), tempo: 1, rate: 1,
 		length: s.length(), freeze: s.spliced(), snd: path, sndAt: s.Ss,
@@ -2881,6 +2638,9 @@ func sndClip(i int, s cutSeg, path string, v *tlVideo, recs []tlAudio) prodClip 
 	return c
 }
 
+// insClip is what an insert becomes: its own picture stretched to its slot,
+// and -- covering the picture alone -- the sound of the recording it was laid
+// over. The note is soundUnder's, logged by the caller.
 func insClip(i int, s cutSeg, file string, vids []tlVideo) (prodClip, string) {
 	c := prodClip{idx: i, ins: file, tempo: 1, rate: 1, length: s.length(), mute: s.Mute,
 		noLanes: !s.keepsSoundUnder()}
@@ -2904,22 +2664,11 @@ func laneRecorded(recs []tlAudio, base string) bool {
 	return false
 }
 
-// soundUnder is where an insert covering the picture ALONE gets its sound: the
-// recording it is drawn over, at the second it covers. The picture is the
-// file's and what is heard is the session's, which is the exact mirror of an
-// audio insert -- so it rides the very same input slot, with the recording in
-// the sound file's place (encodeClip, case c.snd != "").
-//
-// Everything else answers nothing, and for two different reasons worth keeping
-// apart. An ordinary insert brings its own sound and has no use for this. A
-// SPLICED muted one is the other reading of the same flag: the cut was opened
-// for it, so there is nothing underneath to keep and the slot comes out silent
-// -- which is not a failure and does not get a note.
-//
-// The note is for the two ways this can be asked for and not delivered: seconds
-// that fall in no recording, and a recording with no sound in it. Both come out
-// silent, both look like the flag was ignored, and neither is something the eye
-// can find on the timeline.
+// soundUnder is where an insert covering the picture alone gets its sound:
+// the recording it is drawn over, at the second it covers, in the sound
+// input's slot (encodeClip). Ordinary inserts bring their own; a spliced muted
+// one is meant to be silent. The note is for the two ways this comes out
+// silent by accident: seconds in no recording, or a recording with no sound.
 func soundUnder(s cutSeg, vids []tlVideo) (path string, at float64, note string) {
 	if !s.keepsSoundUnder() {
 		return "", 0, ""
@@ -2936,17 +2685,8 @@ func soundUnder(s cutSeg, vids []tlVideo) (path string, at float64, note string)
 	return v.path, v.at(s.S), ""
 }
 
-// matchEntries finds the narration written for a segment -- every line of it,
-// in placement order, since a clip may carry more than one. The entries carry
-// the clip's own times, so they usually match to the decimal -- but a cut
-// edited after narrating can shift underneath, and a line silently dropped
-// from the render is the worst possible failure here. So: real overlap is
-// enough, merely touching is not.
-// spokenHere is what to add to the message about a clip being dropped, when
-// there are narration lines written on it. The lines go with the clip -- they
-// are attached further down, past the drop -- and a sentence disappearing out
-// of the finished video is worth more than the half-second of footage it was
-// written over. Empty for a clip nobody wrote on, which is the ordinary case.
+// spokenHere is what to add to a dropped-clip message when narration lines
+// were written on it; empty for a clip nobody wrote on.
 func spokenHere(entries []narrEntry, s cutSeg) string {
 	n := 0
 	for _, e := range matchEntries(entries, s) {
@@ -2964,6 +2704,10 @@ func spokenHere(entries []narrEntry, s cutSeg) string {
 	}
 }
 
+// matchEntries finds the narration written for a segment, every line of it in
+// placement order. Real overlap is enough, merely touching is not: a cut
+// edited after narrating can shift, and a line silently dropped is the worst
+// failure here.
 func matchEntries(entries []narrEntry, s cutSeg) []*narrEntry {
 	var out []*narrEntry
 	for i := range entries {

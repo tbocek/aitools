@@ -444,7 +444,7 @@ func TestEveryPageKeepsTheSameMarginsAroundItsWork(t *testing.T) {
 		{"narrate.go", `func \(a \*App\) buildNarrate\(`, []string{
 			"shown.SetMarginStart(12)", "shown.SetMarginEnd(6)",
 			"shown.SetMarginTop(8)", "shown.SetMarginBottom(8)",
-			"written.SetMarginStart(6)", "written.SetMarginEnd(12)",
+			"margins(written, 8, 8, 6, 12)",
 		}},
 		{"publish.go", `func \(a \*App\) buildPublishPanes\(`, []string{
 			"col.SetMarginStart(12)", "col.SetMarginEnd(6)", "col.SetMarginTop(8)",
@@ -453,8 +453,7 @@ func TestEveryPageKeepsTheSameMarginsAroundItsWork(t *testing.T) {
 		// margins for both its rows: the words and the encoder settings under
 		// them had a pair each, so one ended 24 from the window and the other 12
 		{"produce.go", `func \(a \*App\) buildProduce\(`, []string{
-			"right.SetMarginStart(6)", "right.SetMarginEnd(12)",
-			"right.SetMarginTop(8)", "right.SetMarginBottom(8)",
+			"margins(right, 8, 8, 6, 12)",
 		}},
 	} {
 		body := funcBody(t, c.file, c.fn)

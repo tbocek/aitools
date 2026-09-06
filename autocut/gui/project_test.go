@@ -935,7 +935,7 @@ func TestAddingASourceAsksWhetherToCopyItIn(t *testing.T) {
 	}
 	// both Add buttons go through the one decision...
 	src2 := readSrc(t, "project.go")
-	if n := strings.Count(src2, "a.askImport(paths)"); n != 2 {
+	if n := strings.Count(src2, "a.askImport"); n != 2 {
 		t.Errorf("%d of the two Add buttons decide where the file should live, want 2", n)
 	}
 	// ...which is a setting of the project, not a question per file: copy by

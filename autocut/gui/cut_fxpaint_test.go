@@ -172,7 +172,7 @@ func TestBothPreviewsPaintThroughTheOnePainter(t *testing.T) {
 			"ed.drawFxOver(cr, f, alpha, ox, oy, ow, oh)",
 			"return fxOverPx(f, ox, oy, ow, oh)",
 		},
-		"narrate_fxview.go": {
+		"narrate.go": {
 			"n.fx.paintLive(cr, w, h)",
 			"n.fx.buildLayers(n, n.player.Picture, n.player.video)",
 		},
@@ -185,7 +185,7 @@ func TestBothPreviewsPaintThroughTheOnePainter(t *testing.T) {
 		}
 	}
 	// and neither page grew a second opinion about the same picture
-	for _, file := range []string{"cut_fxview.go", "narrate_fxview.go"} {
+	for _, file := range []string{"cut_fxview.go", "narrate.go"} {
 		for _, no := range []string{"fxMaskLive(", "fxLiveFit("} {
 			if strings.Contains(readSrc(t, file), no) {
 				t.Errorf("%s calls %s itself instead of going through fxScreen", file, no)
@@ -198,7 +198,7 @@ func TestBothPreviewsPaintThroughTheOnePainter(t *testing.T) {
 	for _, want := range []string{
 		"func fxLiveFit(", "func fxMaskLive(", "func fxOverPx(", "func drawFxText(",
 	} {
-		if !strings.Contains(readSrc(t, "cut_fxpaint.go"), want) {
+		if !strings.Contains(readSrc(t, "cut_fxdraw.go"), want) {
 			t.Errorf("cut_fxpaint.go no longer defines %q", want)
 		}
 	}
@@ -214,7 +214,7 @@ func TestBothPreviewsPaintThroughTheOnePainter(t *testing.T) {
 // one letter. A group composites the union once, which is what a stroke is and
 // what the render already did.
 func TestTheTitlesEdgeIsOneShapeAndNotStackedCopies(t *testing.T) {
-	body := funcBody(t, "cut_fxpaint.go", `func drawFxText\(`)
+	body := funcBody(t, "cut_fxdraw.go", `func drawFxText\(`)
 	for _, want := range []string{
 		"cr.PushGroup()",
 		"cr.PopGroupToSource()",

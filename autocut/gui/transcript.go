@@ -1,29 +1,18 @@
 package main
 
-// Transcript: turn raw ASR into publishable, grounded text.
-//
-// Timestamps are the contract: every source's absolute start comes from its
-// filename (YYYYMMDD-HHMMSS), or from the session's own start when the name
-// carries none (srcClock), so alignment is a lookup, not a step. A content-based LLM aligner used to sit in align.go for
-// the case where metadata lies; it was never wired to anything and is gone --
-// git has it if copied files or hand-set recorder clocks ever make it worth
-// reviving.
-//
-// The LLM fixes transcript lines in blocks, grounded in what the event log
-// says was on screen and what the other sources heard at the same moment --
-// that is how "pig access" becomes "pickaxes". Timestamps and speakers pass
-// through byte-identical, enforced; a block that fails validation twice keeps
-// its original lines and says so.
+// Transcript: raw ASR into publishable, grounded text. Every source's absolute
+// start comes from its filename or the session's own start (srcClock), so
+// alignment is a lookup. The LLM fixes lines in blocks, grounded in the event
+// log and what other sources heard at the same moment; timestamps and speakers
+// pass through byte-identical, enforced; a block that fails twice keeps its
+// original lines.
 //
 // prepare/transcript/
-//   <video>/transcript.fixed.tsv + subtitles.srt   per video, video timeline
+//   <video>/transcript.fixed.tsv + subtitles.srt   per video
 //   <audio>/commentary.fixed.tsv                   per voice recording
 //   offsets.tsv                                    video, audio, offset seconds
-//   session.tsv / session.txt                      everything -- commentary,
-//        game audio, events -- interleaved on one global timeline; this is
-//        what the cut step reads.
-//
-// The page is prep.go -- the describer (describe.go) and this share it.
+//   session.tsv / session.txt                      everything on one timeline;
+//                                                  what the cut step reads
 
 import (
 	"errors"
@@ -115,18 +104,12 @@ func srtStamp(t float64) string {
 	return fmt.Sprintf("%02d:%02d:%02d,%03d", h, m, s, ms)
 }
 
-// Accepts the stamps recorders actually write: OBS's 2026-08-08 19-55-15, a
-// Quest's com.Maker.Game-20260808-195900-0, a phone's VID_20250814_213311, a
-// dashcam's 20250814213311 with no separator at all, ShadowPlay's dotted
-// 2025.08.14 - 21.33.11.03, QuickTime's "2026-08-08 at 7.55.15 PM", ISO
-// 2026-08-08T19:55:15 -- and whatever users add by hand, which mixes them.
-// Always year first: a day-first date cannot be told from a month-first one,
-// and a guessed order silently misplaces the file by weeks. The century is
-// pinned to 19/20 so a bare digit run has to look like a date before it counts
-// as one; parseStamp then rejects the ones that only look like it (month 13,
-// hour 25), which is what keeps the loose separators honest. A single-digit
-// hour must bring its own separators -- freed of that, it would read a bad
-// six-digit time as a good five-digit one.
+// Accepts the stamps recorders write: OBS 2026-08-08 19-55-15, Quest
+// ...-20260808-195900-0, phone VID_20250814_213311, dashcam 20250814213311,
+// ShadowPlay 2025.08.14 - 21.33.11.03, QuickTime "2026-08-08 at 7.55.15 PM",
+// ISO 2026-08-08T19:55:15. Always year first (day/month order is a guess that
+// misplaces by weeks); century pinned to 19/20; parseStamp rejects month 13
+// and hour 25. A single-digit hour must bring its own separators.
 var tsRe = regexp.MustCompile(`((?:19|20)\d{2})[-._]?(\d{2})[-._]?(\d{2})` +
 	`(?:\s?[aA][tT]\s|[-_T. ]{0,3})` +
 	`(?:(\d{2})[-.:_]?(\d{2})[-.:_]?(\d{2})|(\d)[-.:_](\d{2})[-.:_](\d{2}))` +
@@ -253,33 +236,13 @@ func sortStamped(paths []string) {
 	})
 }
 
-// srcClock puts a set of sources on one wall clock, and says where the
-// session's own second nought falls.
-//
-// A file that NAMES a moment is placed at it. That is the only timestamp worth
-// believing: whatever was recording wrote it at the moment it started, and it
-// survives every copy of the file afterwards.
-//
-// A file that names none is placed at the session's start -- the earliest
-// moment any of the others names. Not at its own mtime, which is when the file
-// was WRITTEN: for anything copied off a card, re-encoded, exported or
-// downloaded that is hours or weeks after it was shot, and a source dropped a
-// week down the timeline is a row nobody can find. At the session's start it is
-// at least on screen and next to the others, which is where the right drag can
-// line it up by ear (cut_shift.go).
-//
-// Where nothing names a moment there is no session clock to join and no order
-// worth guessing at, so they all start together and the session starts at 0:00.
-//
-// This is the only door. The lanes, the merged transcript, the describe pass,
-// the frame names and the render all come through here, so the waveform and the
-// sound cannot end up in two different spots -- and they hand it the whole
-// session rather than the two files they happen to hold, because the session's
-// start is the earliest moment ANYTHING in it names and a shorter list can put
-// that zero somewhere else. It reads names and nothing else: no stat, no
-// ffprobe, so unlike what it replaced it is cheap enough to ask on a redraw.
-// There was briefly a per-file correction on top of it, for recorders whose
-// clocks disagree; that is now the right drag, which is a thing you can see.
+// srcClock puts sources on one wall clock and says where second nought falls.
+// A file that NAMES a moment is placed at it. One that does not goes at the
+// session's start -- not its mtime, which is when it was copied or exported --
+// where the right drag can line it up by ear (cut_shift.go). Nothing named:
+// all start together at 0:00. This is the only door for lanes, transcript,
+// describe, frame names and render, and it is handed the WHOLE session, since
+// a shorter list can put zero elsewhere. Names only, no stat or ffprobe.
 func srcClock(paths []string) (map[string]float64, float64) {
 	at := make(map[string]float64, len(paths))
 	zero := math.Inf(1)

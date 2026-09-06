@@ -1,33 +1,5 @@
 package main
 
-// Which lanes a scene is heard on.
-//
-// This used to be one answer for the whole cut -- ed.snd, walked with ↑ and ↓ --
-// and one answer is the wrong shape for the question. A session is a game
-// capture with its own sound, a microphone on the desk, and whatever else was
-// running; the scene where somebody is talking wants the microphone, the scene
-// where nobody is wants the game, and the scene where both matter wants both.
-// A single choice made every one of those the same, and the arrows that walked
-// it were invisible: there was nothing on the page saying they existed, and
-// nothing but a word on one plate saying what they had done.
-//
-// So the choice moved onto the lanes, per scene. Take a scene in hand and every
-// audio lane says whether that scene hears it -- green for yes, grey for no --
-// and carries a badge that turns it off and on. Two lanes on is a legal answer
-// and a common one: they are summed at the level each was recorded at, the way
-// a hand on a desk would do it, with a limiter on the finished clip so the sum
-// cannot reach the encoder clipping (clipCeil, produce.go).
-//
-// The badge sits at the LEFT of the held scene, and only the left: the rest of
-// the scene is the press that puts the red line on it or takes it in hand, and
-// a badge in the middle of a clip is a button you hit while aiming at the clip.
-// (It used to be the left because the ✕ that drops a scene was at the right;
-// that ✕ is on the green bar now, cut_segkill.go, and the left is still where
-// this one belongs.) Both kinds of lane wear one -- the camera's own
-// sound, drawn under its pictures, and every separately recorded lane in the
-// band below -- because "which of these do I hear" is one question and the page
-// draws the answers in two places only by accident of layout.
-
 import (
 	"fmt"
 	"math"
@@ -36,6 +8,13 @@ import (
 
 	"github.com/diamondburned/gotk4/pkg/cairo"
 )
+
+// Which lanes a scene is heard on: per scene, on the lanes. Take a scene in
+// hand and every audio lane shows green/grey with a badge that toggles it; two
+// lanes on are summed at their recorded levels with a limiter on the clip
+// (clipCeil, produce.go). The badge sits at the LEFT of the held scene only --
+// the rest of the scene is the press that moves the line or takes it in hand.
+// Both the camera's own strip and the recorders' band wear one.
 
 const (
 	hearR   = 4.5  // the speaker cone, from its centre
@@ -66,18 +45,9 @@ type hearBadge struct {
 	on     bool    // this scene hears this lane
 }
 
-// hearScene is the scene the badges are about: the one in hand, or, with
-// nothing in hand, the one under the line.
-//
-// They used to be the held scene's alone, and the hush the preview applies
-// follows the LINE (syncHush) -- so a lane could be switched on in the scene
-// you were holding while the line played a scene that silenced it, and the
-// page showed a green badge over silence. That was a real afternoon: a cut
-// whose first scene quieted the voice lane, the voice lane's badge lit on
-// another scene, and nothing anywhere saying which scene the ear was in.
-// Following the line when nothing is held is what makes the badge the thing
-// you hear: it changes as the line moves, and pressing it changes the scene
-// that is playing.
+// hearScene is the scene the badges are about: the one in hand, else the one
+// under the line -- which is the scene the preview's hush follows (syncHush),
+// so the badge shown is the thing you hear.
 func (ed *cutEditor) hearScene() *cutSeg {
 	if s := ed.heldSeg(); s != nil {
 		return s
@@ -125,44 +95,17 @@ func (ed *cutEditor) hearBadgesAud() []hearBadge {
 
 // ---- the whole lane -----------------------------------------------------
 //
-// The badges above answer "does THIS scene hear this lane", which is the
-// question once you are working inside a scene. Before that there is a
-// coarser one -- "is this recording in the video at all" -- and answering it
-// with the badges meant taking every scene in hand in turn and pressing the
-// same plate on each. A session of forty scenes is forty presses to say one
-// thing.
-//
-// So each recording in the band wears one more speaker, on its name plate at
-// the left of the widget: the lane's own switch. Off means every scene
-// silences it; on means none does. It is not a new thing the project stores
-// -- there is nothing to migrate and nothing that can disagree with the
-// badges, because it IS the badges, written to every scene at once.
-//
-// The footage's own sound wears one too, on its strip under the pictures. It
-// did not at first, on the grounds that the strip is drawn plateless on
-// purpose (drawPairStrip) -- it is the row's shadow rather than a mixer strip,
-// and a scene shown from a camera is heard from it unless that scene says
-// otherwise. But "is the camera's own sound in this video at all" is the same
-// coarse question as any other lane's, and the answer was reachable only one
-// scene at a time: a capture with the game audio nobody wants meant taking
-// every scene in hand and pressing the same plate on each, while the recorder
-// beside it had a single switch. One question, one control, both bands.
-//
-// It is a switch per ROW and not per file, because a camera stopped and
-// started again is several recordings in a line on one row -- the same reading
-// hushOneLane makes of an old project's single choice -- and "this camera's
-// sound, off" must not mean "off until the camera restarted".
+// Each recording wears a lane switch on its name plate at the left; the
+// footage's own sound has one on its strip. Off silences the lane in every
+// scene, on silences it in none. It stores nothing new: it IS the badges,
+// written to every scene at once. Per ROW, not per file -- a camera stopped
+// and restarted is several recordings on one row.
 
 const (
 	// the switch's centre, and where a name starts beside it. Same plate and
-	// same speaker as a scene's badge (hearPlate): one mark to learn, in the
-	// two places sound is switched.
-	//
-	// The switch stands in the black strip at the head of the timeline
-	// (cut_gutter.go) rather than pinned to the widget's left edge. Pinned, it
-	// was drawn over the waveform at every scroll position, and the reading it
-	// covered is the reading the band exists to show. The name is still
-	// pinned, and starts where that strip ends, so the two never meet.
+	// speaker as a scene's badge (hearPlate). The switch stands in the gutter
+	// (cut_fold.go), never over the waveform; the name is pinned and starts where
+	// the strip ends.
 	laneSwX   = gutterMid
 	laneNameX = gutterPx + 4
 )
@@ -295,19 +238,10 @@ func (ed *cutEditor) drawPairSwitches(cr *cairo.Context) {
 	}
 }
 
-// toggleLaneAll turns one lane off, or on, for the whole cut: every scene's
-// answer rewritten to the same one. Off if any scene still hears it -- the
-// press means "stop hearing this" while any of it is left -- and on only from
-// a lane that is silent everywhere.
-//
-// A FRESH list per scene, never an append into the one that is there, for the
-// reason toggleHear gives: an undo snapshot copies the slice of segments but
-// not the strings inside it, and growing a list in place rewrites every
-// snapshot holding the same one.
-//
-// One pushUndo for the lot. It is one act -- one press, one sentence about
-// the video -- and forty entries to undo it one scene at a time is not an
-// edit history, it is a punishment.
+// toggleLaneAll rewrites every scene's answer for one lane: off if any scene
+// still hears it, on only from a lane silent everywhere. A FRESH list per
+// scene (undo snapshots share the string slices, see toggleHear), and one
+// pushUndo for the lot.
 func (ed *cutEditor) toggleLaneAll(base string) {
 	if base == "" {
 		return
@@ -315,14 +249,9 @@ func (ed *cutEditor) toggleLaneAll(base string) {
 	ed.toggleLanesAll([]string{base}, base)
 }
 
-// toggleLanesAll is that press when the switch stands for several recordings at
-// once: a camera row, where one camera stopped and started again is several
-// files in a line and one switch over the lot (pairSwitches). name is what the
-// status calls them -- one lane says its own name, a row says the row's.
-//
-// Off if ANY of them is still heard anywhere, so a row half-silenced by
-// per-scene presses reads on and the switch finishes the job, rather than
-// turning the rest off in one press and back on in the next.
+// toggleLanesAll is that press for a switch standing for several recordings --
+// a camera row (pairSwitches). name is what the status calls them. Off if ANY
+// of them is still heard anywhere, so a half-silenced row finishes the job.
 func (ed *cutEditor) toggleLanesAll(bases []string, name string) {
 	if len(bases) == 0 {
 		return
@@ -369,21 +298,9 @@ func (ed *cutEditor) toggleLanesAll(bases []string, name string) {
 
 // ---- what every scene hears, said on every scene -----------------------------
 
-// A lane a scene silences is drawn grey where that scene is, on every scene at
-// once rather than only the one in hand.
-//
-// It used to be the held scene's alone (drawHearBadges), and the whole-lane
-// switch beside the name is nothing but these same answers written to every
-// scene in one press (toggleLaneAll). So switching a lane off for the cut
-// changed one plate on a name that nobody was looking at, and left forty green
-// selections looking exactly as they had: the switch read as a state of its
-// own, kept somewhere else, that the cut knew nothing about. It is not one --
-// there is nothing to store and nothing that could disagree -- and the page
-// should not be able to give the other impression.
-//
-// A wash rather than a badge, because this is the answer for scenes nobody is
-// pointing at: at any zoom the tint is the part that reads, and forty plates
-// on forty scenes would be forty controls that are not there to press.
+// A lane a scene silences is washed grey where that scene is, on every scene
+// -- otherwise the whole-lane switch would read as a state kept somewhere else.
+// A wash, not badges: forty plates would be forty controls that are not there.
 
 // laneWash is a stretch of one lane to be greyed: timeline x, area y.
 type laneWash struct{ x0, x1, y0, y1 float64 }
@@ -579,14 +496,25 @@ func (ed *cutEditor) drawLaneSwitches(cr *cairo.Context) {
 // thing in both places -- a scene's badge and a lane's switch are the same
 // question asked at two sizes.
 func hearPlate(cr *cairo.Context, cx, cy float64, on bool) {
-	if on {
-		cr.SetSourceRGBA(0.15, 0.65, 0.3, 0.95)
-	} else {
-		cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.62)
-	}
-	cr.Arc(cx, cy, hearR+hearPad, 0, 2*math.Pi)
-	cr.Fill()
+	litPlate(cr, cx, cy, on)
 	drawSpeaker(cr, cx, cy, on)
+}
+
+// litPlate is the round plate a lane's or a camera's badge sits on: green when
+// the thing is in use, dark when it is not. plate is the bare disc every badge
+// on the page is drawn on (drawKillBadge, foldPlate use it too).
+func litPlate(cr *cairo.Context, cx, cy float64, on bool) {
+	if on {
+		plate(cr, cx, cy, hearR+hearPad, 0.15, 0.65, 0.3, 0.95)
+		return
+	}
+	plate(cr, cx, cy, hearR+hearPad, 0.06, 0.06, 0.07, 0.62)
+}
+
+func plate(cr *cairo.Context, cx, cy, r, R, G, B, A float64) {
+	cr.SetSourceRGBA(R, G, B, A)
+	cr.Arc(cx, cy, r, 0, 2*math.Pi)
+	cr.Fill()
 }
 
 // drawSpeaker is the mark on the plate: a cone, with two arcs coming off it
@@ -619,24 +547,12 @@ func drawSpeaker(cr *cairo.Context, cx, cy float64, on bool) {
 	cr.Stroke()
 }
 
-// migrateSound reads a cut written when the sound was one choice for the whole
-// project -- cutFile.Sound, a lane name, meaning "every scene is heard on this
-// one" -- and says the same thing in the only way a cut now can: every scene
-// silences every lane but that one.
-//
-// It runs once by construction. Nothing writes Sound any more, so the next save
-// drops the field, and a project migrated cannot be migrated twice. A scene that
-// already names silenced lanes is left exactly as it is: the only way one can
-// exist is a file written after the move, and there the scenes are the truth
-// and the old field is a leftover.
-//
-// One thing the old choice could do that no arrangement of silences can: put
-// camera A's sound under camera B's picture. Only B's own track reaches a clip
-// cut from B, so there is no lane there to leave audible. Those scenes keep
-// their OWN camera rather than being migrated into silence -- a scene that
-// sounds like the wrong camera is something anyone can hear and correct, and a
-// scene that plays nothing reads as a broken render -- and the note says how
-// many, because it is the one part of this that is not what the file asked for.
+// migrateSound reads a cut from when sound was one lane for the whole project
+// (cutFile.Sound) and writes the same thing per scene: every scene silences
+// every lane but that one. Runs once -- nothing writes Sound any more; scenes
+// that already name silenced lanes are left alone. The old choice could put
+// camera A's sound under camera B's picture; those scenes keep their OWN camera
+// (audible and correctable beats silent), and the note counts them.
 func migrateSound(segs []cutSeg, snd string, vids []tlVideo, auds []tlAudio) ([]cutSeg, string) {
 	if strings.TrimSpace(snd) == "" || len(segs) == 0 {
 		return segs, ""
@@ -691,16 +607,10 @@ func migrateSound(segs []cutSeg, snd string, vids []tlVideo, auds []tlAudio) ([]
 	return out, note
 }
 
-// syncHush tells the preview what the scene under the playhead hears. It runs
-// from showInsert, which is every path that moves the line: a click, a frame
-// step, playback following its own clock, and the badge that changed the answer
-// in the first place -- so the press is audible at once, and playback picks the
-// new answer up at the boundary rather than carrying the old scene's lanes into
-// the next one.
-//
-// Off the ends of the cut, and in a gap between kept scenes, everything is
-// heard: what is playing there is not a scene and has no answer of its own,
-// and the scrub through a cut-out stretch is worth hearing.
+// syncHush tells the preview what the scene under the playhead hears, from
+// showInsert -- every path that moves the line -- so a badge press is audible
+// at once and playback picks the new answer up at the boundary. Off the ends
+// of the cut and in gaps everything is heard.
 func (ed *cutEditor) syncHush() {
 	if ed.player == nil {
 		return
@@ -730,17 +640,131 @@ func (ed *cutEditor) syncHush() {
 	ed.player.Hush(own, quiet, until)
 }
 
-// hushOf is what a scene does not hear, in the two pieces the preview keeps its
-// sound in: whether the recording it is playing the picture from is silenced --
-// shown from the camera, heard from the microphone is a legal scene -- and the
-// scene's own list, which names the recordings mixed under it.
-//
-// No scene, no answer: off the ends of the cut and in the gaps between kept
-// scenes there is nothing holding an opinion, and a scrub through a cut-out
-// stretch is worth hearing.
+// hushOf is what a scene does not hear, in the two pieces the preview keeps
+// its sound in: whether the recording the picture comes from is silenced, and
+// the scene's own list of silenced lanes. No scene, no answer: gaps and the
+// ends of the cut are heard whole.
 func hushOf(s *cutSeg, base string) (bool, []string) {
 	if s == nil {
 		return false, nil
 	}
 	return base != "" && laneQuiet(s.Quiet, base), s.Quiet
+}
+
+// Which camera a scene is shown from (cutSeg.Cam), said on the rows: a held
+// scene wears a lens badge on every row that was rolling, lit on the row shown,
+// at the same x as the speaker badges. A lens is a radio (one picture, never
+// none) where a speaker is a checkbox. Rows filming nothing at those seconds
+// get none: the render would fall back anyway (pickVideoOn).
+
+// camBadge is one row's answer for the scene the badges are about: where it is
+// drawn, in timeline x and area y, and whether the scene is shown from there.
+type camBadge struct {
+	row    int
+	cx, cy float64
+	on     bool
+}
+
+// camBadges is one per row that could show this scene: the rows that have
+// footage under it. Empty when there is no scene in hand, when the scene is too
+// narrow to wear a mark, or when one row is all there is -- a badge that is the
+// only badge answers a question nobody can ask.
+//
+// The x is hearX's, so the picture's marks and the sound's stand in one column
+// at the scene's left edge and read as one question asked of every row.
+func (ed *cutEditor) camBadges() []camBadge {
+	cx, ok := ed.hearX()
+	if !ok || ed.laneN < 2 {
+		return nil
+	}
+	s := ed.hearScene()
+	var out []camBadge
+	for r := 0; r < ed.laneN; r++ {
+		if videoOn(ed.vids, r, s.S) == nil {
+			continue // that camera was not rolling here
+		}
+		out = append(out, camBadge{r, cx, ed.laneTop(r) + ed.laneH()/2, r == s.Cam})
+	}
+	if len(out) < 2 {
+		return nil // one answer is not a choice
+	}
+	return out
+}
+
+// camBadgeAt is the row whose badge is under a press, or -1.
+func (ed *cutEditor) camBadgeAt(px, y float64) int {
+	for _, b := range ed.camBadges() {
+		if math.Abs(px-b.cx) <= hearHit && math.Abs(y-b.cy) <= hearHit {
+			return b.row
+		}
+	}
+	return -1
+}
+
+// setSegCam shows the scene from row r; seconds, silenced lanes and effects
+// stay. It does not coalesce -- rearranging the list under a hand still on a
+// badge is how a press becomes "what happened to my clip"; the next edit joins
+// neighbours that now agree.
+func (ed *cutEditor) setSegCam(r int) {
+	s := ed.hearScene()
+	if s == nil || r < 0 || r == s.Cam {
+		return
+	}
+	ed.pushUndo()
+	s.Cam = r
+	ed.persist()
+	ed.showInsert() // the preview is standing on a frame that came from the old row
+	ed.redrawTracks()
+	ed.a.setStatus(fmt.Sprintf("the scene at %s is shown from %s now", mmss(s.S), ed.camName(r)))
+}
+
+// drawCamBadges paints them over the pictures, inside drawTrack's translation.
+// The wash under a badge says which row a scene is shown from at any zoom;
+// only the row NOT showing it gets one -- the showing row has the green.
+func (ed *cutEditor) drawCamBadges(cr *cairo.Context, vx0, vx1 float64) {
+	badges := ed.camBadges()
+	if len(badges) == 0 {
+		return
+	}
+	s := ed.hearScene()
+	x0, x1 := ed.xOf(s.S), ed.xOf(s.E)
+	for _, b := range badges {
+		if b.on || x1 < vx0 || x0 > vx1 {
+			continue
+		}
+		cr.SetSourceRGBA(0.55, 0.55, 0.6, 0.22)
+		cr.Rectangle(x0, ed.laneTop(b.row), x1-x0, ed.laneH())
+		cr.Fill()
+	}
+	for _, b := range badges {
+		if b.cx < vx0-hearHit || b.cx > vx1+hearHit {
+			continue
+		}
+		camPlate(cr, b.cx, b.cy, b.on)
+	}
+}
+
+// camPlate is the round plate a lens is drawn on: lit on the row the scene is
+// shown from, dark on the rows it could be shown from instead. The plate is the
+// speaker's, because both marks answer "is this row in this scene" and the page
+// should say that once -- and what is ON the plate is what says which half of
+// the question this is, and that a press here is a choice rather than a toggle.
+func camPlate(cr *cairo.Context, cx, cy float64, on bool) {
+	litPlate(cr, cx, cy, on)
+	drawLens(cr, cx, cy, on)
+}
+
+// drawLens is the mark: a ring, filled on the row in use and hollow on the
+// rest -- a radio button wearing a camera's face. A path rather than a glyph,
+// like every other mark on this page.
+func drawLens(cr *cairo.Context, cx, cy float64, on bool) {
+	cr.SetSourceRGBA(1, 1, 1, 0.92)
+	cr.SetLineWidth(1.4)
+	cr.Arc(cx, cy, hearR*0.82, 0, 2*math.Pi)
+	cr.Stroke()
+	if !on {
+		return
+	}
+	cr.Arc(cx, cy, hearR*0.4, 0, 2*math.Pi)
+	cr.Fill()
 }

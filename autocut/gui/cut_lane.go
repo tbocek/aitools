@@ -2,32 +2,13 @@ package main
 
 // ---- a lane the cut put there -----------------------------------------------
 //
-// Every other row of the picture band is a recording. Prepare was pointed
-// at a file, the file was transcribed and described and given a waveform, and
-// the row is that work showing. This is the other kind: a shot copied from
-// somewhere else in the session, or a video that was never a source at all, put
-// on a row of its own so the green can cut to it and back.
-//
-// Cut-only, and that is the whole of the difference. It lives in cut.json and
-// nowhere else: nothing transcribes it and nothing describes it. Prepare
-// decides what the SOURCES are and this decides what the CUT has to work with,
-// and those are not the same list -- reload builds the sources and then lays
-// these over the top of them.
-//
-// It does get a waveform lane, because footage is picture and the sound filmed
-// with it in one piece and a row of pictures with no sound under it is a row
-// half of whose content the page will not show. Its sound is the same window
-// its pictures are: the file from second Off, for Dur seconds (laneAudios).
-//
-// A row is a window on a file: which file, the second of it the row starts at,
-// where that second lands in the session, and how long it runs. A recording is
-// that same thing with the window wide open -- off nought, dur the whole file --
-// which is why one tlVideo says both, and why every lookup from a session second
-// to a file second goes through tlVideo.at rather than subtracting start by hand.
-//
-// The row it lands on is pinned, like a dragged one (cut_shift.go). It has to
-// be: cutSeg.Cam is a row NUMBER, and a new row that pushed a real camera down
-// one would silently repoint every scene that named it.
+// A cut lane is a shot copied from elsewhere in the session, or a video that
+// was never a source, on a row of its own. Cut-only: it lives in cut.json,
+// nothing transcribes or describes it; reload builds the sources and lays these
+// over. It gets a waveform lane from the same window (Off, Dur) as its
+// pictures. A row is a window on a file -- tlVideo.at maps session seconds to
+// file seconds; a recording is the same with the window wide open. Its row is
+// pinned (cut_shift.go): cutSeg.Cam is a row NUMBER.
 
 import (
 	"fmt"
@@ -97,21 +78,11 @@ func (a *App) laneVideos(lanes []cutLane, vids []tlVideo) []tlVideo {
 	return out
 }
 
-// laneAudios is the sound of those rows: the file's own track, windowed to the
-// row exactly as its pictures are. masterLanes says the same thing about a
-// recording and is not reused, because a recording's window is the whole file
-// and is read off tlVideo -- here the window is the LANE's, and a row put on
-// the band twice at two different seconds of one file is two lanes with two
-// different offs and one path.
-//
-// A file with no track in it gets none, for masterLanes' reason: a strip of
-// ground and a decode that can only fail.
-//
-// How many channels comes off the source's own lane when the file IS a source,
-// the way laneVideos takes its thumbnails from the source's frames: a copied
-// shot is one recording seen twice and the probe was paid for the first time
-// round. src is the lanes that are not cut lanes, which is exactly the list
-// that would hold it.
+// laneAudios is the sound of cut lanes: the file's track windowed as the row's
+// pictures are. Not masterLanes (whose window is the whole file): one file on
+// the band twice is two lanes with two offs. Files without a track get none.
+// Channel count comes off the source's own lane when the file is a source
+// (src: the non-cut lanes).
 func laneAudios(rows []tlVideo, src []tlAudio) []tlAudio {
 	var out []tlAudio
 	for _, v := range rows {
@@ -167,7 +138,7 @@ func videoByPath(vids []tlVideo, path string) *tlVideo {
 	return nil
 }
 
-// laneName is what to call a new row: the file's name, and the file's name with
+// cutLaneName is what to call a new row: the file's name, and the file's name with
 // a number after it when the session already has one. Names are the key the
 // pinned rows and the hand-made corrections are held under, so two rows sharing
 // one would move together and be drawn on top of each other.
@@ -191,14 +162,10 @@ func cutLaneName(vids []tlVideo, want string) string {
 	}
 }
 
-// addLane puts a stretch of a file on a row of its own, and returns what the row
-// is called. src is an absolute path; off is the second of it the row starts at,
-// at is where that second lands in the session, and dur is how long it runs.
-//
-// The rows are frozen first, for the reason setShift freezes them: a row number
-// is what a scene carries, and inserting a row is exactly the edit that would
-// change what those numbers point at. Frozen, the new one is pinned to the
-// bottom of the stack and every camera keeps the row it had.
+// addLane puts a stretch of a file on a row of its own and returns the row's
+// name. src is absolute; off is the file second the row starts at, at where
+// that lands in the session, dur how long it runs. Rows are frozen first
+// (setShift's reason): a row number is what a scene carries.
 func (ed *cutEditor) addLane(src string, off, at, dur float64) string {
 	off, at = math.Max(0, off), math.Max(0, at)
 	// a window can only be as long as there is file left past off. Zero dur
@@ -324,17 +291,9 @@ func (ed *cutEditor) isCutLane(base string) bool { return cutLaneIdx(ed.cutLanes
 
 // ---- the ✕ that takes one away ----------------------------------------------
 //
-// A recording cannot be removed here -- it is a source, and the place to stop
-// using a source is the page that chose it. A cut lane has no such page: it was
-// made by a press on this one and it has to be unmakeable by a press on this
-// one, or a lane put on by accident is a lane that can only be got rid of by
-// editing cut.json by hand.
-//
-// So the same badge every remove on this page wears (drawKillBadge), at the
-// row's own left edge beside its name. It is the only ✕ drawn on the pictures
-// now -- the one that dropped a scene has moved to the green bar in the
-// selection row -- so the press it has to be told apart from is the clip
-// border it can sit on, and that one is asked after it (cut.go).
+// A recording is removed on Prepare; a cut lane was made by a press here and is
+// unmade by one: drawKillBadge at the row's left edge beside its name, asked
+// before the clip border it can sit on (cut.go).
 
 // laneKillCentre is where the ✕ for a cut lane sits: timeline x, area y.
 func (ed *cutEditor) laneKillCentre(v *tlVideo) (float64, float64) {
@@ -388,16 +347,9 @@ func (ed *cutEditor) drawLaneKill(cr *cairo.Context, vx0, vx1 float64) {
 }
 
 // closeRow brings the rows above `row` down one and renumbers everything that
-// names a row: the pins, the scenes, the selection, a copy in hand, and the
-// watch. The one piece of row-removal killLane and killRow share -- and it is
-// shared rather than copied because a scene whose Cam came down while its
-// footage stayed put would silently show the wrong camera, which is the exact
-// lie the pins exist to prevent.
-//
-// Every source is pinned first. The decrement below is only TRUE of a source
-// whose row is written down: an unpinned one is re-coloured greedily at the
-// next relayout and could land in the closed gap, desynced from the very Cam
-// numbers this function just adjusted to match it.
+// names a row: pins, scenes, selection, a copy in hand, the watch. Shared by
+// killLane and killRow. Every source is pinned first -- an unpinned one is
+// re-coloured at the next relayout and could land in the closed gap.
 func (ed *cutEditor) closeRow(row int) {
 	if ed.rows == nil {
 		ed.rows = map[string]int{}
@@ -460,14 +412,9 @@ func (ed *cutEditor) closeRow(row int) {
 
 // ---- the ✕ on a row with nothing on it ---------------------------------------
 //
-// A right-drag that moves a part onto another row leaves the old row standing
-// empty on purpose (moveRow): closing it there would renumber every scene's
-// camera as a side effect of a drag that meant something else. But an empty
-// row is still a row of space on the band, and the only way to be rid of one
-// was to know that truth about moveRow. So it wears the same ✕ a cut lane
-// does, at its left edge -- there is no footage to put it beside, so it sits at
-// the edge of the VIEW and rides the scroll, where a lane's sits at the lane's
-// own start.
+// moveRow leaves an emptied row standing (closing it would renumber scenes as
+// a side effect of a drag). It wears the same ✕ a cut lane does, at the edge
+// of the VIEW since there is no footage to put it beside.
 
 // rowEmpty says nothing is drawn on row r.
 func (ed *cutEditor) rowEmpty(r int) bool {
@@ -579,7 +526,7 @@ func (ed *cutEditor) sortVids() {
 	sort.SliceStable(ed.vids, func(i, j int) bool { return ed.vids[i].start < ed.vids[j].start })
 }
 
-// sameLanes compares two lists of the cut's own rows, in order: reordering them
+// sameCutLanes compares two lists of the cut's own rows, in order: reordering them
 // changes which row each is drawn on, which is an edit like any other.
 func sameCutLanes(a, b []cutLane) bool {
 	if len(a) != len(b) {

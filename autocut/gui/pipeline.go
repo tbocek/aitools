@@ -1,18 +1,14 @@
 package main
 
-// The first half of Prepare, natively: STT both inputs and dump frames
-// at an interval, into
-// inputs/. ffmpeg is driven via os/exec and the audio.cpp server over HTTP
-// (audiocpp.go); the anchored diarization and the segment merge are real code
-// here, not awk.
+// The first half of Prepare: STT for every input and frames at an interval,
+// into inputs/. ffmpeg via os/exec, ASR/diarization via audio.cpp over HTTP
+// (audiocpp.go).
 //
 // inputs/
-//   <input-basename>/  voice16k.wav, transcript.{txt,tsv,srt}, words.json,
-//                      turns.json  (per input, video and voice alike)
-//   frames/<input-basename>/2026-08-08_19-59-00.jpg   one per interval, named
-//                      for the wall-clock second it was shot in; frame n is
-//                      still exactly t = (n-1) * interval into the recording
-//   meta.env           chosen inputs + interval, read by the GUI and later steps
+//   <input-basename>/  voice16k.wav, transcript.{txt,tsv,srt}, words.json, turns.json
+//   frames/<input-basename>/2026-08-08_19-59-00.jpg   one per interval, named for
+//                      the wall-clock second; frame n is t = (n-1) * interval
+//   meta.env           chosen inputs + interval
 //
 // Finished stages are skipped, so re-running resumes.
 
@@ -56,14 +52,9 @@ const (
 	minAnchorOv = 0.5  // anchor-block overlap to claim a slot
 	diarTurnGap = 0.5  // merge same-speaker turns closer than this
 
-	// The ASR encoders carry the same kind of position table, and a session
-	// is far past it: Nemotron refuses outright ("relative position frames
-	// exceed maximum") well before the 12 minutes a capture runs to, and the
-	// ones that do not refuse answer by running full context over the whole
-	// recording, which is not what any of them were trained for. Long audio
-	// goes in as chunks, cut where nobody is talking -- a cut through the
-	// middle of a word hands both halves to a decoder that never heard the
-	// other one.
+	// The ASR encoders have a position table a session is far past (Nemotron
+	// refuses well before 12 minutes; others run full context over the whole
+	// recording). Long audio goes in as chunks, cut where nobody is talking.
 	asrChunkMax = 300.0 // longest audio in one ASR request
 	asrCutSeek  = 20.0  // how far from an even cut a silence is worth taking
 	asrQuietDB  = -35   // what counts as quiet, in dBFS
@@ -169,14 +160,9 @@ func (a *App) playClicked() {
 		// and the second could not be pressed before the first had finished.
 		a.prepRun()
 	case "cut":
-		// ▶ is this step's job, suggesting, exactly as it is on every other page.
-		// It used to be three things at once -- add the pending selection, or
-		// suggest but only into an empty cut, or else print a sentence explaining
-		// which of the two you had asked for -- because "Suggest cut" was also a
-		// button in the toolbar. That button is gone, so ▶ is the one way to run
-		// the step, and adding a selection is ＋ Add, which is where it always was.
-		// Suggesting over hand edits still refuses, in suggestClicked, and says to
-		// Revert first: that is a rule about the cut, not about which button ran.
+		// ▶ is this step's job, suggesting, as on every other page; adding a
+		// selection is ＋ Add. Suggesting over hand edits still refuses in
+		// suggestClicked and says to Revert first.
 		if a.ed != nil {
 			a.suggestClicked()
 		}
@@ -475,16 +461,11 @@ func (a *App) ingest(videos, audios []string, interval float64, scaleName, scale
 	if err := os.MkdirAll(inDir, 0o755); err != nil {
 		return err
 	}
-	// progress plan: half the bar each. This step is two jobs -- speech
-	// recognition (GPU, on the server) and frame extraction (CPU ffmpeg) --
-	// which do not contend, so they run as parallel tracks. Weighting them by
-	// file count instead gave whichever job had more inputs most of the bar,
-	// and the bar then crossed that job's share and sat still through the other.
-	//
-	// Both jobs run at once, so neither is "1 of 2": the bar names them instead
-	// and shows both lines. Each queues a task per file it was given, and the
-	// speech side queues more as it goes -- a recording's diarization windows
-	// are not countable until its length is known.
+	// progress plan: half the bar each. Speech recognition (GPU, server) and
+	// frame extraction (CPU ffmpeg) do not contend, so they run as parallel
+	// tracks; weighting by file count let one job take most of the bar and then
+	// sit still. Each queues a task per file, and the speech side queues more as
+	// it goes.
 	inputs := append(append([]string{}, videos...), audios...)
 	a.qJob(trackSTT, "speech", 0, 0)
 	a.qPush(trackSTT, len(inputs), "recording")
@@ -652,16 +633,11 @@ func (a *App) transcribe(input, inDir string, base, unit float64) error {
 	return nil
 }
 
-// asrLong is one recording through the ASR, in as many requests as its length
-// needs. A recording that fits goes in whole and its answer is written through
-// untouched -- that is still the common case, and words.json stays the
-// server's own document. A long one is cut into pieces and the pieces are
-// stitched back into one answer of the same shape, which is all the rest of
-// the pipeline ever reads.
-//
-// The seams are the whole difficulty. Cutting on the clock cuts through
-// speech, so the cuts slide to the middle of a silence; each piece then starts
-// and ends in the quiet, where a decoder losing its context costs nothing.
+// asrLong is one recording through the ASR in as many requests as its length
+// needs. A recording that fits goes in whole and words.json stays the server's
+// own document; a long one is cut into pieces, stitched back into one answer
+// of the same shape. The cuts slide to the middle of a silence, where a
+// decoder losing its context costs nothing.
 func (a *App) asrLong(wav string, dur float64, name string, base, unit float64) ([]byte, string, error) {
 	if dur <= asrChunkMax {
 		return a.asrJSON(wav)
@@ -719,14 +695,10 @@ func (a *App) asrLong(wav string, dur float64, name string, base, unit float64) 
 	return append(b, '\n'), text, nil
 }
 
-// asrCuts divides dur into pieces and returns the times between them.
-//
-// Even pieces, not full ones: three of 250 s beat two of 300 s and a runt of
-// 150, which would be a whole extra request spent on almost nothing. Each cut
-// then slides up to seek seconds to the middle of the nearest silence, and the
-// pieces are sized so that even two cuts sliding apart from each other cannot
-// push the piece between them past max -- the ceiling is the reason any of
-// this exists, and a piece over it is the error this is here to avoid.
+// asrCuts divides dur into pieces and returns the times between them. Even
+// pieces, not full ones with a runt. Each cut slides up to seek seconds to the
+// nearest silence, and the pieces are sized so two cuts sliding apart cannot
+// push the piece between them past max.
 func asrCuts(dur float64, quiet []span, max, seek float64) []float64 {
 	if dur <= max || max <= 0 {
 		return nil
@@ -752,14 +724,10 @@ func asrCuts(dur float64, quiet []span, max, seek float64) []float64 {
 	return out
 }
 
-// shiftWords takes the words out of one chunk's answer and moves them to where
-// that chunk was in the whole recording. The objects are the server's own,
-// with the two sample counts rewritten, so whatever else a word carries rides
-// along instead of being dropped on the way through.
-//
-// A word whose times cannot be read travels too, unshifted. It is the merge
-// that has to notice the ASR answering in a shape nobody here understands, and
-// it cannot notice words that were quietly left behind.
+// shiftWords moves one chunk's words to where the chunk was in the recording,
+// rewriting only the two sample counts so whatever else a word carries rides
+// along. A word whose times cannot be read travels unshifted -- the merge is
+// what has to notice an unknown shape.
 func shiftWords(body []byte, off float64) []any {
 	var v any
 	if json.Unmarshal(body, &v) != nil {
@@ -1390,24 +1358,12 @@ func (a *App) extractFrames(video string, interval float64, scaleName, scaleVF, 
 	return nil
 }
 
-// stampFrames renames ffmpeg's counting into the wall clock: every frame is
-// called the second it was shot in, so a folder of them reads against the
-// session timeline -- and against the recorders' own file names -- without
-// anyone doing arithmetic. An interval under a second puts several frames in
-// one second; those are numbered -1, -2 after the first.
-//
-// The name comes from the frame NUMBER, never from the position in the sorted
-// listing: a chunk that yields fewer frames than planned leaves a gap in the
-// numbering, and t = (n-1) * interval has to keep holding across it.
-//
-// start is where the session puts this video (a.sourceStart), passed in rather
-// than looked up: the caller already holds the whole source list, and a folder
-// of frames that disagrees with the row above it is a description talking
-// about the wrong moment.
-//
-// Nothing numbered left in the folder means there is nothing to do, which is
-// the normal case on a re-run -- so this is also what renames a folder
-// extracted before frames were stamped, without decoding it again.
+// stampFrames renames ffmpeg's numbering into the wall-clock second each frame
+// was shot in (several in one second get -1, -2). The name comes from the
+// frame NUMBER, never the sorted position, so t = (n-1) * interval survives a
+// gap. start is the session's placement of this video, passed in by the caller
+// who holds the whole source list. Nothing numbered left means nothing to do,
+// which is also what renames a folder extracted before stamping existed.
 func stampFrames(fdir, video string, start, interval float64) (int, error) {
 	ents, err := os.ReadDir(fdir)
 	if err != nil {

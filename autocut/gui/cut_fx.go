@@ -1,38 +1,13 @@
 package main
 
-// The camera, the clock and the words: effects a cut can carry beyond which
-// seconds it keeps.
+// Effects a cut carries beyond which seconds it keeps: zoom (where the camera
+// is; Stay keeps the framing until the next zoom), speed (the clock: a rate, or
+// a held frame), text (words in a box, fxtext.go) and volume. None touch the
+// segments; an effect whose seconds are cut out never fires (applyFx).
 //
-// Three kinds, one list. A "zoom" says which part of the picture the finished
-// video shows -- the tool that makes a vertical short out of widescreen
-// footage, where somebody has to say which slice of the frame the action is
-// in, and say it again when the action moves. When its seconds are up the
-// camera either comes back out on its own or stays on the region until the
-// next zoom (Stay), which is the whole difference between a passing close-up
-// and a reframing that holds. A "speed" is the clock instead of the camera: footage put on a
-// rate of its own -- slowed to a crawl, or run up to a hundred times faster so
-// a twenty-minute stretch of nothing passes in a few seconds -- or one frame
-// held still for a moment. A "text" is words over the picture for a while, in
-// a box drawn on it (fxtext.go, which is also what draws them). A "volume" is
-// none of those three: it touches neither the frame nor the clock, only how
-// loud the seconds under it are, from silence to ten times what was recorded.
-//
-// None of them touch the segments. The cut says WHAT is shown; the effects say
-// HOW -- where the camera is, how fast the clock runs, what is written over it
-// -- and the two lists edit independently: trimming a scene does not move the
-// camera, and moving the camera does not re-cut the scene. An effect whose
-// moment is cut out of the footage simply never fires (the render walks the
-// kept segments; see applyFx, buildCam and textCues).
-//
-// The rectangle a zoom points the camera at is stored normalized --
-// centre as a fraction of the source frame, height as a fraction of the source
-// height -- so it survives the source being probed at different sizes, and so
-// the same numbers drive the preview overlay (cut_fxview.go) and the render
-// (produce_fx.go). Its WIDTH is never stored: a camera rectangle is always
-// exactly the cut's aspect ratio, so the width is hf*sh*A px by construction
-// and cannot drift out of shape. A text's box is normalized too, but against
-// the OUTPUT frame and with a width of its own -- see the header of fxtext.go
-// for why the two rectangles cannot be the same kind of thing.
+// A zoom's rectangle is stored normalized against the SOURCE frame with no
+// width -- it is always the cut's aspect, so width = hf*sh*A. A text's box is
+// normalized against the OUTPUT frame and keeps its width (fxtext.go).
 
 import (
 	"fmt"
@@ -298,26 +273,11 @@ func fullFill(srcA, outA float64) fxRect {
 
 func (r fxRect) rect() (cx, cy, hf float64) { return r.cx, r.cy, r.hf }
 
-// fxRectAt is where the camera is at session time t. This one function answers
-// for the preview overlay and for every breakpoint of the render's camera path
-// (produce_fx.go), so the two cannot disagree.
-//
-// The zooms chain. Each one glides from wherever the camera actually was at
-// its T -- mid-move included, so a zoom placed inside another's glide starts
-// from the picture that is on screen rather than teleporting -- to its own
-// rectangle, holds it for the rest of its seconds, and then either comes back
-// off it over the fade out to the framing it departed from, or (Stay) keeps
-// it: a staying zoom becomes the framing every later zoom departs from and
-// returns to. Between zooms the camera is parked on that settled framing,
-// which begins as the whole frame (fullFill).
-//
-// Nothing reaches BACKWARDS. A staying zoom framed the video from its very
-// beginning for a while -- the thought being that a region chosen a minute in
-// was a choice about the whole video -- and it read as a bug every time: the
-// camera was already inside the close-up before the effect that makes it,
-// scrubbing to a second before the zoom showed the picture after it, and the
-// lane said the zoom was somewhere it plainly was not. An effect acts over
-// its own seconds and the seconds after it, never before.
+// fxRectAt is where the camera is at session time t -- the one answer for the
+// preview overlay and the render's camera path (produce_fx.go). Zooms chain:
+// each glides from where the camera actually is at its T, holds, then returns
+// to the framing it left or (Stay) becomes that framing. Nothing reaches
+// backwards: an effect acts over its own seconds and after, never before.
 func fxRectAt(fx []cutFx, t float64, srcA, outA float64) fxRect {
 	return camRectAt(zoomsOf(fx), t, srcA, outA)
 }
@@ -390,17 +350,10 @@ func clampFades(f *cutFx) {
 	}
 }
 
-// trimFades is what a band being cut shorter does to the two fades inside it,
-// where was is the seconds it covered before. They shrink with it, in the same
-// proportion, so the effect keeps the shape it was given: two seconds of glide
-// on a six-second zoom is a third of it spent arriving, and a third of it is
-// what it stays when the cut underneath leaves only three seconds.
-//
-// Holding them at their old lengths instead is what made a trimmed effect stop
-// working. Six seconds cut to two, and 2/2 fills the whole band -- the camera
-// arrives and leaves again having never once held the region it was placed to
-// show. Scaling keeps whatever hold there was, because a shape with a hold in
-// the middle still has one at half the size.
+// trimFades is what a band cut shorter does to the two fades inside it, where
+// was is the seconds it covered before: they shrink in proportion, so the
+// effect keeps its shape. Held at their old lengths, six seconds cut to two
+// left 2/2 fading -- the camera never once held the region.
 func trimFades(f *cutFx, was float64) {
 	if was > 0 && f.Dur < was {
 		k := math.Max(f.Dur, 0) / was
@@ -487,14 +440,9 @@ func fxHasCamera(aspect string, fx []cutFx) bool {
 // ---- the clock: speed effects on the segment list ---------------------------
 
 // applyFx rewrites a render sequence (splitSpliced's output) with the speed
-// effects in it: footage under one gets its Rate.
-//
-// Only footage changes, and only its clock. Cards keep their own clocks, a
-// freeze is not here at all -- its still is an overlay on the picture
-// (freezeCues), the footage under it running on untouched, so the segments
-// have nothing to learn from it -- and an effect whose moment is not in any
-// kept segment does nothing: the scene it was set in has been cut, and the
-// effect waits (harmlessly, invisibly) for Undo to bring the scene back.
+// effects: footage under one gets its Rate. Only footage, only its clock --
+// cards keep their own, a freeze is an overlay (freezeCues) and not here, and
+// an effect whose moment is in no kept segment does nothing.
 func applyFx(segs []cutSeg, fx []cutFx) []cutSeg {
 	out := segs
 	for _, st := range rateSpans(fx) {
@@ -519,17 +467,10 @@ func speedsOf(fx []cutFx) []cutFx {
 // rateStep is one constant-rate stretch of a speed effect.
 type rateStep struct{ t0, t1, rate float64 }
 
-// rampStep is how long one stair of a ramp lasts IN THE FINISHED VIDEO. It is
-// not how much footage the stair covers, and the difference is the whole point:
-// at ×8 a stair has to run through eight seconds of footage to last one second
-// on screen, so the footage a ramp needs grows with the rate it ramps to.
-//
-// Measured in footage instead -- which is what it used to be -- every stair of
-// a fast ramp came out under the render's floor and was dropped, so the ramp
-// did not merely play wrong, the seconds under it went missing from the video.
-//
-// It is not a smoothness dial either. Finer stairs are clips too short to
-// render, which is the same hole seen from the other side.
+// rampStep is how long one stair of a ramp lasts IN THE FINISHED VIDEO, not in
+// footage: at ×8 a stair reads eight seconds of footage to last one on screen.
+// Measured in footage, every stair of a fast ramp fell under the render's floor
+// and its seconds went missing. Finer stairs are clips too short to render.
 const rampStep = 0.6
 
 // speedRamps is the seconds a speed effect actually spends ramping each way:
@@ -592,23 +533,10 @@ func (f cutFx) rampAsk() (in, out float64) {
 	return
 }
 
-// speedSteps breaks a speed effect into the constant-rate stretches the render
-// can actually make. ffmpeg holds one setpts and one atempo chain per clip, so
-// a rate that changes over time has to be a staircase of clips rather than a
-// curve, and this is where the curve is turned into stairs.
-//
-// The rates climb geometrically -- ×1 to ×4 passes through ×2, not ×2.5 --
-// because speed is seen and heard in ratios: the halfway point of a doubling
-// is another doubling, and a linear ramp lurches at the slow end and crawls at
-// the fast one. Each stair is given the rate at its own middle, which is the
-// closest a constant rate can sit to the curve it stands in for.
-//
-// How many stairs a ramp gets is set by its FASTEST end, because that is the
-// stair that comes out shortest: at ×8 a stair needs eight times the footage
-// to clear the render's floor, so a ramp to ×8 gets an eighth of the stairs a
-// ramp to ×1 would over the same seconds. Asked for less than one, it gets one
-// -- a single step at the middle rate, which is a coarse ramp but is footage
-// that reaches the video.
+// speedSteps turns a ramp into the constant-rate stairs ffmpeg can make (one
+// setpts/atempo per clip). Rates climb geometrically, each stair at the rate
+// of its own middle; the count is set by the fastest end, whose stair comes out
+// shortest (rampStairs). At least one stair.
 func speedSteps(f cutFx) []rateStep {
 	if f.Rate <= 0 || f.Dur <= 0 {
 		return nil
@@ -650,17 +578,11 @@ func (f cutFx) stairs(in, out float64) []rateStep {
 	return steps
 }
 
-// fxGainAt is how loud session second t is, as a plain linear gain: 1 where no
-// volume effect covers it, and every volume effect that does multiplied
-// together. Multiplied, not averaged the way overlapping rates are (rateSpans),
-// because two gains are two things done to the same sound and doing both is
-// doing both -- twice as loud and then twice again is four times, which is
-// what a hand that placed two of them asked for. The ceiling is the same one a
-// single effect has, so the pair cannot go somewhere neither of them could.
-//
-// This is the one gain rule: the preview reads it per tick (syncPlayGain) and
-// the render reads it per clip (gainCues), so what you hear while cutting is
-// what comes out.
+// fxGainAt is how loud session second t is, as a linear gain: 1 with no volume
+// effect, every covering effect MULTIPLIED (two gains are two things done to
+// the same sound; rates average instead, rateSpans), capped at a single
+// effect's ceiling. The one gain rule: the preview reads it per tick
+// (syncPlayGain), the render per clip (gainCues).
 func fxGainAt(fx []cutFx, t float64) float64 {
 	g := 1.0
 	for _, f := range fx {
@@ -684,20 +606,10 @@ func gainPct(g float64) string {
 	return fmt.Sprintf("%.0f%%", clampGain(g)*100)
 }
 
-// rampStairs is how many stairs a ramp of d seconds of footage from rate from
-// to rate to is cut into: as many as the render will keep whole.
-//
-// The stair that decides it is the one nearest the fast end, since that is the
-// one whose output comes out shortest -- but it runs at ITS OWN rate, half a
-// stair short of the ramp's top, and not at the top itself. The gap is widest
-// where it hurts most: asked for one stair, that stair sits at the geometric
-// middle, which at ×8 is ×2.83 and not ×8.
-//
-// Charged the top rate instead, an eight-second ramp to ×8 could afford a
-// single stair where it can plainly afford two, so the "ramp" was one constant
-// speed and the video stepped ×1, ×2.83, ×8 -- picture and sound both -- where
-// it was meant to climb. Nothing about a slow ramp changes: at ×1 to ×0.5 the
-// fastest stair IS very nearly the top rate, and the count comes out the same.
+// rampStairs is how many stairs a ramp gets: as many as the render keeps whole,
+// judged at the fastest stair's OWN rate -- half a stair short of the top --
+// not at the top, or an eight-second ramp to ×8 gets one stair where it can
+// afford two.
 func rampStairs(d, from, to float64) int {
 	n := 1
 	for rampFits(d, from, to, n+1) {
@@ -719,27 +631,11 @@ func rampFits(d, from, to float64, n int) bool {
 	return (d/float64(n))/fast >= rampStep
 }
 
-// fxPreviewRateAt is the rate the PREVIEW runs at session second t: the speed
-// effect covering it at its own rate, ramps and all, or 1. The render follows
-// the ramp's stairs (fxRateAt); the preview does not, and this is why.
-//
-// A rate only takes hold at a seek. When the instant rate change is refused
-// -- which depends on the elements in the pipeline, and is refused on this
-// one -- the seek is a flushing, accurate one: stop the stream, seek, decode
-// from the previous keyframe up to the frame we were on, on the GTK thread.
-// On a 1080p capture that is a few hundred milliseconds. A ramp to ×4 is
-// several stairs over its first second, the tick reads the stair under the
-// line ten times a second, and every stair is a new rate -- so the main loop
-// spent every tick inside a seek, the window stopped answering, and the shell
-// offered to kill it. The picture cannot show a ramp anyway: what it showed
-// was the stutter of building one. So the preview runs the effect's rate from
-// its first second to its last -- one seek in, one seek out -- and the ramp is
-// something the render does.
-//
-// A stop (rate 0) reads as 1 here as it does in fxRateAt: the still is an
-// overlay and the footage runs on under it. Overlapping speeds take the first,
-// where the render averages them (rateSpans): a preview that is one of the two
-// speeds is closer to the truth than one that seeks between them.
+// fxPreviewRateAt is the rate the PREVIEW runs at t: the covering speed
+// effect's rate flat across its seconds (the render follows the stairs). A
+// rate change is a flushing seek on the GTK thread, and a ramp's stairs ten
+// times a second hung the window. A stop reads as 1 (the still is an overlay);
+// overlapping speeds take the first, where the render averages (rateSpans).
 func fxPreviewRateAt(fx []cutFx, t float64) float64 {
 	for _, f := range speedsOf(fx) {
 		if f.frozenFx() || f.Dur <= 0 || t < f.T || t >= f.T+f.Dur {
@@ -751,16 +647,11 @@ func fxPreviewRateAt(fx []cutFx, t float64) float64 {
 	return 1
 }
 
-// fxRateAt is the clock the footage at session time t runs on: what the speed
-// effects covering it ask for between them, ramps included, or 1 where none
-// does. It reads the same stretches applyFx applies, so the preview and the
-// render agree on what a second of session time is worth.
-//
-// Frozen seconds come back as 1 rather than as the 0 they mean. Under a still
-// the footage's speed cannot be seen and 0 is not a clip anything can build,
-// so the footage runs on at full speed -- which is what lets the still fade
-// out onto footage exactly where the clock says it is. fxMeanRate is the same
-// answer with the 0 left in, for the things that need to know.
+// fxRateAt is the clock the footage at session time t runs on -- what the
+// covering speed effects ask for, ramps included, or 1. Reads the same
+// stretches applyFx applies. Frozen seconds come back as 1, not 0: the footage
+// under a still runs on at full speed so the still can fade out onto it where
+// the clock says. fxMeanRate keeps the 0.
 func fxRateAt(fx []cutFx, t float64) float64 {
 	for _, st := range rateSpans(fx) {
 		if t >= st.t0 && t < st.t1 {
@@ -798,13 +689,10 @@ func rateSpan(segs []cutSeg, t0, t1, rate float64) []cutSeg {
 
 // ---- the effects on the page -------------------------------------------------
 //
-// Everything below is the editor's half: the lane under the video track where
-// effects are seen and picked up, the toolbar controls that create them, and
-// the dialogs that ask the one or two numbers each kind needs. The gestures
-// are the timeline's own -- a press on a mark picks that effect up and the same
-// drag slides it along the lane, ‹f/f› nudge it, Del removes it, Esc puts it
-// down, and the Insert button reads ✎ Edit while one is held. New nouns, old
-// verbs.
+// The editor's half: the lane under the video track, the toolbar controls
+// that create effects, and the forms that ask their numbers. The gestures are
+// the timeline's own: press picks up, drag slides, ‹f/f› nudge, Del removes,
+// Esc puts down, Insert reads ✎ Edit while one is held.
 
 // fxLaneH is the height of the effects lane drawn under the picture band.
 // Always there, even empty: a lane that appears when the first effect does
@@ -815,26 +703,9 @@ func rateSpan(segs []cutSeg, t0, t1, rate float64) []cutSeg {
 // to the long bands alone makes the short ones fiddly.
 const fxLaneH = 26
 
-// fxLaneTop is the lane's y inside the source-track area: directly under the
-// green bar, and above the pictures.
-//
-// It used to be at the bottom, under the whole stack of camera rows, which put
-// the two bands that speak for the WHOLE CUT -- which seconds are in the video,
-// and what happens to them -- on either side of two bands that are one
-// camera's material. The lane read as belonging to the pictures it was tucked
-// under, and the pictures were separated from the recorders' band below by the
-// one row that has nothing to do with either.
-//
-// So the page is two groups now. Above: the clock, the seconds the video is
-// made of, and what is done to them. Below: everything that was recorded. And
-// the lane's own y is fixed, where it used to move with however many cameras
-// and wave strips the page happened to have -- the ✕ you were about to press
-// stays where it was.
-//
-// What it costs is the other direction: a second row of effects pushes the
-// pictures down, where before it pushed only the recorders' band. That is the
-// honest picture of a lane that is as deep as the effects in it, and a run
-// that fills the lane rearranges the page anyway.
+// fxLaneTop is the lane's y: directly under the green bar, above the pictures,
+// so the two bands that speak for the whole cut sit together and the lane's y
+// does not move with the camera rows.
 func (ed *cutEditor) fxLaneTop() float64 { return float64(rulerH) + float64(selBandH) }
 
 // fxHitLane is whether a press in the source-track area lands in the lane. It
@@ -852,29 +723,10 @@ func (ed *cutEditor) fxHitLane(y float64) bool {
 // zoomed.
 const fxPackMin = 0.4
 
-// fxRows gives every effect the row it is drawn in, and says how many rows the
-// lane needs.
-//
-// One row per effect is the obvious answer to overlap and the wrong one: ten
-// effects would be ten rows, nearly all of them empty nearly all of the way
-// across, and one busy minute in an afternoon's cut would push the audio lanes
-// off the bottom of the page. Rows are for OVERLAP, not for effects. An effect
-// goes in the first row whose contents it does not touch, so everything that
-// does not overlap shares row 0 and the lane grows only as deep as the deepest
-// pile -- a cut whose effects do not collide looks exactly as it did before
-// this existed, and a cut with one pair of overlapping bands pays two rows for
-// it rather than N.
-//
-// Sorted by start and greedy is not a heuristic here, it is the answer: spans
-// on a line are an interval graph, and first-fit in start order colours one
-// with the fewest colours there are. So the lane is never deeper than the
-// number of effects genuinely live at some one instant.
-//
-// The packing is in seconds rather than pixels so that a row is a fact about
-// the cut and not about the view. Rows that reshuffled as the wheel turned
-// would slide the thing you were aiming at out from under the pointer, and the
-// lane height -- which everything below it sits under -- would change with the
-// zoom.
+// fxRows assigns each effect a row: the first whose contents it does not
+// overlap (first-fit in start order colours an interval graph optimally), so
+// the lane is only as deep as the deepest pile. In seconds, not pixels, so
+// rows do not reshuffle with the zoom.
 func fxRows(fx []cutFx) ([]int, int) {
 	rows := make([]int, len(fx))
 	order := make([]int, len(fx))
@@ -972,23 +824,9 @@ func (ed *cutEditor) fxPartAt(i int, px float64) int {
 	return fxWhole
 }
 
-// resizeFxTo moves one end of the held effect's band to t and leaves the other
-// end where it is.
-//
-// What changes is the length, never the transitions. The fades are seconds you
-// chose for how the effect should arrive and leave -- dragging the end of the
-// band means "hold it longer", not "take longer getting there" -- so Trans and
-// Tout keep their numbers and Dur absorbs the whole change. Dragging the START
-// moves T as well, because a band that begins later begins later.
-//
-// They keep their numbers only as far as the band still has room for them: a
-// ten-second effect with two seconds of fade either side, dragged down to one
-// second, cannot fade for four. clampFades shares the second out between them,
-// so the band that ends up on the lane is the band the render draws.
-//
-// It snaps where a moved effect snaps -- the borders of the cut -- for the same
-// reason: an effect that stops a third of a second before the clip does is a
-// mistake nobody makes on purpose.
+// resizeFxTo moves one end of the held effect's band to t. Dur absorbs the
+// change; Trans/Tout keep their seconds as far as the band still has room
+// (clampFades); dragging the start moves T too. Snaps to the cut's borders.
 func (ed *cutEditor) resizeFxTo(end bool, t float64) {
 	f := ed.heldFx()
 	if f == nil {
@@ -1028,28 +866,10 @@ func (ed *cutEditor) heldFx() *cutFx {
 // keyframe rather than a hand going somewhere else.
 const fxHoldSlack = 1.0 / 24
 
-// syncFxHold ends the hold when the line has walked off the effect.
-//
-// Holding a zoom is what puts the WHOLE frame on the preview with
-// the effect's box outlined on it: you are being shown everything the camera
-// could see, so that you can aim it. That picture is only honest while the
-// line is standing on the effect -- and holdFx puts it there. Once the line is
-// somewhere else, the outline draws one moment's framing over another
-// moment's frame, and worse, the framed preview stays off, so the framing
-// actually in force at the line is not shown at all.
-//
-// That is the "it keeps the last effect" you get from picking up the last
-// zoom, clicking back to the start of the timeline, and finding the box still
-// on the right where that zoom left it, over footage the opening framing shows
-// down the middle. A hand on the line is a hand off the effect -- the same
-// rule a held clip and a held edge already follow when a click lands clear of
-// them.
-//
-// Moving the effect is not the line leaving it. Both paths that do it write
-// the new time onto the effect and then carry the line to it (nudgeFx and the
-// drag along the lane, through showFx), so the line arrives back on the effect
-// and the hold survives -- except mid-drag, where showFx is throttled and the
-// line can lag the effect by a scrub interval. ed.fxMoving covers that gap.
+// syncFxHold ends the hold when the line has walked off the effect: the
+// framed-preview outline is only honest with the line on it. Moving the effect
+// carries the line along (showFx), so the hold survives that; ed.fxMoving
+// covers the throttled lag mid-drag.
 func (ed *cutEditor) syncFxHold() {
 	if ed.fxHoldLost() {
 		ed.dropFx()
@@ -1100,15 +920,9 @@ func (ed *cutEditor) fxIndexAt(px, y float64) int {
 	return best
 }
 
-// holdFx takes hold of effect i and puts the playhead on it.
-//
-// The playhead move is the point. A zoom says what the picture shows from its
-// own moment on, and the overlay draws the held one on the preview -- so
-// picking up a zoom half a minute away used to leave the framing of a moment
-// you are not looking at drawn over the frame you are. With two zooms that
-// reads as the first one never being shown at all. Landing on the zoom's own
-// moment makes the rectangle and the picture under it the same instant again,
-// which is also what the frame buttons do once it is in hand (showFx).
+// holdFx takes hold of effect i and puts the playhead on it, so the rectangle
+// drawn on the preview and the picture under it are the same instant (the
+// frame buttons keep it so, showFx).
 func (ed *cutEditor) holdFx(i int) {
 	if i < 0 || i >= len(ed.fx) {
 		return
@@ -1122,15 +936,10 @@ func (ed *cutEditor) holdFx(i int) {
 	ed.redrawTracks()
 }
 
-// hoverFx remembers which effect the pointer is over so the lane can say so.
-// Off-lane, or clear of every marker, is "none"; (-1, -1) is the pointer
-// having left the widget altogether.
-//
-// The lane is the only place on this page that answers the pointer without
-// being pressed. It has to: an effect's marker is a few pixels wide, several
-// of them can overlap, and fxIndexAt breaks the tie by span rather than by
-// which one looks nearest. Showing the answer first turns a press into a
-// choice instead of a guess.
+// hoverFx remembers which effect the pointer is over so the lane can say so:
+// none off-lane or clear of every marker, (-1, -1) when the pointer left the
+// widget. Markers are a few px wide and overlap, and fxIndexAt breaks ties by
+// span, so the answer is shown before the press.
 func (ed *cutEditor) hoverFx(x, y float64) {
 	i := -1
 	if x >= 0 && ed.fxHitLane(y) {
@@ -1345,6 +1154,14 @@ func laneBand(cr *cairo.Context, x0, x1, inW, outW, y float64) {
 	cr.Fill()
 }
 
+// fxPlate is a band's mark and label, on bands wider than room px.
+func fxPlate(cr *cairo.Context, f cutFx, x0, x1, y, room float64) {
+	if x1-x0 > room {
+		mark, label := laneLabel(f, fxLabelRoom(x0, x1))
+		markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
+	}
+}
+
 // drawFxLane paints the effects lane. Called from drawTrack inside its
 // translation, so x here is timeline px like everything drawn around it.
 func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
@@ -1411,10 +1228,7 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.LineTo(x1, y+2)
 			cr.LineTo(x1, y+fxLaneH-2)
 			cr.Stroke()
-			if x1-x0 > 40 {
-				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
-				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
-			}
+			fxPlate(cr, f, x0, x1, y, 40)
 		case "speed":
 			cr.SetSourceRGBA(0.92, 0.42, 0.6, 0.4)
 			if f.frozenFx() {
@@ -1435,19 +1249,11 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.Rectangle(x0, y+2, x1-x0, fxLaneH-4)
 			cr.Stroke()
 			ed.drawSndTail(cr, f, y)
-			if x1-x0 > 34 {
-				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
-				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
-			}
+			fxPlate(cr, f, x0, x1, y, 34)
 		case "text", "svg":
-			// a bracket like a zoom's, in its own colour, with the opening
-			// words -- or the drawing's file -- in it: the lane is where you
-			// look for "which title is that one", and a bracket that says
-			// only "text" answers nothing. The fill is the fades' own
-			// envelope (zoomGlides clamps a text's fades exactly as it clamps
-			// a zoom's glides: inside Dur, the way in winning any overlap).
-			// Two colours for the two kinds of overlay, because on the lane
-			// they are the same shape and only the colour tells them apart.
+			// a bracket like a zoom's, in its own colour, with the opening words -- or
+			// the drawing's file -- in it; the fill is the fades' envelope (zoomGlides).
+			// Two colours for the two overlay kinds, which are otherwise the same shape.
 			fin, fout := f.zoomGlides()
 			r, g, b := 0.6, 0.55, 0.95
 			if f.Kind == "svg" {
@@ -1462,10 +1268,7 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.LineTo(x1, y+2)
 			cr.LineTo(x1, y+fxLaneH-2)
 			cr.Stroke()
-			if x1-x0 > 40 {
-				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
-				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
-			}
+			fxPlate(cr, f, x0, x1, y, 40)
 		case "label":
 			// a marker, not a band: a label does nothing to the seconds it
 			// covers, so it is drawn as a tag on the lane rather than as a
@@ -1486,10 +1289,7 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.LineTo(x1, y+fxLaneH/2)
 			cr.Stroke()
 			cr.SetDash(nil, 0)
-			if x1-x0 > 30 {
-				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
-				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
-			}
+			fxPlate(cr, f, x0, x1, y, 30)
 		case "volume":
 			// the same bracket the overlays wear, in its own yellow, with the
 			// fill drawn on textFades -- which is the very function fxGainAt
@@ -1506,10 +1306,7 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.LineTo(x1, y+2)
 			cr.LineTo(x1, y+fxLaneH-2)
 			cr.Stroke()
-			if x1-x0 > 40 {
-				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
-				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
-			}
+			fxPlate(cr, f, x0, x1, y, 40)
 		}
 		// the ends, when there are ends: a band wide enough to have a middle
 		// has grips, and they are drawn so that what can be dragged looks like
@@ -1599,21 +1396,10 @@ func (ed *cutEditor) aspectChanged(s string) {
 		ed.a.setStatus("aspect: the source's own — the video comes out the shape it was filmed")
 		return
 	}
-	// ...and the framing that shape asks for, placed rather than waited for.
-	//
-	// A cut with an aspect of its own has one question outstanding from the
-	// moment the aspect is picked: which slice of the recording the finished
-	// video shows. Until it was answered the render fell back to the centred
-	// full-fill window -- the right answer, arrived at invisibly, by a rule
-	// nothing on the page states. So it is an effect now: a staying zoom at
-	// the very beginning, centred, exactly the window the fallback used, one
-	// second long. Nothing about the video changes; what changes is that the
-	// answer is on the lane, where it can be seen, dragged on the preview and
-	// thrown away.
-	//
-	// Only when there is no staying zoom already: a cut that has been framed
-	// has answered the question, and a second answer at second nought would
-	// quietly outrank it for every clip before the first one.
+	// A cut with an aspect of its own needs a framing; rather than a hidden
+	// fallback, it is placed as a staying zoom at 0:00, centred, full-fill, one
+	// second long -- visible on the lane, draggable, droppable. Only when no
+	// staying zoom exists yet.
 	if placed {
 		ed.a.setStatus(fmt.Sprintf("aspect %s — a ⊕ zoom at 0:00 holds the whole frame, centred", s))
 		return
@@ -1704,17 +1490,10 @@ func (ed *cutEditor) selOrdered() (float64, float64) {
 	return ed.sel.t0, ed.sel.t1
 }
 
-// syncFxArm shows the armed drag in the column, and takes the note away again.
-//
-// Arming changes nothing else you can see. The pointer becomes a crosshair over
-// the preview and the words that say why go to setStatus -- a dim, ellipsized
-// line in the log header at the bottom of the window, which is not somewhere a
-// hand looks. Pick ⊕ Zoom with a region marked and, from the chair, nothing
-// happens at all: that is what it was reported as, and it was accurate.
-//
-// Called from syncFxCursor, which is the one thing every path that arms or
-// disarms already calls -- including Esc and the release that places the
-// effect, neither of which knows this note exists.
+// syncFxArm shows the armed drag in the column and takes the note away again:
+// arming otherwise changes only the cursor and the status line, which nobody
+// looks at. Called from syncFxCursor, which every arm and disarm path already
+// calls.
 func (ed *cutEditor) syncFxArm() {
 	if ed.formBox == nil {
 		return // headless, or a page with no column yet
@@ -1746,14 +1525,10 @@ func (ed *cutEditor) syncFxArm() {
 	ed.formArm = ed.fxArm
 }
 
-// speedClicked is the ⏩ Speed entry: a stretch of footage put on a clock of
-// its own -- including the clock that does not run. A stop is a speed of ×0
-// and nothing else, which is why there is no separate entry for one: the same
-// dialog, the same bar on the lane, one number apart.
-//
-// A marked stretch is the seconds it covers. With nothing marked it takes a
-// couple of seconds from the line, which is the shape a stop is usually asked
-// for -- stand on this frame, here.
+// speedClicked is the ⏩ Speed entry: a stretch on a clock of its own,
+// including the one that does not run -- a stop is ×0, same dialog, same bar.
+// A marked stretch is the seconds it covers; with nothing marked, a couple of
+// seconds from the line.
 func (a *App) speedClicked() {
 	ed := a.ed
 	t0, t1 := ed.selOrdered()
@@ -1979,29 +1754,10 @@ func (ed *cutEditor) writeFx(was, nf cutFx) {
 
 // ---- dialogs ----------------------------------------------------------------
 
-// fxWin is the form every effect dialog is: whatever rows the caller adds, and
-// a line under them saying what is already true.
-//
-// It was a modal window until the Cut page had a column to put it in
-// (cut_form.go), and an effect is the thing that most wanted the change: the
-// numbers being typed are seconds of a band that is drawn on a lane four inches
-// below, and a window over the page is exactly what stopped that band being
-// looked at while its length was being decided.
-//
-// There is no Save and no Cancel. A form that sits beside the thing it edits,
-// with that thing live on the page, has nothing to ask permission for: the
-// answer to "what does 4 look like instead of 3" is the band on the lane and
-// the picture above it, and reaching it through a button meant typing, pressing
-// Save, watching, pressing ✎ Edit, and starting again. Every keystroke lands
-// (fxLive, a beat after the burst it belongs to) and ↶ Undo takes the whole
-// visit back in one step -- which is what Cancel was, minus the promise that
-// nothing had happened yet.
-//
-// isNew places it as the form opens. The form IS the effect from that moment:
-// there is no press left that would have placed it, and a caption you cannot
-// see while you type it is the thing this whole arrangement exists to avoid.
-// Nothing about it is stranded -- the band wears the ✕ that drops it, and Undo
-// takes it back.
+// fxWin is the form every effect opens in the Cut page's column (cut_form.go):
+// the caller's rows and a line saying what is already true. No Save/Cancel --
+// every keystroke lands after a beat (fxLive) and Undo takes the visit back.
+// isNew places the effect as the form opens.
 func (a *App) fxWin(title string, isNew bool, live *fxLive, rows []gtk.Widgetter, apply func()) {
 	form := a.cutForm()
 	if form == nil {
@@ -2032,14 +1788,9 @@ func (a *App) fxWin(title string, isNew bool, live *fxLive, rows []gtk.Widgetter
 	}
 }
 
-// fxLive is the thread every control in a live form pulls when it changes.
-//
-// One per form, handed to the rows as they are built, so a control says "I
-// changed" without knowing what the form does about it -- and the form is
-// wired up after the rows exist, which is the order the two need.
-//
-// The wait is the page's own (debounce): a burst of keystrokes is one edit,
-// and writing the cut to disk on every letter is a file write per letter.
+// fxLive is the thread every control in a live form pulls when it changes: one
+// per form, handed to the rows as they are built, wired up after. The wait is
+// the page's debounce -- a burst of keystrokes is one edit.
 type fxLive struct {
 	d    debounce
 	fire func()
@@ -2105,25 +1856,8 @@ func (f fxField) setSensitive(on bool) {
 }
 
 // fxLine puts a form's questions on one line: label, control, label, control.
-//
-// A form is two of these, and which question goes on which is the split the
-// old two-column grid made: what the effect IS on the first line -- its rate,
-// its gain, what its sound does, and its length, which is the one thing every
-// kind has -- and how it ARRIVES AND LEAVES on the second: the two fades and
-// the shape they travel in. Two short lines rather than one long one, and the
-// second line is the same three questions in every dialog, so the eye learns
-// where to look once.
-//
-// They were a two-column grid, five rows deep, with a full sentence for a label
-// on each ("Length seconds", "Fade in seconds") and every entry given the
-// column's slack -- so four numbers of at most five digits each filled a panel
-// the size of the preview beside it, and the words being typed into the box
-// above were pushed off the top of it.
-//
-// Nothing here is wider than "0.35". The labels say the unit in brackets
-// because that is the whole of what the long ones added, the entries ask for
-// the five characters they will ever hold (fxNumRow), and the line is short
-// enough that the form is the height of the thing it is about.
+// Line one is what the effect IS (rate/gain/sound, length), line two how it
+// arrives and leaves (the fades and their shape), the same in every dialog.
 func fxLine(fields ...fxField) *gtk.Box {
 	b := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	for i, f := range fields {
@@ -2328,14 +2062,9 @@ func fxNumOf(e *gtk.Entry, def float64) float64 {
 	return def
 }
 
-// askZoomParams asks a camera move's numbers: the fades either side, how long
-// it lasts, and the one real choice a zoom makes -- whether the camera comes
-// back off the region when its seconds are up or stays on it.
-//
-// The two are one effect because they are one gesture: draw a region, say how
-// long. Whether the picture opens back out afterwards is a line in the dialog,
-// not a second tool with its own button, its own lane colour and its own
-// arithmetic to keep in step.
+// askZoomParams asks a camera move's numbers: the fades, how long it lasts,
+// and whether the camera comes back off the region or stays. One effect,
+// because one gesture: draw a region, say how long.
 func (a *App) askZoomParams(f cutFx, isNew bool, ok func(cutFx)) {
 	// the form applies as it is typed, and the first answer it gives places
 	// the effect or opens the undo step (fxWin, fxLiveOk)
@@ -2478,14 +2207,10 @@ func laneWords(s string, n int) string {
 	return s
 }
 
-// askSpeedParams asks what the clock does over the seconds the effect covers.
-// One dialog for the whole kind: ×0 is a stop, and everything about a stop --
-// how long the frame stands, how it fades on and off, what the sound does --
-// is this dialog with a zero typed into the first row.
-//
-// The rate is typed rather than picked off a list of three: the useful slow
-// rates are a handful, but the fast ones run from "trim the dead air a bit" to
-// 100×, and no list that short covers both ends.
+// askSpeedParams asks what the clock does over the effect's seconds; ×0 is a
+// stop, and everything about a stop is this dialog with a zero in the first
+// row. The rate is typed, not picked: the fast ones run from "trim a bit" to
+// 100×.
 func (a *App) askSpeedParams(f cutFx, isNew bool, ok func(cutFx)) {
 	// the form applies as it is typed, and the first answer it gives places
 	// the effect or opens the undo step (fxWin, fxLiveOk)

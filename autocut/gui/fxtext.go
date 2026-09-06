@@ -1,29 +1,13 @@
 package main
 
-// Text on the picture: the layout, and the SVG the render draws it from.
+// Text on the picture: the layout and the SVG the render draws it from.
 //
-// A text effect is words, a stretch of time, and a box to put them in. The box
-// is the interesting part, and it is why this file exists apart from the other
-// two halves of the effects (cut_fx.go edits them, produce_fx.go renders them).
-//
-// WHERE THE BOX IS. A view or a zoom points a camera at part of the SOURCE, so
-// its rectangle is a fraction of the source frame. Text is the opposite: it is
-// put on the FINISHED video, and it has to stay where it was put while the
-// camera glides underneath it. So a text box is a fraction of the OUTPUT frame
-// -- Cx, Cy, Wf, Hf against the frame the video comes out at -- and the render
-// composites it after the camera chain, where the picture is already the
-// output's size and shape. Wf is the one field views and zooms deliberately do
-// not have: a camera window is always exactly the cut's aspect, and a text box
-// is whatever shape the words want.
-//
-// HOW BIG THE WORDS ARE. Neither the preview nor the render may measure text:
-// cairo could, librsvg will not tell us, and if they measured separately they
-// would disagree and the preview would stop being a preview. So fitText below
-// is the only measurement either of them makes -- a plain estimate over an
-// average advance, the same one the cards use (fitFont in svgcards.go) -- and
-// both sides lay the words out from the numbers it returns. The estimate errs
-// small, so a title that is a size too modest still reads and one that runs out
-// of its box does not happen.
+// A text box is a fraction of the OUTPUT frame (Cx, Cy, Wf, Hf), composited
+// after the camera chain, so it stays put while the camera glides; views and
+// zooms are fractions of the SOURCE and have no Wf (a camera window is always
+// the cut's aspect). fitText is the ONLY text measurement either side makes --
+// cairo could measure, librsvg will not -- an estimate over an average advance
+// (fitFont in svgcards.go) that errs small.
 
 import (
 	"fmt"
@@ -140,14 +124,8 @@ func textLines(text string, width, size float64) []string {
 }
 
 // fitText is the whole of the layout: the largest font size at which the words
-// fit the box, and the lines they break into at that size. Sizes are in the
-// same units as the box, so the caller decides whether that is output pixels
-// (the render) or widget pixels (the preview) and gets a consistent answer
-// either way.
-//
-// Binary search rather than stepping down, because the answer has to be the
-// same on both sides to the last decimal: the preview and the render must not
-// disagree about where line two starts.
+// fit the box, and the lines at that size, in the box's own units. Binary
+// search, because preview and render must agree to the last decimal.
 func fitText(text string, boxW, boxH float64) (size float64, lines []string) {
 	if strings.TrimSpace(text) == "" || boxW <= 0 || boxH <= 0 {
 		return 0, nil
@@ -199,15 +177,9 @@ func textBaselines(y, boxH, size float64, n int) []float64 {
 
 // ---- the SVG the render draws ------------------------------------------------
 
-// textSVG is one text effect as a transparent document exactly the size of the
-// output frame, for the render to composite over the picture (see textChain).
-// The whole frame rather than just the box, so the overlay is a plain 0,0
-// composite and there is no second place for the geometry to be got wrong.
-//
-// White words with a dark outline around them, because footage is any colour
-// and text with no outline disappears into half of it. The outline is a second
-// copy of every line drawn underneath in stroke only, which is the one way of
-// doing it that needs nothing from the renderer beyond stroke and fill.
+// textSVG is one text effect as a transparent document the size of the output
+// frame (a plain 0,0 composite, see textChain): white words with a dark
+// outline, the outline a stroke-only copy of every line drawn underneath.
 func textSVG(f cutFx, outW, outH int) []byte {
 	w, h := float64(outW), float64(outH)
 	x, y, bw, bh := f.textBox().px(w, h)
@@ -263,16 +235,10 @@ type textCue struct {
 	idx int
 }
 
-// overFx is whether an effect is one of the two laid OVER the running picture
-// rather than done to it: words (text) or a drawing (svg, fxsvg.go). Both sit
-// in a box on the finished frame, both fade on and off inside their bar, and
-// both are composited after the camera -- so the cues, the filter graph and
-// the preview treat them as one thing, and only the last step, what is
-// actually drawn, tells them apart.
-//
-// An empty one is not an effect: a title with no words and a drawing with no
-// file have nothing to put on the picture, and carrying them any further only
-// makes an input ffmpeg cannot open.
+// overFx is whether an effect is laid OVER the running picture: text or a
+// drawing (svg, fxsvg.go). Cues, filter graph and preview treat both as one
+// thing; only what is drawn differs. An empty one (no words, no file) is not
+// an effect -- it would be an input ffmpeg cannot open.
 func overFx(f cutFx) bool {
 	switch f.Kind {
 	case "text":
@@ -416,17 +382,11 @@ func cueClip(T, dur, fin, fout, sessS, rate, length float64) (s, e, cin, cout fl
 	return s, e, cin, cout, true
 }
 
-// freezeCues maps the cut's stop effects onto one clip, on exactly the terms
-// textCues maps its titles -- the same five numbers, the same arithmetic --
-// so a still and a title placed at the same second come and go together. A
-// held clip (span 0: a spliced card, an audio insert's held frame) gets none;
-// there is no footage running under it for a still to stand over.
-//
-// A stop stands over the seconds frozenSpans gives it rather than over its
-// whole bar, which are the same seconds except where another speed effect
-// crosses it and dilutes its ×0 (cut_speedmix.go). The fades belong to the
-// bar's own ends: an edge made by a crossing effect is a hard one, because the
-// picture there does not fade into motion, it simply starts moving.
+// freezeCues maps the cut's stop effects onto one clip on textCues' terms --
+// same five numbers -- so a still and a title at the same second come and go
+// together. A held clip (span 0) gets none. A stop stands over frozenSpans'
+// seconds, not its whole bar: a crossing speed effect dilutes its ×0
+// (cut_speedmix.go), and an edge made by a crossing is hard.
 func freezeCues(fx []cutFx, sessS, span, rate, length float64) []textCue {
 	if length <= 0 || span <= 0 {
 		return nil
@@ -456,24 +416,13 @@ func freezeCues(fx []cutFx, sessS, span, rate, length float64) []textCue {
 	return out
 }
 
-// textChain is the filter graph that puts the cues on the picture: each one
-// its own input, faded on its own alpha and composited over whatever came
-// before, switched on for exactly its seconds. in is the label the picture
-// arrives on, base the input index of the first overlay file, boxW and boxH
-// the finished frame's size, and the label the picture leaves on comes back.
-//
-// The two kinds of overlay differ in one line each. A title's file is drawn
-// the whole size of the frame already (textSVG), so it goes on at the origin
-// and the box is inside the drawing. A drawing is the user's own file at
-// whatever size it happens to be, so it is fitted into its box here -- shrunk
-// to sit inside, its own shape kept, centred on whichever axis the fit left
-// short (w and h in the overlay expression are the overlay's own size, so the
-// centring is done with the numbers ffmpeg ends up with rather than the ones
-// we predicted).
-//
-// Commas are backslash-escaped inside enable=, because the filtergraph parser
-// splits filters on bare commas -- the same escaping pieceExpr does for
-// zoompan's expressions.
+// textChain is the filter graph that puts the cues on the picture: each its
+// own input, faded on its own alpha, enabled for exactly its seconds. in is
+// the incoming label, base the input index of the first overlay file,
+// boxW/boxH the frame size; the outgoing label comes back. A title's file is
+// already frame-sized (textSVG) and goes on at the origin; a drawing is fitted
+// into its box here using ffmpeg's own w/h. Commas inside enable= are escaped
+// as pieceExpr does for zoompan.
 func textChain(cues []textCue, in string, base, boxW, boxH int) (string, string) {
 	var b strings.Builder
 	cur := in

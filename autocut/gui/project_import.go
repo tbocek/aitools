@@ -1,21 +1,9 @@
 package main
 
-// Adding a source: into the project, or in place.
-//
-// A project is a folder now (projExt), and the point of that is that it can be
-// copied, backed up or zipped as one thing. A session whose sources are
-// somewhere else -- on the card they were recorded on, in a downloads folder,
-// on a drive that will be unplugged -- is not one thing, and nothing about the
-// project says so until a source is gone and the row goes red.
-//
-// So copying in is the default, and a tick beside the Add buttons turns it off
-// for the project (Project.RefSources). Both answers are legitimate: reference
-// is right for the footage you are cutting on the machine that recorded it,
-// where 20 GB of capture does not want a second copy; copy is right for
-// anything that has to survive being handed over.
-//
-// The copy goes to <project>/sources/. Not a settings folder, not the root:
-// inside the project, because that is the whole reason to press it.
+// Adding a source: copied into <project>/sources/ by default, so the project
+// folder stays one thing; a tick beside the Add buttons switches to
+// referencing in place (Project.RefSources) for footage that should not exist
+// twice.
 
 import (
 	"fmt"
@@ -65,16 +53,11 @@ func (a *App) askImport(paths []string) {
 }
 
 // copySources copies what is outside the project into <project>/sources/ and
-// adds the copies, on a goroutine because a card full of capture is gigabytes
-// and the window has to stay alive.
-//
-// A file already inside the project is added where it is. A name already taken
-// in sources/ by a file of the same size is taken to be the same file and is
-// not copied again -- adding the same card twice is a thing people do, and the
-// second add should cost nothing.
+// adds the copies, on a goroutine. A file already inside the project is added
+// where it is; a name already in sources/ with the same size is the same file
+// and is not copied again.
 func (a *App) copySources(paths []string) {
-	if a.running {
-		a.setStatus("a run is already active — stop it first (⏹)")
+	if a.busy() {
 		return
 	}
 	dir := a.sourcesDir()
@@ -100,9 +83,7 @@ func (a *App) copySources(paths []string) {
 		a.addSources(paths...)
 		return
 	}
-	a.running = true
-	a.updateRunControls()
-	a.logExp.SetExpanded(true)
+	a.startRun()
 	a.logf(">>> copying %s (%s) into %s", plural(len(todo), "source"), humanSize(total), dir)
 	go func() {
 		var out []string
@@ -130,8 +111,7 @@ func (a *App) copySources(paths []string) {
 			out = append(out, to)
 		}
 		glib.IdleAdd(func() {
-			a.running = false
-			a.updateRunControls()
+			a.endRun()
 			a.progress.SetFraction(0)
 			a.addSources(out...)
 			a.saveProjectNow()

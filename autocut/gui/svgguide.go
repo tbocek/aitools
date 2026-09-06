@@ -1,16 +1,9 @@
 package main
 
-// The note that goes into a project's assets folder beside the cards.
-//
-// It is here rather than in a file next to this one because it has to end up in
-// the folder the cards are in, on a machine that only has the binary: whoever
-// opens assets/ to write a second card -- and increasingly that is a model being
-// asked to "make one like tier.svg" -- finds the rules there, in the folder,
-// with the examples they are about.
-//
-// Keep it in step with svgcards.go, svganim.go and svgcss.go. It is the same
-// three subsets described from the other side: what a document may do, rather
-// than what this package does with it.
+// The note written into a project's assets folder beside the cards, so whoever
+// (or whatever model) writes a second card finds the rules next to the
+// examples. Keep it in step with svgcards.go, svganim.go and svgcss.go: the
+// same three subsets, described from the document's side.
 
 // cardGuideFile is what the note is called. Uppercase, so it sorts above the
 // cards and reads as a note about them rather than as one of them.

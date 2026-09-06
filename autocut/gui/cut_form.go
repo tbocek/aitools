@@ -1,41 +1,20 @@
 package main
 
-// The Cut page's form column.
-//
-// It is the space the three prompt boxes used to fill. Every prompt is on
-// Prepare now (prepedit.go), which left the right-hand half of the top row
-// empty -- and that half is exactly the shape a form wants: a column,
-// as tall as the video beside it, wide enough for a labelled entry and a line
-// of explanation under it.
-//
-// So the dialogs moved in. Inserting a card asks six questions; a zoom asks
-// five; both used to ask them in a modal window over the page, which is the one
-// place a question about the footage cannot be asked -- the answer depends on
-// what is under the window. Here the timeline, the preview and the lane the
-// effect sits on all stay visible and stay live while the form is up. Nothing
-// is modal: the form is a part of the page, and pressing something else on the
-// page is allowed to take the column away from it.
-//
-// Which is what gone is for. Every form is built by whoever opens it and holds
-// widgets this column has been handed; when the column is given to something
-// else, that owner has to hear about it. Showing a second form takes the first
-// one down, and taking one down calls its gone, so a dialog that was waiting
-// for an answer learns it will not get one.
+// The Cut page's form column: the right half of the top row, where insert and
+// effect forms live instead of modal dialogs, so the timeline and preview stay
+// live while a question about the footage is answered. Showing a second form
+// takes the first down and calls its gone, so a waiting dialog learns it will
+// get no answer.
 
 import (
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
-// buildForm makes the column. With no form in it, it is the page's quiet
-// corner: the view controls and the totals (formIdle).
-//
-// Three pieces, and only the middle one scrolls. The heading is pinned to the
-// top and the buttons to the bottom, because a form whose Place button is below
-// the fold is a form that cannot be placed: the column is as tall as the video
-// beside it and no taller, a five-question form is taller than that, and a
-// scrollbar in a panel that is mostly entry boxes is not something a hand
-// reaches for. Pinned, the answer to "what do I press now" is always on screen.
+// buildForm makes the column; with no form in it, it holds the view controls
+// and the totals (formIdle). Three pieces, only the middle scrolls: the
+// heading is pinned to the top and the buttons to the bottom, so a form taller
+// than the column keeps its Place button on screen.
 func (ed *cutEditor) buildForm() *gtk.Box {
 	ed.formTitle = gtk.NewLabel("")
 	ed.formTitle.SetXAlign(0)
@@ -43,24 +22,16 @@ func (ed *cutEditor) buildForm() *gtk.Box {
 	ed.formTitle.AddCSSClass("heading")
 	ed.formTitle.SetEllipsize(pango.EllipsizeEnd)
 
-	shut := gtk.NewButtonFromIconName("window-close-symbolic")
-	shut.AddCSSClass("flat")
-	shut.SetTooltipText("close this form — nothing is lost that was not already saved")
-	shut.ConnectClicked(func() { ed.hideForm() })
+	shut := flatIcon("window-close-symbolic", "close this form — nothing is lost that was not already saved", func() { ed.hideForm() })
 
 	ed.formHead = gtk.NewBox(gtk.OrientationHorizontal, 6)
 	ed.formHead.Append(ed.formTitle)
 	ed.formHead.Append(shut)
 
 	// What the column holds when no form is open: the zoom and the thumbnail
-	// size, and what the cut comes to (filled in by buildCut).
-	//
-	// It used to hold a paragraph explaining that forms open here, which is a
-	// thing you learn the first time a form opens and read for the rest of the
-	// project. The two pairs of buttons are the other half of the same trade:
-	// they are set once and then left, so they do not belong on the bar with
-	// Add, Split and Remove -- and this column is empty except while a form is
-	// up, which is exactly when nobody is zooming the timeline.
+	// size, and what the cut comes to (filled in by buildCut). Set-once controls
+	// that do not belong on the bar of verbs, in a column that is otherwise empty
+	// exactly when nobody is zooming.
 	ed.formIdle = gtk.NewBox(gtk.OrientationVertical, 6)
 	ed.formIdle.SetVExpand(true)
 
@@ -95,18 +66,10 @@ func (ed *cutEditor) buildForm() *gtk.Box {
 }
 
 // idleRow is one line of the quiet column: what it is, then the thing itself.
-// The readings used to be captions under the buttons they belonged to, in
-// small print on a bar that had no room for them; named and stacked they are a
-// column of numbers, which is a thing to read rather than a label on a control.
-//
-// Every line, including the ones whose "reading" is a control: the thumbnail
-// buttons say how big the pictures are and the dropdown says what shape the
-// video is, and a row with no name in a column of named rows is the row you
-// have to work out.
+// Every line is named, including the ones whose "reading" is a control -- a
+// row with no name in a column of named rows is the row you have to work out.
 func idleRow(name string, w gtk.Widgetter) *gtk.Box {
-	l := gtk.NewLabel(name + ":")
-	l.SetXAlign(0)
-	l.AddCSSClass("dim-label")
+	l := dimLabel(name + ":")
 	l.SetWidthChars(13) // one column for the names, whatever the readings measure
 	l.SetVAlign(gtk.AlignCenter)
 	row := gtk.NewBox(gtk.OrientationHorizontal, 6)
@@ -118,9 +81,7 @@ func idleRow(name string, w gtk.Widgetter) *gtk.Box {
 // idleRead is one of that column's readings: left-aligned, dim, and in the
 // numeric face the clock uses, so a column of them lines up digit under digit.
 func idleRead() *gtk.Label {
-	l := gtk.NewLabel("")
-	l.SetXAlign(0)
-	l.AddCSSClass("dim-label")
+	l := dimLabel("")
 	l.AddCSSClass("numeric")
 	return l
 }

@@ -1,39 +1,11 @@
 package main
 
-// Showing an insert in the preview.
-//
-// An insert is the one thing on this page that is not in any recording: a title
-// card, a still, an animated ranking. The timeline drew it in violet and the
-// preview went on showing the footage it replaces, so the single thing you
-// cannot check about a card -- what it looks like, whether the names on it came
-// out right, whether it is on screen where you meant it to be -- was the thing
-// the page would not show you. It came out at Produce, ten minutes of encoding
-// later, or it did not.
-//
-// So while the playhead is inside an insert, the preview shows the insert -- and
-// what you hear is the insert too. The footage's sound is cut under a card, both
-// of its own and any recording mixed under it, because that is the cut the
-// render makes: no session audio runs under an insert there either. A card that
-// is a video plays its own sound, which is the whole point of a sting.
-//
-// The two modes differ in what the FOOTAGE does, and the preview has to show
-// that difference or the flag looks like it does nothing:
-//
-//   - over the footage: the stream keeps running underneath. Those seconds are
-//     seconds the cut has already given away to the card, and running is what
-//     reads the clock and scrolls the timeline.
-//   - between the footage: the stream is HELD. The card is not on the session's
-//     ruler at all, so playback stops at the split point, the card plays through
-//     at its own speed, and the footage carries on from the same frame -- which
-//     is exactly what the render will do.
-//
-// A card dropped into a gap between recordings has nothing running under it, so
-// it stands still. Nothing plays in a gap on this page, with or without a card
-// in it.
-//
-// Frames are rendered by ffmpeg, which is what Produce renders them with -- so
-// what the preview shows is what the video will get, and not a second opinion
-// from a different SVG library about what the card means.
+// Showing an insert in the preview while the playhead is inside it, with the
+// insert's sound and the session hushed -- the cut the render makes. Over the
+// footage: the stream keeps running underneath. Between the footage: the stream
+// is HELD at the split point, the card plays at its own speed, the footage goes
+// on from the same frame. A card in a gap stands still. Frames come from
+// ffmpeg, the same renderer Produce uses.
 
 import (
 	"bytes"
@@ -82,20 +54,10 @@ type insFilm struct {
 	failed bool // it cannot be drawn; said once, then left alone
 }
 
-// insertAt is the insert the session time t falls inside, and how far into the
-// card's own time that is. nil when the playhead is on footage.
-//
-// The two are not the same number for a spliced card, which is why they are
-// returned together. A spliced card owns no session time at all -- it is a point
-// where the footage is cut open -- so there is no span of the timeline to be
-// "inside" it. What it has is the marker drawn for it, and sweeping the playhead
-// across that marker plays the card from beginning to end: the same gesture as
-// scrubbing through a card that lies over the footage, at a different scale.
-//
-// The marker's width comes from spliceSpan, so this reads the same picture the
-// eye does. Zoomed in far enough that the marker is the card's own length, that
-// scale is 1:1 and sweeping the playhead across it plays the card at its own
-// speed; zoomed out, the same sweep is the same card in fewer px.
+// insertAt is the insert session time t falls inside, and how far into the
+// card's own time that is; nil on footage. A spliced card owns no session time,
+// so its marker (spliceSpan) is what the playhead sweeps -- the same picture
+// the eye reads, 1:1 at a zoom where the marker is the card's own length.
 func (ed *cutEditor) insertAt(t float64) (*cutSeg, float64) {
 	for i := range ed.segs {
 		s := &ed.segs[i]
@@ -132,17 +94,10 @@ type insHold struct {
 	done bool
 }
 
-// splicedCrossed is the spliced card playback has just run into: the first one
-// whose split point lies in (from, to].
-//
-// The card's own marker is not what triggers it. The marker is drawn wide enough
-// to grab with a mouse and gets wider as you zoom, and a card that plays earlier
-// because the timeline is zoomed in would be a preview lying about the cut. The
-// split point is a moment in the footage, and crossing it is the trigger.
-//
-// A jump forward -- a seek, a new file cued -- is not a crossing. Only the
-// distance one tick of playback covers counts, so landing past a card does not
-// play it on the way.
+// splicedCrossed is the spliced card playback has just run into: the first
+// whose split point lies in (from, to]. The split point, not the marker (which
+// widens with zoom), is the trigger; and only the distance one tick covers
+// counts, so a seek past a card does not play it.
 func (ed *cutEditor) splicedCrossed(from, to float64) *cutSeg {
 	if to <= from || to-from > 1.0 {
 		return nil
@@ -242,22 +197,12 @@ func (ed *cutEditor) cardNow() (*cutSeg, float64) {
 	return s, into
 }
 
-// cardSound is what the preview plays while a card is on it: not the session.
-//
-// The footage and everything mixed under it go quiet for as long as the card is
-// up, which is what the render does with those seconds. A video insert gets its
-// own sound instead -- cued once, when it comes up, and left to run on its own
-// clock, because seeking it ten times a second to keep it level with a preview
-// rendered at eight frames would be a stutter rather than a sting.
-// cardHush is whether the session's own sound is silenced while s is up. A card
-// takes those seconds -- the render puts no session audio under one -- and so
-// does no card at all being up, which is to say none of them.
-//
-// The one card that does NOT is an insert covering the picture alone: the
-// render leaves the recording underneath playing (soundUnder), so the preview
-// has to leave it playing too, or scrubbing through one would be silent where
-// the finished video is not. That is the whole of the difference between the
-// two readings of Mute as the ear meets them.
+// cardSound: what the preview plays while a card is up. The session goes quiet;
+// a video insert's own sound is cued once when it comes up and left on its own
+// clock (seeking it 10×/s against an 8 fps preview would stutter).
+// cardHush: whether the session's sound is silenced while s is up. Only an
+// insert covering the picture alone leaves the recording playing (soundUnder),
+// as the render does.
 func cardHush(s *cutSeg) bool { return s != nil && !s.keepsSoundUnder() }
 
 func (ed *cutEditor) cardSound(s *cutSeg, into float64) {
@@ -345,16 +290,11 @@ func (ed *cutEditor) showInsert() {
 	s, into := ed.cardNow()
 	ed.cardSound(s, into)
 	if s == nil || s.audioIns() {
-		// no card, or a sound-only one: the picture stays the session's --
-		// running under an overwrite, standing on its held frame under a
-		// splice -- and cardSound above has already routed the file's sound.
-		//
-		// Unless the session's picture would be a lie: standing still on a row
-		// with nothing under the line, the pipeline is holding some OTHER
-		// row's frame (videoAt falls back so a scene never renders a hole),
-		// and showing it says this row has that footage. Black says what is
-		// true -- there is no video here. Only at a standstill: in playback
-		// the fallback stays, because the running pipeline is the clock.
+		// no card, or a sound-only one: the picture stays the session's, and cardSound
+		// has routed the file's sound. Unless standing still on a row with nothing
+		// under the line: the pipeline holds some OTHER row's frame (videoAt falls
+		// back), and black is what is true. Only at a standstill -- in playback the
+		// running pipeline is the clock.
 		if !ed.player.playing && ed.videoShown(ed.playhead) == nil {
 			ed.player.ShowStill(blackStill())
 		} else {

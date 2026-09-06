@@ -1,31 +1,11 @@
 package main
 
-// Suggest: the Cut page's ▶.
-//
-// Everything else under cut_*.go is a hand doing something to the timeline --
-// dragging an edge, dropping a card, muting a lane. This is the one path where
-// the timeline arrives from outside: the session transcript goes out to a
-// model, two prompts run over it in turn -- the cut, which chooses segments
-// and (for the Shorts style) the effects that decorate them, then two passes
-// that reads both back -- and what comes back is a set of segments and a set
-// of effects the page then has to be talked into believing.
-//
-// Which is why it is its own file rather than a section of cut.go. It shares no
-// state with the editing code beyond the two slices it hands over at the end,
-// it is the only part of the page that can fail for reasons off this machine,
-// and it is the only part with a progress bar -- a run here is minutes, and
-// most of what these functions do is not choosing but explaining, clamping and
-// double-checking what was chosen.
-//
-// The clamps are the point. A model asked for seconds will return seconds that
-// overlap, run past the end of the footage, or hold a zoom for longer than the
-// clip it is on; every reply is walked back onto the timeline it claims to
-// describe (clampFxToSegs, keepFilmed, rowsInSegs) before the page sees it. A
-// suggestion that cannot be edited by hand afterwards is worse than none.
+// Suggest: the Cut page's ▶. The one path where the timeline arrives from a
+// model -- the cut, then captions, speed and effects passes over it -- and
+// every reply is walked back onto the timeline it claims to describe
+// (clampFxToSegs, keepFilmed, rowsInSegs) before the page sees it.
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -38,8 +18,7 @@ import (
 )
 
 func (a *App) suggestClicked() {
-	if a.running {
-		a.setStatus("a run is already active — stop it first (⏹)")
+	if a.busy() {
 		return
 	}
 	// re-suggesting over an untouched suggestion is fine -- there is no human
@@ -75,24 +54,13 @@ func (a *App) suggestClicked() {
 		span = math.Max(span, r.e)
 	}
 
-	a.running = true
-	a.stopFlag.Store(false)
-	a.pauseFlag.Store(false)
-	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.qReset()
-	a.updateRunControls()
-	a.logExp.SetExpanded(true)
+	a.startRun()
 	a.saveProjectNow() // the run is a moment worth a file
 	a.logf(">>> suggest: target %.0f s — three calls: the cut, its captions, its effects", target)
-	// Both calls are streamed, so the bar has real news to report -- but not
-	// yet: the model thinks for minutes before it writes the first segment, and
-	// there is nothing to measure in that. So it pulses until the first finished
-	// segment arrives, and the thing that stops the pulse is that segment's own
-	// fraction rather than a flag set from the goroutine. Pulse and SetFraction
-	// drive the same needle, and the one that lasts has to be the one with real
-	// news. (Same shape as publish; see there.)
-	// the queue's first word, not the bar's: anything the queue says later
-	// would otherwise land after this and wipe it (showProg runs on an idle)
+	// Both calls are streamed, but the model thinks for minutes before the first
+	// segment, so the bar pulses until the first finished segment's own fraction
+	// stops it (same shape as publish). The queue's first word, not the bar's:
+	// anything the queue says later would wipe it (showProg runs on an idle).
 	a.qJob(trackSTT, "suggest", 1, 4)
 	a.prog(trackSTT, 0, "thinking over the whole session")
 	glib.TimeoutAdd(150, func() bool {
@@ -130,8 +98,7 @@ func (a *App) suggestClicked() {
 			fx = append(fx, a.decorateCut(segs, rows, fx)...)
 		}
 		glib.IdleAdd(func() {
-			a.running = false
-			a.updateRunControls()
+			a.endRun()
 			if err != nil {
 				if !errors.Is(err, errStopped) {
 					a.logf("suggest FAILED: %v", err)
@@ -277,15 +244,10 @@ func (a *App) footageWindow(target float64) (lo, hi float64) {
 // would accept cuts nothing could make watchable.
 const maxSpeedRate = 4.0
 
-// suggestWindow is how far a suggestion's total may drift from the target
-// before it is rejected. The
-// wide band exists because a long cut is a wish, not a contract: minutes-long
-// cuts land where the material lets them. A short one is the opposite -- "30
-// seconds" is a promise to whoever was told it -- so under a minute the
-// ceiling is a fifth over instead of half over: a 25-second target must not
-// ship as a 37-second clip, and being told so is what makes the next attempt
-// trim inside its beats rather than keep the length.
-// The floor stays shared: too little footage is the same failure everywhere.
+// suggestWindow is how far a suggestion's total may drift from the target. A
+// long cut is a wish (half over is fine); under a minute it is a promise, so
+// the ceiling is a fifth over -- a 25-second target must not ship as 37. The
+// floor is shared.
 func (a *App) suggestWindow(target float64) (lo, hi float64) {
 	if target <= shortTarget {
 		return target * 0.6, target * 1.2
@@ -348,23 +310,11 @@ func joinSpeeds(fx []cutFx) []cutFx {
 	return append(out, rest...)
 }
 
-// fxFromReply turns proposed effects into the page's own cutFx. The model is
-// trusted with WHEN and WHICH KIND; everything about HOW -- where a zoom
-// centres, how a caption is boxed, how long a fade runs -- is this app's own
-// defaults, the same ones the fx dialogs open with (a centre punch-in; the
-// caption box is left empty for textBox() to fill in). Entries that make no
-// sense are dropped rather than failing the run: the segments are the work,
-// the effects are seasoning.
-//
-// Four of the app's five kinds can be asked for. The fifth, svg, cannot: a
-// drawing is a file on this machine and nothing in a reply can name one, so
-// the overlay stays a thing a hand places.
-// fxMaxProposed is how many effects a reply may place. It was a handful when
-// the only style asking for them cut a 25-second Short; the long-form styles
-// ask now too, and their wording budgets three or four per five minutes of
-// finished video -- so the ceiling is what that rate reaches on a cut far
-// longer than anyone makes, and a reply past it is a model decorating instead
-// of editing.
+// fxFromReply turns proposed effects into cutFx: the model chooses WHEN and
+// WHICH KIND, the app's own defaults decide HOW. Nonsense entries are dropped,
+// not fatal. svg cannot be asked for (a file on this machine).
+// fxMaxProposed caps a reply's effects at the wording's rate over a cut longer
+// than anyone makes.
 const fxMaxProposed = 1000 // effectively none: how many effects a cut carries is the prompt's call, not this file's
 
 func fxFromReply(in []sugFx) []cutFx { return fxFrom(in, fxMaxProposed) }
@@ -454,15 +404,10 @@ func fxFrom(in []sugFx, cap int) []cutFx {
 
 func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutFx, error) {
 	system := a.sysPrompt("cut")
-	// The range, not just the number. The wording asks for a total near the
-	// target and the validator accepts a window around it (suggestWindow), and
-	// for a long time only the number crossed the wire: a model told "300
-	// seconds" and nothing else treats 300 as the answer, and one told to hit
-	// it exactly will spend the whole call trying -- adding a segment, dropping
-	// another, adding up again -- and run out of room to write the answer in.
-	// That is not a hypothetical: an 11-minute call once came back with 85 kB
-	// of arithmetic and no JSON at all. The two numbers come from the same
-	// function the validator uses, so the prompt and the gate cannot drift.
+	// The range, not just the number: told "300 seconds" alone, a model spends
+	// the call adding and dropping segments to hit it exactly and runs out of room
+	// for the answer (once: 85 kB of arithmetic, no JSON). From the same function
+	// the validator uses, so prompt and gate cannot drift.
 	lo, hi := a.footageWindow(target)
 	// ...and how long the session it is choosing from actually runs. The
 	// timeline is written in mm:ss and the answer is in seconds, and nothing
@@ -510,15 +455,9 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 			a.prog(trackSTT, suggestChooseShare*f, "%d moments", n)
 		}
 	}
-	// Thinking first, and execute mode only after an attempt comes back with
-	// nothing (thinkAgain). This was briefly the other way round, on the
-	// evidence of six empty thinking attempts in a row -- all six under a
-	// user context that asked for a caption per line of speech, which is what
-	// the reasoning was spent on. Every run before that context, over three
-	// days, was a thinking call that answered in about ten minutes; the
-	// execute-mode attempts that replaced it answered in two and answered
-	// worse -- the whole session kept, malformed JSON, a search instead of an
-	// answer. The fallback stays; the default is what worked.
+	// Thinking first, execute mode only after an attempt comes back empty
+	// (thinkAgain): thinking calls answered in about ten minutes over three days
+	// of runs; execute-mode ones answered in two and worse.
 	think := true
 	for try := 0; try < 3; try++ {
 		if err := a.checkpoint(); err != nil {
@@ -553,28 +492,11 @@ func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutF
 	return nil, nil, fmt.Errorf("no valid cut after 3 attempts")
 }
 
-// checkCutReply reads one answer to the cut and says what is wrong with it --
-// all of it, one fault per sentence, worst first -- or hands back the cut.
-//
-// Everything, not the first thing. The check was an if/else chain, one problem
-// per attempt, so an answer with three faults took three attempts to be told
-// about the third and there are only three. One run: told "139 effects" on the
-// second attempt, it fixed that and was then told the total, never that half
-// its timestamps lay past the end of the recording, never that the speed it
-// had written onto its segments had been thrown away. Told all three at once
-// it has one round to fix them in, and it is a round it gets.
+// checkCutReply reads one answer to the cut and says everything wrong with it
+// -- one fault per sentence, worst first -- or hands back the cut. Everything,
+// not the first thing: there are only three attempts, and an answer with three
+// faults gets one round to fix them all.
 func (a *App) checkCutReply(reply string, target, span float64, attempt int) ([]cutSeg, []cutFx, string) {
-	problem := noAnswer(reply)
-	if problem != "" {
-		// nothing to parse: say so rather than reporting the parser's
-		// bafflement at an empty string (llm.go)
-		return nil, nil, problem
-	}
-	clean := strings.TrimSpace(reply)
-	if i := strings.Index(clean, "{"); i >= 0 {
-		clean = clean[i:]
-	}
-	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
 	var out struct {
 		// speed and rate on a SEGMENT are the same thing said where a model
 		// keeps saying it: a stretch that runs at 4 is one segment with one
@@ -585,12 +507,7 @@ func (a *App) checkCutReply(reply string, target, span float64, attempt int) ([]
 		Segments []struct{ Start, End, Speed, Rate float64 } `json:"segments"`
 		Fx       []sugFx                                     `json:"fx"`
 	}
-	if err := json.Unmarshal([]byte(clean), &out); err != nil {
-		// a reply the token ceiling chopped in half wants a shorter answer,
-		// not a more careful one (cutOff, llm.go)
-		if problem = cutOff(reply, err); problem == "" {
-			problem = "not valid JSON: " + err.Error()
-		}
+	if problem := jsonReply(reply, &out); problem != "" {
 		return nil, nil, problem
 	}
 	// a rate on a segment: 1 is the ordinary rate and says nothing, and any
@@ -771,20 +688,9 @@ func clampFxToSegs(fx []cutFx, segs []cutSeg) []cutFx {
 
 // ---- the passes after the cut ----------------------------------------------
 //
-// The cut used to be one reply: the segments, the length arithmetic, and every
-// effect, in one answer to one request holding the whole timeline. The three
-// jobs interfere. A model writing two hundred captions ran into the token
-// ceiling before it finished; one told to caption every line concluded every
-// line had to stay and kept the whole session; one thinking about all three at
-// once spent eleven minutes and wrote nothing. Separated, none of them is
-// hard: the cut is a short list, the captions are a paragraph per clip, the
-// decorations are a handful.
-//
-// So the cut is chosen first, and only then are the effects asked
-// for -- in the clips' own seconds, from a brief that holds nothing but the
-// kept clips and what was said over them. Offsets from a clip's start, not
-// session stamps: a reply that reads [28:04] as 2804 is a reply that cannot
-// happen when the clip starts at 0.
+// Cut first, then captions, speed and effects over the kept clips in the clips'
+// own seconds (offsets from the clip's start, never session stamps). One reply
+// for all of it ran out of tokens or wrote nothing.
 
 // captionBatch is how many clips one captions request carries. Five is a few
 // paragraphs in and a few dozen lines out -- small enough that a bad answer
@@ -838,14 +744,6 @@ func (a *App) captionCut(segs []cutSeg, rows []tsvRow) []cutFx {
 // seconds are offsets from the clip's start and are held inside the clip. A
 // clip the reply does not mention has no captions, which is an answer.
 func captionsFromReply(batch []cutSeg, first int, reply string) ([]cutFx, string) {
-	if p := noAnswer(reply); p != "" {
-		return nil, p
-	}
-	clean := strings.TrimSpace(reply)
-	if i := strings.Index(clean, "{"); i >= 0 {
-		clean = clean[i:]
-	}
-	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
 	var out struct {
 		Clips []struct {
 			I  int `json:"i"`
@@ -855,11 +753,8 @@ func captionsFromReply(batch []cutSeg, first int, reply string) ([]cutFx, string
 			} `json:"fx"`
 		} `json:"clips"`
 	}
-	if err := json.Unmarshal([]byte(clean), &out); err != nil {
-		if p := cutOff(reply, err); p != "" {
-			return nil, p
-		}
-		return nil, "not valid JSON: " + err.Error()
+	if p := jsonReply(reply, &out); p != "" {
+		return nil, p
 	}
 	var fx []cutFx
 	for _, c := range out.Clips {
@@ -885,15 +780,9 @@ func captionsFromReply(batch []cutSeg, first int, reply string) ([]cutFx, string
 	return fx, ""
 }
 
-// decorateCut is the effects pass: the zooms, stops and volume, in one request
-// over every kept clip. A failed answer is logged and the cut stands plain.
-//
-// It runs last and is told what the two passes before it decided: the captions
-// as CAPTION lines (clipBriefsWith), and the rate in each heading. Both
-// change the answer. A zoom that pushes the frame past a caption hides the
-// words; a stop or a two-second zoom on a clip running at 8 is over before it
-// registers, and a "hold on this beat" is a contradiction on a stretch chosen
-// for being worth skipping.
+// decorateCut is the effects pass: zooms, stops and volume in one request over
+// every kept clip; a failed answer leaves the cut plain. It is told the
+// captions (CAPTION lines) and each clip's rate, since both change the answer.
 func (a *App) decorateCut(segs []cutSeg, rows []tsvRow, done []cutFx) []cutFx {
 	if len(segs) == 0 {
 		return nil
@@ -944,14 +833,6 @@ func (a *App) decorateCut(segs []cutSeg, rows []tsvRow, done []cutFx) []cutFx {
 // from that clip's start, held inside it. The kinds the pass owns and no
 // others -- a speed or a caption here is written elsewhere and is dropped.
 func decorationsFromReply(segs []cutSeg, reply string) ([]cutFx, string) {
-	if p := noAnswer(reply); p != "" {
-		return nil, p
-	}
-	clean := strings.TrimSpace(reply)
-	if i := strings.Index(clean, "{"); i >= 0 {
-		clean = clean[i:]
-	}
-	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
 	var out struct {
 		Fx []struct {
 			Clip       int
@@ -960,11 +841,8 @@ func decorationsFromReply(segs []cutSeg, reply string) ([]cutFx, string) {
 			Gain       *float64
 		} `json:"fx"`
 	}
-	if err := json.Unmarshal([]byte(clean), &out); err != nil {
-		if p := cutOff(reply, err); p != "" {
-			return nil, p
-		}
-		return nil, "not valid JSON: " + err.Error()
+	if p := jsonReply(reply, &out); p != "" {
+		return nil, p
 	}
 	var in []sugFx
 	for _, e := range out.Fx {
@@ -988,26 +866,10 @@ func decorationsFromReply(segs []cutSeg, reply string) ([]cutFx, string) {
 
 // ---- the speed pass ---------------------------------------------------------
 //
-// How fast each clip plays, asked once the cut stands and its captions are
-// placed. Two reasons it is its own call and not part of the cut's answer.
-//
-// The size of the other call. Speed used to ride on the reply that chose the
-// moments from a timeline of thousands of lines, and the pairing produced
-// ten-minute calls with no answer in them: the model would choose, add up,
-// re-choose, and run out of call. Here the brief is a list of clips.
-//
-// The captions. A caption over a stretch at 4 is gone before it is read, and
-// which lines become captions is the captions pass's decision -- so nothing
-// before that pass can know which clips must stay at 1. The rule is enforced
-// here rather than only asked for: a rate on a captioned clip is dropped, and
-// the model is told which clips carry them so it does not spend the answer on
-// rates that will be thrown away.
-//
-// What it is NOT given is a target. It was -- the footage, the target, and an
-// accepted range the answer was gated on -- and that made it speed clips up
-// because the sum said so, dull or not. How much to speed up, if anything, is
-// the user context's to say and the model's to place (speedSystem); the length
-// of the cut is the cut pass's own gate (footageWindow).
+// A rate per clip, asked once the cut and its captions stand: a rate on a
+// captioned clip is dropped here (words at 4 are unreadable). It is handed no
+// target -- how much to speed up is the user context's to say (speedSystem);
+// the cut's length is the cut pass's gate (footageWindow).
 
 // speedCut asks for a rate per clip and returns the speed effects. A failure
 // leaves the cut at 1 throughout, which is a longer video and a whole one.
@@ -1026,16 +888,9 @@ func (a *App) speedCut(segs []cutSeg, caps []cutFx, rows []tsvRow) []cutFx {
 			}
 		}
 	}
-	// ...and the clip's own lines: what was said over it and what the frames
-	// showed, at the seconds they happened.
-	//
-	// This pass used to get two counts -- how many lines were spoken, how many
-	// captions -- and was asked which clips are boring. It could not know. A
-	// long clip with nothing said over it is the walk back across the map or
-	// the silent final approach, and a count of zero is the same number for
-	// both. The other three passes after the cut have read the lines all
-	// along (clipBriefsWith); this one now reads them too, and dullness is
-	// something in front of it rather than something to infer from a duration.
+	// ...and the clip's own lines: what was said and shown, at the seconds they
+	// happened. Two counts (lines spoken, captions) could not tell a silent walk
+	// back from a silent final approach; the lines can.
 	raw := 0.0
 	for _, s := range segs {
 		raw += s.E - s.S
@@ -1084,25 +939,14 @@ func (a *App) speedCut(segs []cutSeg, caps []cutFx, rows []tsvRow) []cutFx {
 // the user context can ask for more speed than the silent clips can give, and
 // the wording says what to take then.
 func speedsFromReply(segs []cutSeg, capped []int, reply string) ([]cutFx, string) {
-	if p := noAnswer(reply); p != "" {
-		return nil, p
-	}
-	clean := strings.TrimSpace(reply)
-	if i := strings.Index(clean, "{"); i >= 0 {
-		clean = clean[i:]
-	}
-	clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
 	var out struct {
 		Speeds []struct {
 			Clip int
 			Rate float64
 		} `json:"speeds"`
 	}
-	if err := json.Unmarshal([]byte(clean), &out); err != nil {
-		if p := cutOff(reply, err); p != "" {
-			return nil, p
-		}
-		return nil, "not valid JSON: " + err.Error()
+	if p := jsonReply(reply, &out); p != "" {
+		return nil, p
 	}
 	var in []sugFx
 	for _, sp := range out.Speeds {

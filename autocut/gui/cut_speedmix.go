@@ -1,24 +1,9 @@
 package main
 
-// What two speed effects over the same seconds do.
-//
-// They used to do whatever the later one said. That is a fine rule for a
-// single effect and a silly one for two: a stop under a ×2 meant nothing at
-// all -- the stop is not a rate, so the ×2 simply won -- and a ×2 under a ×4
-// meant ×4, as though the first had been deleted. Neither is what putting two
-// effects over the same seconds looks like it should do.
-//
-// The rule now is the mean. Add the rates the effects covering a second ask
-// for and divide by how many asked: a stop and a ×2 come out ×1, three
-// effects share three ways, and one effect on its own comes out exactly what
-// it asked for, which is the case that has to keep working.
-//
-// A stop is the ×0 in that arithmetic, and that is the whole of what a stop
-// is: no footage passes during its seconds, which is why the picture stands
-// still. So the picture freezes exactly where the mean is nought -- under a
-// stop with nothing over it -- and runs at ×1 where a ×2 crosses it, because
-// there the mean is no longer nought and the stop has been diluted rather
-// than obeyed.
+// Two speed effects over the same seconds: the rate is the MEAN of what they
+// ask for. A stop is ×0 in that arithmetic, so the picture freezes only where
+// the mean is nought -- a stop with nothing over it -- and a stop under a ×2
+// comes out ×1.
 
 import (
 	"math"
@@ -102,16 +87,11 @@ func joinSpans(sp []rateStep) []rateStep {
 	return out
 }
 
-// healSpans gives away any stretch the render would drop.
-//
-// This is the same hole clampSpeed guards for a single effect, opened from the
-// other side: two bands that overlap by a tenth of a second slice a stretch
-// that thin out of each other, and a clip under minClipLn is not encoded at
-// all -- the footage under it leaves the video in silence (planClips). One
-// effect can be held to a rate its band can pay for; two effects cannot, so
-// the sliver is handed to a neighbour instead. The stretch then plays at
-// slightly the wrong speed for a tenth of a second, which is a lie nobody can
-// see, rather than going missing, which anybody can.
+// healSpans gives away any stretch the render would drop: two bands
+// overlapping by a tenth of a second slice a sliver under minClipLn out of
+// each other, and such a clip is not encoded (planClips). The sliver goes to
+// a neighbour -- slightly the wrong speed for a tenth of a second beats
+// footage going missing.
 func healSpans(sp []rateStep) []rateStep {
 	for pass := 0; pass < len(sp)+1 && len(sp) > 0; pass++ {
 		k := -1

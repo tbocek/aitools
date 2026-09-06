@@ -1,50 +1,6 @@
 package main
 
-// Narrate / Voice. Who speaks, on top (narrate_voice.go), and what they
-// say, below: the lines in a vertical list -- a clip may carry several, each
-// "[emotion @seconds] words" in one editable box -- next to a preview player
-// with a seek slider. Clicking a row jumps the video there (play state
-// preserved). ▶ on the run bar is the INITIAL fill: it writes the narration
-// once (and again only if the cut moved) and speaks it; after that the lines
-// are edited by hand -- text, delivery, placement, add and remove -- and the
-// speak button voices whatever changed.
-//
-// The preview plays the CUT: it skips what Cut removed instead of running on
-// into it, and when it reaches a line that has not been spoken yet it holds the
-// picture, speaks the line, and carries on. Waiting is the point -- a preview
-// that runs a clip mute is a preview of a video nobody is going to make.
-//
-// Emotions are taken from how the moment was actually spoken -- the generator
-// sees the original lines and the events -- and then heightened; the user has
-// the last word per entry.
-//
-// The narration is mixed OVER the clip's own audio rather than replacing it
-// (Produce ducks the original to a fifth and leaves it there), which is the fact
-// the prompt is written around: whatever was said in the clip is still audible,
-// so narration that quotes it, or says it again in other words, is heard twice.
-// The prompt used to ask for exactly that -- "reuse quotable lines VERBATIM" --
-// and the result was a narrator reading the transcript back over the people
-// saying it.
-//
-// Voice on the fly (narrate_tts.go): audio.cpp's own audiocpp_server keeps
-// IndexTTS2 loaded, so per-line synthesis skips the model reload. This is the
-// same HTTP API the audio.cpp WebUI proxies to, called the same way (the
-// reference goes up first and voice_ref names where the server put it, see
-// serverFile). Autocut uses whatever server is listening
-// (AUDIOCPP_SERVER or AUTOCUT_TTS_URL, default 127.0.0.1:8765) and never starts
-// one itself.
-// Synthesized lines are cached by hash of (voice, text, emotion). The pitch
-// knob sits with the voice at the top of the page: it moves the reference wav
-// before it is cloned, so it changes who is speaking rather than transposing
-// what was spoken.
-//
-// narrate/narration.json      entries
-// narrate/voice_ref_base.wav  the reference as chosen or cut
-// narrate/voice_ref.wav       ...shifted by the reference pitch: the server's input
-// narrate/tts/<hash>.wav      synthesis cache
-
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,10 +12,25 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/diamondburned/gotk4/pkg/cairo"
+	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
 )
+
+// Narrate: who speaks (narrate_voice.go) and what they say -- one editable
+// "[emotion @seconds] words" box per line -- beside a preview that plays the
+// CUT, holding the picture to speak a line that has no wav yet. ▶ writes the
+// narration and speaks what is not cached (narrate_tts.go, keyed by voice, text
+// and emotion); after that the lines are edited by hand. The narration is mixed
+// OVER the clip's own sound (Produce ducks it), which is why the prompt forbids
+// repeating what was said.
+//
+// narrate/narration.json      entries
+// narrate/voice_ref_base.wav  the reference as chosen or cut
+// narrate/voice_ref.wav       ...shifted by the reference pitch: the server's input
+// narrate/tts/<hash>.wav      synthesis cache
 
 const (
 	ttsPort = 8765
@@ -75,56 +46,10 @@ const (
 	narrRunIn = 3.0
 )
 
-// One paragraph or bullet per line, unwrapped: see describeSystem.
-//
-// Short on purpose, and numbered. This ran on a 27B model that had been given
-// eight hundred words of nuance and answered with captions -- terse, formal,
-// referring to things it had been told not to name. A small model reads a long
-// rule list as a list of prohibitions and writes the safest thing that breaks
-// none of them, which is nothing anybody would watch. Rules it can hold, and
-// one worked example of the voice, do more than any amount of explaining: the
-// example below is the single most load-bearing part of this prompt.
-//
-// It is commentary, not memoir, and that is the whole of the second rewrite.
-// Told it had been there and that this had happened to it, the model wrote a
-// man remembering his own body -- "I'm already spinning", "my hands are not
-// listening", "I keep saying up" -- six entries out of nine opening with I'm,
-// and every clip a summary of what it had cost him. Watch what this actually
-// competes with on YouTube and the voice is doing the opposite: it is watching
-// the picture WITH you, in the present.
-//
-// The third rewrite is the amount. Asked for a verdict on every beat and given
-// a budget of 2.5 words a second -- a speaking rate -- the model filled every
-// clip wall to wall, which is a voice that never stops and, worse, always
-// sounds the same: a paragraph starting at 0.3 s and running to the end,
-// whatever the clip was doing. The pause is what makes a voice-over sound like
-// somebody watching. encodeClip lays the line at the head of the clip and
-// leaves the rest to the game, so the pauses are simply the words nobody spent:
-// short lines, some clips with no line at all, and the gaps come out different
-// lengths on their own, because the clips are different lengths and only some
-// of them are worth talking over. Hence narrBudget, the empty text "" rule, and
-// the worked example of one.
-//
-// And the ratio is taught by the examples, not the rules: told "several clips
-// should get one" and shown two examples of which one was "", the model
-// returned five silent clips out of nine -- it imitated the fifty-fifty split
-// it was shown. So the rule says one or two per video, and the "" example is
-// one of three.
-//
-// "at" is the other half of matching the video. The writer places each line on
-// the second it is about; the render starts it there (encodeClip's adelay) and
-// so does the preview (entryAt). That is what lets a line about the chest wait
-// for the chest, and the sign-off close the video instead of playing 30 s
-// before the end of the last clip.
-//
-// And the worked example is INVENTED, deliberately. It used to be built from
-// this repo's own test session -- "Open up, FBI.", the chest, the gorillas --
-// which made the model's behavior on that very footage unreadable: it quoted
-// the line while it was in the prompt and swerved around it once the rules
-// changed, paraphrasing the example's vocabulary ("a big lid... we all crowd
-// it") to avoid repeating text the prompt had already used. An example the
-// input can never collide with is the only way a rule about NARRATOR lines is
-// tested by the session rather than by the example.
+// One paragraph or bullet per line, unwrapped: see describeSystem. Short and
+// numbered for a ~27B model; the worked example is load-bearing and INVENTED so
+// the session's lines cannot collide with it. "at" places a line on the second
+// it is about (encodeClip's adelay, entryAt).
 const narrSystem = `You are the voice-over on a video of one session -- a game, a build, a lesson, a drive. What it is, is in the user context and in the EVENT lines: read it first and talk about what is happening on screen and what we are doing about it.` + narrCraft
 
 // narrCraft is the craft: the premise, how a line is written and placed, how a
@@ -172,21 +97,10 @@ The first clip is what a pause looks like: one thought per entry, three seconds 
 
 Answer with ENTRIES.`
 
-// narrNoMicNote rides on the narrate prompt when the finished video DOES play
-// what people said out loud, which is the one case the prompt's premise is
-// wrong about: it is written for a session whose voices are not in the video
-// -- split off and silenced, or recorded on a microphone the render never
-// plays -- and there "say what was said, better" is the whole job. Where the
-// viewer can hear them, the same instruction has the narrator read the
-// transcript back over the people saying it.
-//
-// Which case it is, is not a setting: it is what the scenes hear (speechHeard).
-// This used to fire on "the session has no separate narrator recording", which
-// is a different question and got the answer right only by accident -- a
-// session with a narrator mic AND the footage's own voices kept was told the
-// voices were nobody's to repeat.
-//
-// Appended rather than a style of its own, so a reworded prompt keeps working.
+// narrNoMicNote rides on the prompt when the finished video DOES play what
+// people said (speechHeard): the prompt assumes the voices are not in the
+// video, and there "say what was said, better" would read the transcript back
+// over the people saying it. Appended, so a reworded prompt keeps working.
 const narrNoMicNote = `THIS VIDEO PLAYS WHAT PEOPLE SAID OUT LOUD. The lines marked SPEAKER are heard by the viewer in the speakers' own voices, so never say one back: set it up before it lands, or react after it. The NARRATOR lines are still yours -- nobody hears those unless you use them -- and so is every clip the speakers left alone.`
 
 // narrCaptionsAddendum rides on the narrate prompt when the project's voice is
@@ -215,14 +129,9 @@ type narrEntry struct {
 	// unless the action does. Written by the captions-only narration, editable
 	// as a tag word ("[top] look up here"), and meaningless to the TTS.
 	Pos string `json:"pos,omitempty"`
-	// Roll is how many times this line has been asked for a different take.
-	// The engine draws a random seed per request unless it is given one, so
-	// two runs of the same words came back as two different performances and a
-	// take you liked could not be kept. The seed is derived from the line
-	// instead (ttsKey), which makes it stable -- and this counter is the one
-	// way to move it, when the delivery is nearly right and you just want
-	// another draw. It salts the cache key too, or the re-roll would be served
-	// the take it was pressed to replace.
+	// Roll is how many times this line has been asked for a different take. The
+	// seed is derived from the line (ttsKey) so a take can be kept; this counter
+	// is the one way to move it, and it salts the cache key.
 	Roll int `json:"roll,omitempty"`
 }
 
@@ -285,15 +194,10 @@ type narrator struct {
 	playVideoStart float64   // session start of the video loaded in the preview
 	pos            float64   // last known playhead, in session time (tick + cue)
 
-	// the seek slider under the video. sliding guards the loop: the tick sets
-	// the value and the value-changed handler seeks, and without the flag the
-	// two feed each other. seekWant/seekArmed debounce a drag into one seek per
-	// 120 ms instead of a pipeline reload per pixel.
-	// The slider runs on the CUT's clock, not the session's: its range is the
-	// kept seconds end to end, so what the edit removed takes up no room on the
-	// bar at all. Everything else on this page (the row times, the playhead,
-	// Cut) speaks session time, so the two are converted at the edge --
-	// cutPos on the way out, cutAt on the way in.
+	// the seek slider under the video. sliding guards the tick/value-changed
+	// loop; seekWant/seekArmed debounce a drag into one seek per 120 ms. The
+	// slider runs on the CUT's clock (the kept seconds end to end); everything
+	// else speaks session time, converted at the edge (cutPos out, cutAt in).
 	slider    *gtk.Scale
 	timeLbl   *gtk.Label
 	playBtn   *gtk.Button
@@ -325,14 +229,10 @@ type narrator struct {
 	building bool // guards feedback loops while (re)building rows
 	rebuildQ bool // a rebuild is waiting for the idle (queueRebuild)
 
-	// speaking is the row whose line is on n.voice, -1 none: it is what draws
-	// that row's ⏸, and it is set whoever started the sound. solo answers the
-	// other question -- which row started it from its OWN ▶ -- and it lasts
-	// only as long as that line does: with the picture, the tick drops it once
-	// the line has been spoken and the preview carries on down the cut, because
-	// the cut is what this page previews and an audition is a seek into it.
-	// Without the picture (soloPic false) it lasts until the wav ends, and the
-	// tick must not pause the voice under it.
+	// speaking is the row whose line is on n.voice (-1 none), whoever started it;
+	// it draws that row's ⏸. solo is the row that started it from its OWN ▶: with
+	// the picture it lasts until the line is spoken and the preview carries on;
+	// without (soloPic false) until the wav ends, and the tick must not pause it.
 	speaking int
 	solo     int
 	// the row the ⏸ is currently drawn on, so the tick can notice when it
@@ -423,17 +323,9 @@ func lineText(e narrEntry) string {
 
 func (a *App) narrPath() string { return filepath.Join(a.narrateDir(), "narration.json") }
 
-// keepPrevNarration copies the narration aside before a run overwrites it, and
-// hands back where it put it.
-//
-// ▶ rewrites every line now, which is what makes a narration re-doable and also
-// what makes it losable: an evening of hand-edited lines is one button press
-// from being a fresh draft. A copy costs a few kilobytes and turns that press
-// from irreversible into inconvenient. One generation deep on purpose -- the
-// question it answers is "I did not mean that", asked immediately.
-//
-// Nothing here fails the run: no narration yet is the ordinary first press, and
-// a copy that cannot be made is worth a quiet nothing rather than a stop.
+// keepPrevNarration copies the narration aside before a run overwrites it and
+// hands back where -- one generation deep, for "I did not mean that". Nothing
+// here fails the run.
 func keepPrevNarration(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -447,6 +339,9 @@ func keepPrevNarration(path string) (string, error) {
 }
 
 // ---- persistence ------------------------------------------------------------
+
+// has is whether i names a line.
+func (n *narrator) has(i int) bool { return i >= 0 && i < len(n.entries) }
 
 func (n *narrator) load() {
 	n.entries, n.silent = nil, nil
@@ -561,17 +456,9 @@ func (a *App) buildNarrate() gtk.Widgetter {
 		}
 		i := row.Index()
 		if i >= 0 && i < len(n.entries) {
-			// to the LINE, not to its clip: the line may sit a minute in, and
-			// what a click wants judged is the line landing on its moment --
-			// a few seconds of run-in shows the moment arrive. leadIn rather
-			// than the arithmetic, and the same leadIn the row's ▶ uses:
-			// picking a line is picking a line, and two run-ins for the one act
-			// would only be two numbers to learn.
-			//
-			// This is the ONLY place the preview jumps of its own accord. The
-			// tick that follows playback selects rows too, and would land here
-			// on every clip -- selectRow holds n.building across it for exactly
-			// that reason, so a seek here is always a user picking a line.
+			// to the LINE, not its clip, with the row's own leadIn of run-in. This is
+			// the ONLY place the preview jumps of its own accord: the tick that follows
+			// playback selects rows too, and selectRow holds n.building across it.
 			n.seekTo(n.leadIn(i))
 		}
 	})
@@ -618,14 +505,10 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	vframe.SetMarginTop(10)
 	vframe.SetMarginBottom(6)
 
-	// The transport, subtitle-editor style: play/pause, a seek slider over the
-	// cut, the playhead's clock, and the two verbs of manual editing -- a line
-	// at the playhead, and voicing what changed. The run bar's ▶ stays the
-	// initial fill (write once, speak everything); these are for the editing
-	// that follows it.
-	// ±3 s either side of play, in session time and on the cut: a jump that
-	// lands in a stretch the cut removed carries on to the neighbouring clip,
-	// the same rule the slider and the wheel follow
+	// The transport: play/pause, a seek slider over the cut, the playhead's
+	// clock, a line at the playhead, and voicing what changed. ±3 s in session
+	// time on the cut: a jump into a removed stretch carries on to the
+	// neighbouring clip, as the slider and wheel do.
 	back := gtk.NewButtonFromIconName("media-seek-backward-symbolic")
 	back.SetTooltipText("back 3 seconds")
 	back.ConnectClicked(func() { n.seekTo(snapToCut(n.clips(), n.pos, n.pos-3, cutEdge)) })
@@ -662,15 +545,9 @@ func (a *App) buildNarrate() gtk.Widgetter {
 		if n.sliding {
 			return
 		}
-		// The handle is somewhere on the CUT, so there is nothing to snap: the
-		// removed stretches are not on the bar to be dropped into. It only has
-		// to be read back into session time, which is what the player and every
-		// other number on this page are in.
-		//
-		// The bar used to span the gaps as well, which made most of it dead
-		// space on a real session -- thirty minutes of source for five of cut --
-		// and every drag through it a fight between the handle and a snap
-		// dragging it back to the nearest clip edge.
+		// The handle is on the CUT, so there is nothing to snap; it only has to be
+		// read back into session time. Spanning the gaps made most of the bar dead
+		// space and every drag a fight with the snap.
 		n.seekWant = cutAt(n.clips(), n.slider.Value())
 		// one seek per 120 ms, not one per pixel of the drag: a seek that
 		// lands in a different recording reloads the pipeline
@@ -686,16 +563,8 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	})
 	n.timeLbl = gtk.NewLabel("00:00")
 	n.timeLbl.AddCSSClass("dim-label")
-	// ＋ is the same ＋ every line's row carries, and means the same thing: a
-	// new line here. It sits with the transport because "here" is the playhead
-	// -- you pause where the video has nothing to say, and add there -- and it
-	// had a row of its own under this one, a whole line of the column spent on
-	// one button, pushing the voice picker down.
-	//
-	// It is also the only way in ABOVE a line: a row's ＋ adds below itself, so
-	// the first line of a clip is reached by pausing where the new one should
-	// speak. That is the better move anyway -- a line is placed against what is
-	// on screen, and here you are looking at it.
+	// ＋ is the same ＋ every row carries: a new line here, at the playhead. It is
+	// also the only way in ABOVE a line -- a row's ＋ adds below itself.
 	addBtn := gtk.NewButtonFromIconName("list-add-symbolic")
 	addBtn.SetTooltipText("start a new narration line at this second — it runs until the clip's " +
 		"next line, or the clip's end. Pause where the video has nothing to say and press this.")
@@ -716,29 +585,15 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	preview := gtk.NewBox(gtk.OrientationVertical, 8)
 	preview.Append(vframe)
 	preview.Append(transport)
-	// the picture takes this column's spare height. It used to go to the voice
-	// picker, which was a scrolling list of voices and could use it; the picker
-	// is two rows now, and height given to it is height taken off the video.
-	//
-	// On the FRAME as well as on the box around it. A box hands its spare
-	// height to children that ask for it and to no one else, and the frame
-	// asked only when a player had been built and put an expanding picture
-	// inside it -- with no player, or before one exists, the box grew and its
-	// two children did not, and what stood between the transport and the voice
-	// picker was a hand's width of nothing.
+	// the picture takes this column's spare height -- on the FRAME as well as the
+	// box, or with no player built the box grew and its children did not, leaving
+	// a hand's width of nothing above the voice picker.
 	vframe.SetVExpand(true)
 	preview.SetVExpand(true)
 
-	// The prompt was a box filling the bottom half of this column, then a
-	// dropdown above the video, and it is on Prepare with all the others now
-	// (prepedit.go). What took its place is the voice picker -- which used to
-	// sit on top of the narration lines and take a third of their column's
-	// height for a choice made once.
-	//
-	// That swap is the point of the page's shape: the lines are what you work
-	// on, they are sentences, and sentences want width. With the picker out of
-	// their column they have the whole of it, and it is under the video where it
-	// is read alongside the sample it plays.
+	// The voice picker sits under the video, where it is read alongside the
+	// sample it plays; the lines have their whole column, because sentences want
+	// width. The prompt is on Prepare (prepedit.go).
 	voice := a.buildVoicePicker()
 
 	// Whether this video is narrated at all, at the top right of the page.
@@ -788,10 +643,7 @@ func (a *App) buildNarrate() gtk.Widgetter {
 
 	// ...and the lines beside them
 	written := gtk.NewBox(gtk.OrientationVertical, 4)
-	written.SetMarginStart(6)
-	written.SetMarginEnd(12)
-	written.SetMarginTop(8)
-	written.SetMarginBottom(8)
+	margins(written, 8, 8, 6, 12)
 	written.Append(left)
 	// everything on this page except the tick itself: with no narration there
 	// is nothing here to do, and a page of live controls over a video that has
@@ -800,14 +652,8 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	// worth pressing.
 	n.body = []gtk.Widgetter{left, preview, voice}
 
-	// The picture on the left, the words on the right -- the shape Cut and
-	// Produce have. What a page SHOWS is on the left of all three of them, and
-	// a video editor whose preview moved side to side by page is a video
-	// editor you look for the preview on.
-	//
-	// The lines take the window's extra width, because they are sentences and
-	// sentences want width; the picture keeps what it was dragged to and
-	// cannot be crushed.
+	// Picture left, words right -- the shape Cut and Produce have. The lines take
+	// the window's extra width; the picture keeps what it was dragged to.
 	split := gtk.NewPaned(gtk.OrientationHorizontal)
 	split.SetStartChild(shown)
 	split.SetEndChild(written)
@@ -848,21 +694,9 @@ func (a *App) buildNarrate() gtk.Widgetter {
 // scrollbar -- so the slack rounds up.
 func textBoxHeight(lineH, lines int) int { return lines*lineH + 8 }
 
-// queueRebuild is rebuildRows for a caller that is inside a row's own signal
-// handler -- which is to say, inside a widget the rebuild is about to destroy.
-//
-// GTK is still standing on that widget when our handler returns: it goes on
-// walking the entry's handler list, finishing the focus change it was
-// delivering, and -- for the text view in the row -- holding iterators into a
-// buffer the rebuild has just thrown away. Tearing the list down underneath
-// that is a use-after-free, and it is what a committed time edit crashed on:
-// "any mutation that affects indexable buffer contents will invalidate all
-// outstanding iterators", then SIGSEGV inside the main loop.
-//
-// So the rebuild waits for the loop to finish delivering the event and runs on
-// the next idle, when nothing is standing on the old widgets any more. It is
-// coalesced because one edit raises several of these: Enter commits, and the
-// focus then leaves the box it just committed.
+// queueRebuild is rebuildRows for a caller inside a row's own signal handler:
+// GTK is still standing on that widget, so the rebuild runs on the next idle,
+// coalesced (Enter commits, then the focus leaves the box).
 func (n *narrator) queueRebuild() {
 	if n.list == nil || n.rebuildQ {
 		return // headless (tests), or one is already on its way
@@ -878,15 +712,10 @@ func (n *narrator) rebuildRows() {
 	if n.list == nil {
 		return // headless (tests): the entries are the model, the rows a view of it
 	}
-	// Where the reader was. A rebuild throws every row away and builds it
-	// again, and a fresh list is scrolled to the top -- so editing line twelve
-	// and committing it put line one on screen and line twelve somewhere below
-	// the fold, which is what "it jumps back to the start" was.
-	//
-	// The OFFSET is restored, not the focus. A rebuild is usually raised by the
-	// focus leaving a box (queueRebuild), so grabbing it back would pull it off
-	// whatever it was moving to -- and the one path that does want the focus
-	// asks for it afterwards by name (focusLine).
+	// Where the reader was: a rebuild throws every row away, and a fresh list is
+	// scrolled to the top. The OFFSET is restored, not the focus -- a rebuild is
+	// usually raised by focus leaving a box (queueRebuild); focusLine asks by
+	// name.
 	at, sel := n.listOffset(), -1
 	if r := n.list.SelectedRow(); r != nil {
 		sel = r.Index()
@@ -902,16 +731,9 @@ func (n *narrator) rebuildRows() {
 	n.rows = nil
 	n.speaking, n.solo = -1, -1 // the buttons that knew about it are gone
 	n.sortEntries()             // a hand-edited time may have reordered the list
-	// A line's height in pixels, measured rather than guessed -- font size and
-	// text scaling differ per machine, and the box is sized in lines.
-	//
-	// Measured in the BOX's font, which is monospace and not the list's. Asking
-	// the list was asking the wrong widget: monospace is a few pixels taller per
-	// line on most themes, so the room set aside for three lines held three
-	// lines minus about ten pixels, and a full box came up with a scrollbar that
-	// could travel that far and no further. A scrollbar for ten pixels is worse
-	// than no scrollbar at all -- it says there is more to read when there is
-	// not.
+	// A line's height in pixels, measured in the BOX's font (monospace, a few px
+	// taller than the list's) -- sized from the list, a full three-line box came
+	// up ten pixels short with a scrollbar that travelled that far.
 	lineH := 20
 	probe := gtk.NewTextView()
 	probe.SetMonospace(true)
@@ -1311,30 +1133,9 @@ func (n *narrator) setPlayhead(t float64) {
 	}
 }
 
-// syncFxSound puts the preview's sound where the finished video's is, which
-// is the other half of "the play must respect the cut": the lanes the scene at
-// the playhead hears, the loudness the volume effects give it, and silence
-// where a stop asked for its seconds to be taken out. The picture's half is
-// narrate_fxview.go.
-//
-// A narration line is written against both. There is no room for a line under
-// a shout the render is about to boost, and a lane the scene silences is room
-// the finished video WILL have -- so a page that plays every lane at the
-// recording's own level is a page where every gap looks too small.
-//
-// None of the three needs a seek, so all three settle on the playhead itself
-// (setPlayhead) and are as true while scrubbing as while playing.
-// gameGain is the level the footage and the recordings under it play at, at
-// session second t: the cut's own say over those seconds (a volume effect),
-// times the game's level wherever the render is going to duck it.
-//
-// The render's rule is per CLIP, not per line: a clip with anything written on
-// it has its WHOLE bed at GameVol, start to end, rather than a duck that
-// follows the words (encodeClip). This page has to sound the same way, because
-// the one judgement it exists for -- is there room here for this line -- was
-// being made against a mix the finished video never has. The game played at
-// full level under every line, so every gap sounded narrower than it was going
-// to be, and lines were written short for room that was already there.
+// gameGain is the level the footage plays at, at t: the volume effect there,
+// times GameVol on any clip with a line on it -- the render ducks the WHOLE
+// clip, not the words (encodeClip), and the page has to sound the same way.
 func (n *narrator) gameGain(t float64) float64 {
 	g := 1.0
 	if n.a != nil && n.a.ed != nil {
@@ -1359,6 +1160,10 @@ func (n *narrator) clipSpeaks(t float64) bool {
 	return false
 }
 
+// syncFxSound puts the preview's sound where the finished video's is: the
+// lanes the scene hears, the volume effects, silence where a stop cuts seconds
+// out. All three settle on the playhead (setPlayhead), no seek needed. The
+// picture's half is fxPage (formerly narrate_fxview.go).
 func (n *narrator) syncFxSound() {
 	ed, p := n.a.ed, n.player
 	if ed == nil || p == nil {
@@ -1366,16 +1171,10 @@ func (n *narrator) syncFxSound() {
 	}
 	p.SetFxGain(n.gameGain(n.pos))
 	s := n.heardScene(n.pos)
-	// Two silences, and this page owes both. fxHush is a speed effect that asked
-	// for its seconds to be taken out of the sound; cardHush is a card laid
-	// over the footage, which takes those seconds' audio with the picture
-	// unless it was put there for the picture alone (keepsSoundUnder).
-	//
-	// The preview cannot load a card -- it is not one of the session's
-	// recordings, so cutVideoAt answers with whatever is on that lane and cue
-	// leaves the previous file running. The picture being wrong is a known
-	// hole; the SOUND being wrong is not survivable here, because the whole of
-	// this page is judging a line against the audio it has to fit between.
+	// Two silences this page owes: fxHush (a speed effect that silenced its
+	// seconds) and cardHush (a card over the footage, unless it was for the
+	// picture alone, keepsSoundUnder). The preview cannot load a card, so the
+	// picture is a known hole; the SOUND being wrong is not survivable here.
 	p.SetMuted(fxHush(ed.fx, n.pos) || cardHush(overInsert(ed.segs, n.pos)))
 	base, until := "", 0.0
 	if v := ed.cutVideoAt(n.pos); v != nil {
@@ -1418,22 +1217,11 @@ func needsReload(segs []cutSeg, vids []tlVideo, loaded string, t float64) bool {
 	return v != nil && loaded != v.path
 }
 
-// heardScene is the clip whose answer about the lanes the preview is under,
-// which is not always the clip the playhead is inside.
-//
-// The Cut page's rule is that a second belonging to no scene is heard whole:
-// there, scrubbing through material the edit removed should sound like
-// something. This page is the opposite. It previews the FINISHED video, where
-// those seconds do not exist -- and it spends real time outside a clip on
-// purpose: the tick holds past a clip's end while a line finishes speaking (the
-// render grows the clip for exactly that, see followPlayback), and skipping a
-// gap costs a seek and a preroll. With no scene to ask, every lane came back at
-// full level in those seconds, so a recording's own voice -- silenced in every
-// scene of the cut, and replaced by the narration -- spoke again underneath the
-// line that replaced it.
-//
-// So: the clip being played OUT of, and before the first one the clip being
-// played INTO. Either way it is the clip whose material is actually sounding.
+// heardScene is the clip whose lane answers the preview is under: the clip
+// being played OUT of, or before the first one the clip being played INTO. Not
+// "the clip under the playhead" -- this page spends real time outside clips
+// (holding past an end, skipping a gap) and must not play lanes those scenes
+// silence.
 func (n *narrator) heardScene(t float64) *cutSeg {
 	ed := n.a.ed
 	if ed == nil {
@@ -1505,16 +1293,10 @@ func frameTarget(segs []cutSeg, pos, fps float64, frames int) float64 {
 // would be landing on the thing being snapped away from.
 const cutEdge = 0.05
 
-// snapToCut keeps a scrub on the cut. A time inside a clip is itself; a time in
-// the gap between two clips is footage Cut removed -- the one thing the
-// finished video will never contain -- so it lands on the near edge of the clip
-// the move was HEADING for: forward, the next clip's first frame; back, the
-// tail of the clip behind. Off either end of the cut, its first or last frame.
-//
-// Direction is the whole point. The preview's own gap-skip only ever runs
-// forward, which is right while the video plays and wrong for a drag: dragging
-// the handle left through a gap used to spit the playhead out at the far side,
-// past everything the drag was trying to reach.
+// snapToCut keeps a scrub on the cut: a time in a gap lands on the near edge
+// of the clip the move was HEADING for (forward: next clip's first frame; back:
+// the tail behind); off either end, the first or last frame. Direction is the
+// point -- the preview's own gap-skip only runs forward.
 func snapToCut(segs []cutSeg, from, to, edge float64) float64 {
 	if len(segs) == 0 {
 		return to
@@ -1540,16 +1322,10 @@ func snapToCut(segs []cutSeg, from, to, edge float64) float64 {
 	return last
 }
 
-// cutLen, cutPos and cutAt are the session clock and the cut's own clock, and
-// the conversion between them. The cut's clock counts only what is kept: it is
-// the clock of the video that will actually be produced, which is what a seek
-// bar under a preview of that video should measure.
-//
-// This is what "the slider jumps over what was removed" means in the end -- not
-// a handle that snaps out of the gaps it can be dropped into, but a bar the gaps
-// are not on. A session of half an hour cut down to five minutes had five sixths
-// of its slider standing for footage nobody will ever see, and dragging across
-// it was a fight with the snap.
+// cutLen, cutPos and cutAt are the session clock, the cut's own clock (only
+// what is kept -- the clock of the video that will be produced) and the
+// conversion between them. The seek bar is on the cut's clock, so the gaps
+// are simply not on it.
 func cutLen(segs []cutSeg) float64 {
 	tot := 0.0
 	for _, s := range segs {
@@ -1744,38 +1520,9 @@ func gapAt(segs []cutSeg, t float64) (cur, next int) {
 	return -1, next
 }
 
-// entryAt finds the narration line covering a session time. It is looked up by
-// time rather than by clip index so that a cut edited after narrating speaks
-// the right line, or none, instead of an off-by-one one.
-//
-// An entry with no words in it is not a line: it is a clip the narration left
-// alone, and the preview runs it the way the render will, on its own audio. It
-// has to be skipped HERE rather than further down, or the tick finds no wav for
-// it, stops the picture and sends the empty string to the TTS server.
-//
-// The line starts at S+At, not at S: before that the clip is playing but the
-// line has not arrived yet, which is -1 exactly like a clip with no line --
-// the render leaves that stretch to the game, and so does the preview. A
-// clip's second line ends the first one's window: the entries are sorted, so
-// the next entry on the same clip is simply the next in the list.
-// leadIn is where a row's ▶ -- or a click on the row -- drops the preview: a
-// few seconds ahead of the line, so the moment it was written for can be
-// watched arriving.
-//
-// Never back inside the line above it. A clip carries as many lines as the
-// writer put on it, and three seconds ahead of the second line on a clip is the
-// first one still mid-sentence: entryAt hands those seconds to that earlier line
-// -- it owns the clip until this one starts -- so the tick found it under the
-// playhead and resumed its wav from wherever the seek had landed in it. Press
-// ▶ on line 5, hear the back half of line 4. A run-in is worth having where the
-// seconds belong to nobody; where they belong to another line, starting on the
-// line itself is what the button says it does.
-//
-// entryAt is asked rather than the times compared here, so this cannot drift
-// from the rule that actually decides who speaks. Asked about a line that is
-// first on its clip it answers about this one, or about nobody, and either way
-// the run-in stands: the seconds before the first line of a clip are the clip
-// arriving, which is exactly what there is to watch.
+// leadIn is where a row's ▶ drops the preview: a few seconds ahead of the
+// line, but never back inside the line before it on the same clip -- entryAt
+// decides who owns those seconds.
 func (n *narrator) leadIn(i int) float64 {
 	e := n.entries[i]
 	t := math.Max(e.S, e.S+e.At-narrRunIn) // not before the clip: no video there
@@ -1785,6 +1532,10 @@ func (n *narrator) leadIn(i int) float64 {
 	return t
 }
 
+// entryAt finds the line covering a session time, by time rather than by clip
+// index so an edited cut speaks the right line. An entry with no words is
+// skipped here (or the tick would send "" to the TTS). A line starts at S+At;
+// the next entry on the same clip ends its window.
 func (n *narrator) entryAt(t float64) int {
 	for i, e := range n.entries {
 		if strings.TrimSpace(e.Text) != "" && t >= e.S+e.At && t < n.lineEnd(i) {
@@ -1937,7 +1688,7 @@ func (n *narrator) addLineAt(t float64) int {
 // addLineAfter is the row's own +: a line starting where this one's audio ends
 // plus a beat, which is the first second the playhead rule would allow anyway.
 func (n *narrator) addLineAfter(i int) int {
-	if i < 0 || i >= len(n.entries) {
+	if !n.has(i) {
 		return -1
 	}
 	e := n.entries[i]
@@ -1952,23 +1703,12 @@ func (n *narrator) addLineAfter(i int) int {
 	return n.addLineAt(e.S + at)
 }
 
-// moveLine puts line i where the row's time field says, and is the whole answer
-// to a typed time. The field used to do this itself, in one line, by clamping
-// into the line's OWN clip -- so a time in the next clip moved the line to one
-// second before the end of this one, and the box went on showing what was typed.
-// The row then read "12:42 – 11:07.5": an end before its start, two numbers
-// disagreeing about the same line, and nothing on screen saying which was real.
-//
-// A time in another clip is not a mistake, it is a move. The entry carries its
-// clip's bounds, and the spoken wav is keyed by words and delivery only (see
-// ttsKey), so re-homing it costs nothing and does what was asked. A time in a
-// gap, or past the cut, has no clip to land in: there the clamp is right, but it
-// has to be said out loud rather than left as a silent disagreement.
-//
-// Returns true when the line changed clips, which is a big enough move that the
-// caller re-sorts the list around it.
+// moveLine puts line i where the row's time field says. A time in another
+// clip is a move (the wav is keyed by words and delivery, so it costs
+// nothing); a time in a gap is clamped and said so. Returns true when the
+// line changed clips, so the caller re-sorts.
 func (n *narrator) moveLine(i int, t float64) bool {
-	if i < 0 || i >= len(n.entries) {
+	if !n.has(i) {
 		return false
 	}
 	e := &n.entries[i]
@@ -1993,15 +1733,10 @@ func (n *narrator) moveLine(i int, t float64) bool {
 	// spill) is written against that rule
 	e.At = math.Min(math.Max(0, t-s.S), math.Max(0, s.length()-1))
 	at := e.At // read before the caller's rebuild can move the entry
-	// The clip the line just left is now empty, and that has to be recorded or
-	// staleFor reads the hole as a clip the cut moved and the next ▶ rewrites
-	// narration nobody asked it to touch. It used to be recorded as a blank
-	// entry, which meant a blank ROW -- a text box's worth of page saying
-	// nothing. It is a line of JSON now (silentFor).
-	//
-	// Only when the line was the last one there, and only for a clip that is
-	// really in the cut: a line sitting on video the cut no longer has (an
-	// orphan, see refitEntries) leaves nothing behind.
+	// The clip the line just left is now empty and has to say so (silentFor), or
+	// staleFor reads the hole as a clip the cut moved. Only when it was the last
+	// line there, and only for a clip really in the cut -- an orphan (refitEntries)
+	// leaves nothing.
 	if moved && clipIndex(segs, from) >= 0 && !clipHasEntry(n.entries, from, i) {
 		n.silent = markSilent(n.silent, from)
 	}
@@ -2031,20 +1766,9 @@ func clipIndex(segs []cutSeg, s cutSeg) int {
 	return -1
 }
 
-// silentFor, markSilent and pruneSilent are the record of a clip you emptied on
-// purpose.
-//
-// It exists because staleFor reads COVERAGE -- every clip in the cut needs a
-// line, or the narration was written for a different cut and ▶ must write it
-// again -- and a clip you deleted the last line of has none. Without the record
-// the next ▶ would helpfully fill it back in, which is the opposite of what the
-// trash was pressed for; with it, "this clip plays its own audio" is a decision
-// the file keeps saying, and it says it in one line of JSON instead of a blank
-// row taking up a third of the page.
-//
-// Bounds, not an index: if the clip itself moves in Cut, the record stops
-// matching and the clip counts as uncovered again. That is right -- the cut
-// changed under the decision, and that is exactly what staleness is.
+// silentFor, markSilent and pruneSilent record a clip emptied on purpose, so
+// staleFor (which reads coverage) does not have ▶ fill it back in. Kept by
+// bounds, not index: a clip that moves in Cut counts as uncovered again.
 func silentFor(silent []cutSeg, s cutSeg) bool {
 	for _, q := range silent {
 		if onClip(s, q.S, q.E) {
@@ -2129,7 +1853,7 @@ func (a *App) addLineClicked() {
 // The clip then has no row on the page. That is what removing its only line
 // means, and the status says how to get one back.
 func (n *narrator) deleteLine(i int) {
-	if i < 0 || i >= len(n.entries) {
+	if !n.has(i) {
 		return
 	}
 	// the indices the playback state holds are about to shift; the picture may
@@ -2204,17 +1928,9 @@ func (n *narrator) sortEntries() {
 	})
 }
 
-// lineEnd is where line i's slot closes on the session clock: the same clip's
-// next line, or the clip's end. It is what the row shows after the dash --
-// unlike lineWindow it leaves the render's growth out, because the growth is
-// the mix's spill room, not time the user placed anything in.
-// nextSpoken is the line whose arrival is where line i's time runs out: the
-// next one on the same clip, if it has words. Three places worked this out for
-// themselves and one of them compared the two starts for exact equality --
-// which is not the twentieth of a second of slack the rest of the page uses for
-// "the same clip" (see onClip), so entryAt could put a line's end somewhere
-// lineEnd did not and ▶ would hand the seconds to a different row than the ⚠
-// was measuring. One spelling, so they cannot disagree.
+// nextSpoken is the line whose arrival ends line i's time:
+// the next on the same clip with words, using onClip's slack rather than
+// exact equality, so entryAt and lineEnd cannot disagree.
 func (n *narrator) nextSpoken(i int) int {
 	if i+1 < len(n.entries) && math.Abs(n.entries[i+1].S-n.entries[i].S) <= 0.05 &&
 		strings.TrimSpace(n.entries[i+1].Text) != "" {
@@ -2223,6 +1939,9 @@ func (n *narrator) nextSpoken(i int) int {
 	return -1
 }
 
+// lineEnd is where line i's slot closes on the session clock: the same clip's
+// next line, or the clip's end -- without the render's growth, which is the
+// mix's spill room.
 func (n *narrator) lineEnd(i int) float64 {
 	if j := n.nextSpoken(i); j >= 0 {
 		return n.entries[i].S + n.entries[j].At
@@ -2251,25 +1970,10 @@ func (n *narrator) clipLines(top int) []prodLine {
 	return out
 }
 
-// clipOverrun is how far a clip's narration runs past the end of the clip after
-// the render has done everything it can that costs nothing: stacked the lines
-// up with a breath between them (packLines) and grown the slot as far as it is
-// allowed to (maxExtend). Zero when it fits.
-//
-// This is the render's own arithmetic, asked here, because the per-line ⚠ next
-// to it answers a different question -- "has THIS line room before the next one
-// arrives" -- and by construction cannot see the one the render complains
-// about. An overrun is CUMULATIVE: a first line three seconds too long pushes
-// every line under it three seconds later, each of which may have all the room
-// in the world of its own, and it is the last one that falls off the end. That
-// came back as seven lines of "the narration does not fit where it was placed"
-// after twenty minutes of encoding, about words that could have been changed in
-// ten seconds on this page.
-//
-// The footage bound the render also applies is deliberately not here: whether a
-// recording actually HAS four more seconds past the clip is a fact about the
-// file, and guessing at it would turn a warning that is right into one that is
-// sometimes right.
+// clipOverrun is how far a clip's narration runs past its end after packLines
+// and maxExtend -- the render's own arithmetic, asked here. Cumulative: a long
+// first line pushes every later one, and it is the last that falls off. The
+// footage bound is deliberately not applied (a fact about the file).
 func (n *narrator) clipOverrun(top int) float64 {
 	lines := n.clipLines(top)
 	if len(lines) == 0 {
@@ -2318,14 +2022,10 @@ const (
 	rateMax = 28.0
 )
 
-// measured is the take's real length, or 0 if it has not been measured yet.
-// Probed once per wav and then remembered -- and probed off the GTK thread,
-// because this is asked on every rebuild and on every playback tick, and an
-// ffprobe is a spawned process: a page that waited for one per fresh take
-// stood still for as long as the answers took, which read as the whole UI
-// hitching. The estimate stands in for the take until the answer lands
-// (speechDur), and the landing rebuilds the rows so the ⚠ and the printed
-// ends are re-measured against the real length.
+// measured is the take's real length, or 0 if not yet measured. Probed once
+// per wav, off the GTK thread (this is asked on every rebuild and tick, and an
+// ffprobe is a process); speechDur stands in until the answer lands and
+// rebuilds the rows.
 func (n *narrator) measured(e narrEntry) float64 {
 	wav := n.a.ttsWav(e)
 	if d, ok := n.durCache[wav]; ok {
@@ -2415,14 +2115,9 @@ func (n *narrator) updateInputs() {
 	if len(segs) == 0 {
 		line, detail = "no cut yet — build one on the Cut step", ""
 	}
-	// what refit could not fix: clips the narration has no line for, or lines
-	// whose clip is gone. Said here rather than only when ▶ is pressed -- the
-	// page's whole job is that a narration written for another cut reads exactly
-	// like one written for this one.
-	// ...and the ⚠ says WHAT is out of date rather than that something is:
-	// "not this cut" was a verdict nobody can act on, and the counts are the
-	// two things ▶ would fix. The sentence naming the first clip is the
-	// tooltip's.
+	// what refit could not fix: clips with no line, lines whose clip is gone.
+	// The ⚠ says WHAT is out of date -- the two counts ▶ would fix; the tooltip
+	// names the first clip.
 	if why := n.staleFor(segs); why != "" && len(n.entries) > 0 {
 		if miss, orph := n.staleCounts(segs); miss > 0 || orph > 0 {
 			var parts []string
@@ -2549,21 +2244,10 @@ func (n *narrator) followPlayback() bool {
 		return true
 	}
 	n.jumped = -1
-	// The cut can hand the picture to another camera with NO gap to jump: two
-	// scenes that touch, the second taken on a different lane, which is most of
-	// what stealing a scene for the other camera does. Only a gap re-cued, so
-	// nothing here noticed, and the preview went on playing the first camera's
-	// file straight through the second's clip.
-	//
-	// With the file came its SOUND -- at the wrong scene's levels, and past a
-	// lane the second scene silences, because syncFxSound reads its base off
-	// the cut (cutVideoAt) while the pipeline was still on the other recording.
-	// So the one thing this page is for -- writing a line to fit the gaps in
-	// the finished video's audio -- was judged against audio the finished video
-	// does not have.
-	//
-	// cue is the whole fix: same path, it is a seek and nothing more; a new
-	// one reloads and brings the mix, the rate and the hush with it.
+	// Two touching scenes on different cameras have no gap to re-cue on, so
+	// the camera change is checked here too: the sound comes with the file
+	// (syncFxSound reads the cut), so playing the wrong file plays the wrong
+	// mix. cue on the same path is only a seek.
 	if ed := n.a.ed; ed != nil && needsReload(ed.segs, ed.vids, n.player.loaded, t) {
 		n.seekTo(t)
 		return true
@@ -2681,14 +2365,9 @@ func (a *App) sessionZero() float64 {
 // ---- generation -------------------------------------------------------------
 
 // staleFor is why the narration would have to be written again, or "" when it
-// already answers this cut. The times are the test because writeNarration takes
-// them from the cut verbatim -- an entry's start IS its clip's start -- so a
-// mismatch means the cut moved underneath, which is the one thing that makes a
-// narration wrong rather than merely different.
-//
-// Note what is NOT here: text you edited. A line you rewrote is the line you
-// want, and a ▶ that threw it away and asked the model again would be a button
-// nobody dares press twice.
+// answers this cut. The times are the test: an entry's start IS its clip's
+// start, so a mismatch means the cut moved underneath. Edited text is NOT here
+// -- a rewritten line is the line you want.
 func (n *narrator) staleFor(segs []cutSeg) string {
 	if len(n.entries) == 0 {
 		return "there is no narration yet"
@@ -2735,23 +2414,10 @@ func (n *narrator) staleCounts(segs []cutSeg) (missing, orphan int) {
 	return missing, len(n.entries) - ei
 }
 
-// refitEntries moves the lines onto the cut as it is NOW, and does it without
-// asking the model anything. Cut is a page you go back to, and a clip dragged
-// wider there used to leave the narration on the old geometry: the row still
-// printed the old end, the ⚠ still measured the words against the old slot, and
-// the only thing that made the page agree with the cut was ▶ -- which rewrites
-// every line you have edited by hand. The words are the expensive half and they
-// are still good; it is the times under them that moved. So the times follow
-// the cut and the words are left exactly as they are.
-//
-// A line keeps its place against the VIDEO rather than its offset into the
-// clip: a clip that grew at the front would otherwise drag every line in it
-// later by however far the front moved, which is the one thing the edit did not
-// touch. Past the clip's edge it is clamped like any other placement.
-//
-// orphan counts the lines whose clip is gone altogether. Those are left alone
-// on purpose -- deleting words somebody wrote is not a side effect a tab
-// change gets to have -- and staleFor reports them, which is ▶'s job.
+// refitEntries moves the lines onto the cut as it is now without asking the
+// model: the words are kept, the times follow. A line keeps its place against
+// the VIDEO, not its offset into the clip. Lines whose clip is gone are left
+// alone and counted (orphan) for staleFor.
 func refitEntries(segs []cutSeg, entries []narrEntry) (moved, orphan int) {
 	for i := range entries {
 		e := &entries[i]
@@ -2835,35 +2501,13 @@ func (n *narrator) unspoken() int {
 	return miss
 }
 
-// narrateRun is ▶ on this page: everything between the cut and every line
-// spoken, in one press.
-//
-// It was two buttons, and the split was the tool's bookkeeping rather than the
-// user's: "Generate narration" beside the video, "Synthesize all" on the run
-// bar, and no way to tell from either which one you owed. Worse, they were
-// ordered -- generate, then speak -- so the second was pressed after the first
-// every single time, and pressing it alone on a changed cut spoke lines written
-// for clips that no longer existed.
-//
-// Now the page says what it needs and ▶ does it: write the narration, then
-// speak whatever is not already in the cache. Both stages are one run, so ⏸ and
-// ⏹ cover the pair and the progress bar runs from one end of the step to the
-// other.
-//
-// ▶ WRITES EVERY TIME. It used to write only when staleFor said the narration
-// could not be right, so that a hand-edited line was never thrown away by a
-// button press -- and the cost of that was that a narration you wanted redone
-// could not be redone at all: every clip already had a line, or a deliberate
-// blank, so ▶ said "the narration matches the cut" and did nothing. There was
-// no other way to ask for a rewrite.
-//
-// So the restraint is gone and the safety net is a file: keepPrevNarration
-// copies narration.json aside before the model's answer replaces it, and the
-// log says where. staleFor is still read -- it names WHY in the log and drives
-// the ⚠ on the inputs row -- it just no longer decides.
+// narrateRun is ▶: write the narration, then speak whatever is not cached, as
+// one run. It writes EVERY time -- keepPrevNarration copies the previous
+// narration.json aside first -- because a narration that already covers the
+// cut could otherwise never be redone. staleFor only names why, in the log and
+// on the inputs row.
 func (a *App) narrateRun() {
-	if a.running {
-		a.setStatus("a run is already active — stop it first (⏹)")
+	if a.busy() {
 		return
 	}
 	n := a.narr
@@ -2894,15 +2538,7 @@ func (a *App) narrateRun() {
 	var speak []narrEntry
 	a.saveProjectNow() // the run is a moment worth a file, whatever the ticker is doing
 
-	a.running = true
-	a.stopFlag.Store(false)
-	a.pauseFlag.Store(false)
-	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.updateRunControls()
-	a.logExp.SetExpanded(true)
-	// this run's bar is this run's: the two tracks are summed, so a fraction
-	// left behind by the previous step would be added to every reading here
-	a.qReset()
+	a.startRun()
 	// True only while the model is writing. The pulse used to stop when the run
 	// did, which is the wrong end of it: the writing is one call with nothing to
 	// measure, but the speaking that follows it is n lines and counts them, and
@@ -3018,8 +2654,7 @@ func (a *App) narrateRun() {
 // narrateDone ends the run from whichever stage stopped it, on the GUI thread.
 func (a *App) narrateDone(err error, stage string) {
 	glib.IdleAdd(func() {
-		a.running = false
-		a.updateRunControls()
+		a.endRun()
 		if n := a.narr; n != nil {
 			n.updateInputs()
 			n.updateOut()
@@ -3042,30 +2677,9 @@ func (a *App) narrateDone(err error, stage string) {
 	})
 }
 
-// writeNarration writes every clip's line in one call: they refer to each
-// other, so the lines only fit together if they are written together.
-// clipBriefs is everything the writer is told about the clips: for each one its
-// length, its word budget, and the session timeline over it -- what was said
-// and what was on screen, in order.
-//
-// Every line is stamped with where inside the clip it falls, because "when" is
-// half of what makes a narration line wrong. A clip whose first forty seconds
-// are a fall and a ghost, and whose last two are a pickaxe finally coming out,
-// reads as a clip about digging if the order and the offsets are stripped off,
-// and the line written for it then talks about digging over forty seconds of
-// something else.
-// narratorMic names the one recording in the session the finished video never
-// plays: the microphone the narration's own voice is cloned from.
-//
-// Everything else in the timeline is heard. encodeClip takes each clip's sound
-// from the footage it was cut from and ducks it under the narration, so the
-// game and everyone talking through it are still there. What is not there is
-// the narrator: he is the one person whose own words reach the viewer only when
-// the TTS says them, which is why those lines -- and only those -- are the
-// narration's to quote.
-//
-// Blank when the voice is cut from footage (a session that is one capture and
-// nothing else): then the narrator is on the capture like everybody else.
+// narratorMic names the one recording the finished video
+// never plays -- the narration's to quote; blank when the voice is cut from
+// the footage.
 func (a *App) narratorMic() string {
 	slot := narratorSlot(a.voiceID())
 	if slot == 0 {
@@ -3084,15 +2698,10 @@ func (a *App) narratorMic() string {
 	return baseName(p)
 }
 
-// narrBudget is how many words a clip is allowed. It used to be 2.5 a second,
-// which is a speaking rate: every clip came back filled from end to end, and a
-// voice that never stops has no timing -- the pause is where the joke lands and
-// where the game gets to be heard. The first cut went to a fifth of that, which
-// over-shot the other way: six-word lines that tease and never follow through
-// ("One glowing person wants three things." -- and what, do we find them?). At
-// under a third there is room for the thought AND its punchline, the words
-// still run out early in every clip, and because the cap binds past 40 s a
-// two-minute clip does not get two minutes of talking either.
+// narrBudget is how many words a clip is allowed: under a third of speaking
+// rate, so there is room for the thought AND its punchline and the words run
+// out early in every clip; the cap binds past 40 s so a two-minute clip does
+// not get two minutes of talking.
 func narrBudget(dur float64) int {
 	n := int(dur * 0.75)
 	switch {
@@ -3200,20 +2809,10 @@ func clipBriefsWith(segs []cutSeg, rows []tsvRow, fx []cutFx, narr string, head 
 	return b.String()
 }
 
-// speechHeard is whether the finished video plays anything anybody said out
-// loud. It is the one question the narration's premise turns on: the prompt is
-// written for a video whose only voice is the narration, and that is true
-// exactly when no spoken line survives into it.
-//
-// A line survives when the scene covering it keeps the lane it was recorded on
-// -- the same reading the render makes clip by clip (clipMixes, and laneQuiet
-// for the footage's own track). The narrator's own microphone never survives:
-// the render does not play it at all, which is what makes those lines the
-// narration's material rather than its competition.
-//
-// A session with the voices split off and the voice lane silenced therefore
-// answers false, which is the everyday case here and the one the prompt is
-// written for; a straight capture with its own sound kept answers true.
+// speechHeard is whether the finished video plays anything anybody said: a
+// spoken line survives when the scene covering it keeps its lane (clipMixes,
+// laneQuiet). The narrator's own mic never survives. This is the premise the
+// prompt turns on (narrNoMicNote).
 func (a *App) speechHeard(segs []cutSeg, rows []tsvRow) bool {
 	narr := a.narratorMic()
 	for _, r := range rows {
@@ -3247,6 +2846,8 @@ func narrEntriesDone(s string) int {
 	return n
 }
 
+// writeNarration writes every clip's line in one call: they refer to each
+// other.
 func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 	rows := a.sessionRows()
 	// the box on the page is the whole system message: what used to be a
@@ -3284,25 +2885,11 @@ func (a *App) writeNarration(segs []cutSeg) ([]narrEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		clean := strings.TrimSpace(reply)
-		if i := strings.Index(clean, "{"); i >= 0 {
-			clean = clean[i:]
-		}
-		clean = strings.TrimSuffix(strings.TrimSpace(clean), "```")
 		var out struct {
 			Entries []rawEntry `json:"entries"`
 		}
-		problem := noAnswer(reply)
-		if problem != "" {
-			// nothing to parse: say so rather than reporting the parser's
-			// bafflement at an empty string (llm.go)
-		} else if err := json.Unmarshal([]byte(clean), &out); err != nil {
-			// a reply the token ceiling chopped in half wants a shorter
-			// answer, not a more careful one (cutOff, llm.go)
-			if problem = cutOff(reply, err); problem == "" {
-				problem = "not valid JSON: " + err.Error()
-			}
-		} else {
+		problem := jsonReply(reply, &out)
+		if problem == "" {
 			entries, p := bindEntries(segs, out.Entries)
 			if p == "" {
 				return entries, nil
@@ -3388,4 +2975,73 @@ func bindEntries(segs []cutSeg, raw []rawEntry) ([]narrEntry, string) {
 		return entries[a].At < entries[b].At
 	})
 	return entries, ""
+}
+
+// The Narrate preview shows the FINISHED picture -- crop, zoom, titles -- so a
+// line is judged against what it is spoken over. The layers and painting are
+// the Cut page's (cut_fxscreen.go, cut_fxdraw.go); this only answers fxPage.
+// The sound's half is syncFxSound.
+
+// ---- what this page answers for its screen (fxPage) --------------------------
+
+func (n *narrator) fxCut() *cutEditor { return n.a.ed }
+func (n *narrator) fxPlayer() *Player { return n.player }
+func (n *narrator) fxAt() float64     { return n.pos }
+
+// fxSrcSize is asked only before the first frame arrives, so it hands the
+// question to the page that keeps the recordings: this preview plays whichever
+// one the scene names, and once it is playing the paintable answers instead.
+func (n *narrator) fxSrcSize() (float64, float64) { return n.a.ed.fxSrcSize() }
+
+// fxCamOK is yes whenever there is footage. Nothing is ever aimed by hand
+// here -- effects are placed on the Cut page and only watched on this one --
+// so the one reason Cut takes the camera layer down cannot arise.
+func (n *narrator) fxCamOK() bool { return n.player != nil && n.player.Loaded() }
+
+// buildNarrFx wraps the preview picture in the same three layers Cut's preview
+// has and returns what to hang in the frame.
+func (n *narrator) buildNarrFx() gtk.Widgetter {
+	n.fx = &fxScreen{}
+	over := n.fx.buildLayers(n, n.player.Picture, n.player.video)
+	n.fx.fxArea.SetDrawFunc(n.drawFx)
+	// the display's clock, not the page's: the 100ms tick is right for a red
+	// line and wrong for a glide, and this layer costs nothing while it is down
+	n.fx.fxArea.AddTickCallback(func(_ gtk.Widgetter, _ gdk.FrameClocker) bool {
+		if n.fx.livePreview() && n.player != nil && n.player.playing {
+			n.fx.syncPreviewZoom()
+			n.fx.fxArea.QueueDraw() // the mask and the titles move with the camera
+		}
+		return true
+	})
+	return over
+}
+
+// syncFx settles all three layers for wherever the playhead is now. Hung on
+// setPlayhead, which every way this preview moves goes through, so a seek into
+// a zoom shows the zoom and a seek into a stop shows the frozen frame.
+func (n *narrator) syncFx(t float64) {
+	if n.fx == nil {
+		return
+	}
+	n.fx.reLive(t)
+	n.fx.syncPreviewZoom()
+	n.fx.syncFxStill()
+	n.fx.fxArea.QueueDraw()
+}
+
+// drawFx paints what the render will have that the layers underneath do not:
+// the black around the output frame, and the titles.
+//
+// The whole of the difference from Cut's overlay is what is missing. There is
+// no camera outline, no text-box handles, no label, no drag -- an effect is
+// placed on the Cut page, and here it is only watched.
+func (n *narrator) drawFx(_ *gtk.DrawingArea, cr *cairo.Context, w, h int) {
+	if n.player == nil || n.player.still {
+		return // a card is on screen; the camera talks about footage
+	}
+	if n.fx.livePreview() {
+		n.fx.paintLive(cr, w, h)
+		return
+	}
+	n.fx.paintFlat(cr, w, h)
 }

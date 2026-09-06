@@ -1,66 +1,31 @@
 package main
 
-// The system prompts, in one registry and editable in the app.
-//
-// These are the tool's taste: what counts as a highlight, how the narration
-// sounds, what the vision model bothers to mention. Compiled in, they could
-// only be changed by rebuilding -- backwards, since the footage varies far more
-// than the code does. Every prompt the tool sends is here, and every step page
-// shows its own in full.
-//
-// describe and fix have no separate "notes" box: the two used to be glued
-// together before the request went out, which meant two fields, one string and
-// no way to tell from the screen what the model was actually told. The box IS
-// the prompt now.
-//
-// An edited prompt is stored, an untouched one is not, and where it is stored
-// is ~/.config/autocut/prompts -- this machine's, not this project's, because
-// how you like to be edited for does not change between two sessions the way
-// the footage does (promptstore.go). So a job nobody has touched picks up
-// improvements from a new build instead of freezing today's wording forever,
-// and what is on disk is a record of what the user decided rather than a copy
-// of the binary.
-
 import (
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
-// promptStyle is one named wording for a job -- what the box shows when that
-// name is picked in the row above it.
-//
-// Most jobs have exactly one, because there is one good way to say what they
-// are for: describing a frame is describing a frame. The cut is the exception,
-// and it is not a close one. What makes a good segment is not a property of
-// this tool at all, it is a property of what was filmed -- a session where a
-// group scores nine maps and reads out a ranking wants a completely different
-// video out of the same hour than a raid night does, and no single wording is
-// even nearly right for both. So the cut ships several, the box picks between
-// them, and a project that needs a shape nobody shipped adds its own.
-// promptRow is the widgets above one prompt box: the label that says whether
-// this machine is holding an edit of the shipped wording, and the button that
-// puts the built-in back.
+// The system prompts: one registry, editable in the app. An edited prompt is
+// stored in ~/.config/autocut/prompts (this machine's, not the project's --
+// taste does not change between sessions); an untouched one is not, so it
+// picks up a new build's wording. The box IS the prompt: nothing is glued on.
+
+// promptStyle is one named wording for a job. Most jobs have one; the cut
+// ships several because what makes a good segment is a property of the
+// footage, and a project can add its own.
+// promptRow is the widgets above one prompt box: the edited/shipped label and
+// the reset button.
 type promptRow struct {
 	mark *gtk.Label
 	drop *gtk.Button
 }
 
-// promptDef is one editable prompt: the job it is for, and the wording this
-// build ships for it.
-//
-// There used to be several wordings per job -- a Style dropdown on Prepare
-// turned every prompt at once to "Highlights", "Showcase", "Rating / tier
-// list" or "YouTube Shorts", each a paragraph that already believed it knew
-// what the footage was. It is one wording per job now, written to be true of
-// any session, and what KIND of video this is goes in the user context, where
-// the rest of the facts about the session are. That is the same information in
-// one place instead of two, and the place it is in is the one that is read
-// with every request and outranks the wordings (ctxRule).
-//
-// A blurb explaining what changing a prompt would do used to sit between the
-// heading and the box; the prompt itself says that better than a paragraph
-// above it can, and the paragraph was what made these pages a wall of prose.
+// promptDef is one editable prompt: the job and the wording this build ships.
+// One wording per job, written to be true of any session; what KIND of video
+// this is goes in the user context, which outranks the wording (ctxRule).
 type promptDef struct{ key, def string }
 
 // Keys name the prompt in project.json and are therefore permanent -- renaming
@@ -71,16 +36,10 @@ var promptDefs = []promptDef{
 	{key: "system", def: strings.TrimSpace(sysSystem)},
 	{key: "describe", def: strings.TrimSpace(describeSystem)},
 	{key: "fix", def: strings.TrimSpace(fixSystem)},
-	// the cut, and the three passes that follow it clip by clip: what was
-	// said, how fast each clip runs, and the decorations. They were one reply
-	// with the segments, and the one reply is what kept failing
-	// (cut_suggest.go).
-	//
-	// "audit" was here: a second long call that read the suggestion back
-	// against the same brief and moved its boundaries. It was worth having
-	// when the cut was one reply doing three jobs; against a cut that is only
-	// segments it spent ten minutes to move a border a few seconds. Removed,
-	// not renamed -- a project's edited copy is a dead key nobody reads.
+	// the cut, then the three passes that follow it clip by clip: captions,
+	// speed, decorations. "audit" was here -- a second long call that moved
+	// borders by seconds; removed, not renamed, so a project's edited copy is a
+	// dead key.
 	{key: "cut", def: strings.TrimSpace(cutSystem)},
 	{key: "captions", def: strings.TrimSpace(captionSystem)},
 	{key: "speed", def: strings.TrimSpace(speedSystem)},
@@ -170,17 +129,10 @@ func (a *App) showPrompt(key string) {
 	a.markPromptRow(key)
 }
 
-// adoptProjectPrompts takes in what a project has to say about the prompts --
-// which, now that they are the machine's (promptstore.go), is only ever what a
-// project written before that has to say. It ADOPTS rather than replaces: a
-// wording lands only where this machine has nothing of its own for the job.
-//
-// It used to be a full switch, everything the project did not mention going
-// back to the built-in, because the prompts were the project's and leaving the
-// last project's wording in a box would have been the worst kind of bug --
-// invisible, and it changes what the model writes. With the prompts kept per
-// machine the bug is the other way round: an old project opened for five
-// minutes must not overwrite the wording four videos were tuned with.
+// adoptProjectPrompts takes in what a project written before the prompts were
+// the machine's has to say about them. It ADOPTS rather than replaces: a
+// wording lands only where this machine has nothing of its own for the job, so
+// an old project opened for five minutes cannot overwrite tuned wordings.
 func (a *App) adoptProjectPrompts(legacy map[string]string) {
 	for _, d := range promptDefs {
 		if a.promptOwned(d.key) {
@@ -249,83 +201,31 @@ func sameStrings(model *gtk.StringList, want []string) bool {
 // the same reasons; Enter is OK here rather than Cancel, because the only thing
 // this asks for is a name and typing one is the whole interaction.
 func (a *App) askName(question, detail string, ok func(string)) {
-	win := gtk.NewWindow()
-	win.SetTransientFor(&a.win.Window)
-	win.SetModal(true)
-	win.SetTitle(question)
-	win.SetDefaultSize(380, -1)
-
-	q := gtk.NewLabel(question)
-	q.SetXAlign(0)
-	q.SetWrap(true)
-	q.AddCSSClass("heading")
-	d := gtk.NewLabel(detail)
-	d.SetXAlign(0)
-	d.SetWrap(true)
-	d.AddCSSClass("dim-label")
-
+	var win *gtk.Window
 	entry := gtk.NewEntry()
+	done := func() {
+		if name := strings.TrimSpace(entry.Text()); name != "" {
+			win.Close()
+			ok(name)
+		}
+	}
+	entry.ConnectActivate(done)
 	save := gtk.NewButtonWithLabel("Save")
 	save.AddCSSClass("suggested-action")
-	done := func() {
-		name := strings.TrimSpace(entry.Text())
-		if name == "" {
-			return // a nameless wording could never be picked again
-		}
-		win.Close()
-		ok(name)
-	}
 	save.ConnectClicked(done)
-	entry.ConnectActivate(done)
 	cancel := gtk.NewButtonWithLabel("Cancel")
+	win = a.modal(question, detail, 380, entry, cancel, save)
 	cancel.ConnectClicked(func() { win.Close() })
-
-	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	btns.SetHAlign(gtk.AlignEnd)
-	btns.SetMarginTop(8)
-	btns.Append(cancel)
-	btns.Append(save)
-
-	box := gtk.NewBox(gtk.OrientationVertical, 8)
-	box.SetMarginTop(16)
-	box.SetMarginBottom(16)
-	box.SetMarginStart(16)
-	box.SetMarginEnd(16)
-	box.Append(q)
-	box.Append(d)
-	box.Append(entry)
-	box.Append(btns)
-	win.SetChild(box)
 	entry.GrabFocus()
 	win.SetVisible(true)
 }
 
 // editorBody is the one shape a text box on a step page has: a heading row,
-// then the box under it, framed, scrolling and floored at four lines.
-//
-// It is one function because the boxes are seen side by side. The prompts and
-// the context were built separately and drifted: the context box had no natural
-// height and no floor, so a drag or a short window squeezed the two halves of
-// the Describe page differently -- and, more visibly, a heading row carrying a
-// Reset button is a good deal taller than one carrying a bare label, so the box
-// under it started a dozen pixels lower than the box beside it. Two boxes of
-// the same kind, misaligned by exactly the height of a button.
-//
-// The size group is what settles the second one: every heading row on every
-// page joins it, so all of them are given the tallest one's height and every
-// box under them starts at the same y, button or no button. It spans pages
-// rather than a page, which costs nothing -- every row in it is either a label
-// or a label and a button -- and means a new step gets the alignment by calling
-// this rather than by remembering to.
-//
-// About the floor. Natural height is what makes the box open big where the page
-// has room; the minimum is what a divider or a short window may squeeze it to,
-// and it is the one number here that can push things off the page. It was 240
-// once, which on the two-prompt page meant the pair could not fit a short
-// window at all: the divider stayed where it was, the top box kept a height it
-// no longer had room for, and its heading and Reset button went off the top.
-// Four lines is a box you can still work in, and small enough that no window is
-// too short for two of them.
+// then a framed, scrolling box floored at four lines. Every heading row on
+// every page joins one size group, so a row with a button and a row with a
+// bare label are the same height and the boxes under them start at the same
+// y. The four-line floor is the one number that can push things off a short
+// window; 240 once did.
 func (a *App) editorBody(head *gtk.Box, tv *gtk.TextView) *gtk.Box {
 	if a.headGroup == nil {
 		a.headGroup = gtk.NewSizeGroup(gtk.SizeGroupVertical)
@@ -358,4 +258,207 @@ func editorFrame(head *gtk.Box, tv *gtk.TextView) *gtk.Box {
 	body.Append(head)
 	body.Append(scroll)
 	return body
+}
+
+// Edited prompts live in ~/.config/autocut/prompts/<job>.txt, beside the
+// settings that are also this machine's. Files, not project JSON: a prompt is
+// how you like to be edited for, the same across sessions, and prose that
+// gets diffed and grepped. Only what differs is written, so Reset is a delete
+// and a newer build's wording reaches an untouched machine.
+
+// promptsDir is the folder, or "" when there is nowhere to put it. Same answer
+// as configDir, and for the same reason: nowhere to write is not an error, it
+// is a launch where the prompts are whatever the binary ships.
+func promptsDir() string {
+	d := configDir()
+	if d == "" {
+		return ""
+	}
+	return filepath.Join(d, "prompts")
+}
+
+const promptExt = ".txt"
+
+// promptPath is where a job's wording is kept, or "" with nowhere to put it:
+// prompts/cut.txt, one file per job (it was a folder per job with a file per
+// wording, back when styles existed).
+func promptPath(key string) string {
+	d := promptsDir()
+	if d == "" || key == "" {
+		return ""
+	}
+	return filepath.Join(d, key+promptExt)
+}
+
+// oldPromptNames are the file names the folder-per-job era wrote a job's
+// DEFAULT wording under. Anything else in that folder was a wording for a
+// style, and the styles no longer exist -- the file is left where it is, and
+// what is worth keeping out of it goes in the box or the user context by hand.
+var oldPromptNames = []string{"General" + promptExt, "Default" + promptExt}
+
+// loadGlobalPrompts is the startup read: whatever this machine has of its own
+// for each job. Called once, before the first project is opened, so that what
+// the boxes show is this machine's answer rather than the last project's.
+func (a *App) loadGlobalPrompts() {
+	txt, disk := map[string]string{}, map[string]string{}
+	for _, d := range promptDefs {
+		text, from := a.readPrompt(d.key)
+		if text == "" {
+			continue
+		}
+		txt[d.key] = text
+		if from == promptPath(d.key) {
+			// adopted from the old folder instead: leaving promptDisk empty
+			// for it is what makes the next flush write it where it belongs
+			disk[d.key] = text
+		}
+	}
+	a.promptMu.Lock()
+	a.promptTxt = txt
+	a.promptMu.Unlock()
+	a.promptDisk = disk
+	for _, d := range promptDefs {
+		a.showPrompt(d.key)
+	}
+}
+
+// readPrompt is one job's stored wording and the file it came from: its own
+// file, or -- for a machine that last ran a build with styles -- the default
+// wording out of the old folder.
+//
+// An empty file is a wording that says nothing, which would send the model no
+// system prompt at all: treated as absent, here as before.
+func (a *App) readPrompt(key string) (text, from string) {
+	try := []string{promptPath(key)}
+	if d := promptsDir(); d != "" {
+		for _, n := range oldPromptNames {
+			try = append(try, filepath.Join(d, key, n))
+		}
+	}
+	for _, p := range try {
+		if p == "" {
+			continue
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				a.logf("!!! could not read the %s prompt: %v", key, err)
+			}
+			continue
+		}
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s, p
+		}
+	}
+	return "", ""
+}
+
+// flushPrompts writes what changed since the last flush, on the autosave tick
+// (startAutosave). promptDisk is what is believed on disk; a failed write is
+// logged and treated as done (the next edit retries). A job back on its
+// shipped wording has its file REMOVED. GUI thread only, like flushProject.
+func (a *App) flushPrompts() {
+	if promptsDir() == "" {
+		return
+	}
+	cur := map[string]string{}
+	for _, d := range promptDefs {
+		if a.promptOwned(d.key) {
+			cur[d.key] = a.prompt(d.key)
+		}
+	}
+	for key, text := range cur {
+		if a.promptDisk[key] == text {
+			continue
+		}
+		if err := os.MkdirAll(promptsDir(), 0o700); err != nil {
+			a.logf("!!! could not keep the %s prompt: %v", key, err)
+			continue
+		}
+		if err := os.WriteFile(promptPath(key), []byte(text+"\n"), 0o600); err != nil {
+			a.logf("!!! could not keep the %s prompt: %v", key, err)
+		}
+	}
+	for key := range a.promptDisk {
+		if _, ok := cur[key]; ok {
+			continue
+		}
+		if err := os.Remove(promptPath(key)); err != nil && !os.IsNotExist(err) {
+			a.logf("!!! could not drop the %s prompt: %v", key, err)
+		}
+	}
+	a.promptDisk = cur
+}
+
+// The user context: what the editor knows that the material does not say --
+// who is in the session, what they were doing, what to call things. One box,
+// the first row of the bench on Prepare, carried by every request. Prompts say
+// HOW to work; this says WHAT this session was, which is why it is stored in
+// full and a prompt only when it differs from the built-in.
+
+// sessionCtx is the box's text, callable from a runner's goroutine.
+func (a *App) sessionCtx() string {
+	a.promptMu.Lock()
+	defer a.promptMu.Unlock()
+	return strings.TrimSpace(a.ctxTxt)
+}
+
+func (a *App) setSessionCtx(s string) {
+	a.promptMu.Lock()
+	a.ctxTxt = s
+	a.promptMu.Unlock()
+}
+
+// applySessionCtx loads a project's context into the box and the cache. GUI
+// thread only (a GtkTextBuffer). No box is the ordinary case: the bench shows
+// one row at a time, and the box fills from the cache when switched back to.
+func (a *App) applySessionCtx(s string) {
+	a.setSessionCtx(s)
+	if a.ctxView != nil {
+		a.ctxView.Buffer().SetText(s)
+	}
+}
+
+// ctxBlock is the context as a request carries it, or nothing when the box is
+// empty (an empty heading invites invention). Headed USER CONTEXT, which is
+// what downstream prompts call it. It goes in the USER message ahead of the
+// material, never the system prompt: the prompt boxes stay what the user
+// wrote, and a job's rules stay separable from a session's facts.
+func (a *App) ctxBlock() string { return a.ctxBlockFor("cut") }
+
+// ctxBlockFor is the block as one job carries it. The speech rule under it is
+// about what to DO with spoken lines -- keep them, caption them, cut on them
+// -- and only the jobs that decide that get it: the cut and the narration. The frame describer, the transcript fixer and the upload text
+// are told the context and nothing about a decision they never make.
+func (a *App) ctxBlockFor(key string) string {
+	s := a.sessionCtx()
+	if s == "" {
+		return ""
+	}
+	b := "USER CONTEXT -- written by the person who made this recording and " +
+		"is editing it. It outranks anything you infer from the material, and it " +
+		"outranks the rules of the job you were given wherever the two disagree; " +
+		"only the mechanics of the answer -- its shape, its clock, what may be " +
+		"invented -- are not its to change:\n" + s + "\n\n"
+	switch key {
+	case "cut", "narrate":
+		b += ctxSpeech + "\n\n"
+	}
+	return b
+}
+
+// ctxSpeech rides under the user context, and only under it: how the context
+// bears on the spoken lines. Sent exactly when there is a context to be about.
+// Read the wrong way it is the worst answer this app gives -- an aside to the
+// editor captioned into the video, or the video thrown away as asides.
+const ctxSpeech = `The speech is content unless the user context above says otherwise: the speakers are in the video, and what they say is why a moment is worth keeping. Where the user context calls it directions ("this part is boring", "speed this up"), do what a direction asks at the second it asks and keep its words out of the video -- never caption them, and never keep a stretch just because it was spoken over. An instruction about a kind of stretch -- speed the dull parts up and show them instead of cutting them, caption each thing as it is named -- holds wherever such a stretch occurs. It decides segments too: a stretch to be shown fast has to be in the cut, with a speed effect over it, or there is nothing left to speed up.`
+
+// logCtx says, in the log, that this step's requests carried the context. A
+// second input that changes the result and appears nowhere in the run is how
+// an editor ends up baffled by their own note from three sessions ago; naming
+// the step matters, because the log is read long after the run.
+func (a *App) logCtx(step string) {
+	if c := a.sessionCtx(); c != "" {
+		a.logfIdle(">>> %s: sending the session context from Prepare (%d characters)", step, len(c))
+	}
 }

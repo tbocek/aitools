@@ -1,40 +1,6 @@
 package main
 
-// The voice every narrated line is spoken in: the top of the Narrate step,
-// above the lines themselves. It was a step of its own, two rows away from the
-// text it speaks, so hearing whether a voice suited the narration meant
-// remembering the narration. IndexTTS2 keeps timbre and emotion apart --
-// the speaker comes from a reference wav, the emotion from each line's own
-// text -- so picking a voice is exactly picking which wav to clone, and the
-// narrate step's per-line emotion goes on working unchanged.
-//
-// Two sources: one of the session's own voices -- the dominant speaker in the
-// recording tagged with that narrator slot on the Prepare page, cut from the
-// stretches its diarization and transcript agree are worth cloning, which is
-// the pipeline's default -- or a wav in the voices folder, the
-// CC0 references that ship beside audio.cpp's models, plus anything added with
-// "Add sample…", which converts and copies it in. The list shows file names
-// because that is what they are: a row can be opened, replaced or deleted in
-// the folder the button beside it opens. The pick is installed as narrate/voice_ref.wav
-// because that is the file the TTS server is handed, and the output folder is
-// the one mounted into the server at its own absolute path -- the voices folder
-// sits at a different path inside the container, so aiming the server straight
-// at it would not resolve.
-//
-// The pitch slider post-processes the reference before the model ever sees it,
-// which is the difference between a new speaker and a familiar one transposed:
-// IndexTTS2 takes its timbre from this file, so a shifted reference is cloned
-// as a shifted voice, and the narrate step speaks in it without knowing anything
-// changed. The unshifted recording is kept beside it as voice_ref_base.wav, so
-// moving the slider costs one ffmpeg pass rather than re-cutting the
-// diarization.
-//
-// Switching is free: the synthesis cache is keyed on the voice and its pitch as
-// well as the text, so lines spoken in an earlier voice are still there when
-// you switch back.
-
 import (
-	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
@@ -47,11 +13,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
 )
+
+// The voice every line is spoken in. IndexTTS2 takes timbre from a reference
+// wav: one of the session's speakers (cut from the recording tagged with that
+// narrator slot) or a file in the voices folder, installed as
+// narrate/voice_ref.wav for the TTS server. The pitch slider shifts the
+// reference before cloning (voice_ref_base.wav is unshifted); the synthesis
+// cache is keyed by voice and pitch.
 
 // ownVoice is the id of "clone me", the default the pipeline had before this
 // step existed. It is narrator 1's id and stays spelled "own": it is what every
@@ -229,28 +201,16 @@ func (a *App) voiceID() string {
 	return a.voiceSel
 }
 
-// refLoud levels the reference before the model ever hears it. A clone is as
-// loud as what it was cloned from: a quiet recording became a quiet narrator,
-// which the audition made obvious and the finished video did not -- the mix is
-// loudnorm'd as a whole (loudFlt), so a thin voice under game audio comes out
-// as game audio, at the right level, with somebody murmuring under it.
-//
-// Single-pass loudnorm is dynamic, which is what a reference wants: the takes
-// come from different minutes of a recording and the joins between them are
-// audible when one is louder than the next. LRA is tight because this is one
-// person talking, not a programme.
+// refLoud levels the reference before the model hears it: a clone is as loud
+// as its source, and a quiet narrator under loudnorm'd game audio is somebody
+// murmuring. Single-pass (dynamic) loudnorm, since the takes come from
+// different minutes; LRA tight because it is one person talking.
 const refLoud = "loudnorm=I=-16:TP=-1.5:LRA=7"
 
-// refRate is what a reference is written at, and it is asked for rather than
-// inherited because of what happens at the far end. loudnorm resamples its
-// output to 192 kHz, and above 48 kHz ffmpeg stops writing a plain wav header:
-// it writes WAVE_FORMAT_EXTENSIBLE instead -- format tag 0xFFFE and a 40-byte
-// fmt chunk. A reader that switches on that tag to decide what the samples are
-// sees 0xFFFE, does not know it, and refuses the whole file, which is what the
-// audio server does ("unsupported WAV encoding"). So a voice that plays
-// perfectly in every player on the machine cannot be cloned. 48 kHz is the
-// highest rate that keeps the header plain, and at or above what anything we
-// clone from was recorded at, so nothing is lost by pinning it.
+// refRate is what a reference is written at. loudnorm resamples to 192 kHz,
+// and above 48 kHz ffmpeg writes WAVE_FORMAT_EXTENSIBLE (tag 0xFFFE), which
+// the audio server refuses ("unsupported WAV encoding"). 48 kHz keeps the
+// header plain and is at or above anything we clone from.
 const refRate = "48000"
 
 // wavPlain asks the question the server asks: is this a wav whose samples it
@@ -584,16 +544,10 @@ func (a *App) ensureVoiceBase() error {
 	return nil
 }
 
-// voiceKey is the voice as the caches see it. Pitch 0 keeps the key the voice
-// had before the slider existed, so nothing already spoken is orphaned by this
-// step gaining a knob -- and hand-picked takes are spelled the same way, empty
-// for the projects that have never had any.
-//
-// Both parts are here because both change who is speaking. A reference cut from
-// different seconds is a different clone, and a cache that did not know it
-// would answer the new question with the old voice: the sample would replay
-// the take you had just replaced, which is a control that appears to do
-// nothing (sampleNeedsSpeaking says the rest).
+// voiceKey is the voice as the caches see it. Pitch 0 and no takes keep the
+// key older projects had, so nothing already spoken is orphaned. Both parts
+// change who is speaking -- a reference cut from different seconds is a
+// different clone (sampleNeedsSpeaking).
 func (a *App) voiceKey() string {
 	k := a.voiceID()
 	if st := a.pitchST(); st != 0 {
@@ -618,15 +572,9 @@ func (vp *voicePicker) sampleKey(text string) string {
 }
 
 // sampleNeedsSpeaking is what ▶ does: resume the sample in the player, or make
-// a new one.
-//
-// It used to be the first of those whenever anything was loaded, and that is
-// the bug this exists to name. The player holds a file, not a question, and
-// the file stops being the answer the moment the voice, the pitch or the words
-// change -- so moving the slider and pressing ▶ played back the setting before
-// it, and the only way to hear the new one was to edit the text, which took a
-// different path (the entry's Enter) and always spoke afresh. A control that
-// silently does nothing is worse than one that is missing.
+// a new one. The player holds a file, not a question, and the file stops being
+// the answer when the voice, pitch or words change -- resuming then played the
+// old setting.
 func sampleNeedsSpeaking(sounding bool, loaded, now string) bool {
 	return !sounding || loaded != now
 }
@@ -832,17 +780,12 @@ func voiceNames(vs []voiceOpt) []string {
 	return out
 }
 
-// reload rebuilds the list from the folder -- after an import, there is a file
-// in it that was not there when the page was built. sel names the voice to
-// leave selected, and choose says whether landing on it counts as picking it.
-// Importing one file picks it, which is what asking for that file meant.
-// Anything else must not: re-picking the voice already in use is not free --
-// for a narrator slot it deletes the reference cut from the recording.
-//
-// Never from inside notify::selected. Splicing a dropdown's model while its
-// popup is still closing leaves the list view drawing a list that is gone (see
-// showPromptStyle, which learned it the hard way); every caller here is a file
-// arriving or a tag changing, which is not that.
+// reload rebuilds the list from the folder. sel names the voice to leave
+// selected; choose says whether landing on it counts as picking it (importing
+// a file does; anything else must not -- re-picking a narrator slot deletes
+// the reference cut). Never from inside notify::selected: splicing a
+// dropdown's model while its popup closes leaves the view drawing a gone list
+// (see showPromptStyle).
 func (vp *voicePicker) reload(sel string, choose bool) {
 	vp.syncing = true
 	defer func() { vp.syncing = false }()
@@ -881,23 +824,11 @@ func (vp *voicePicker) refreshNarrators() {
 // conversion runs off the GUI thread, since it is ffmpeg.
 func (vp *voicePicker) addVoiceDialog() {
 	a := vp.a
-	d := gtk.NewFileDialog()
-	d.SetTitle("Choose a voice sample")
-	d.SetInitialFolder(gio.NewFileForPath(a.audDir))
-	filt := gtk.NewFileFilter()
-	filt.SetName("Audio and video")
+	exts := make([]string, 0, len(mediaExt))
 	for e := range mediaExt {
-		filt.AddSuffix(strings.TrimPrefix(e, "."))
+		exts = append(exts, e)
 	}
-	filters := gio.NewListStore(gtk.GTypeFileFilter)
-	filters.Append(filt.Object)
-	d.SetFilters(filters)
-	d.Open(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.OpenFinish(res)
-		if err != nil || f == nil {
-			return // dismissed
-		}
-		src := f.Path()
+	a.pickFile("Choose a voice sample", a.audDir, extFilter("Audio and video", exts...), func(src string) {
 		a.setStatus("adding " + filepath.Base(src) + "…")
 		go func() {
 			v, err := a.importVoice(src)
@@ -1162,4 +1093,140 @@ func (vp *voicePicker) playSample() {
 			a.setStatus(fmt.Sprintf("sample in %s", v.name))
 		})
 	}()
+}
+
+// Which seconds a voice reference is cut from: the takes with the most SPEECH
+// in them, by the transcript's words, narrowed to the first and last word.
+// Diarization alone finds where somebody held the floor, which can be a laugh
+// and a long think. With no transcript the fallback is longest turns first.
+
+const (
+	// refMinLen is the shortest take worth having. Under about five seconds
+	// there is not enough of a voice in it to be one.
+	refMinLen = 5.0
+	// refPad is how far another speaker must stay from a take on either side.
+	// Diarization edges are approximate, and a syllable of the wrong person
+	// bleeding into the reference is a syllable the clone learns.
+	refPad = 2.0
+	// refWant is how much reference the model is given, and refTakeMax how
+	// many pieces it may be assembled from. More than this stops helping;
+	// fewer, longer pieces are steadier than many short ones.
+	refWant    = 14.0
+	refTakeMax = 3
+	// refMinRate is how much speech a take has to hold to count as speech:
+	// words per second. Ordinary talk runs near 2.5, so this admits somebody
+	// speaking slowly or leaving pauses and turns away the stretch that is
+	// mostly not talking -- including the credits ASR invents over silence,
+	// which are a handful of words spread over a long quiet.
+	refMinRate = 1.5
+)
+
+// refTake is one stretch worth cloning: the seconds it covers, and how much
+// was said in them.
+type refTake struct {
+	s, e  float64
+	words int
+}
+
+func (t refTake) dur() float64 { return t.e - t.s }
+
+// domSpeaker is whoever did most of the talking, by total time. A voice
+// recording is one person plus whatever the room leaked into it, so this is
+// the person, and everyone else is the leak.
+func domSpeaker(turns []span) string {
+	by := map[string]float64{}
+	for _, t := range turns {
+		by[t.slot] += t.e - t.s
+	}
+	dom, best := "", 0.0
+	for s, d := range by {
+		if d > best {
+			dom, best = s, d
+		}
+	}
+	return dom
+}
+
+// refCuts ranks the stretches of a recording a reference should be cut from,
+// best first. turns is the diarization, rows the transcript of the same
+// recording on the same clock; rows may be empty.
+func refCuts(turns []span, rows []seg4) []refTake {
+	dom := domSpeaker(turns)
+	if dom == "" {
+		return nil
+	}
+	var cand []refTake
+	for _, t := range turns {
+		if t.slot != dom || !soloTurn(turns, t, dom) {
+			continue
+		}
+		// no length test on the turn itself: spokenIn only ever narrows it,
+		// so the take being long enough says the turn was
+		if c := spokenIn(t, rows); c.dur() >= refMinLen {
+			cand = append(cand, c)
+		}
+	}
+	// The takes somebody is speaking through. With no transcript none of them
+	// qualifies and the whole set stays, ranked below by length alone -- and
+	// the same happens for a speaker so slow that nothing clears the bar,
+	// which is a thin reference but a better one than none.
+	var spoke []refTake
+	for _, c := range cand {
+		if float64(c.words) >= refMinRate*c.dur() {
+			spoke = append(spoke, c)
+		}
+	}
+	if len(spoke) > 0 {
+		cand = spoke
+	}
+	// most said first, and length breaks the tie the no-transcript case makes
+	// of every comparison
+	sort.SliceStable(cand, func(i, j int) bool {
+		if cand[i].words != cand[j].words {
+			return cand[i].words > cand[j].words
+		}
+		return cand[i].dur() > cand[j].dur()
+	})
+	return cand
+}
+
+// soloTurn is whether a turn has the recording to itself, refPad included.
+func soloTurn(turns []span, t span, dom string) bool {
+	for _, o := range turns {
+		if o.slot != dom && o.e > t.s-refPad && o.s < t.e+refPad {
+			return false
+		}
+	}
+	return true
+}
+
+// spokenIn narrows a turn to the words inside it and counts them. A row counts
+// when its middle is in the turn: diarization edges are approximate, and a row
+// across the boundary belongs to the side holding most of it. Speakers are not
+// checked -- the turn is already this speaker's alone.
+func spokenIn(t span, rows []seg4) refTake {
+	out := refTake{s: t.s, e: t.e}
+	first, last := 0.0, 0.0
+	for _, r := range rows {
+		if mid := (r.s + r.e) / 2; mid < t.s || mid >= t.e {
+			continue
+		}
+		// a row with no words in it is not the end of the speech: letting it
+		// through would stretch the take out over the silence it stands for
+		n := len(strings.Fields(r.text))
+		if n == 0 {
+			continue
+		}
+		// clamped, because a row counted by its middle can still begin before
+		// the turn or end after it, and the seconds outside are the pad
+		if out.words == 0 {
+			first = max(r.s, t.s)
+		}
+		last = min(r.e, t.e)
+		out.words += n
+	}
+	if out.words > 0 {
+		out.s, out.e = first, last
+	}
+	return out
 }

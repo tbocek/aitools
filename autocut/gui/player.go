@@ -1,14 +1,9 @@
 package main
 
-// Video preview: a GStreamer playbin3 rendering into gtk4paintablesink, whose
-// GdkPaintable is shown by a GtkPicture. Arch ships no GTK media backend
-// (GtkVideo is inert here), so this go-gst bridge IS the playback path.
-//
-// go-gst v1 is girgen-generated on its own glib fork (go-gst/go-glib), so its
-// objects and gotk4's are different Go wrappers around the same C GObjects.
-// The paintable crosses that boundary as a raw pointer: take the C pointer
-// out of the go-gst wrapper, ref it into gotk4's world, and hand GtkPicture a
-// gdk.Paintable built around it.
+// Video preview: GStreamer playbin3 into gtk4paintablesink, shown by a
+// GtkPicture (Arch ships no GTK media backend). go-gst's objects and gotk4's
+// are different Go wrappers around the same C GObjects, so the paintable
+// crosses as a raw pointer: taken out of go-gst, ref'd into gotk4's world.
 
 import (
 	"fmt"
@@ -187,27 +182,12 @@ func NewPlayer() (*Player, error) {
 	return p, nil
 }
 
-// audioFilter is the audio path every pipeline here plays through: scaletempo,
-// then a volume element of our own. It returns the bin for playbin's
-// audio-filter and the volume element, which is where the app's gain and mute
-// go from now on.
-//
-// They used to go on playbin's own volume and mute properties, and those are
-// not a gain inside the pipeline: with a pulse or pipewire sink they are the
-// sound server's per-stream volume, and the server REMEMBERS a stream volume
-// per application. So the first time the app wrote a 0 -- a stop with its
-// sound taken out, a volume effect at nought, a hushed lane -- the server
-// stored 0 for "autocut-gui", and restored 0 to every stream the app opened
-// after that, across restarts, until somebody dragged the sliders up in the
-// system mixer. Both autocut streams sat at 0 there, and the app was at a
-// loss to say why, because nothing in it was at 0 any more. A volume element
-// inside the pipeline is heard the same and remembered by nobody.
-//
-// scaletempo is what makes a rate other than 1 listenable: without it a
-// stream at half speed drops an octave. It is the same trade atempo makes in
-// the render (produce_fx.go), so the preview and the finished video sound
-// like each other. A missing plugin is a worse preview, not a dead one: the
-// bin is built from whatever of the two exists.
+// audioFilter is every pipeline's audio path: scaletempo (a rate other than 1
+// without a pitch change, as atempo does in the render) then a volume element
+// of our own. Gain and mute go on that element, not on playbin's properties:
+// those are the sound server's per-application stream volume, which it
+// REMEMBERS -- one 0 written there muted every later stream across restarts.
+// A missing plugin degrades the preview rather than killing it.
 func audioFilter(name string) (filter, gain gst.Element) {
 	gain = gst.ElementFactoryMake("volume", name+"gain")
 	tempo := gst.ElementFactoryMake("scaletempo", name+"tempo")
@@ -306,16 +286,10 @@ func (p *Player) PlaySegment(file string, start, stop float64, play bool) {
 
 // ---- a picture in front of the video ----------------------------------------
 
-// ShowStill puts a picture where the video was: the card, title or still that
-// an insert plays instead of the footage. The stream underneath is not touched
-// -- it is what the timeline is scrolling against and what the clock is read
-// from, and the seconds it is playing are seconds the cut has already given
-// away to the insert.
-//
-// The swap is the paintable rather than a widget stacked over the picture: one
-// GtkPicture with one thing in it cannot get out of step with itself, and the
-// video's paintable is a live object that keeps rendering whether it is on
-// screen or not.
+// ShowStill puts a picture where the video was -- the card an insert plays --
+// without touching the stream underneath, which the timeline scrolls against
+// and the clock is read from. The swap is the paintable, not a widget over the
+// picture.
 func (p *Player) ShowStill(tex gdk.Paintabler) {
 	if tex == nil {
 		return
@@ -337,21 +311,10 @@ func (p *Player) ShowVideo() {
 
 // ---- the separate recordings ------------------------------------------------
 
-// Everything below is one sentence: what the cut plays is the session at that
-// moment, not the file that happens to have the pictures in it.
-//
-// The footage is a capture card's idea of the room -- game sound, and whoever
-// was close enough to the console -- and the recording that has the voices in it
-// is a different file with a different clock. Watching the cut while hearing
-// half of it is how a cut gets made against the wrong second, and the waveform
-// lanes underneath make that worse rather than better: they show a shout you
-// cannot hear.
-//
-// GStreamer offers no way to add a second file to a playbin, so each recording
-// is its own audio-only pipeline, seeked to ITS second of the same instant and
-// driven by the same transport. Two pipelines on one machine share the audio
-// clock, so they stay together for as long as anyone watches a preview; this is
-// a monitor mix, and the render still does its own arithmetic (clipMixes).
+// What the cut plays is the session at that moment, not the file with the
+// pictures: each separate recording is its own audio-only pipeline, seeked to
+// its own second of the same instant and driven by the same transport. A
+// monitor mix; the render does its own arithmetic (clipMixes).
 type auxAudio struct {
 	pb   gst.Element
 	gain gst.Element // our volume element inside pb's audio path (audioFilter)
@@ -559,16 +522,9 @@ var volScales []*gtk.Scale
 // true.
 var volSyncing bool
 
-// formSlider is what a slider with a number on it looks like, everywhere one
-// appears: its own width rather than the column's, its value beside the trough
-// rather than over it, and centred in whatever row it lands in.
-//
-// The value's POSITION is the whole of it. GTK draws it above the slider by
-// default, which makes the control a line and a half tall -- so a form of
-// one-line rows gets two rows standing out of it, with the space above and
-// below them belonging to nothing, and the eye reads the gap as a group
-// boundary that is not there. Beside the trough it is one line, like every
-// other row, and the number is closer to the handle it belongs to.
+// formSlider is what a slider with a number on it looks like everywhere: its
+// own width, its value beside the trough (above, GTK's default, makes the row
+// a line and a half tall), centred in its row.
 func formSlider(sc *gtk.Scale, tip string) {
 	sc.SetDrawValue(true)
 	sc.SetValuePos(gtk.PosRight)
@@ -612,16 +568,10 @@ func volumeCtl() *gtk.Box {
 	return box
 }
 
-// SetFxGain is the cut's own say over this player's loudness: the volume
-// effect under the playhead, which the preview obeys for the same reason it
-// obeys a speed effect's rate -- a preview that does not is telling you about
-// a video that will not exist.
-//
-// Multiplied with the slider rather than replacing it, so turning the preview
-// down still turns a boosted stretch down. Nothing is done when the gain has
-// not moved: this is called from a tick ten times a second, and writing a
-// property that already holds that value on every one of them is a message
-// through the pipeline for nothing.
+// SetFxGain is the volume effect under the playhead, which the preview obeys
+// as it obeys a speed effect's rate. Multiplied with the slider, so turning
+// the preview down still turns a boosted stretch down. Nothing is written when
+// the gain has not moved -- this runs ten times a second.
 func (p *Player) SetFxGain(g float64) {
 	g = math.Max(0, math.Min(fxMaxGain, g))
 	if math.Abs(p.fxGain-g) < 1e-6 {
@@ -664,38 +614,19 @@ func (p *Player) applyVol() {
 	}
 }
 
-// SetMuted cuts the session's sound -- the footage and every recording heard
-// under it -- without stopping any of it. The clock still runs, the timeline
-// still scrolls, and the preview is simply not claiming that what you are
-// looking at is what you would be hearing.
-//
-// This is the preview's half of what an insert means. The render never puts
-// session audio under a card (clipMixes), so a preview that does is telling you
-// about a cut that will not exist.
+// SetMuted cuts the session's sound -- footage and every recording under it --
+// without stopping anything; the clock runs on. The preview's half of an
+// insert: the render never puts session audio under a card (clipMixes).
 func (p *Player) SetMuted(v bool) {
 	p.muted = v
 	p.applyMute()
 }
 
-// Hush silences the parts of the session the scene under the playhead does not
-// hear: own for the footage's own sound, quiet for the recordings mixed under
-// it, named the way the scene names them (cutSeg.Quiet).
-//
-// The pipelines stay where they are and only their mute property moves. The set
-// of recordings changes with the FILE and the answer about them changes with
-// the SCENE, which is ten times a second while the preview runs -- rebuilding
-// them at that rate would be a gap in the sound at every clip boundary, and the
-// lane would come back a beat late even where it is heard.
-//
-// Without this the badge was a control over the render alone: the lane went
-// grey, the wash went grey, and the preview went on playing it, so the one
-// place the choice could be checked by ear disagreed with the finished video.
-//
-// until is when this answer expires: the master-file second at which the
-// scene under the line ends, or the next scene begins -- 0 for never. A lane
-// started under this answer is seeked with a stop there (stopFor), so it
-// falls silent exactly at the boundary rather than a tick after it; the
-// tick then places it again under the next scene's answer (applyMute).
+// Hush silences what the scene under the playhead does not hear (cutSeg.Quiet):
+// only mute properties move, never the pipelines, since the answer changes
+// every tick. until is the master-file second the answer expires at (0 =
+// never); a lane started under it is seeked with a stop there (stopFor) so it
+// falls silent on the boundary, and the tick re-places it (applyMute).
 func (p *Player) Hush(own bool, quiet []string, until float64) {
 	p.hushOwn, p.hush, p.until = own, hushSet(quiet), until
 	p.applyMute()
@@ -779,14 +710,10 @@ func (p *Player) applyMute() {
 	for _, a := range p.mix {
 		m := p.hushes(a.base, false)
 		if m == a.mute {
-			// a lane whose running seek has reached its stop is standing
-			// silent at the boundary it was told about; once the scene under
-			// the line has moved on and still hears it, it is placed again,
-			// with the next stop. Not before: while the line is still read as
-			// the old scene's the stop is the same second, and a seek whose
-			// stop is already behind it is a seek with no stop -- the lane
-			// would run on past the boundary, which is the bleed this exists
-			// to end.
+			// a lane whose running seek has reached its stop stands silent at the
+			// boundary; once the scene under the line has moved on and still hears it,
+			// it is placed again with the next stop. Not before: a seek whose stop is
+			// already behind it has no stop, and the lane would bleed past the boundary.
 			if !m && a.live && a.stopAt > 0 && p.stopFor(a) > a.stopAt {
 				if pos, ok := where(); ok && pos+a.delta >= a.stopAt-0.05 {
 					p.place(a, pos, p.playing)
@@ -818,14 +745,9 @@ func (p *Player) applyMute() {
 	}
 }
 
-// CardSound plays an inserted video's own audio, at seconds into it, which is
-// the other half: a sting that says something is a sting that says it out loud.
-// An empty file takes the sound away again.
-//
-// Its own pipeline, unmuted by SetMuted -- it is not the session's sound, it is
-// the insert's, and it is the one thing that should be audible while a card is
-// up. A card with no audio track simply plays nothing, so nothing here asks
-// whether it has one.
+// CardSound plays an inserted video's own audio, at seconds into it; an empty
+// file takes it away. Its own pipeline, unmuted by SetMuted: it is the
+// insert's sound, not the session's. A card with no audio track plays nothing.
 func (p *Player) CardSound(file string, at float64, play bool) {
 	if file != p.cardFile {
 		p.dropCard()
@@ -994,16 +916,12 @@ func (p *Player) syncMix(play bool) {
 	}
 }
 
-// place puts one recording at the master's time t and either lets it run or
-// holds it there. The one place a mix pipeline is started, so it is the one
-// place that has to know a lane with nothing to play here and a lane the scene
-// does not hear are the same thing to it (audible): both are a pipeline taken
-// to READY.
-//
-// It goes through cue rather than seeking outright: a lane that was hushed
-// is in READY with no stream (applyMute), and a seek on that is a no-op
-// followed by a start from the file's first second. cue prerolls first and
-// seeks when the preroll lands -- at once, for a lane that was already there.
+// place puts one recording at the master's time t and lets it run or holds it.
+// The one place a mix pipeline is started, so it knows that a lane with nothing
+// to play and a lane the scene does not hear are the same thing (audible):
+// READY. Through cue, not a bare seek: a hushed lane is in READY with no
+// stream (applyMute), and a seek on that is a start from the file's first
+// second.
 func (p *Player) place(a *auxAudio, t float64, play bool) {
 	if !a.audible(t) {
 		a.pend, a.live = -1, false
@@ -1067,16 +985,8 @@ func (p *Player) SeekTo(t float64) {
 	}
 }
 
-// SetRate stores the clock the stream is to run on and says whether that is a
-// change. It does NOT seek, because a rate only takes effect at a seek and
-// every caller here is about to make one anyway -- setting it first means one
-// seek where storing it afterwards would mean two.
-//
-// A caller that changes the rate mid-playback, with nowhere to seek to, has to
-// seek to where the stream already is. That is the editor's job (syncPlayRate)
-// rather than this one's: only it knows whether the line is about to move.
-// Rate is the clock the picture is actually running on -- the rate the last
-// seek went out at, not one that has been asked for and not yet taken hold.
+// Rate is the clock the picture is actually running on -- the last seek's, not
+// one asked for and not yet taken hold.
 func (p *Player) Rate() float64 {
 	if p.seekRate <= 0 {
 		return 1
@@ -1084,6 +994,10 @@ func (p *Player) Rate() float64 {
 	return p.seekRate
 }
 
+// SetRate stores the clock the stream is to run on and says whether that is a
+// change. It does NOT seek: a rate only takes effect at a seek and every caller
+// is about to make one. Changing the rate mid-playback is the editor's job
+// (syncPlayRate).
 func (p *Player) SetRate(r float64) bool {
 	if r <= 0 || math.IsNaN(r) || math.IsInf(r, 0) {
 		r = 1
@@ -1095,22 +1009,11 @@ func (p *Player) SetRate(r float64) bool {
 	return true
 }
 
-// SetRateNow is SetRate for a rate change under a running preview: a speed
-// effect's edge crossing under the line. A rate only takes hold at a seek, so
-// this is a flushing seek to where the stream already is, with the new rate
-// on it -- a small stumble at each edge of an effect.
-//
-// It used to try GStreamer's INSTANT_RATE_CHANGE first, a seek that hands the
-// multiplier downstream with no flush and no stumble. On this stack --
-// playbin3, scaletempo, gtk4paintablesink -- that seek does not return:
-// gst_element_seek with flags 0x400 sat on the GTK thread until the shell
-// offered to kill the window, half a second into every ×4 (hangwatch.go
-// caught it). The stumble is the price of a preview that keeps answering.
-//
-// Held to one seek per rateSeekGap. The preview runs an effect flat
-// (fxPreviewRateAt), so the rate changes twice per effect; the gap is for
-// whatever else asks in a hurry, and inside it the rate is put back so the
-// next tick asks again rather than believing the change was made.
+// SetRateNow changes the rate under a running preview with a flushing seek to
+// the current position -- a small stumble. INSTANT_RATE_CHANGE does not return
+// on this stack (playbin3, scaletempo, gtk4paintablesink). Held to one seek
+// per rateSeekGap; inside the gap the rate is put back so the next tick asks
+// again.
 func (p *Player) SetRateNow(r float64) {
 	was := p.rate
 	if !p.SetRate(r) {

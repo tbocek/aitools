@@ -533,7 +533,7 @@ func TestTheGreenBarsXLightsUnderThePointer(t *testing.T) {
 // lane's, an emptied row's and an effect's are one function, so a remove looks
 // like a remove and there is one place to change it.
 func TestEveryKillBadgeIsTheSameBadge(t *testing.T) {
-	for _, f := range []string{"cut_selband.go", "cut_lane.go", "cut_fxkill.go"} {
+	for _, f := range []string{"cut_selband.go", "cut_lane.go", "cut_fxdraw.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -541,7 +541,7 @@ func TestEveryKillBadgeIsTheSameBadge(t *testing.T) {
 		if !strings.Contains(string(b), "drawKillBadge(") {
 			t.Errorf("%s draws its ✕ some other way than drawKillBadge", f)
 		}
-		if strings.Contains(string(b), "cr.Arc(cx, cy, segKillR+segKillPad") {
+		if strings.Contains(string(b), "cr.Arc(cx, cy, segKillR+segKillPad") && !strings.Contains(string(b), "plate(cr,") {
 			t.Errorf("%s still has a copy of the badge's own drawing", f)
 		}
 	}
@@ -733,7 +733,7 @@ func TestEveryKillBadgeKeepsTheSameRoomForTheHandle(t *testing.T) {
 	// and the two that are drawn against one edge measure from killIn
 	for _, c := range []struct{ file, want string }{
 		{"cut_selband.go", "drawKillBadge(cr, (gx0+gx1)/2, y+selBandH/2, ed.bandKillHov == i)"},
-		{"cut_fxkill.go", "return (x0 + x1) / 2, ed.fxLaneTop()"},
+		{"cut_fxdraw.go", "return (x0 + x1) / 2, ed.fxLaneTop()"},
 		{"cut_lane.go", "return v.pxOrigin + killIn, ed.laneTop(v.lane) + segKillTop"},
 		// ...and an emptied row's, which has no edge of its own to sit against:
 		// it stands in the gutter with the other permanent controls

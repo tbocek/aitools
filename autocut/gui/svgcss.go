@@ -1,54 +1,27 @@
 package main
 
-// CSS animation, baked the way SMIL is.
+// CSS animation, baked the way SMIL is: @keyframes rules become svgAnims for
+// svganim.go, which interpolates, freezes, repeats and writes the frame.
 //
-// svganim.go evaluates SMIL and writes one static SVG per frame, because
-// nothing in the render path plays an animation. CSS @keyframes is the other
-// way an SVG animates itself, and it is the way every drawing tool writes one:
-// export a fly-in from a design app and you get a <style> block with @keyframes
-// in it, not an <animateTransform>. Those cards used to be drawn as a still with
-// a line in the log saying why.
-//
-// So they are folded into the same machinery instead. A @keyframes rule is a
-// list of values at fractions of a duration, which is what an svgAnim already
-// is: read the stylesheet, work out which elements an animation applies to and
-// what each animated property is at 0, 0.4, 1, and hand svganim.go an svgAnim
-// per property. Everything after that -- interpolating, freezing, repeating,
-// writing the frame -- is the code SMIL already goes through.
-//
-// The subset is what the built-in cards need, which is what a tier list needs:
+// Subset:
 //
 //	properties   opacity, transform, fill
-//	transform    translate, translateX, translateY, scale, scaleX, scaleY,
-//	             rotate, none -- in px and deg, since a baked frame is a static
-//	             SVG and those are the units an SVG transform attribute has
-//	selectors    one compound selector: #id, .class, tag, *, and combinations
-//	             of them ("rect.row", "#board .chip" is NOT matched -- no
-//	             combinators, no attribute selectors, no pseudo-classes)
+//	transform    translate(X/Y), scale(X/Y), rotate, none -- px and deg
+//	selectors    one compound selector: #id, .class, tag, *, combinations
+//	             ("rect.row"); no combinators, attributes or pseudo-classes
 //	timing       animation and its longhands: name, duration, delay,
 //	             timing-function, iteration-count, fill-mode
 //	easing       linear, ease, ease-in, ease-out, ease-in-out, cubic-bezier();
-//	             steps() is read as linear, which is a wrong easing rather than
-//	             a wrong picture -- the same call the SMIL side makes for spline
+//	             steps() read as linear
 //
-// Anything outside it is left alone: an unmatched selector, an unknown property,
-// a transform in % or em, animation-direction other than normal. The rule stays
-// in the document and renders statically, which is what would have happened
-// before any of this existed. Widening it is mostly a matter of adding to
-// cssAnimProps and cssTransform below.
+// Anything outside it stays in the document and renders statically. Widen via
+// cssAnimProps and cssTransform.
 //
-// The stylesheet in the baked frames comes out without the @keyframes blocks and
-// without the animation declarations that drove them, for the same reason the
-// SMIL path drops its <animate> elements: the frame is the animation's result,
-// and a renderer that DID understand the animation would otherwise play it again
-// on top. The declarations of the properties being animated go with them --
-// leaving "opacity: 0" in a rule would beat the baked presentation attribute,
-// since a stylesheet outranks an attribute, and the card would never appear.
-// The one thing that costs: a rule which animates one element and statically
-// styles another loses that property for both in the baked frames. A card that
-// never appears is worse than a card whose second row is a shade off, and the
-// alternative -- writing every baked value into an inline style -- puts CSS
-// transforms in the output, which only the newest renderers read.
+// Baked frames drop the @keyframes blocks, the animation declarations and the
+// declarations of the animated properties: a stylesheet outranks a
+// presentation attribute, so "opacity: 0" left in a rule would hide the baked
+// value. Cost: a rule that animates one element and statically styles another
+// loses that property for both.
 
 import (
 	"math"

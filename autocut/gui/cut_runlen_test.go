@@ -125,7 +125,7 @@ func TestEveryTimeOnThePageReadsTheSamePipe(t *testing.T) {
 	}
 	// the removal says how much shorter the VIDEO is, which is the number the
 	// total under the tracks moved by
-	rm := readSrc(t, "cut_selrm.go")
+	rm := readSrc(t, "cut_edit.go")
 	if !strings.Contains(rm, "a.setStatus(removedMsg(was-ed.cutLen(), before, len(ed.segs)))") {
 		t.Error("－ Remove reports session seconds again, which the total beside it will not agree with")
 	}

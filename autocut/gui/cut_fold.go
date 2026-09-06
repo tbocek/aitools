@@ -1,42 +1,5 @@
 package main
 
-// Folding the stretches the cut throws away.
-//
-// A session is mostly not in the video. Between two kept clips there can be
-// twenty minutes of walking back, and at this page's zoom that is a screen and
-// a half of footage nobody will ever watch, sitting between the two things
-// being compared. The timeline already collapses one kind of dead space -- a
-// stretch nobody FILMED is drawn as one fixed hatch however many minutes it
-// stands for -- and this is the same trick for the other kind: seconds that
-// exist and that the cut drops.
-//
-// So a dropped stretch can be folded, the way an IDE folds a function body: a
-// − where it is, a + where it was, and everything else on the page follows,
-// because everything measures itself through xOf and tAt and those walk the
-// cells (layoutPx).
-//
-// What a fold is NOT is an edit. The cut is the same cut, the render is the
-// same render; it changes what you are looking at, so it pushes no undo step
-// -- and it is kept with the cut all the same (cutFile.Folds), because it is
-// about the gaps between that cut's segments and would otherwise be undone by
-// closing the project.
-//
-// ---- and drags open it -------------------------------------------------------
-//
-// Folded, two clips end up drawn border against border with minutes between
-// them.
-// Every hard case in this feature comes from that: which of the two touching
-// borders a press means, what a pixel of dragging is worth inside a fold,
-// where the page goes when a clip grows into one. They all go away with one
-// rule: a press that can MOVE something opens the folds around it for as long
-// as the button is down (foldOpen/foldShut). The drag then runs on the
-// ordinary proportional timeline, and the merge at the end of it is the same
-// merge a clip dragged against its neighbour has always had.
-//
-// The view is anchored on the pressed second across both, so the thing under
-// the pointer stays under the pointer while the rest of the timeline slides
-// around it -- the trick the wheel already uses to zoom about the cursor.
-
 import (
 	"fmt"
 	"math"
@@ -44,19 +7,21 @@ import (
 	"github.com/diamondburned/gotk4/pkg/cairo"
 )
 
+// Folding dropped stretches, IDE-style: a folded gap is drawn with no width
+// (foldPx), so its clips meet border to border; everything follows because
+// xOf/tAt walk the cells (layoutPx). A fold is a view, not an edit -- no undo
+// step -- but is kept with the cut (cutFile.Folds).
+//
+// Drags open it: a press that can MOVE something opens the folds around it
+// while the button is down (foldOpen/foldShut), so the drag runs on the
+// ordinary timeline and the merge at its end is the usual one. The view is
+// anchored on the pressed second across both, as the wheel zoom anchors on the
+// cursor.
+
 const (
-	// foldPx is how wide a folded stretch is drawn: NOTHING. The two clips
-	// either side of one meet, border against border, exactly as they do when
-	// there is no time between them at all -- which is the truth a fold is
-	// telling. A strip left standing in there, whatever was drawn on it, is a
-	// stretch of page standing for footage that is not on the page.
-	//
-	// It was 32 px for a while, wide enough that the two borders and the +
-	// between them each had their own pixels. That bought a tidy press at the
-	// cost of the one thing the feature is for, and it is not needed: a press
-	// on the seam OPENS it (foldOpen), and everything after that is an
-	// ordinary drag on an ordinary timeline. Which of the two borders a press
-	// on the seam means is answered by the side it lands on (bandClipPartAt).
+	// foldPx: a folded stretch has NO width; the two clips meet border to
+	// border. A press on the seam opens it (foldOpen); which border it means is
+	// the side it lands on (bandClipPartAt).
 	foldPx = 0.0
 	// a gap with no room to draw the − in is not offered one: the badge would
 	// be wider than the thing it folds, and would sit on both its neighbours.
@@ -115,14 +80,9 @@ func (ed *cutEditor) syncFolds() {
 }
 
 // wholeRun is whether a gap has swallowed an entire recording: nothing kept
-// before it, nothing after, the run itself dropped end to end.
-//
-// A fold is remembered by overlap, which is what carries it through trims --
-// and what would otherwise carry it through the cut being emptied. Clear the
-// cut, or undo back to before there was one, and the gap beside a fold grows
-// to the whole session; folded, that is the whole page collapsed to one strip
-// by a press nobody made. A fold is a gap BETWEEN scenes: with no scene either
-// side of it, it is not one.
+// before or after it. A fold is remembered by overlap, which would otherwise
+// carry it through the cut being emptied and collapse the whole page to one
+// strip. A fold is a gap BETWEEN scenes; with none either side it is not one.
 func (ed *cutEditor) wholeRun(t0, t1 float64) bool {
 	for _, r := range ed.runs() {
 		if t0 <= r.t0+0.01 && t1 >= r.t1-0.01 {
@@ -222,22 +182,10 @@ func (ed *cutEditor) foldBadges() []foldBadge {
 	return out
 }
 
-// foldBadgeX is where a gap's badge goes along the timeline.
-//
-// The middle, for a gap between two clips: the ends are the clips' own grips,
-// and the middle is the one part of it nothing else wants.
-//
-// But the stretch BEFORE the first clip and the one after the last are not
-// between anything. Their middle is an arbitrary point in the void -- these
-// are usually the longest gaps on the page, the capture set going and
-// forgotten about -- and their far end is the edge of the page, where a badge
-// is a mark floating in black with nothing to say which timeline it belongs
-// to. So the head's badge goes just INSIDE the first clip and the tail's just
-// inside the last: on the green, killIn from the border, which is where every
-// badge that sits against an edge on this page sits.
-//
-// Never past that clip's middle, which is its ✕ (drawSelBand): on a clip too
-// short to hold both, the fold's badge gives way and stays at the border.
+// foldBadgeX: the badge sits in the middle of a gap between two clips (the ends
+// are grips). The head and tail gaps are not between anything, so their badge
+// goes just INSIDE the first/last clip, killIn from the border -- never past
+// that clip's middle, which is its ✕.
 func (ed *cutEditor) foldBadgeX(g foldGap, x0, x1 float64) float64 {
 	mid := (x0 + x1) / 2
 	head, tail := ed.headTail(g)
@@ -296,16 +244,9 @@ func (ed *cutEditor) foldBadgeAt(px, y float64) int {
 	return -1
 }
 
-// toggleFold folds a gap or opens it again, and keeps the second under the
-// pointer under the pointer.
-//
-// Everything to the right of the gap moves -- that is what folding IS -- so
-// without the anchor the press throws the page sideways by however many
-// minutes the fold hides. anchor is the timeline x the press landed on
-// (foldAnchor); the view is set so the second that was there is there again.
-//
-// No undo step: the cut is the same cut, and a history of what was looked at
-// is not a history of what was done.
+// toggleFold folds a gap or opens it again, keeping the second under the
+// pointer under the pointer: everything right of the gap moves, so anchor
+// (foldAnchor) is the timeline x the press landed on. No undo step.
 func (ed *cutEditor) toggleFold(i int, anchor float64) {
 	badges := ed.foldBadges()
 	if i < 0 || i >= len(badges) {
@@ -370,12 +311,10 @@ func (ed *cutEditor) drawFoldBadges(cr *cairo.Context, vx0, vx1 float64) {
 // away.
 func foldPlate(cr *cairo.Context, cx, cy float64, mark string, hot bool) {
 	if hot {
-		cr.SetSourceRGBA(0.25, 0.55, 0.85, 0.95)
+		plate(cr, cx, cy, segKillR+segKillPad, 0.25, 0.55, 0.85, 0.95)
 	} else {
-		cr.SetSourceRGBA(0.06, 0.06, 0.07, 0.55)
+		plate(cr, cx, cy, segKillR+segKillPad, 0.06, 0.06, 0.07, 0.55)
 	}
-	cr.Arc(cx, cy, segKillR+segKillPad, 0, 2*math.Pi)
-	cr.Fill()
 	cr.SetSourceRGBA(1, 1, 1, 0.92)
 	cr.SetLineWidth(1.6)
 	cr.MoveTo(cx-segKillR, cy)
@@ -404,14 +343,10 @@ func (ed *cutEditor) hoverFold(x, y float64) {
 
 // ---- what opens a fold besides its own + -------------------------------------
 
-// walkFold opens the fold the line has walked into. ▶ plays the footage, all
-// of it, dropped stretches included -- so a page that shows a seam while the
-// line is somewhere inside it is lying about where the line is. ▶✂ plays the
-// cut, which never enters one, and this is not called for it.
-//
-// It stays open afterwards. The line came out of it, and refolding under a
-// running line would pull the page sideways mid-playback; the + is right there
-// when it is wanted again.
+// walkFold opens the fold the line has walked into: ▶ plays the footage,
+// dropped stretches included, and a seam shown while the line is inside it
+// lies about where the line is. ▶✂ never enters one. It stays open afterwards
+// -- refolding under a running line would pull the page sideways.
 func (ed *cutEditor) walkFold() {
 	s := ed.foldAt(ed.playhead)
 	if s == nil {
@@ -425,18 +360,9 @@ func (ed *cutEditor) walkFold() {
 	ed.a.setStatus(fmt.Sprintf("unfolded %s — ▶ ran into it", mmss(t0)))
 }
 
-// foldOpen opens every fold a press could drag something into or out of, for
-// as long as the button is down, and answers what foldShut needs to put them
-// back.
-//
-// The reason is in this file's head: folded, two clips meet at one x with
-// minutes between them, and a drag across that seam would have to invent what
-// a pixel is worth inside it. Opening first means the drag runs on the
-// ordinary timeline, where a pixel is a pixel.
-//
-// Only the folds the press can reach are opened -- the one under it and the
-// one either side of whatever it grabbed -- because opening all of them would
-// throw every other seam on the page open for a drag that cannot touch them.
+// foldOpen opens the folds a press could drag something into or out of -- the
+// one under it and either side of what it grabbed -- for as long as the button
+// is down, and returns what foldShut needs to put them back.
 func (ed *cutEditor) foldOpen(a, b, px float64) []foldGap {
 	reach := foldReach / math.Max(ed.pps, 0.001)
 	var shut []foldGap
@@ -485,4 +411,120 @@ func (ed *cutEditor) foldShut(shut []foldGap, px float64) {
 	ed.syncFolds()
 	ed.foldLayout(t, px)
 	ed.persist()
+}
+
+// The gutter: the timeline starts gutterPx in, and the black strip before it
+// holds the permanent controls (whole-lane sound switches, row ✕, fold-all) so
+// they never sit on footage. It is content, not a pinned column: the first
+// gutterPx of timeline coordinate space (layoutPx), so controls are placed and
+// pressed in timeline px and scroll away with the tape.
+
+const (
+	// gutterPx is how much black stands in front of second zero, and
+	// gutterMid is where a control in it is centred. Wide enough for the
+	// plates the switches wear (hearPlate, foldPlate) with a px or two either
+	// side, and no wider: it is space taken off the width the footage has.
+	gutterPx  = 30.0
+	gutterMid = gutterPx / 2
+)
+
+// drawGutter fills the strip. Black rather than the band's own dark grey: the
+// bands say "footage" and this is the one part of the page that is not, and at
+// the zoom floor -- where the whole session is on screen and the strip is the
+// only thing to the left of it -- a shade of the same grey would read as more
+// timeline with nothing on it.
+func (ed *cutEditor) drawGutter(cr *cairo.Context, top, h float64) {
+	cr.SetSourceRGB(0, 0, 0)
+	cr.Rectangle(0, top, gutterPx, h)
+	cr.Fill()
+}
+
+// ---- fold the lot -----------------------------------------------------------
+
+// foldAllY is where the fold-all control sits: the selection band's own line,
+// under the clock, because folding is about the gaps between the green bars
+// that band draws.
+func (ed *cutEditor) foldAllY() float64 { return ed.selBandTop() + selBandH/2 }
+
+// foldAllOn is what pressing it would do: with anything folded it opens
+// everything, and only with nothing folded does it fold. One press to get the
+// page back is worth more than one press to fold the last gap -- and a control
+// that reads "+" while half the page is folded and half is not would be lying
+// about the half it is not.
+func (ed *cutEditor) foldAllOn() bool { return len(ed.folds) > 0 }
+
+// foldAllAt is whether a press in the gutter is on it.
+func (ed *cutEditor) foldAllAt(px, y float64) bool {
+	return len(ed.foldGaps()) > 0 &&
+		math.Abs(px-gutterMid) <= segKillHit && math.Abs(y-ed.foldAllY()) <= segKillHit
+}
+
+// toggleFoldAll folds every dropped stretch away, or brings them all back.
+//
+// The view is anchored the way one gap's own badge anchors it (toggleFold):
+// the second at the left of the page stays at the left of the page, so folding
+// the lot pulls the timeline in around what you were looking at rather than
+// throwing it somewhere else entirely.
+func (ed *cutEditor) toggleFoldAll() {
+	gaps := ed.foldGaps()
+	if len(gaps) == 0 {
+		return
+	}
+	t := ed.tAt(ed.viewX + gutterPx)
+	on := ed.foldAllOn()
+	n := 0
+	if on {
+		ed.folds = nil
+		n = len(gaps)
+	} else {
+		for _, g := range gaps {
+			ed.folds = append(ed.folds, [2]float64{g.t0, g.t1})
+			n++
+		}
+		ed.syncFolds() // a gap that is a whole recording is not one to fold (wholeRun)
+		n = len(ed.folds)
+	}
+	ed.foldLayout(t, ed.xOf(t))
+	ed.persist()
+	if on {
+		ed.a.setStatus("unfolded " + plural(n, "seam"))
+		return
+	}
+	ed.a.setStatus("folded " + plural(n, "seam"))
+}
+
+// drawFoldAll paints it: the same − and + a single gap's badge wears, because
+// it is the same verb over all of them.
+func (ed *cutEditor) drawFoldAll(cr *cairo.Context) {
+	if len(ed.foldGaps()) == 0 {
+		return
+	}
+	mark := "−"
+	if ed.foldAllOn() {
+		mark = "+"
+	}
+	foldPlate(cr, gutterMid, ed.foldAllY(), mark, ed.foldAllHov)
+}
+
+// gutterCtl is whether a press landed on a control in the strip: the fold-all
+// badge, a lane's sound switch, a row strip's switch, an emptied row's ✕.
+// Every second in the gutter is second zero, so a press on a control must not
+// also cue the line there; only the black between them is a place for the line.
+func (ed *cutEditor) gutterCtl(px, y float64) bool {
+	if px > gutterPx {
+		return false
+	}
+	return ed.foldAllAt(px, y) || ed.laneSwitchAt(px, y) != "" ||
+		ed.pairSwitchAt(px, y) != nil || ed.rowKillAt(px, y) >= 0
+}
+
+// hoverFoldAll lights it under the pointer, like every other badge here.
+func (ed *cutEditor) hoverFoldAll(x, y float64) {
+	on := x >= 0 && ed.foldAllAt(x+ed.viewX, y)
+	if on != ed.foldAllHov {
+		ed.foldAllHov = on
+		if ed.srcArea != nil {
+			ed.srcArea.QueueDraw()
+		}
+	}
 }

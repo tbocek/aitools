@@ -1,49 +1,18 @@
 package main
 
-// What the sound does over a speed effect.
-//
-// It used to be one tick on one rate: a stop asked whether to keep playing the
-// footage's sound under the held frame, and every other rate simply took the
-// sound with the picture. That left two things unreachable. Silence, at any
-// rate but a stop -- fast-forwarded chatter is the first thing most editors
-// throw away, and doing it meant dragging a second effect (🔊 Volume 0%) over
-// the same seconds. And the opposite: the sound going on at its own speed
-// while the picture runs off without it, which is what a montage is.
-//
-// So it is a choice with five answers, on every rate.
+// What the sound does over a speed effect: five answers on every rate.
 //
 //	with the picture, voice held   the clock takes the sound too, pitch kept
-//	with the picture, pitch and all the tape-speed version of the same thing
+//	with the picture, pitch and all the tape-speed version
 //	at 1×, until the speed change ends
 //	at 1×, until the scene ends
 //	silent
 //
-// ---- the two that let the sound run on ---------------------------------------
-//
-// Think of two read-heads on the recording: the picture's and the sound's.
-// Normally they are the same head. Under a speed effect that keeps its sound at
-// 1× they come apart -- the picture's runs four times as fast, or half -- and a
-// GAP opens between them. The two entries are where that gap is closed.
-//
-// The gap costs something either way, and which it costs is the rate:
-//
-//	×4 over 20 s   5 s on screen, the sound 15 s BEHIND. Closing the gap
-//	               skips forward: 15 s of sound is never heard.
-//	×0.5 over 20 s 40 s on screen, the sound 20 s AHEAD -- it has read past
-//	               what the picture has reached. Closing it jumps back: 20 s
-//	               is heard twice.
-//
-// Neither is a fault to be designed out. A fast stretch under a voice that
-// keeps talking IS the thing being asked for, and the seconds it costs are the
-// seconds the speed-up was there to skip. What matters is that the cost lands
-// somewhere the hand chose, which is what the two entries are: at the end of
-// the effect, or at the end of the scene it is in.
-//
-// The close itself is a splice in the sound, so it is dipped rather than cut
-// (sndDip). Not crossfaded: clips are encoded one at a time and joined with a
-// stream copy, so nothing can cross the join -- what is possible is the tail of
-// one clip fading down and the head of the next fading up, which over 150 ms
-// reads as a soft join rather than the click a hard splice makes.
+// The two 1× answers let the picture's and the sound's read-heads come apart,
+// and the GAP is closed where the hand chose: ×4 skips the sound never heard,
+// ×0.5 repeats what was heard. The close is a splice, dipped rather than cut
+// (sndDip): clips are joined with a stream copy, so nothing can cross the join
+// -- one tail fades down, the next head fades up.
 
 import (
 	"fmt"
@@ -120,13 +89,8 @@ func sndKindOf(i uint) string {
 }
 
 // sndAt is the sound answer in force at session second t, and which effect
-// gave it.
-//
-// Two speed effects over one second average their rates (cut_speedmix.go), and
-// there is no averaging two answers about the sound: the EARLIER effect's
-// answer holds, because it is the one whose sound is already running by the
-// time the second arrives. Nothing at t at all is the plain answer, which is
-// also what a stretch with no speed effect over it gets.
+// gave it. Rates average (cut_speedmix.go); sound answers do not -- the
+// EARLIER effect's holds, since its sound is already running.
 func sndAt(fx []cutFx, t float64) (string, cutFx, bool) {
 	for _, f := range speedsOf(fx) { // sorted by T
 		if f.Dur > 0 && t >= f.T-1e-9 && t < f.T+f.Dur-1e-9 {
@@ -218,17 +182,10 @@ func sndNote(kind string, rate, dur float64) string {
 	}
 }
 
-// drawSndTail marks how far past its own bar an effect's sound reaches.
-//
-// This is the one effect on the page whose reach is not its band. "At 1× until
-// the scene ends" leaves the sound running over the clips that follow, out of
-// step with them by a fixed number of seconds, and none of that is visible
-// anywhere: the bar stops where the picture stops speeding up. So the bar
-// grows a tail -- a thin line at the height of the band, to the second the
-// sound goes back in sync, with how far apart the two are written on it.
-//
-// Drawn from inside drawFxLane's translation, so x is timeline px like
-// everything around it.
+// drawSndTail marks how far past its own bar an effect's sound reaches: "at 1×
+// until the scene ends" runs over the clips that follow, out of step by a fixed
+// number of seconds, so the bar grows a thin tail to the second the sound goes
+// back in sync, labelled with the gap. Drawn inside drawFxLane's translation.
 func (ed *cutEditor) drawSndTail(cr *cairo.Context, f cutFx, y float64) {
 	t0, t1, debt, ok := ed.sndTail(f)
 	if !ok {

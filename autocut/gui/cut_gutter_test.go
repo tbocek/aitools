@@ -69,7 +69,7 @@ func TestTheSwitchesStandInTheGutterRatherThanOnTheFootage(t *testing.T) {
 	if !strings.Contains(readSrc(t, "cut_audio.go"), "ed.drawGutter(cr, 0, fh)") {
 		t.Error("the recorders' band draws no gutter")
 	}
-	if !strings.Contains(readSrc(t, "cut_gutter.go"), "cr.SetSourceRGB(0, 0, 0)") {
+	if !strings.Contains(readSrc(t, "cut_fold.go"), "cr.SetSourceRGB(0, 0, 0)") {
 		t.Error("the gutter is not black, so it reads as more timeline with nothing on it")
 	}
 }

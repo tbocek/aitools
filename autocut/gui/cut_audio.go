@@ -1,37 +1,12 @@
 package main
 
-// The audio lanes under the cut: one pair for the footage's own sound, and one
-// per separate recording.
-//
-// The video track is the master and stays the master: the timeline is the
-// footage's, x is still the footage's x, and a lane below is a slave drawing of
-// something that happened at the same time. This matters because the audio was
-// recorded by a different machine -- a headset recorder, OBS's second track, a
-// phone on the table -- which started when it started and knows nothing about
-// when the capture card did. What lines them up is the wall clock (srcClock: a
-// timestamp in the name, else the session's own start), the same zero every
-// other part of this app places sources by, so a lane is drawn where the
-// recording actually was rather than from the left edge.
-//
-// The consequence is that a lane is usually shorter than the timeline, and that
-// is the point: only the part of the recording that overlaps the footage is
-// drawn, over its own lighter ground, so the ends that hang off -- the minutes
-// before you hit record on the capture card, the hour after you stopped -- are
-// visibly not there instead of being stretched to fit.
-//
-// The footage's own track is drawn as a lane too, first, even though it is
-// coming out of the speakers anyway. A lane on its own cannot be checked
-// against anything -- it is a blue smear, and whether it is a second early is
-// not a question a picture of one waveform can answer. Under the sound the
-// footage itself carries, a laugh in both lanes lines up in the same column or
-// it does not, and the answer is the page rather than a claim about it.
-//
-// Left and right are separate lanes. A stereo recording of a group is often not
-// a stereo picture at all -- one player per side, or a mic on one channel and
-// the game on the other -- and a merged waveform hides exactly that. Blue,
-// because every other ink on this page already means something: green is kept,
-// red is removed and the playhead, yellow is a file boundary, violet is an
-// insert, white is the held edge.
+// The audio lanes under the cut: one pair for the footage's own sound, one per
+// separate recording. The footage is the master; a recording is placed by the
+// wall clock (srcClock) and only the part overlapping the footage is drawn, on
+// its own lighter ground. The footage's own track is drawn too, so a laugh in
+// two lanes either lines up or does not. Left and right are separate lanes
+// (one player per side is common). Blue, because every other ink here means
+// something else.
 
 import (
 	"bufio"
@@ -65,17 +40,11 @@ const (
 	wavePad   = 3.0  // above and below the lanes as a whole
 )
 
-// tlAudio is a recording placed on the session timeline, exactly as tlVideo is,
-// minus everything to do with pictures. It is NOT part of the timeline's
-// geometry: relayout lays out the videos and the audio is drawn against that.
-//
-// The footage's own sound track is one of these too, master set. It is not a
-// separate recording by any definition -- it is the master, drawn from the same
-// file as the pictures above it -- but on this page it is a waveform against
-// the timeline like the others, and leaving it out was the reason a lane could
-// not be read: a blue smear with nothing to compare it to says nothing about
-// whether it is where it should be. Side by side with the footage's own sound,
-// the same shout is visibly in both, at the same x.
+// tlAudio is a recording placed on the session timeline, as tlVideo is, minus
+// the pictures. Not part of the timeline's geometry: relayout lays out the
+// videos and the audio is drawn against that. The footage's own track is one
+// too, master set -- side by side with it, the same shout is visibly in both
+// lanes at the same x, which is what makes a lane readable.
 type tlAudio struct {
 	base   string
 	path   string
@@ -91,14 +60,9 @@ type tlAudio struct {
 	track int
 }
 
-// at is the second of the file heard at session second t, which is tlVideo.at
-// for sound and is a subtraction for the same reason: a lane's clock and the
-// session's differ by exactly where the lane was put.
-//
-// off is nought for a recording -- a recording IS its file, whole, and its
-// first second is the file's first second. A cut lane is a WINDOW opening
-// partway into a file (cut_lane.go), and its sound is that same window: the
-// row starts at second off of the file and runs dur from there.
+// at is the second of the file heard at session second t (tlVideo.at for
+// sound). off is nought for a recording; a cut lane is a WINDOW partway into a
+// file (cut_lane.go) and its sound is that same window.
 func (au tlAudio) at(t float64) float64 { return t - au.start + au.off }
 
 // soundAt says whether anything is audible at these seconds -- the capture's own
@@ -114,29 +78,10 @@ func (ed *cutEditor) soundAt(t, dur float64) bool {
 	return false
 }
 
-// soundOpen is whether the insert form asks what this insert does to the sound.
-//
-// It used to be a narrow question, because a strip above the tracks answered
-// most of it before the chooser opened: a selection could be scoped to the
-// picture alone, or to one recording's sound, and the form only asked in the
-// one case that left open -- a file with no sound of its own laid over seconds
-// that have some. That strip is gone; which rows a SCENE is made of is said on
-// the scene now (cut_cam.go, cut_hear.go), and what an INSERT does to the
-// sound is asked here, of the file that actually came back.
-//
-// A picture insert only. A sound insert settles it by being one: it IS the
-// sound, and cutSeg.Lane says which recording it stands in for.
-//
-// Spliced BETWEEN the footage there is nothing underneath to keep, so the only
-// question is whether the insert plays its own sound or runs silent -- worth
-// asking of a file that has one, and nothing to ask of a card that has not.
-// Laid OVER the footage both readings are live: the file's own sound, or the
-// session's carrying on under the picture.
-//
-// A copied stretch of the session counts as having sound. It is footage, and
-// footage on this page is picture and what was recorded with it; a copy of a
-// silent capture answers the question with a tick that changes nothing, which
-// is a smaller wrong than not being asked at all.
+// soundOpen is whether the insert form asks what this insert does to the
+// sound: only for a picture insert (a sound insert IS the sound). Spliced
+// between the footage the question is own sound or silent; laid over it, own
+// sound or the session's carrying on. A copied stretch counts as having sound.
 func (ed *cutEditor) soundOpen(path string, at, dur float64, m insMode) bool {
 	if ed == nil || m.lane != "" || insKind(path) == "audio" {
 		return false
@@ -156,21 +101,9 @@ func insHasSound(path string) bool {
 	return hasAudioStream(file)
 }
 
-// loadWaves gets an envelope for every lane that has not got one, in the
-// background and one goroutine each: decoding an hour of audio takes seconds,
-// and a page that waited for them would be a tab that does not open. A lane
-// whose envelope has not landed yet draws its ground and no wave, and the
-// redraw when it does is the whole of the arrival -- there is nothing to
-// recompute, because the audio is not part of the timeline's geometry.
-//
-// Asked again whenever the lanes change and not only on a reload: a cut lane
-// added by hand is a lane with sound under it from the moment it appears
-// (setLanes), and one that had to wait for the next visit to draw its wave
-// would look like a lane that has none.
-//
-// Keyed by the lane's name rather than its path, because that is what draws it,
-// and a copied shot is one file on two lanes with two windows on it. The second
-// decode is a read of the disk cache the first one left (loadWave).
+// loadWaves fetches an envelope for every lane without one, one goroutine
+// each; a lane draws its ground until its wave lands. Asked whenever the lanes
+// change (setLanes). Keyed by lane name: a copied shot is one file on two lanes.
 func (ed *cutEditor) loadWaves() {
 	if ed.audArea == nil {
 		return // no band to draw them in: an editor built for a test
@@ -223,33 +156,10 @@ type waveform struct {
 
 // ---- how loud is drawn ------------------------------------------------------
 //
-// A linear envelope is unreadable. Amplitude is linear and hearing is not, so
-// a lane drawn straight from the sample values spends almost its whole height
-// on the loudest few dB and puts everything else on the floor: speech peaking
-// at -12 dBFS is a quarter of the lane, the room tone under it at -50 is three
-// thousandths of it, and the picture is a row of spikes over a flat line. What
-// you want to see -- where the talking is, where the quiet is, where a lull is
-// merely quiet rather than empty -- is all in the part that got flattened.
-//
-// So the height is a meter reading, not an amplitude. The curve is IEC
-// 60268-18, the broadcast meter scale: -70 dBFS at the bottom, 0 dBFS at the
-// top, and progressively more of the lane per dB as it climbs. It is the same
-// curve Shotcut's timeline waveform is drawn on -- MLT's audiolevel filter
-// turns it on by default -- which is why the two now look like each other.
-//
-// One thing is still ours rather than Shotcut's: the envelope underneath is a
-// peak and Shotcut's is a mean over the first four milliseconds of each video
-// frame, so the same sound reads a few dB hotter here and an onset that
-// Shotcut's strobe misses is still drawn.
-//
-// A lane is filled from the bottom up, not mirrored about a middle. A mirrored
-// waveform is the picture of a signal -- a bipolar thing swinging both ways
-// about zero -- and this is not one: a bucket holds the loudest ABSOLUTE
-// sample in ten milliseconds, so the half below the line was the half above it
-// drawn a second time. It carried nothing, and it cost the lane half its
-// height to say it. What the envelope actually holds is a level, levels have a
-// floor and a top and no negative side, and a lane filled from its floor gives
-// every pixel of itself to the only number there is.
+// The height is a meter reading on the IEC 60268-18 scale (-70..0 dBFS), not
+// an amplitude: linear puts everything but the loudest few dB on the floor.
+// The envelope is a peak per 10 ms bucket, so a lane is filled from the
+// bottom, not mirrored -- a level has no negative side.
 
 // iecRaw is the standard's own curve: linear amplitude in, meter deflection
 // out, with the knots exactly where IEC 60268-18 puts them.
@@ -340,14 +250,10 @@ func (a *App) waveCache() string { return filepath.Join(a.outDir, "cache", "wave
 const waveMagic = "AWV4"
 
 // loadWave is the cache in front of buildWave, keyed by the source's size and
-// modification time as well as its name: a session re-recorded to the same
-// filename is a different recording, and drawing the old one under it would be
-// a picture that quietly lies.
-// Keyed on the LANE's name and not the file's, because a multi-track capture is
-// one file on several lanes: two tracks of one .mkv have the same size and the
-// same mtime, so a cache file named for the file alone would hand the second
-// lane the first one's envelope and every check that guards against a stale
-// picture would pass (cut_tracks.go).
+// mtime (a re-recording under the same name is a different recording) and by
+// the LANE's name, not the file's: two tracks of one .mkv share size and
+// mtime, and a file-named cache would hand the second lane the first's
+// envelope.
 func loadWave(dir string, au tlAudio) (*waveform, error) {
 	fi, err := os.Stat(au.path)
 	if err != nil {
@@ -501,17 +407,11 @@ func buildWave(path string, track, chans int) (*waveform, error) {
 	if len(wf.chans[0]) == 0 {
 		return nil, fmt.Errorf("%s: no audio came out of it", filepath.Base(path))
 	}
-	// Two sides carrying the same signal are one signal, and drawing it twice
-	// costs a lane to say nothing: a mic plugged into one input of an interface
-	// and written out as stereo, a phone recording, anything mono that went
-	// through a stereo container. Not sample-exact equality, because a file that
-	// was mono until it was encoded comes back with the coder's own noise between
-	// the sides; what is asked instead is whether the two ever get more than a
-	// hundredth of the file's own peak apart -- 40 dB down, which is a difference
-	// nobody could see in a 30 px lane, let alone hear as a stereo image.
-	//
-	// A silent stereo file collapses too (nothing is nothing twice over), which is
-	// the right answer for the same reason.
+	// Two sides carrying the same signal are one signal (a mono mic in a stereo
+	// container). Not sample-exact: an encoder adds noise between the sides, so
+	// the test is whether they ever differ by more than a hundredth of the file's
+	// peak -- 40 dB down, invisible in a 30 px lane. A silent stereo file
+	// collapses too.
 	if chans == 2 && (apart*dualMonoRatio <= loudest || sameLanes(wf.chans[0], wf.chans[1])) {
 		wf.chans = wf.chans[:1]
 	}
@@ -522,29 +422,10 @@ func buildWave(path string, track, chans int) (*waveform, error) {
 // be than the recording itself before they count as one signal.
 const dualMonoRatio = 100
 
-// sameLanes is the other half of that question, asked about the PICTURE rather
-// than about the samples: do these two envelopes draw the same lane?
-//
-// The sample test above is the strict one -- it asks whether there is a stereo
-// image at all, and it answers no only when the sides never get 40 dB from each
-// other anywhere in the recording. That is the right question for "is this one
-// signal" and too strict for "is this one lane": one transient where a lossy
-// coder reconstructed the two sides slightly differently is enough to fail it,
-// and the page then spends a row of itself drawing the same skyline twice.
-//
-// So this asks the drawn question instead, in the envelope's own unit. A bucket
-// is a byte, so two envelopes that agree to within a byte are the same picture
-// to the precision the picture is kept in -- there is nothing left to see in the
-// second lane. Averaged, because coder noise is scattered over the recording
-// and a mean is what a lane full of it looks like; with a ceiling on any single
-// bucket, because "identical except for the one moment something panned hard"
-// is a stereo image, and a mean over an hour would swallow it.
-//
-// The numbers are far apart on purpose. A mono file through a lossy coder comes
-// back with the sides a small fraction of a byte apart; a pair of mics that are
-// not quite matched -- a tenth of the level between them, which is under a dB
-// and is the case this must NOT collapse -- is thirteen bytes apart at every
-// bucket. There is an order of magnitude either side of where this sits.
+// sameLanes asks whether two envelopes draw the same PICTURE: mean difference
+// within a byte, with a ceiling on any single bucket so one hard pan still
+// counts as stereo. Looser than the sample test (which fails on one lossy
+// transient) and an order of magnitude away from a mismatched mic pair.
 const (
 	laneSameAvg = 1.0 // bytes of envelope, meaned over the recording
 	laneSameMax = 8   // ...and the most any one bucket may be out
@@ -631,15 +512,9 @@ func (ed *cutEditor) audioLanes() int {
 	return n
 }
 
-// audAtY is the recording whose lanes sit at y in the audio area, by base
-// name, or "" when there are none at all. It walks the layout drawAudio
-// draws, so what the hand lands on is the lane the eye is pointing at.
-//
-// Total, deliberately: every point in the area answers with a recording. The
-// pad above the first lane and the hair of ground between two recordings are
-// not places anyone is aiming at on purpose, and a press there that quietly
-// meant "the pictures" would take the footage when the hand was on a
-// waveform -- the one mistake this whole row is here to prevent.
+// audAtY is the recording whose lanes sit at y in the audio area, by base name,
+// or "" with none at all. Total, deliberately: a press on the pad above a lane
+// or the hair between two must not quietly mean "the pictures".
 func (ed *cutEditor) audAtY(y float64) string {
 	auds := ed.sepAuds()
 	if len(auds) == 0 {
@@ -700,16 +575,9 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 	// standing in it (cut_gutter.go)
 	ed.drawGutter(cr, 0, fh)
 	ed.drawLaneSwitches(cr)
-	// What the cut keeps, in green, exactly as it is said over the thumbnails
-	// -- these seconds are in the video, and the rest is not. It has to be
-	// said in both places: sound is chosen here now, and choosing where a
-	// sound goes against a band that never showed the cut meant reading the
-	// answer off a different row than the one being worked in.
-	//
-	// Fainter than the tint on the pictures, though. There it lies over a
-	// thumbnail, which is a picture and survives being tinted; here it lies
-	// over a waveform, which IS the reading, and a wash heavy enough to
-	// colour the ground would take the wave with it.
+	// What the cut keeps, in green, as over the thumbnails: sound is chosen here,
+	// so the band has to show the cut. Fainter than the tint on the pictures -- a
+	// waveform IS the reading, and a heavy wash would take it with it.
 	for _, s := range ed.segs {
 		if s.isInsert() && !(s.audioIns() && !s.spliced()) {
 			continue // violet below; the sound laid over running footage keeps its green
@@ -927,13 +795,9 @@ func (ed *cutEditor) drawPairStrip(cr *cairo.Context, v tlVideo, au tlAudio, y, 
 }
 
 // drawWaveSpan paints the stretch of one channel of one recording that
-// overlaps one piece of footage.
-//
-// dim is the paired strip's voice: the same wave turned down, plateless, edge
-// to edge with the thumbnails above it. The strip sits inside the picture
-// band, and the rows of pictures are the things the eye compares when it
-// chooses a camera -- so the wave has to read as the row's shadow, not as a
-// row of its own between two of them.
+// overlaps one piece of footage. dim is the paired strip's voice: the same
+// wave turned down, plateless, edge to edge under the thumbnails, so it reads
+// as the row's shadow rather than a row of its own.
 func (ed *cutEditor) drawWaveSpan(cr *cairo.Context, au tlAudio, v tlVideo, wf *waveform, ch int, y, vx0, vx1 float64, dim bool) {
 	// the overlap of this recording with this piece of footage, in session
 	// time

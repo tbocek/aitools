@@ -1,35 +1,5 @@
 package main
 
-// Settings: edits llm.conf in place. It stays bash-sourceable (quoted values,
-// no GUI-only syntax) so a shell can read it too. Both of the pipeline's HTTP
-// endpoints live here -- the LLM that writes (descriptions, cuts, narration)
-// and the audio.cpp server, which speaks the narration and does the listening
-// in Prepare -- plus the handful of names the second one needs: which of its
-// models transcribes and which one tells speakers apart.
-//
-// What is deliberately NOT here any more is the language. This file is one
-// machine's stack, the same for every session it ever runs; the language is a
-// fact about the footage, and a machine that cut a German session yesterday
-// still transcribed today's English one as German until somebody remembered to
-// come in here. It lives on the Inputs page now, in the project, beside the
-// sources it describes.
-//
-// Those were compiled in until they made the app run on exactly one machine:
-// the paths were one person's, and the backend assumed an AMD card. The
-// backend went away with the container -- where a model runs is now decided in
-// audiocpp-server.json, by whoever runs the server.
-//
-// ffmpeg is the one local tool every step depends on, so it is shown, settable
-// and testable here. Left blank it comes off PATH like any other tool, which is
-// what nearly every machine wants; a path is for the machines where that is
-// wrong -- two ffmpegs installed, or a GUI whose PATH is not the shell's.
-//
-// The dialog can query each server and say what it found, because the failures
-// it is meant to catch are silent otherwise: a model id spelled differently
-// than the server spells it (a hand-typed id with a stray suffix cost us a
-// debug round once already), a TTS server that answers but serves the wrong
-// family, and an ffmpeg built without the parts the render needs.
-
 import (
 	"bytes"
 	"context"
@@ -52,21 +22,22 @@ import (
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
+// Settings: llm.conf, kept bash-sourceable. The two HTTP endpoints (the
+// writing model, the audio.cpp server) and the model ids the second needs,
+// plus ffmpeg and firefox. The language is the project's, not the machine's.
+// Each server can be queried from here, because the failures this catches --
+// a misspelled model id, a server serving the wrong family, an ffmpeg missing
+// a filter -- are silent otherwise.
+
 type appConf struct {
 	Server, Model, Key string // the LLM that writes
 	TTS                string // the audio.cpp server; blank = the compose default
 	TTSKey             string // its API key; blank = none, which the local stack is
 
-	// the sd.cpp server that draws the thumbnail; blank for the compose
-	// default, like TTS, and its key, like TTSKey. Every server here speaks
-	// HTTP and any of them can sit behind a proxy that wants a token -- so
-	// every server has a key field, and blank simply sends none.
-	//
-	// There is no model box beside SD. sd-server loads one model when it starts
-	// and its request bodies have no model field, so nothing autocut sends can
-	// switch it -- and a box that cannot choose anything is a box that can only
-	// be wrong. The Test button reports what the server actually has loaded,
-	// which is the same information without a second place to keep it in sync.
+	// the sd.cpp server that draws the thumbnail; blank for the compose default,
+	// with a key like every server here (any can sit behind a proxy wanting a
+	// token). No model box: sd-server loads one model at start and takes none per
+	// request; the Test button reports what is loaded.
 	SD    string
 	SDKey string
 
@@ -191,15 +162,9 @@ func (a *App) legacyConfPath() string {
 type globalConf struct {
 	appConf
 
-	// The named project last opened or saved, keyed by the autocut root it
-	// belongs to. Keyed rather than one path, because every path INSIDE a
-	// project file is relative to its root (see relToRoot): reopening last
-	// night's project from a different session folder would resolve its
-	// sources against the wrong directory and drop every one of them with a
-	// warning.
-	//
-	// Nothing prunes this map. Entries are one short string each, and a root
-	// that comes back after a month is exactly the case worth remembering.
+	// The named project last opened or saved, keyed by the autocut root: every
+	// path inside a project file is relative to its root (relToRoot). Nothing
+	// prunes this map; entries are one short string.
 	Projects map[string]string
 
 	// PROMPT_* lines were here: which of a job's several wordings this
@@ -408,13 +373,8 @@ SD_API_KEY=%q
 }
 
 // rememberedBody is the half of the file that is not a setting: what autocut
-// noticed rather than what it was told. Numbered pairs and one key per prompt
-// rather than a blob of JSON on a line, so it reads and hand-edits like the
-// rest of the file and a shell that sources it gets usable variables.
-//
-// Sorted, so that saving the settings twice with nothing changed produces the
-// same file twice -- a config that reshuffles itself on every write is a
-// config nobody can diff.
+// noticed. Numbered pairs and one key per prompt, so it reads and sources like
+// the rest of the file; sorted, so an unchanged save is byte-identical.
 func rememberedBody(g globalConf) string {
 	var b strings.Builder
 	if len(g.Projects) > 0 {
@@ -519,14 +479,9 @@ func llmRoundTrip(c appConf, content any, timeout time.Duration) (string, error)
 	return reply, nil
 }
 
-// testLLM does one real round trip -- the model id and the key are only proven
-// by a completion, not by a model list, and those are exactly what gets typed
-// wrong.
-//
-// It is deliberately the smallest completion that still proves those two
-// things. A warm server answers in well under a second; when this takes long it
-// is the server loading the model, which no shorter request avoids -- hence the
-// generous timeout and the elapsed time in the report.
+// testLLM does one real round trip -- model id and key are only proven by a
+// completion. The smallest completion that proves them; a slow answer is the
+// server loading the model, hence the generous timeout and the elapsed time.
 func testLLM(c appConf) (string, error) {
 	start := time.Now()
 	reply, err := llmRoundTrip(c, "Reply with the single word: ok", 60*time.Second)
@@ -625,17 +580,10 @@ func testTTS(url, key string) (string, error) {
 		float64(took.Milliseconds()), clone, len(cat)), nil
 }
 
-// testAudioModel is the same question for one of the server's ids: is it
-// really in the catalog, and is it declared for the task we will ask of it.
-// One id per button, because a combined check answers "something is wrong"
-// when the question was "which one". Getting this wrong is otherwise a run
-// that starts, extracts frames for minutes, and then stops on "unknown model".
-//
-// Everything here is learned over HTTP -- the GUI does not read the server's
-// config file, wherever the server may be running. So the error can only name
-// the two ways a catalog grows, and neither is something autocut can do for
-// you: registering a model needs its family and the path to its weights, which
-// is knowledge of the server's machine, not of this session.
+// testAudioModel asks the server whether one id is in the catalog and declared
+// for the task we will ask of it -- one id per button, so the verdict names
+// which. Learned over HTTP only, so the error can name the two ways a catalog
+// grows but cannot do either.
 func testAudioModel(url, key, id, task, what string) (string, error) {
 	cat, took, err := audioProbe(url, key)
 	if err != nil {
@@ -891,15 +839,10 @@ func (a *App) setupDialog() {
 	// opens it, because then the words ARE the answer
 	logExp := gtk.NewExpander("Log")
 	logExp.SetChild(logScroll)
-	// open, the log is the dialog's one stretchy row -- enlarging the window
-	// enlarges it. Closed, it hands the height back rather than holding an
-	// empty stretch of dialog open. Following the property rather than setting
-	// it in a click handler keeps the failure auto-open in step too.
-	//
-	// Both widgets, and that is the whole trick: vexpand on the expander alone
-	// only wins the row extra height, which the expander then spends on empty
-	// space below a child still sitting at its natural 110 px. The scroller has
-	// to be told to fill what the expander won.
+	// open, the log is the dialog's one stretchy row; closed, it hands the height
+	// back. Following the property keeps the failure auto-open in step. Both
+	// widgets: vexpand on the expander alone wins the row height the child does
+	// not fill.
 	logGrow := func() {
 		on := logExp.Expanded()
 		logScroll.SetVExpand(on)
@@ -938,16 +881,10 @@ func (a *App) setupDialog() {
 		}()
 	})
 
-	// every Test behaves the same way: read the boxes on the GUI thread, work
-	// in the background, and land the verdict twice -- as a badge on the row
-	// that asked, and as the words in the log. The tests speak to what is typed,
-	// not to what is saved: the point is to find out whether a setting works
-	// before committing it.
-	//
-	// Each one also lands in runAll, which is the whole of what Test All is:
-	// the same presses, made at once. The buttons stay the source of truth --
-	// a run in flight has its button greyed, and the guard reads that rather
-	// than keeping a second list of what is busy.
+	// every Test behaves the same way: read the boxes on the GUI thread, work in
+	// the background, land the verdict as a badge on the row and words in the
+	// log. They test what is typed, not what is saved. Each also lands in runAll
+	// (Test All); a run in flight has its button greyed, and the guard reads that.
 	var runAll []func()
 	hook := func(btn *gtk.Button, badge *testBadge, name string, prep func() (string, func() (string, error))) {
 		run := func() {
@@ -1143,17 +1080,10 @@ func (a *App) setupDialog() {
 			func() (string, error) { return testSD(url, k) }
 	})
 
-	// The dialog has no Save and no Cancel. It had both, and a settings window
-	// you can leave without saving is a settings window you leave without
-	// saving: a server typed, a Test run against it, the verdict read, the
-	// window closed on the Escape that dismisses every other dialog -- and the
-	// typing gone. Nothing here is dangerous enough to be worth confirming,
-	// and everything here is worth keeping.
-	//
-	// So a change to any box writes the file, a beat after the typing stops.
-	// The beat matters: a save per keystroke is a file rewritten thirty times
-	// across one URL, and every one of them a chance to leave half a line on
-	// disk if the machine picks that moment to stop.
+	// No Save and no Cancel: a settings window you can leave without saving is
+	// one you leave without saving, and nothing here is dangerous enough to
+	// confirm. A change to any box writes the file a beat after typing stops --
+	// a save per keystroke is thirty rewrites across one URL.
 	var saveTimer glib.SourceHandle
 	writeConf := func() {
 		cc := appConf{Server: server.Text(), Model: model.Text(), Key: key.Text(),
@@ -1216,10 +1146,7 @@ func (a *App) setupDialog() {
 	grid := gtk.NewGrid()
 	grid.SetRowSpacing(10)
 	grid.SetColumnSpacing(10)
-	grid.SetMarginTop(16)
-	grid.SetMarginBottom(16)
-	grid.SetMarginStart(16)
-	grid.SetMarginEnd(16)
+	margins(grid, 16, 16, 16, 16)
 	lbl := func(s string) *gtk.Label { l := gtk.NewLabel(s); l.SetXAlign(1); return l }
 	// A section is its title and an ⓘ. The explanations are worth having --
 	// which API a box is expected to speak is not guessable from the box --
@@ -1422,4 +1349,94 @@ func (a *App) setupDialog() {
 
 	win.SetChild(grid)
 	win.SetVisible(true)
+}
+
+// What autocut remembers across sessions, and this machine's settings, in one
+// file: anything whose answer is "this machine" -- servers, ffmpeg, and which
+// project was open.
+//
+//	~/.config/autocut/llm.conf        the settings, and what is remembered
+//	~/.config/autocut/prompts/        the prompts edited here (prompts.go)
+//
+// XDG_CONFIG_HOME when set (the tests use it). Bash-sourceable, chmod 600
+// (writeGlobal). Reads and writes of the remembered half are best-effort.
+
+// configDir is ~/.config/autocut, or "" when there is nowhere to put it -- no
+// HOME, no XDG_CONFIG_HOME. That is not an error worth reporting: it means the
+// feature is off for this launch, and every caller falls back.
+func configDir() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "autocut")
+}
+
+// uiSettings is the old settings.json, which held exactly this. Read, never
+// written: readGlobal takes the map from here when the conf file has nothing
+// to say about projects, which is once, on the launch after the merge.
+type uiSettings struct {
+	Projects map[string]string `json:"projects,omitempty"`
+}
+
+func settingsPath() string {
+	dir := configDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "settings.json")
+}
+
+// loadSettings reads the old file, or hands back an empty one. A settings file
+// that has been corrupted (edited by hand, half-written by a kill -9) is
+// treated the same as a missing one: the whole content is a convenience, so
+// refusing to start over it would be the wrong trade.
+func loadSettings() uiSettings {
+	var s uiSettings
+	p := settingsPath()
+	if p == "" {
+		return s
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return s
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return uiSettings{}
+	}
+	return s
+}
+
+// lastProject is the project file to open on startup, or "" for none. A
+// remembered file that has since been renamed or deleted is not an error and
+// not a dialog -- it is simply not there, and the working copy is what opens
+// instead. The entry is left alone rather than pruned: an external drive that
+// is not mounted this morning is the same shape as a deletion, and forgetting
+// the name would make the difference permanent.
+func (a *App) lastProject() string {
+	p := a.readGlobal().Projects[a.root]
+	if p == "" || !exists(p) {
+		return ""
+	}
+	return p
+}
+
+// rememberProject records what the header bar now names. Called from the two
+// places that assign projPath, so what the next launch opens is what this one
+// last had open -- including the working copy itself, which is a decision
+// ("go back to the unnamed session") and not an absence.
+func (a *App) rememberProject(path string) {
+	g := a.readGlobal()
+	if g.Projects[a.root] == path {
+		return // the startup load re-remembering what it just read
+	}
+	if g.Projects == nil {
+		g.Projects = map[string]string{}
+	}
+	g.Projects[a.root] = path
+	if err := a.writeGlobal(g); err != nil {
+		// worth a line, not worth interrupting: the session is unaffected, the
+		// only casualty is which file the NEXT launch opens
+		a.logf("settings: %v", err)
+	}
 }

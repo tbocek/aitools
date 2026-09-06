@@ -79,25 +79,10 @@ type Project struct {
 	// (see context.go).
 	Context string `json:"context,omitempty"`
 
-	// All three are read, never written. The prompts are the machine's now --
-	// text files under ~/.config/autocut/prompts, see promptstore.go -- because
-	// how you like to be edited for is the same in January's raid as in
-	// March's, and kept in the project it started from the shipped wording
-	// again every time a session began.
-	//
-	// A project that still carries them is one written before that, and what it
-	// carries is adopted on load, once, for whichever jobs this machine has
-	// nothing of its own for (applyPromptStyles). Nothing is deleted from the
-	// file: it is left exactly as it was, so an older build opening it finds
-	// its wordings where it left them.
-	//
-	// Prompts is the only one still read: one string per job and no name for
-	// it, which is exactly the shape the prompts have again. The keys of the
-	// several-wordings-per-job era -- a Style
-	// dropdown on Prepare that turned every prompt at once -- and they are
-	// gone from the app, so they are gone from here: what kind of video a
-	// session is belongs in its context, with the rest of its facts, and a
-	// project written back then keeps those keys until it is saved again.
+	// Read, never written: the prompts live on the machine now (promptstore in
+	// prompts.go). A project still carrying them is adopted once for whichever
+	// jobs this machine has nothing of its own for (applyPromptStyles); the
+	// file itself is left as it was.
 	Prompts map[string]string `json:"prompts,omitempty"`
 
 	Produce *prodSettings `json:"produce,omitempty"`
@@ -176,25 +161,12 @@ func (a *App) fromRoot(rel string) string {
 	}
 }
 
-// A project is a FOLDER: /mnt/rec/tom.autocut, with autocut.json in it and every
-// step's work beside that -- prepare/, cut/, narrate/, produce/. One thing to
-// copy, to back up, to hand to somebody, to zip.
-//
-// It used to be a file and a folder that hung off its name: tom.autocut and
-// tom.autocut.data. That derivation was the point -- nothing stored the
-// folder, so the two could not disagree about where the work went -- and it is
-// kept exactly, by making them one thing. The project's name is still the
-// answer to "where are my transcripts"; there is simply nothing left to come
-// apart. What it cost was that a project was two entries in a file manager,
-// and moving one of them broke it silently.
-//
-// Which is also why a session nobody has saved still has one: the working copy
-// is root/session.autocut, so the rule is the same everywhere and there is no
-// unsaved special case. Save then renames the folder.
-//
-// Projects written by earlier builds are migrated on open (adoptLegacy): the
-// old .data folder becomes the project, and the old file becomes its
-// autocut.json.
+// A project is a FOLDER: /mnt/rec/tom.autocut, with autocut.json in it and
+// every step's work beside it. One thing to copy, back up, hand over or zip;
+// nothing stores where the work goes, so nothing can disagree about it. The
+// unsaved session is root/session.autocut, and Save renames the folder.
+// Projects from earlier builds (a file beside a .data folder) are adopted on
+// open (adoptLegacy).
 const projExt = ".autocut"
 
 // projMain is the project's own file inside its folder. Named rather than
@@ -437,23 +409,12 @@ func (a *App) saveProjectNow() {
 	}
 }
 
-// adoptLegacy turns a project from an earlier build -- the file tom.autocut
-// beside the folder tom.autocut.data -- into the folder this build opens, and
-// answers with the folder either way.
-//
-// A staging name and three moves, in the order that survives being
-// interrupted: the .data folder is renamed aside, the file is written into it
-// as autocut.json, the old file is removed, and only then does the staging folder
-// take the project's name. Stop it anywhere and what is on disk is the file
-// that made it plus a folder called <name>.adopting -- nothing is lost, and
-// the next open says what it found rather than guessing.
-//
-// The staging step is not fussiness: a project already called tom.autocut has
-// to become a FOLDER called tom.autocut, and the file is in the way of its own
-// new name.
-//
-// A path that is already a folder is returned untouched, which is every open
-// after the first.
+// adoptLegacy turns an older build's project -- the file tom.autocut beside
+// tom.autocut.data -- into the folder this build opens, via a staging name so
+// the file is never in the way of its own new name: rename .data aside, write
+// autocut.json into it, remove the file, rename into place. Interrupted, it
+// leaves the file plus <name>.adopting and refuses next time rather than
+// guessing. A folder is returned untouched.
 func (a *App) adoptLegacy(path string) (string, error) {
 	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
 		return path, nil
@@ -511,15 +472,10 @@ func (a *App) adoptLegacy(path string) (string, error) {
 	return dir, nil
 }
 
-// migrateFolders moves a project's data into the folders this build writes,
-// through the two renames there have been: out of the numbered step1/..step6/
-// into folders named for their steps, and then Prepare's three -- inputs/ and
-// understand/{describe,transcript} -- under prepare/, where the step that
-// writes them is one folder like every other step.
-// Once, on the open that finds them: a folder already under its new name is
-// left alone, so a project opened by a newer build and then by this one
-// cannot have its work moved over itself. Logged, because a rename of
-// somebody's finished work is not a thing to do silently.
+// migrateFolders moves a project's data through the two renames there have
+// been: step1/..step6/ into folders named for their steps, then inputs/ and
+// understand/{describe,transcript} under prepare/. Once, on the open that
+// finds them; a folder already under its new name is left alone. Logged.
 func (a *App) migrateFolders() {
 	if a.outDir == "" {
 		return
@@ -729,15 +685,10 @@ func (a *App) applyProject(p Project) {
 	// caller sets both with setProject, which is what redraws those pages.
 }
 
-// blankProject is what New Project starts from: an empty session, and the
-// defaults that are the program's rather than the zero value's.
-//
-// Interval and Produce are stated because their zero values are real settings
-// and the wrong ones -- 0 seconds means EVERY frame, which is gigabytes nobody
-// asked for, and a zeroed produce block is a 0-CRF, 0-fps render. Everything
-// else is legitimately empty: no sources, nothing typed, no prompt edited and
-// no thumbnail. Not the output folder, which is not a setting any more: it
-// follows whichever file the emptied session goes back to being.
+// blankProject is what New Project starts from. Interval and Produce are
+// stated because their zero values are real and wrong (0 seconds is EVERY
+// frame; a zeroed produce block is a 0-CRF, 0-fps render). The output folder
+// is not a setting: it follows the project file.
 func blankProject() Project {
 	prod := defaultProdSettings()
 	return Project{
@@ -792,51 +743,16 @@ func (a *App) newProjectDialog() {
 	a.confirm("Start a new project?", detail, "Start new", a.newProject)
 }
 
-// confirm is a modal yes/no. Hand-rolled on a plain window for the reason the
-// settings dialog is: GtkAlertDialog's constructor is variadic and does not
-// survive the binding, and this needs no more than the two buttons anyway.
-// Destructive-action styling, because that is what the left button means.
+// confirm is a modal yes/no with the red button: what the left button does
+// cannot be undone. Cancel has the focus, so a blind Enter does nothing.
 func (a *App) confirm(question, detail, okLabel string, ok func()) {
-	win := gtk.NewWindow()
-	win.SetTransientFor(&a.win.Window)
-	win.SetModal(true)
-	win.SetTitle(question)
-	win.SetDefaultSize(420, -1)
-
-	q := gtk.NewLabel(question)
-	q.SetXAlign(0)
-	q.SetWrap(true)
-	q.AddCSSClass("heading")
-	d := gtk.NewLabel(detail)
-	d.SetXAlign(0)
-	d.SetWrap(true)
-	d.AddCSSClass("dim-label")
-
-	cancel := gtk.NewButtonWithLabel("Cancel")
-	cancel.ConnectClicked(func() { win.Close() })
+	var win *gtk.Window
 	go1 := gtk.NewButtonWithLabel(okLabel)
 	go1.AddCSSClass("destructive-action")
-	go1.ConnectClicked(func() {
-		win.Close()
-		ok()
-	})
-	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	btns.SetHAlign(gtk.AlignEnd)
-	btns.SetMarginTop(8)
-	btns.Append(cancel)
-	btns.Append(go1)
-
-	box := gtk.NewBox(gtk.OrientationVertical, 8)
-	box.SetMarginTop(16)
-	box.SetMarginBottom(16)
-	box.SetMarginStart(16)
-	box.SetMarginEnd(16)
-	box.Append(q)
-	box.Append(d)
-	box.Append(btns)
-	win.SetChild(box)
-	// Escape is Cancel, as it is in every other dialog; the default is Cancel
-	// too, so a blind Enter on a destructive question does nothing
+	go1.ConnectClicked(func() { win.Close(); ok() })
+	cancel := gtk.NewButtonWithLabel("Cancel")
+	win = a.modal(question, detail, 420, nil, cancel, go1)
+	cancel.ConnectClicked(func() { win.Close() })
 	cancel.GrabFocus()
 	win.SetVisible(true)
 }
@@ -891,51 +807,25 @@ func srcDirs(p Project) (vid, aud string) {
 // addFilesDialog adds files to the session, several at a time -- a card holds
 // one take per angle and picking them one dialog at a time is not a workflow.
 func (a *App) addFilesDialog() {
-	d := gtk.NewFileDialog()
-	d.SetTitle("Add sources")
-	d.SetInitialFolder(gio.NewFileForPath(a.vidDir))
-	filt := gtk.NewFileFilter()
-	filt.SetName("Audio and video")
+	exts := make([]string, 0, len(mediaExt))
 	for e := range mediaExt {
-		filt.AddSuffix(strings.TrimPrefix(e, "."))
+		exts = append(exts, e)
 	}
-	filters := gio.NewListStore(gtk.GTypeFileFilter)
-	filters.Append(filt.Object)
-	d.SetFilters(filters)
-	d.OpenMultiple(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		lm, err := d.OpenMultipleFinish(res)
-		if err != nil || lm == nil {
-			return // dismissed
-		}
-		var paths []string
-		for i := uint(0); i < lm.NItems(); i++ {
-			if obj := lm.Item(i); obj != nil {
-				paths = append(paths, (&gio.File{Object: obj}).Path())
-			}
-		}
-		a.askImport(paths)
-	})
+	a.pickFiles("Add sources", a.vidDir, extFilter("Audio and video", exts...), a.askImport)
 }
 
 // addFolderDialog adds everything playable in a folder: how a session arrives
 // off a card, and what the two folder pickers on this page used to be for.
 func (a *App) addFolderDialog() {
-	d := gtk.NewFileDialog()
-	d.SetTitle("Add every recording in a folder")
-	d.SetInitialFolder(gio.NewFileForPath(a.vidDir))
-	d.SelectFolder(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.SelectFolderFinish(res)
-		if err != nil || f == nil {
-			return // dismissed
-		}
-		dir := f.Path()
-		if len(listMedia(dir)) == 0 {
+	a.pickFolder("Add every recording in a folder", a.vidDir, func(dir string) {
+		names := listMedia(dir)
+		if len(names) == 0 {
 			a.logf("nothing added: %s holds no video or audio files", dir)
 			a.setStatus("nothing playable in that folder")
 			return
 		}
 		var paths []string
-		for _, n := range listMedia(dir) {
+		for _, n := range names {
 			paths = append(paths, filepath.Join(dir, n))
 		}
 		a.askImport(paths)
@@ -974,19 +864,10 @@ func (a *App) saveProjectDialog() {
 		a.setStatus("stop the run first — saving under a new name moves the folder it is writing into")
 		return
 	}
-	d := gtk.NewFileDialog()
-	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
-	d.SetInitialName(filepath.Base(a.projPath))
-	// Save, not SelectFolder: this is where a name is typed, and the name is
-	// what the folder will be called (withProjExt adds the extension). A
-	// folder chooser can only pick one that exists.
-	d.Save(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.SaveFinish(res)
-		if err != nil || f == nil {
-			return // dismissed
-		}
-		a.saveProjectTo(f.Path())
-	})
+	// Save, not SelectFolder: a name is typed here, and the name is what the
+	// folder will be called (withProjExt). A folder chooser can only pick one
+	// that exists.
+	a.saveAs("Save the project", filepath.Dir(a.projPath), filepath.Base(a.projPath), nil, a.saveProjectTo)
 }
 
 // loadProjectDialog picks a project FOLDER -- which is what a project is
@@ -994,15 +875,7 @@ func (a *App) saveProjectDialog() {
 // here; it is opened by double-clicking it, from the recents list, or from the
 // command line, and adopted into a folder on the way in (adoptLegacy).
 func (a *App) loadProjectDialog() {
-	d := gtk.NewFileDialog()
-	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.projPath)))
-	d.SelectFolder(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.SelectFolderFinish(res)
-		if err != nil || f == nil {
-			return
-		}
-		a.loadProjectFrom(f.Path())
-	})
+	a.pickFolder("Open a project", filepath.Dir(a.projPath), a.loadProjectFrom)
 }
 
 // openFolder shows a directory in the user's file manager -- via the desktop

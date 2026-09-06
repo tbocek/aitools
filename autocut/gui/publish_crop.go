@@ -1,27 +1,10 @@
 package main
 
-// The thumbnail is the video's own shape, and the crop box says which part of
-// the frame survives being made that shape.
-//
-// It was 1280x720 whatever the cut was. That is YouTube's size and it is the
-// right answer for a widescreen video, but a session cut to 9:16 got a
-// thumbnail nothing like the video it was for: the picture the model was
-// handed was widescreen, the frame it drew into was widescreen, and the short
-// it advertised was not. The frame follows the cut now, on the same rule
-// produce uses -- parseAspect, and nothing else.
-//
-// Which leaves the question a portrait frame asks and a widescreen one never
-// did: a 16:9 recording has three times more width than a 9:16 thumbnail can
-// hold, so SOMETHING gets thrown away, and only the person who filmed it knows
-// what. So the base image wears a box of the finished shape, and that box
-// slides. It cannot be resized -- it is the biggest rectangle of the output's
-// shape that fits in the frame (fullFill, the same rule the camera's default
-// framing uses), so its size is not a choice anybody has to make. Where it
-// sits is the whole question, and it is answered by dragging it.
-//
-// Only the base. The references are there to be named in a sentence ("the ship
-// from the second image"), not to be composed, and a crop handle on each of
-// them would be four controls asking about one picture.
+// The thumbnail is the video's own shape (parseAspect, as produce), and the
+// crop box says which part of the base frame survives. The box is the biggest
+// rectangle of the output's shape that fits (fullFill) and cannot be resized;
+// where it sits is the whole question, answered by dragging. Only the base
+// wears one -- references are named in a sentence, not composed.
 
 import (
 	"bytes"
@@ -62,13 +45,9 @@ func pubBox(aspect string) (int, int) {
 }
 
 // pubCropAt is the crop box on a source frame of aspect srcA for a thumbnail
-// of aspect outA, centred on cx,cy. The size is fullFill's -- the biggest
-// rectangle of the output's shape that fits -- and the centre is pulled back
-// inside the frame, so a box can never be dragged off the picture and lost.
-//
-// hf and the width it implies are fractions of the SOURCE frame, exactly like
-// a camera rectangle (cutFx), so the two speak the same units and the drawing
-// code is the same arithmetic.
+// of aspect outA, centred on cx,cy: fullFill's size, the centre pulled back
+// inside the frame. hf and the width it implies are fractions of the SOURCE
+// frame, like a camera rectangle (cutFx).
 func pubCropAt(srcA, outA, cx, cy float64) fxRect {
 	r := fullFill(srcA, outA)
 	wf := pubCropW(r.hf, srcA, outA)
@@ -134,18 +113,10 @@ func pubCropRefImage(path string, r fxRect, srcA, outA float64) (string, error) 
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
 
-// pubWriteCropped is the same crop written as a PNG, for the picture that
-// becomes the thumbnail as it stands (pubSlot.useAsThumbnail).
-//
-// Always ENCODED, never copied through. The frames are JPEGs and the ones that
-// need no crop are most of them, so copying the bytes was writing a JPEG to a
-// file called thumbnail-plain.png -- which cairo then refused to read ("png
-// surface: undefined"), so the words were never printed, thumbnail.png was
-// never rewritten, and the button looked like it did nothing at all. The only
-// thing that made it survivable is that it left the old thumbnail alone.
-//
-// The re-encode costs a decode and an encode of one still. That is the price
-// of the file being what its name says.
+// pubWriteCropped writes the same crop as a PNG for the picture used as the
+// thumbnail as it stands (pubSlot.useAsThumbnail). Always ENCODED, never
+// copied through: the frames are JPEGs, and a JPEG named .png is what cairo
+// refuses to read.
 func pubWriteCropped(path string, r fxRect, srcA, outA float64, w, h int, out string) error {
 	img, err := pubCropImage(path, r, srcA, outA)
 	if err != nil {
@@ -165,21 +136,10 @@ func pubWriteCropped(path string, r fxRect, srcA, outA float64, w, h int, out st
 	return png.Encode(f, img)
 }
 
-// pubFit scales an image down to exactly w by h. The crop above has already
-// made the shape right, so this is a size and not a fit: no letterbox, no
-// stretch worth the name.
-//
-// It is here because a chosen thumbnail and a drawn one are the same product
-// and have to be the same size. A capture frame is 3840 wide; written straight
-// out it is a 14 MB PNG, which is seven times what YouTube will accept for a
-// thumbnail -- so the button that put your own frame there produced a file the
-// upload refuses, which is a worse kind of not working than the button doing
-// nothing.
-//
-// Area average, not nearest: this is always a downscale, often by three or
-// four, and nearest at that ratio is a picture of aliasing. Upscales are left
-// alone -- a frame smaller than the box is returned as it is rather than blown
-// up into softness.
+// pubFit scales an image down to exactly w by h; the crop has already made the
+// shape right. A chosen frame and a drawn one must be the same size -- a 3840
+// wide capture frame is a 14 MB PNG YouTube refuses. Area average (always a
+// downscale, often 3-4×); smaller images are returned as they are.
 func pubFit(src image.Image, w, h int) image.Image {
 	b := src.Bounds()
 	if w <= 0 || h <= 0 || b.Dx() <= w || b.Dy() <= h {
@@ -258,16 +218,10 @@ func pubCropImage(path string, r fxRect, srcA, outA float64) (image.Image, error
 
 // ---- the box on the picture -------------------------------------------------
 
-// cropOverlay is the base image with its crop box laid over it, ready to be
-// dragged. Anything else -- a reference, or a base whose shape already matches
-// the cut -- comes back as the plain picture: a control that cannot change
-// anything is worse than no control, because it invites the question of what
-// it does.
-//
-// The box is drawn by dimming everything OUTSIDE it rather than by outlining
-// it. An outline on a photograph is a line among the lines already there; a
-// darkened surround is the thumbnail, lit, and the rest of the frame explained
-// as the part that goes away.
+// cropOverlay is the base image with its crop box laid over it, draggable.
+// A reference, or a base whose shape already matches, comes back plain -- a
+// control that cannot change anything invites the question of what it does.
+// The box is drawn by dimming everything OUTSIDE it.
 func (s *pubSlot) cropOverlay(pic *gtk.Picture) gtk.Widgetter {
 	p := s.p
 	outA := 0.0

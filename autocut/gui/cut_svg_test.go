@@ -236,7 +236,7 @@ func TestTheDrawingIsWiredLikeATitle(t *testing.T) {
 			"f.Src, b = ed.fxSrc, fxSvgDefault",
 			"ed.a.askSvgParams(f, true, func(nf cutFx) {",
 		},
-		"cut_fxpaint.go": {
+		"cut_fxdraw.go": {
 			// the drawing call itself is in the shared painter, so Narrate's
 			// preview shows the same drawing in the same box
 			`if f.Kind == "svg" {`,

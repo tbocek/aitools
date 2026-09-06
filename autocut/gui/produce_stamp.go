@@ -1,23 +1,10 @@
 package main
 
-// Whether the finished video is already the finished video.
-//
-// ▶ on this page used to encode whatever it found: press it twice and the
-// second press spent the same minutes writing the same file, and pressing it
-// after fixing a title -- a fact the video does not contain -- spent them too.
-// The two ↻ buttons are the opposite and stay that way: a model asked the same
-// question twice answers differently, so "draw it again" and "write it again"
-// are worth pressing on an unchanged page, and the render is not.
-//
-// So the render is stamped. Everything that reaches the ffmpeg command line
-// goes into one string -- the settings, the cut, the narration laid over it,
-// the recordings under it -- and the stamp is written beside the video after a
-// successful encode. If the stamp still matches and the file is still there,
-// ▶ leaves it alone. ↻ Transcode encodes anyway: it is the button for "do it
-// again", and a file that looks right and is not is exactly what it exists for.
-//
-// What is deliberately NOT in the stamp: the title, the description, the
-// thumbnail, the upload record. None of them is in the video.
+// Whether the finished video is already the finished video. Everything that
+// reaches the ffmpeg command line -- settings, cut, narration, recordings --
+// goes into one stamp written beside the video after a successful encode; if
+// it matches and the file exists, ▶ leaves it alone. ↻ Transcode encodes
+// anyway. NOT in the stamp: title, description, thumbnail, upload record.
 
 import (
 	"crypto/sha1"

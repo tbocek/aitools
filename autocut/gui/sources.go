@@ -1,32 +1,15 @@
 package main
 
-// The session's sources: one list, and what each file is FOR.
+// The session's sources: one list, and what each file is FOR. A row can carry
+// two independent roles, or neither:
 //
-// There were two lists, one per folder -- footage on the left, voice
-// recordings on the right -- and a file could only be whatever its folder said
-// it was. That is wrong for the sessions this is built for: a screen recording
-// carries the game AND everyone talking over it, so the same file is both the
-// footage and a voice. Two lists could not say that, and pointing them at the
-// same file said it twice: two transcripts of one recording, two copies of
-// every line in the session timeline.
-//
-// So: one list, and two roles a row can carry.
-//
-//	footage   -- frames come out of it; it is a video to describe, cut and render
+//	footage   -- frames come out of it; a video to describe, cut and render
 //	narrator  -- slot 1..4: whose voice this recording is
 //
-// The roles are independent, and a row can carry neither. A row also carries
-// one wish -- split the voice off -- which is not a role but a job for ▶, and
-// which turns one row into two: the recording without its voice, and the voice. Everything in the
-// list is transcribed either way -- that is the point of having the other
-// players' chatter in here: it belongs in the timeline without belonging to
-// anyone we narrate as. What a narrator slot adds is identity: narrator 1 is
-// the voice the narration is spoken in, and 2..4 are the rest of the group,
-// each cloneable in Narrate.
-//
-// Membership is the list itself, not a folder scan and a checkbox. A file is
-// in because it was added and stays in until it is thrown out, which is what
-// the trash button on each row does -- to the list, never to the file.
+// plus one wish, split the voice off (a job for ▶ that turns one row into
+// two). Everything is transcribed regardless; a slot adds identity: narrator 1
+// speaks the narration, 2..4 are the rest of the group. Membership is the
+// list, not a folder scan; the trash button acts on the list, never the file.
 
 import (
 	"os"
@@ -105,18 +88,10 @@ type sourceItem struct {
 
 func (it sourceItem) name() string { return filepath.Base(it.path) }
 
-// sameSource is what == used to be, before a row could name a set of audio
-// tracks and stopped being a comparable struct.
-//
-// Every field is spelled out by hand because Go will not compare a struct
-// holding a slice. That is a standing hazard -- a field added later and
-// forgotten here would be a change the project quietly does not notice it has
-// to save -- which is why TestEverySourceFieldCountsAsAChange walks the type by
-// reflection and fails on any field this does not read.
-//
-// The tracks compare in ORDER, unlike a scene's silenced lanes: they are the
-// stored form of a sorted, deduplicated answer (wantTracks), so two orders here
-// is a row that was written twice and only one of them the way this saves it.
+// sameSource is == for a struct holding a slice. Every field is spelled out,
+// and TestEverySourceFieldCountsAsAChange fails on any field this forgets.
+// Tracks compare in ORDER: they are the stored form of a sorted, deduplicated
+// answer (wantTracks).
 func sameSource(a, b sourceItem) bool {
 	if a.path != b.path || a.footage != b.footage || a.narrator != b.narrator ||
 		a.sepVoice != b.sepVoice || len(a.tracks) != len(b.tracks) {
@@ -316,14 +291,10 @@ func (s *sourceList) split() (footage, rest []string) {
 	return
 }
 
-// clash names two sources that would be written to the same place. Every step
-// keys a source's output folder on its file name without the extension, so
-// clip.mkv and clip.flac -- a camera and its separate sound take, which is a
-// normal way to record -- are both inputs/clip, and the second run would find
-// the first's words.json and skip itself. The list can hold them (they are
-// different files, and dedupe is by path), so the run has to refuse: one clear
-// message beats a transcript that is quietly the wrong file's. "" when the
-// session is clean.
+// clash names two sources that would be written to the same place: every step
+// keys output on the file name without extension, so clip.mkv and clip.flac
+// are both inputs/clip and the second run would find the first's words.json.
+// "" when the session is clean.
 func (s *sourceList) clash() (a, b string) {
 	seen := map[string]string{}
 	for _, it := range s.items {
@@ -398,30 +369,9 @@ func (s *sourceList) changed() {
 	}
 }
 
-// srcRowKey is the key to a row's symbols, on the end of every one of their
-// tooltips: hover any of them and you are told what all four do, in the order
-// they sit in.
-//
-// It was a legend along the top of the list instead -- the same four icons
-// with their words, drawn once. That is a line of the page spent permanently
-// on a question asked twice, and it answered it a hand's width from the
-// buttons, which is the one place the eye is not while it is deciding what a
-// symbol does.
-//
-// A word each, not the sentence: the button under the pointer has already said
-// its own piece above this, and what the key is for is the three the pointer
-// is NOT on. The one it repeats in short is left in rather than skipped -- a
-// list of four with one missing reads as an omission, and the eye has to work
-// out which one it is looking at to know why.
-//
-// Each line opens with the symbol it is about. A key to a row of icons that
-// names them only in words is a key you have to solve: four buttons, four
-// lines, and the reader matching them up by position and hoping. These are
-// Unicode rather than the row's own icon names -- a tooltip is text, and
-// nothing in it can be a GtkImage -- so they are the nearest glyph to each,
-// which is enough to pair a line with a button at a glance. Pango draws them;
-// the toy text API on the timeline could not, which is why the marks there are
-// drawn as paths instead (cut_marks.go).
+// srcRowKey is the key to a row's four symbols, appended to each of their
+// tooltips: a word each, opening with the symbol (Unicode, since a tooltip is
+// text), so the three the pointer is NOT on are explained where the eye is.
 const srcRowKey = "\n\nThe symbols on every row, in order:\n" +
 	"🎥 footage — frames come out of it, and the cut is made of it\n" +
 	"🎤 narrator — which of the voices this is; 1 speaks the narration\n" +
@@ -522,10 +472,7 @@ func (s *sourceList) row(i int) *gtk.Box {
 	// two different x.
 	sep.SetSensitive(!splitProduct(it.path))
 
-	del := gtk.NewButtonFromIconName("user-trash-symbolic")
-	del.AddCSSClass("flat")
-	del.SetTooltipText("Remove from this session — the file itself is left alone" + srcRowKey)
-	del.ConnectClicked(func() { s.remove(i) })
+	del := flatIcon("user-trash-symbolic", "Remove from this session — the file itself is left alone"+srcRowKey, func() { s.remove(i) })
 
 	row := gtk.NewBox(gtk.OrientationHorizontal, 4)
 	row.SetMarginStart(6)

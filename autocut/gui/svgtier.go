@@ -1,17 +1,10 @@
 package main
 
-// The tier board: a sheet of geometry in tier.svg, and the numbers that fill it.
-//
-// Everything visible -- where the rows are, what a place on one is made of, the
-// letters, the colours -- is in tierTemplate below, which is what gets written
-// into a project's assets folder and is an ordinary SVG that opens in any editor
-// and shows a board. The board is fixed: six tiers, S A B C D F, with six places
-// in each, all thirty six written out with their own coordinates. Nothing here
-// generates any of it.
-//
-// What is left for this file is what a document cannot work out for itself: what
-// is in a place and what it is called, how big that name has to be to fit, which
-// place is the one that just arrived, and when everything moves.
+// The tier board: all geometry is in tierTemplate (written into a project's
+// assets, an ordinary SVG) -- six tiers S A B C D F, six places each, all
+// coordinates written out. This file supplies what a document cannot: what is
+// in a place, how big its name must be to fit, which place just arrived, and
+// when everything moves.
 
 import (
 	"fmt"
@@ -50,19 +43,11 @@ func tierNameY(i int) float64     { return tierPlaceY(i) + tierChipH - tierPad }
 func tierPrefix(i int) string     { return strings.ToLower(tierLetters[i]) }
 func tierSlotKey(i, j int) string { return fmt.Sprintf("%s%d", tierPrefix(i), j+1) }
 
-// tierSVG draws the board: the six tiers, with what is in them beside the letter.
-// The rows fly in from the right one after another and what is in them follows,
-// and all of it is frozen at the end -- a tier board is read after it has
-// arrived, not while.
-//
-// If the board says which item is new, that one is held back: the rest is put up
-// quickly, as a recap of where the ranking stood, and the new item flies in
-// after it into a board that has stopped moving.
-//
-// src is the file this is being drawn from, so a board somebody has restyled is
-// drawn as they restyled it. A file with none of the card's own holes left in it
-// -- a board this drew earlier, or one somebody flattened -- is a picture rather
-// than a template, and the built-in one is used instead.
+// tierSVG draws the board: rows fly in from the right one after another, their
+// contents follow, all frozen at the end. A named new item is held back and
+// flies into a board that has stopped moving. src is the file drawn from, so a
+// restyled board stays restyled; a file with none of the card's holes left is
+// a picture, and the built-in template is used instead.
 func tierSVG(q svgQuery, dir string, src []byte) []byte {
 	tmpl := []byte(tierTemplate)
 	if tierIsTmpl(src) {

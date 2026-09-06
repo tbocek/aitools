@@ -1,34 +1,12 @@
 package main
 
-// Which seconds of a narrator's recording the voice reference is cut from,
-// chosen by hand, on the picture of that recording.
-//
-// narrate_ref.go picks them for you, and picks them well: the dominant
-// speaker's longest solo turns, ranked by how much was actually said in them.
-// What it cannot do is listen. Every rule in there is a proxy for "this is a
-// good few seconds of this person" -- words per second, distance from anyone
-// else, length -- and a proxy is wrong exactly where it matters: the stretch
-// where the mic was clipping, the one where the fan came on, the one where
-// they were reading rather than talking. All three score beautifully, and the
-// only place the mistake shows up is in the finished narration, twenty minutes
-// later, in a voice that is nearly right.
-//
-// So the automatic pick stays the default and this is the way to overrule it.
-// Drag on the wave, ＋, and those seconds are the reference; ▶ plays back
-// exactly what the model will be handed, joined the way it will be joined. A
-// hand-picked set is taken whole -- not re-ranked, not trimmed to refWant, not
-// capped at refTakeMax -- because those caps exist to keep a guess honest and
-// there is nothing to keep honest once somebody has heard it.
-//
-// The takes are kept per RECORDING rather than per narrator slot. A slot is a
-// tag on the Prepare page and can be moved to somebody else; the seconds
-// somebody's voice is clearest in belong to the file they were recorded in,
-// and re-tagging must not silently hand them to the next person.
-//
-// One consequence worth spelling out: they are part of who is speaking, so
-// they are part of the cache key (voiceKey). Change a take and every line
-// already spoken is spoken again, exactly as moving the pitch slider does --
-// the alternative is a project half in one voice and half in another.
+// Hand-picked seconds of a narrator's recording for the voice reference,
+// overruling narrate_ref.go's automatic pick (which cannot hear clipping, fans
+// or a reading voice). Drag on the wave, ＋, and those seconds are the
+// reference, taken whole -- not re-ranked, trimmed to refWant or capped at
+// refTakeMax. Kept per RECORDING, not per narrator slot, so re-tagging does
+// not hand them to someone else. Part of voiceKey: change a take and every
+// line is respoken.
 
 import (
 	"crypto/sha1"

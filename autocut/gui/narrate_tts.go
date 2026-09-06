@@ -1,25 +1,11 @@
 package main
 
-// Turning one written line into a spoken wav.
-//
-// The Narrate page is a list of lines and the clips they belong to
-// (narrate.go); this is what happens to one of them when ▶ or ⟳ is pressed.
-// It is the page's only path off this machine -- a TTS server, a reference
-// recording of the voice, and a wav back -- which is why it is here and not
-// beside the list it is driven from.
-//
-// Two things make it more than a request. The first is that the same line asked
-// for twice must come back the same, or a re-render would resay every line in
-// a slightly different voice; so the wav is named after everything that went
-// into it (ttsKey) and a take already on disk is the answer. Rerolling is
-// therefore not "ask again" but "change the seed", which is the one control
-// that is allowed to move it.
-//
-// The second is the emotion tag. The server takes a vector over eight named
-// feelings, and what the model writes is a word -- sometimes two with a weight
-// between them. emoTerm through emoOpts are that translation, and they are
-// deliberately forgiving: a tag nobody taught it is spoken plainly rather than
-// refused, because a line that does not play is worse than a line played flat.
+// One written line into a spoken wav: the page's only path off this machine.
+// The wav is named after everything that went into it (ttsKey), so the same
+// line comes back the same and a take on disk is the answer; rerolling changes
+// the seed. The emotion tag (emoTerm..emoOpts) maps a word, or two with
+// weights, onto the server's eight-axis vector, forgiving: an unknown tag is
+// spoken plainly rather than refused.
 
 import (
 	"bytes"
@@ -79,14 +65,9 @@ func (a *App) ttsModelID() (string, error) {
 // and serving the tamer one would make the constant a lie. So is Roll, which
 // is the user saying "same line, different draw".
 func (a *App) ttsKey(e narrEntry) string {
-	// A weighted tag is named by the mix it resolves to, not by how it was
-	// spelled. Two reasons. The mapping moves -- "excited" was kin of happy and
-	// is now happy with surprise in it -- and a key that only held the spelling
-	// would keep serving the old performance of a tag that now means something
-	// else. And the same request written two ways ("angry=1", "furious=1") is
-	// one take, which is what it sounds like. Unweighted tags keep their old
-	// key: those go to the judge as words, and re-speaking every line a project
-	// already has to change nothing about them would be a poor trade.
+	// A weighted tag is keyed by the mix it resolves to, not its spelling: the
+	// mapping moves ("excited" changed), and "angry=1" and "furious=1" are one
+	// take. Unweighted tags keep their old key -- they go to the judge as words.
 	emo := e.Emotion
 	if vec, ok := emoVector(emo); ok {
 		emo = vec
@@ -114,15 +95,10 @@ func (a *App) ttsWav(e narrEntry) string {
 	return filepath.Join(a.narrateDir(), "tts", fmt.Sprintf("%x.wav", h[:8]))
 }
 
-// ttsSeed is the take's random seed, cut from the same digest as its filename.
-//
-// Left alone, the engine draws a fresh seed for every request: the same words
-// sent twice came back as two different performances, so a line re-spoken after
-// an unrelated edit -- or simply after the cache was cleared -- was a new
-// delivery you had not asked for and could not get back. Deriving it from the
-// key makes the two agree by construction: one filename, one seed, and the only
-// thing that moves it is something that also moves the filename (the words, the
-// emotion, the voice, or the re-roll button).
+// ttsSeed is the take's random seed, cut from the same digest as its filename:
+// one filename, one seed, and only what moves the filename (words, emotion,
+// voice, re-roll) moves it. Left alone, the engine draws a fresh seed per
+// request.
 func ttsSeed(key string) uint32 {
 	h := sha1.Sum([]byte(key))
 	return binary.BigEndian.Uint32(h[8:12])
@@ -163,19 +139,11 @@ func emoTerm(w string) int {
 	return -1
 }
 
-// The blends: points the eight bases reach together that no single one of them
-// reaches alone. "excited" used to be listed as kin of happy, which is what it
-// is nearest to and not what it is -- a chest of gold read as plain happiness
-// sounds pleased rather than thrilled, because the thing that makes it excited
-// is the surprise mixed into it. So the names below are recipes, not synonyms:
-// each one is a mix over the same eight axes the engine already takes, and the
-// engine hears a blend it has no word for.
-//
-// Every recipe peaks at 1, so a weight means the same thing here as on a base:
-// "[excited=1]" is the mix at full force, "[excited=0.5]" the same mix at half.
-// Nothing outside the eight can be invented -- there is no "excitement" dial to
-// turn -- so a name that wants an axis the model does not have (smug, sarcastic
-// as a pitch contour, whispered) still belongs on the judge's side of the fence.
+// The blends: mixes over the eight bases that no single base reaches --
+// "excited" is happy plus surprise, not a kin of happy. Recipes, not synonyms;
+// every recipe peaks at 1 so a weight means the same as on a base. Nothing
+// outside the eight axes can be invented (smug, sarcastic, whispered stay on
+// the judge's side).
 var emoBlends = []struct {
 	Kin []string
 	V   [8]float64 // happy, angry, sad, afraid, disgusted, melancholic, surprised, calm
@@ -245,21 +213,10 @@ func emoWeights(tag string) (parts []struct {
 }
 
 // emoVector turns a weighted tag into the eight floats the engine takes
-// directly. "[angry=1]" is pure anger at full force; "[happy=0.8,
-// surprised=0.4]" is a blend the writer chose rather than one a judge inferred.
-//
-// The engine has two ways in. emotion_text runs the line through a small
-// language model that scores it onto these eight axes -- forgiving of phrasing,
-// but it is a guess, it dilutes anything it does not recognise, and every word
-// that is not an emotion ("loud", "fast") pulls the score toward nothing. A
-// vector skips it: exact weights, same result every run. So the weights are the
-// opt-in, and a bare "[angry]" still goes through the judge, which is what the
-// written narration produces and what phrases like "surprised, happy" need.
-//
-// The names that reach a vector are the eight bases, their kin, and the blends
-// (emoBlends), which are recipes over the same eight. Anything else falls back
-// to the text path rather than guessing an axis -- a wrong axis is a worse
-// answer than a slower one.
+// directly. emotion_text goes through a small judge model (a guess, diluted by
+// every non-emotion word); a vector is exact and repeatable. Weights are the
+// opt-in: a bare "[angry]" still goes through the judge. Bases, kin and blends
+// reach a vector; anything else falls back to the text path.
 func emoVector(tag string) (string, bool) {
 	parts, weighted := emoWeights(tag)
 	if !weighted || len(parts) == 0 {
@@ -313,21 +270,11 @@ func emoText(tag string) string {
 	return strings.Join(names, ", ")
 }
 
-// emoOpts is the request's options block: how the line should be read, in the
-// spelling the engine actually acts on.
-//
-// The emotion belongs here and nowhere else. The speech endpoint parses
-// input/language/voice/options and drops every field it does not know -- this
-// client sent a top-level "emotion" for its whole life, which is why every
-// delivery sounded the same.
-//
-// Two ways in, and they are exclusive. emotion_text is read only when
-// use_emotion_text is set (the text alone is stored and ignored, the second
-// half of the same old silence), and it goes through a small judge model that
-// scores the words onto the eight axes. emotion_vector needs no switch and
-// takes the eight numbers directly. Sending both is not a stronger request: the
-// engine tests use_emotion_text FIRST, so the judge would simply overwrite the
-// weights the writer set by hand. Hence one branch or the other, never both.
+// emoOpts is the request's options block. The emotion belongs HERE: the speech
+// endpoint drops unknown top-level fields (a top-level "emotion" was silently
+// ignored for a long time). emotion_text needs use_emotion_text; emotion_vector
+// needs no switch; the engine tests use_emotion_text FIRST, so exactly one
+// branch is sent.
 func emoOpts(emotion string) map[string]any {
 	opts := map[string]any{"emotion_alpha": emoAlpha}
 	tag := strings.TrimSpace(emotion)
@@ -400,16 +347,11 @@ func (a *App) speak(text, emotion string, seed uint32, out string) error {
 	return os.WriteFile(out, data, 0o644)
 }
 
-// syncSpeakIcons draws the per-line buttons: the row that is running shows the
-// ⏸ that will stop it, every other row the ▶ that starts it.
-//
-// Running is three states, not one. The voice is sounding on that row; or the
-// row is auditioning and its picture is rolling, which happens a moment before
-// any sound does -- the audio pipeline only reports playing once it has
-// prerolled; or the audition is stopped waiting for a line that has never been
-// spoken, which is seconds, or a cold model load. Drawing only the first left
-// the button the user had just pressed sitting on ▶ through all of it, which
-// reads as a click that did nothing.
+// syncSpeakIcons draws the per-line buttons: the running row shows ⏸, every
+// other ▶. Running is three states: the voice sounding on that row; the row
+// auditioning with its picture rolling before any sound (the audio pipeline
+// reports playing only after preroll); or the audition waiting for a line
+// never spoken.
 func (n *narrator) syncSpeakIcons() {
 	live := n.livePlayRow()
 	n.liveRow = live
@@ -425,20 +367,10 @@ func (n *narrator) syncSpeakIcons() {
 	}
 }
 
-// livePlayRow is the row the ⏸ belongs on: the one being played right now.
-//
-// While the picture rolls that is the row under the playhead -- the blue one --
-// and not, as it was, the row whose wav happens to be on the voice player. The
-// two are the same while a line is actually talking and differ for the seconds
-// between two lines, which is where the ⏸ used to sit and stay: a line ends,
-// its player reports stopped, and nothing redraws the icon until the NEXT line
-// starts, so a row that finished talking a page ago still offered to pause
-// itself. Following the playhead answers it for the gaps too.
-//
-// A row with no words counts. It used to be excluded -- "not playable, so it
-// keeps its ▶" -- which was true only because its ▶ refused to do anything.
-// Now that a wordless clip plays like any other (speakEntry), the row the
-// picture is on is the row that offers to pause it, line or no line.
+// livePlayRow is the row the ⏸ belongs on: the row under the playhead while
+// the picture rolls, not the row whose wav is on the voice player -- the two
+// differ between lines, where the ⏸ used to stick. A wordless row counts,
+// since it plays like any other (speakEntry).
 func (n *narrator) livePlayRow() int {
 	i := -1
 	switch {
@@ -447,28 +379,19 @@ func (n *narrator) livePlayRow() int {
 	case n.voice != nil && n.voice.Playing():
 		i = n.speaking // a line spoken over a still frame: no picture to follow
 	}
-	if i < 0 || i >= len(n.entries) {
+	if !n.has(i) {
 		return -1
 	}
 	return i
 }
 
-// rerollEntry asks for another take of a line whose words are already right.
-//
-// The seed is otherwise fixed to the line (ttsSeed), which is what makes a take
-// keepable: nothing re-speaks it behind your back and nothing serves you a
-// different reading of the same words. The cost of that is a delivery you can
-// be stuck with -- the right emotion, landed badly -- and this is the way out.
-// It moves the key, so the old wav is not in the way; the audition that follows
-// is what actually speaks the new one, through the same path as a first play.
-//
-// The old take is left on disk rather than deleted: a re-roll can come back
-// worse, and a synthesis that fails after the file is gone leaves the line with
-// nothing at all.
+// rerollEntry asks for another take of a line whose words are right: it moves
+// the seed (and so the key) and lets the audition speak it through the normal
+// path. The old take stays on disk -- a re-roll can come back worse or fail.
 func (a *App) rerollEntry(i int) {
 	n := a.narr
 	n.pullRows()
-	if i < 0 || i >= len(n.entries) {
+	if !n.has(i) {
 		return
 	}
 	if strings.TrimSpace(n.entries[i].Text) == "" {
@@ -486,14 +409,9 @@ func (a *App) rerollEntry(i int) {
 	a.speakEntry(i)
 }
 
-// pausePress is whether pressing row i's button means "pause it" rather than
-// "start this row". It is the same question syncSpeakIcons draws the face from
-// -- the row the picture is running on is the row wearing the ⏸ -- asked in one
-// place so the button cannot show one thing and do another.
-//
-// Only the picture, not the voice: a line spoken over a still frame is a toggle
-// further down (voice.Toggle), which also knows how to play it again once it
-// has run out.
+// pausePress is whether pressing row i's button means "pause it" -- the same
+// question syncSpeakIcons draws the face from, asked in one place. Only the
+// picture, not the voice: a line over a still frame is voice.Toggle's.
 func (n *narrator) pausePress(i int) bool {
 	return n.player != nil && n.player.Playing() && n.livePlayRow() == i
 }
@@ -508,7 +426,7 @@ func (n *narrator) pausePress(i int) bool {
 func (a *App) speakEntry(i int) {
 	n := a.narr
 	n.pullRows()
-	if i < 0 || i >= len(n.entries) {
+	if !n.has(i) {
 		return
 	}
 	// The ⏸ a row is showing means that row, whatever is written on it. Only
@@ -530,16 +448,9 @@ func (a *App) speakEntry(i int) {
 	e := n.entries[i]
 	if strings.TrimSpace(e.Text) == "" {
 		// A clip the narration left alone is still a clip of the video, and this
-		// button is "play from here" before it is "speak this line": it played
-		// every row but these, so a clip with no line was the one part of the cut
-		// the page would not show you -- and those are exactly the clips you look
-		// at to decide whether they want a line at all.
-		//
-		// So the picture rolls from the top of the clip and the preview carries on
-		// down the cut from there, like any other ▶. What does not happen is the
-		// synthesis: asking the server to say nothing costs a call and returns
-		// silence. No solo either -- there is no line to hand the transport back
-		// after, this is simply a seek into the cut that plays.
+		// button is "play from here" first: the picture rolls from the top of the
+		// clip and the preview carries on down the cut. No synthesis (saying nothing
+		// costs a call) and no solo -- this is a seek into the cut that plays.
 		if ed := a.ed; ed != nil && n.player != nil && ed.videoAt(e.S) != nil {
 			n.claimVoice()
 			n.playSeg, n.jumped = -1, -1

@@ -236,8 +236,8 @@ func TestTheBarPulsesOnlyWhileNothingCanBeCounted(t *testing.T) {
 		t.Error("a cached line moves neither the bar nor its count")
 	}
 	// the two tracks are summed, so last step's leftovers would be added to
-	// every reading this one takes
-	if !strings.Contains(run, "a.qReset()") {
+	// every reading this one takes: startRun empties the queue
+	if !strings.Contains(run, "a.startRun()") {
 		t.Error("the bar is not reset at the start of the run")
 	}
 	// ...and once the writing IS being counted, the pulse has to stop on its

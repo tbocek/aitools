@@ -1,66 +1,16 @@
 package main
 
-// The system context: what every job is told about the tool it is part of, the
-// material it works on and the answer it owes, said once.
+// The system context: what every job is told once about the tool, the material
+// and the answer it owes -- the [mm:ss] stamps, EVENT vs SPEAKER lines, the
+// machine-read reply, never invent, what the four steps ARE so a job writes
+// for the next one. Facts about the tool, true for every job; a wording is
+// only the part that could differ. The user context is deliberately NOT here:
+// its rules travel with it (ctxBlock, ctxRule), so an empty box sends none.
 //
-// Four cut wordings, an audit, a narration and an upload text -- and each of
-// them opened by explaining the same three things: that the lines are stamped
-// [mm:ss] and the minutes keep counting past 59, what an EVENT line is against
-// a SPEAKER line, and that the reply is machine-read so nothing may sit around
-// it. Written out seven times, that is seven places to fix when the timeline
-// gains a lane, and seven wordings that have already drifted -- the Shorts
-// wording explained NARRATOR lines differently from the other three, for no
-// reason anybody chose.
-//
-// The user context is not here at all, and that is the point. Everything
-// about it -- that it outranks what a job would infer and every rule a
-// wording states, and how it changes the reading of the spoken lines --
-// travels WITH it, in the request (ctxBlock) and on the wording's tail
-// (ctxRule). A session with an empty box then sends none of it, where this
-// prompt sent every job a paragraph about a block that was not there; and
-// where there is a context, the rule sits beside it rather than six thousand
-// characters earlier.
-//
-// The same was true of three rules that are not formats at all and had drifted
-// the same way: never invent, the user context outranks what you would infer,
-// and the answer carries nothing around it. Between them they were written into
-// every wording in the app -- "never invent a moment", "never invent a part, a
-// name or a price", "invent nothing that is not in it" -- which is one rule the
-// model meets six times and no rule it meets in the one place it could be
-// tightened.
-//
-// It also says what the four steps ARE. A job used to be told its own step and
-// nothing else, which reads fine until you notice what each one is doing: the
-// cut is choosing seconds that the narration will later have to talk over, and
-// the describing step is writing the only record of the footage that any later
-// step will ever see. A model that knows it is second of four writes for the
-// third; one that thinks it is alone writes for nobody.
-//
-// None of this is taste. Which moments are worth keeping is what a style is FOR
-// and is why there are several; how a second is spelled, what the step after
-// this one will do with the answer, and that nothing may be made up are facts
-// about this tool, true for every style and every job it will ever have. So the
-// facts are one prompt, in front of all of them, and a style is only the part
-// that could reasonably differ.
-//
-// It is the second row of the bench on Prepare, under the session context and
-// over the run: what this machine sends, above what this session was. Editable
-// like the rest, because a local model that keeps misreading the stamps is
-// exactly a sentence that wants rewording, and this is where that sentence now
-// lives.
-//
-// It is the one prompt with no wordings (promptDef.solo). Every other prompt
-// has several because a style has an opinion about it -- Highlights and
-// Showcase want different cuts, and say so in the same box. None of them has an
-// opinion about how a stamp reads: there is one answer to that and this is it,
-// so the row has no name in brackets, no ＋ to save a second one under, and no
-// style pick to lose an edit to.
-//
-// The session context goes in the USER message and this goes in the SYSTEM
-// message, which is the same line drawn twice: facts about the session travel
-// with the material, rules about the job travel with the job (see context.go).
-//
-// One paragraph or bullet per line, unwrapped: see describeSystem.
+// Second row of the bench on Prepare, editable, the one prompt with no
+// wordings (promptDef.solo). Goes in the SYSTEM message; the session context
+// goes in the USER message (context.go). One paragraph or bullet per line,
+// unwrapped: see describeSystem.
 
 import (
 	"regexp"
@@ -131,14 +81,9 @@ Some jobs are offered web_search and web_read. They are for a fact about a named
 NEVER INVENT
 Only what the material shows. Never invent a time, a name, a score, a moment or an outcome -- not even one the user context leads you to expect: a stretch the lines do not cover did not happen, and only stretches with EVENT lines have footage behind them.`
 
-// sysPrompt is the system message a job goes out with: the shared context, then
-// that job's own prompt. Every call that sends a system prompt is built through
-// here -- there is no second way to assemble one, which is what stops a job
-// added later from quietly being the one that is never told how a stamp reads.
-//
-// An emptied box takes the block away rather than sending a heading with
-// nothing under it, the way ctxBlock does: a model reading rules that are not
-// there will happily supply its own.
+// sysPrompt is the system message a job goes out with: the shared context,
+// then the job's own prompt -- the only way one is assembled. An emptied box
+// takes the block away rather than sending an empty heading (as ctxBlock).
 func (a *App) sysPrompt(key string) string {
 	job := a.prompt(key)
 	// the precedence rule rides on the wording, not in it: it is assembled
@@ -156,21 +101,10 @@ func (a *App) sysPrompt(key string) string {
 	return sys + "\n\n" + job
 }
 
-// sysFor is the system context cut down to what one job can use.
-//
-// The box is one text, and it stays one text: the formats are the formats and
-// there is one place to edit them. But it was also sent whole, to every job --
-// and most of it is about some OTHER job. The describing step was handed the
-// audit's reply shape and the narration's list of emotions; the transcript
-// fixer was told what a zoom does. Seven kilobytes in front of every call, of
-// which a describe call could use two. A 27B model weighs what it is given,
-// and what it was given was mostly noise about jobs it is not doing.
-//
-// So the sections are chosen per job, by their headings, which are the app's
-// own vocabulary (TestTheSystemContextIsUnderHeadings). The list of what each
-// job answers with keeps only this job's own line. Anything under a heading
-// this does not know -- a section somebody added to the box -- goes to every
-// job, because the safe reading of an unknown section is that it matters.
+// sysFor cuts the system context down to what one job can use: sections are
+// chosen per job by heading (TestTheSystemContextIsUnderHeadings), and the
+// list of reply shapes keeps only this job's line. A heading this does not
+// know goes to every job -- an unknown section is assumed to matter.
 func sysFor(key, sys string) string {
 	if sys == "" {
 		return ""
@@ -330,23 +264,10 @@ func ownJobLine(key, blk string) string {
 	return strings.Join(out, "\n")
 }
 
-// ctxRule is what the user context is allowed to change: everything a job's
-// wording says, and nothing the system context says.
-//
-// A wording is a set of defaults for a session nobody described -- how many
-// effects, how long a segment, what a line sounds like, what to lead with --
-// and every one of them was written without this video in view. The USER
-// CONTEXT was written by the person whose video it is. So where the two
-// disagree the context wins, and the wording says so itself, at its end,
-// where the model has the rules in its hands: a model that has just read
-// "three or four effects" as a rule and then meets "caption every thing as it
-// is named" in the request otherwise resolves the contradiction in favour of
-// the rule, and the person who asked gets nothing and is told nothing.
-//
-// The system context is the exception, and it is named here as one. It holds
-// the mechanics -- the shape of the answer, the clocks, what may be invented,
-// the ranges the reply is judged by -- and those are how the answer is READ,
-// not how the video is made. A context that changed them would break the
-// machine that reads the reply, not improve the video.
+// ctxRule says what the user context may change: everything a job's wording
+// says (defaults written without this video in view), and nothing the system
+// context says (the shape of the answer, the clocks, what may be invented --
+// how the answer is READ). It sits at the wording's end, where the model has
+// the rules in hand.
 const ctxRule = `WHERE THIS DISAGREES WITH THE USER CONTEXT
 Everything above is a default for a session nobody described. The USER CONTEXT in the request was written by the person whose recording this is, and wherever it asks for something these rules would not -- more of an effect or none, a longer segment, another voice, a different subject, a line kept that this would drop, a language this did not expect -- the user context wins and the rule above gives way. What it does not change is the mechanics you were given first: the shape of the answer, the clock, what may be invented, and the ranges the reply is judged by. Those are how the answer is read, not how the video is made.`

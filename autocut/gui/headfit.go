@@ -5,21 +5,10 @@ import (
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
-// The header bar is asked to hold three things at once: which project file the
-// session is being written to, the five step tabs, and the icon buttons at
-// either end. Two of the three want to be words, and on a 1366-wide laptop the
-// words do not all fit -- so rather than pick one answer for every window, the
-// bar re-fits itself whenever its width changes and spends what it has on the
-// most useful text it can afford.
-//
-// The order is by what cannot be worked out from anything else. The tabs keep
-// their words longest: an icon-only tab row is five guesses until you have
-// learned it, and it is the control pressed most. The project label gives up
-// its leading directories first, because the file name is the half that tells
-// two variants of a session apart and the whole path is one hover away either
-// way. So the ladder is: path and words, then name and words, then name and
-// icons -- and the last rung still says which project is open and still lets
-// you reach every step.
+// The header bar re-fits itself on width: path and tab words, then file name
+// and words, then name and icons. The tabs keep their words longest (the most
+// pressed control); the project label gives up its directories first (the
+// whole path is one hover away).
 
 // tabGap is the space between a tab's icon and its word. Here rather than at
 // the gtk.NewBox call because fitHeader has to price the word AND the gap that

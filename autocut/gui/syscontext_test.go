@@ -157,7 +157,7 @@ func TestNoWordingRepeatsASharedRule(t *testing.T) {
 	// the notes outranking what a job would infer is said by the block that
 	// carries them, in the request itself -- so the context does not say it a
 	// second time, and this is the one place that has to still be true
-	if !strings.Contains(readSrc(t, "context.go"), "outranks anything you infer from the material") {
+	if !strings.Contains(readSrc(t, "prompts.go"), "outranks anything you infer from the material") {
 		t.Error("nothing tells a job that the session notes outrank what it would infer")
 	}
 }

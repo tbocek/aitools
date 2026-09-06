@@ -1,29 +1,15 @@
 package main
 
-// The run queue: what one press of ▶ turned into, in the order it will happen.
-//
-// Every long job on these pages is a list of small ones — chunks of frames to
-// describe, blocks of transcript to fix, lines to speak, clips to encode — and
-// each of them used to talk to the run bar in its own full sentence, filename
-// and all: "[2026-08-08_19-59-00] describing 4/12 (t=180s)". Two of those
-// joined with a dot is not a thing anyone reads at a glance, and it said the
-// same as the log line under it.
-//
-// So the work is a queue. A job fills it, the runner picks tasks off the front,
-// and the bar says one short line: which job, which of the run's jobs that is,
-// what the task at the head is doing, and how far down the queue it has got.
-// The filename is gone from it on purpose — the log is where that belongs.
-//
-// The queue is filled as work is found rather than all at once, because most of
-// it cannot be counted before it is opened: how many windows a recording
-// diarizes into depends on its length, and how many moments a session has is
-// the model's decision. That is exactly why the bar's FRACTION is still not the
-// queue's length. The two halves are weighted by how long the work TAKES (see
-// prog and the plan comments at each step), and a total that grows under a
-// fraction built from it would drag the bar backwards — which is the one thing
-// a progress bar must never do.
+// The run queue: what one press of ▶ turned into, in order. A job fills it as
+// work is found, the runner picks tasks off the front, and the bar says one
+// short line: which job, which of the run's jobs, what the head task is doing,
+// how far down the queue. Filenames belong in the log. The bar's FRACTION is
+// not the queue's length -- the queue grows as it is opened, and a total that
+// grows under a fraction drags the bar backwards -- but the weighted tracks
+// (prog).
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -119,20 +105,11 @@ func (a *App) qReset() {
 	a.showProg()
 }
 
-// qPhase says where in the bar the jobs that come next are drawn, and clears
-// the queue for them.
-//
-// A press that is one step's work never calls it: the two tracks ARE the bar
-// and they add up to the whole of it. Prepare's ▶ is two steps back to
-// back, and neither half knows the other exists -- each still says "half the
-// bar each" and reports its own absolute contribution. So the run says where
-// each half goes and the scaling happens here, rather than in the twenty places
-// that move the needle.
-//
-// base is where the phase starts, share is how much of the bar it owns, and the
-// two tracks split base between them: a phase that has reported nothing yet
-// stands exactly where the one before it finished. A bar that drops back to
-// zero halfway through one press is the thing a progress bar must never do.
+// qPhase says where in the bar the jobs that come next are drawn (base, share)
+// and clears the queue for them. A single-step press never calls it; Prepare's
+// ▶ is two steps back to back, each reporting its own whole bar, and the
+// scaling happens here rather than in every place that moves the needle. A
+// phase that has reported nothing stands where the one before it finished.
 func (a *App) qPhase(base, share float64) {
 	a.progMu.Lock()
 	a.progBase, a.progShare = base, share
@@ -205,14 +182,36 @@ func (a *App) qDone(track int, f float64) {
 	a.showProg()
 }
 
-// prog is how far this track has got and what its current task is doing. The
-// fraction is the track's absolute contribution, as it has always been; the
-// text is two or three words with no filename and no count in it -- the queue
-// supplies the count, and the log has the name.
-//
-// An empty format says nothing of its own, and the task falls back to the kind
-// of thing it is ("chunk 4/12") -- which is all the many calls that do nothing
-// but move the needle ever had to say.
+// busy says whether a run is already active, and tells the status line so.
+func (a *App) busy() bool {
+	if a.running {
+		a.setStatus("a run is already active — stop it first (⏹)")
+	}
+	return a.running
+}
+
+// startRun flips the app into a run: the flags, a fresh context, an empty
+// queue, the controls, the log open. Every ▶ and ↻ goes through it.
+func (a *App) startRun() {
+	a.running = true
+	a.stopFlag.Store(false)
+	a.pauseFlag.Store(false)
+	a.runCtx, a.runCancel = context.WithCancel(context.Background())
+	a.qReset()
+	a.updateRunControls()
+	a.logExp.SetExpanded(true)
+}
+
+// endRun is the GUI-thread half of a run finishing.
+func (a *App) endRun() {
+	a.running = false
+	a.updateRunControls()
+}
+
+// prog is how far this track has got and what its task is doing: the fraction
+// is the track's absolute contribution; the text is two or three words, no
+// filename, no count (the queue counts, the log names). An empty format falls
+// back to the task's kind ("chunk 4/12").
 func (a *App) prog(track int, f float64, format string, args ...any) {
 	txt := fmt.Sprintf(format, args...)
 	a.progMu.Lock()

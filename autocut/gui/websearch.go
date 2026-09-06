@@ -1,35 +1,16 @@
 package main
 
-// The web, for the model that is writing about a thing it does not know.
+// Two tools, web_search and web_read, offered to the jobs that write words the
+// viewer reads (captions, narration, upload text) through the tool-calling
+// loop in llm.go -- so a detail can be looked up rather than inferred.
 //
-// A caption once read "Kenos Tower: pay with slaps". The tower was real, the
-// notes had named it, and the model had nothing about it but the name -- so it
-// wrote the one thing it could infer and called that a detail. A detail is a
-// fact somebody looked up, and this is where the model can look one up: two
-// tools, web_search and web_read, offered to the jobs that write words the
-// viewer reads (the cut's captions, the narration, the upload text), through
-// the same tool-calling loop every OpenAI-shaped server speaks (llm.go).
-//
-// The search is a headless Firefox driven over WebDriver BiDi -- a WebSocket
-// on --remote-debugging-port, three commands: navigate, evaluate, close. No
-// geckodriver, no marionette, no extension. DuckDuckGo's page is rendered by
-// the browser and its result anchors read off the DOM, which is the one reason
-// a browser is involved at all: the HTML endpoint that needs none is rate-
-// limited into a captcha within a dozen queries, and a browser is what a
-// captcha is for. This is the client codehalter's tool_web.go uses, cut to
-// what a video editor needs.
-//
-// A search is asked for as THREE queries, broad to narrow, and answered with
-// the narrowest that still finds anything (searchLadder). The model writes
-// all three in one call -- "tower defense roblox", "slap battles tower
-// defense", "kenos tower slap battles tower defense" -- so that a name too
-// specific for the web to know does not come back empty and a name too broad
-// does not come back as the wrong game.
-//
-// Firefox is the settings box's (appConf.Firefox): empty means the one on
-// PATH, "off" means no tools are offered and the model writes only what the
-// material says. Every browser is registered in curCmds like ffmpeg, so ⏹
-// kills it with the run.
+// The search is headless Firefox over WebDriver BiDi (WebSocket on
+// --remote-debugging-port: navigate, evaluate, close), reading DuckDuckGo's
+// result anchors off the DOM; the HTML endpoint captchas within a dozen
+// queries. A search is THREE queries, broad to narrow, answered with the
+// narrowest that finds anything (searchLadder). Firefox comes from
+// appConf.Firefox: empty = PATH, "off" = no tools. Registered in curCmds, so ⏹
+// kills it.
 
 import (
 	"context"

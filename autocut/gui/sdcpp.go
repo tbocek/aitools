@@ -1,30 +1,12 @@
 package main
 
-// The sd.cpp server: one endpoint, one GPU, one image job -- the thumbnail on
-// the Produce step. It is leejet/stable-diffusion.cpp's sd-server, the same
-// process the compose file starts as the "sd" service, and it is talked to
-// over HTTP exactly like audio.cpp is: autocut never launches it, and the
-// weights it serves are the stack's business, not this program's.
-//
-// Three API families live on that port -- an OpenAI-shaped /v1, an
-// Automatic1111-shaped /sdapi/v1, and sd-server's own /sdcpp/v1. This uses the
-// native one, for one reason: it is the only one that takes an init_image, and
-// the whole point of the thumbnail is that it starts from a frame of the actual
-// video rather than from noise.
-//
-// The native family is asynchronous. POST /sdcpp/v1/img_gen answers 202 with a
-// job id, and the picture arrives base64 in GET /sdcpp/v1/jobs/{id} once its
-// status reaches "completed". That is not ceremony we could skip by using one
-// of the other families: a diffusion job on a busy card takes tens of seconds,
-// and a single blocking request for it is a request that dies in some proxy's
-// read timeout.
-//
-// ONE model, chosen when the server started. There is no model field in the
-// request and /v1/models answers with a fixed id -- so the model name in
-// Settings is a check, not a choice: it says which weights this project was
-// written against, and the Test button reports what the server actually has
-// loaded. Pointing autocut at a different model means restarting the server
-// with different weights.
+// The sd.cpp server (leejet/stable-diffusion.cpp sd-server, the compose file's
+// "sd" service), talked to over HTTP like audio.cpp. Of its three API families
+// this uses the native /sdcpp/v1: the only one that takes an init_image, and
+// the thumbnail starts from a frame of the video. It is asynchronous -- POST
+// img_gen answers 202 with a job id, GET jobs/{id} carries the picture when
+// "completed" -- because a diffusion job outlives a proxy's read timeout. ONE
+// model, chosen at server start: the Settings name is a check, not a choice.
 
 import (
 	"bytes"
@@ -124,15 +106,10 @@ type sdRequest struct {
 	Width    int    `json:"width,omitempty"`
 	Height   int    `json:"height,omitempty"`
 	Seed     int64  `json:"seed"`
-	// The pictures the instruction talks about, as data URLs, in the order the
-	// instruction refers to them: "the first image" is RefImages[0].
-	//
-	// Not init_image. An edit model is conditioned on its references and
-	// rewrites the whole canvas from the instruction, where init_image plus
-	// strength is the img2img road -- renoise everything, resample, and hope
-	// what you did not mention survives. That is the road that turned a green
-	// ghost into purple mush, and there is no value of strength that does not
-	// take it.
+	// The pictures the instruction talks about, as data URLs, in order: "the
+	// first image" is RefImages[0]. Not init_image: an edit model is conditioned
+	// on references and rewrites the canvas from the instruction; img2img
+	// renoises everything, and no strength survives it.
 	RefImages []string `json:"ref_images,omitempty"`
 	// Let the server fit references to the output size. The frames are 16:9 and
 	// so is the thumbnail, so this normally does nothing -- but a hand-picked
@@ -172,15 +149,10 @@ type sdJob struct {
 	} `json:"error"`
 }
 
-// sdGenerate submits one image job and waits for the picture, returning the
-// decoded bytes. onWait is called with a human sentence every time the status
-// is polled, so a page can say "queued, 2 ahead" rather than freezing; it may
-// be nil.
-//
-// The context is the run's, so ⏹ ends the wait. The job itself is then
-// cancelled on the server -- a diffusion job nobody is waiting for still holds
-// the card, and the next press of ▶ would queue behind the one that was
-// abandoned.
+// sdGenerate submits one image job and waits for the picture. onWait (may be
+// nil) gets a human sentence per poll. The context is the run's, so ⏹ ends
+// the wait, and the job is then cancelled on the server -- it would otherwise
+// hold the card ahead of the next ▶.
 func (a *App) sdGenerate(ctx context.Context, req sdRequest, onWait func(string)) ([]byte, error) {
 	url := a.sdURL()
 	key := a.readConf().SDKey // read once; the same key rides every request of the job
@@ -322,21 +294,10 @@ func sdSnippet(raw []byte) string {
 	return s
 }
 
-// testSD is the Settings button: something answers on that endpoint, it
-// answers like sd.cpp, it can draw a picture, and these are the weights it has.
-//
-// Reporting the weights is all it does about them. Settings used to carry a
-// model name to hold the server to, but sd-server loads one model at startup
-// and takes no model field per request, so nothing autocut sent could change
-// it -- the box could only ever disagree with the truth. Naming what is loaded
-// says the same thing without a second copy to keep in sync; the weights are
-// chosen where they are actually chosen, in SD_ARGS (cpp/run.sh).
-//
-// When the capabilities call fails, /v1/models is tried before giving up --
-// not because it would do: the usual tenant of port 1234 is some OpenAI-shaped
-// server (LM Studio's default port is 1234 too), and one that answers the
-// model list can at least be named in the verdict. "1234 is serving
-// qwen2.5-coder" is an answer; "capabilities answered 404" is a riddle.
+// testSD is the Settings button: something answers, it answers like sd.cpp, it
+// can draw, and these are the weights loaded (chosen in SD_ARGS, cpp/run.sh,
+// not here). When capabilities fails, /v1/models is tried so the usual tenant
+// of port 1234 (an OpenAI-shaped server) can at least be named in the verdict.
 func testSD(url, key string) (string, error) {
 	caps, err := sdCapabilities(context.Background(), url, key)
 	if err != nil {

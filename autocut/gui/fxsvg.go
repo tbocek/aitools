@@ -1,34 +1,14 @@
 package main
 
-// A drawing over the picture.
-//
-// The svg effect is a file of the user's own laid over the running video: a
-// logo, an arrow, a badge, a hand-drawn ring round the thing being talked
-// about. It is deliberately NOT an insert. An insert cuts the video and puts
-// its own picture in the hole it made; a drawing changes nothing about the
-// footage, it sits on top of it for a few seconds and goes again -- which is
-// exactly what a text effect does, and why the two share everything but the
-// last step (overFx, fxtext.go).
-//
-// SO IT IS A TEXT EFFECT WITH INK INSTEAD OF WORDS. Same bar on the lane, same
-// two fades inside it, same box on the finished frame -- Cx, Cy, Wf, Hf as
-// fractions of the OUTPUT, so the drawing keeps its place while the camera
-// moves under it -- same compositing after the camera chain. The one thing
-// that differs is what fills the box: a title is fitted to it by breaking and
-// shrinking the words, and a drawing is fitted to it by scaling, keeping its
-// own shape and sitting centred on whichever axis the fit left short.
-//
-// WHY IT IS RASTERIZED AT THE BOX'S SIZE. An SVG is a vector, and the whole
-// point of one is that it is drawn at the size it is used. ffmpeg reads SVG
-// through librsvg, which renders the document at whatever size the document
-// declares unless it is told otherwise -- so a 24 px icon composited into a
-// 400 px box would be a 24 px icon blown up sixteen times. -width/-height on
-// the input is the telling-otherwise, and both the preview and the render use
-// it, so what you place is what you get.
+// A drawing over the picture: a user's SVG laid over the running video for a
+// few seconds. It is a text effect with ink instead of words (overFx,
+// fxtext.go) -- same bar, fades and OUTPUT-fraction box -- fitted by scaling,
+// centred on the axis the fit left short. Rasterized at the box's size:
+// librsvg renders at the document's declared size unless told (-width/-height
+// on the input), so both preview and render pass it.
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"image"
 	"image/png"
@@ -38,7 +18,6 @@ import (
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/cairo"
-	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
@@ -196,22 +175,7 @@ func (ed *cutEditor) drawSVG(cr *cairo.Context, f cutFx, x, y, w, h, alpha float
 // chosen twice: once when it is placed, and again whenever the dialog's
 // Choose… swaps one drawing for another.
 func (a *App) chooseSVG(ok func(string)) {
-	d := gtk.NewFileDialog()
-	d.SetTitle("Choose a drawing to lay over the video")
-	d.SetInitialFolder(gio.NewFileForPath(a.insertDir()))
-	filt := gtk.NewFileFilter()
-	filt.SetName("SVG drawing")
-	filt.AddSuffix("svg")
-	filters := gio.NewListStore(gtk.GTypeFileFilter)
-	filters.Append(filt.Object)
-	d.SetFilters(filters)
-	d.Open(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.OpenFinish(res)
-		if err != nil || f == nil {
-			return // dismissed
-		}
-		ok(f.Path())
-	})
+	a.pickFile("Choose a drawing to lay over the video", a.insertDir(), extFilter("SVG drawing", "svg"), ok)
 }
 
 // svgClicked is the toolbar's SVG entry. The file is asked for FIRST and the

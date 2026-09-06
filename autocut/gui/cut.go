@@ -1,23 +1,9 @@
 package main
 
-// Cut. One thumbnail track over the session timeline, with what the cut
-// keeps tinted green over the footage, and the waveform lanes under it. (There
-// was a second track showing the cut as its own row of thumbnails; it repeated
-// the green and cost a band.) Mouse wheel zooms around the cursor and the bar's
-// + and − do it around the middle of the view, in both cases no further out
-// than the whole session (minPps). Drag selects on the track or on a lane, and a
-// rough selection is fine: Add snaps its edges to a nearby scene change or
-// speech gap, computed from data earlier steps already produced. "Suggest
-// cut" (LLM) fills the cut to the target length; from then on the human owns
-// it and the total simply is what it is. That suggestion (or, before any
-// suggestion, whatever was on disk) is the checkpoint Revert returns to, so
-// hand edits are always a separate, droppable layer.
-//
-// Gaps between recordings (wall-clock holes with no video) draw as a fixed
-// narrow hatched band, not proportionally -- a 30 minute break should not be
-// 30 minutes of scrollbar.
-//
-// cut/cut.json {"segs":[{"s":..,"e":..}]}   session-time seconds, sorted
+// Cut: the session timeline. Thumbnails with the kept stretches tinted green,
+// the waveform lanes under them. Holes nobody filmed collapse to a fixed hatch
+// (gapPx); folded gaps to nothing (cut_fold.go). cut/cut.json holds the
+// segments in session seconds.
 
 import (
 	"context"
@@ -44,14 +30,9 @@ import (
 
 const (
 	rulerH = 18 // tick zone on top of the picture track
-	// the selection band, between the ruler's clock and the thumbnails. Its own
-	// row rather than a tint on the pictures: a tint has nothing to take hold
-	// of, and this is the one thing on the page you are always about to move,
-	// resize or throw away. See drawSelBand.
-	//
-	// 22 and not 16 because the green bar wears the ✕ that drops a scene, and
-	// that mark is a plated badge like every other ✕ in the app (drawKillBadge):
-	// 14 px of plate needs a row it can sit inside rather than straddle.
+	// the selection band between the ruler and the thumbnails (drawSelBand). 22,
+	// not 16: the green bar wears a 14 px plated ✕ (drawKillBadge) that has to
+	// sit inside the row.
 	selBandH = 22
 	gapPx    = 26  // display width of an unfilmed hole between two runs
 	laneGap  = 3   // px between two cameras' rows of the picture band
@@ -72,14 +53,10 @@ const (
 	// of it drops the edge and starts a selection over the clip you were in the
 	// middle of trimming.
 	edgeMove = 12.0
-	// smallest the marker for a spliced insert is drawn. It is a POINT on the
-	// session timeline -- the footage is cut there and carries on afterwards, so
-	// it takes no session seconds (see cutSeg) -- but it does have a length, and
-	// spliceSpan draws that length at the current zoom. This is the floor under
-	// it: a two-second card at the zoom where a whole session fits on screen is a
-	// few px of violet, and below about this it is not a marker any more. The
-	// same idea, and deliberately about the same size, as the hatched hole drawn
-	// between two recordings.
+	// the smallest a spliced insert's marker is drawn: it is a POINT on the
+	// session timeline (see cutSeg) but has a length (spliceSpan), and zoomed out
+	// a two-second card would be a few px of violet. About the size of the hatched
+	// hole between two recordings, on purpose.
 	splicePx = 22.0
 	// px a dragged clip snaps to its neighbour within. Small: it has to be
 	// reachable by hand and it must not swallow a deliberate one-second hole
@@ -106,29 +83,9 @@ const (
 
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 //
-// Every prompt in the suggest pipeline is written for a local model of
-// Qwen-27B's class: one narrow job each, every rule load-bearing, no rule
-// explained twice, and the job given as a numbered procedure rather than as
-// taste. "Keep what matters" is a judgement such a model makes badly and
-// differently every run; "list what the user context names, find where each
-// happens, divide the target by the count" is arithmetic it does the same way
-// every time.
-//
-// There used to be five of these -- a generic one and four shapes: a gaming
-// highlight reel, a rating video, a showcase, a YouTube Short -- with a Style
-// dropdown on Prepare turning every prompt at once. Each shape cut better than
-// the generic one when the footage was that shape and worse when it was not:
-// the highlights wording said "gaming session" in its first sentence and went
-// looking for wins and disasters in a woodworking video. And which shape a
-// session is, is a fact about the session, which is what the user context is
-// for -- said there it is read by every step, it outranks the wordings
-// (ctxRule), and there is one place to say it instead of two that can
-// disagree.
-//
-// So there is one, and it assumes nothing. What it knows how to do is find the
-// subject in the context, enumerate what the context names, budget the target
-// across it, and place the segments; the rules about boundaries, length and
-// the reply are the tail every pass shares (cutReply).
+// Written for a ~27B local model: one narrow job, every rule load-bearing, the
+// job as a procedure rather than as taste. There is one wording; what kind of
+// video a session is belongs in the user context, which outranks it (ctxRule).
 const cutSystem = `You choose the moments a video is cut from. The recording is a session of something happening -- a game, a build, a lesson, a conversation, a drive -- and the USER CONTEXT says which, when it says anything at all.
 
 Work in this order.
@@ -143,45 +100,11 @@ Work in this order.
 
 Each segment starts a beat before the first word you want and ends after the reaction to it. About one segment per 20 seconds of target length, never fewer than two.` + cutReply
 
-// fxRules is the effects half of a cut prompt, shared by the three styles that
-// cut for a screen rather than for a phone. Shorts keeps its own wording: two
-// or three effects on a 25-second clip watched with the sound off is a
-// different instruction from a handful spread over five minutes with the sound
-// on, and one paragraph trying to cover both would say neither well.
-//
-// It is appended rather than written out three times because it is the same
-// instruction three times. The reply shape is not in here either: it is in
-// cutReply, which every wording ends on, Shorts included.
-//
-// The user context comes first in it on purpose. What to do with a dull stretch is
-// exactly what the editor writes down -- "the boring parts you can speed up
-// and show instead of cutting them" -- and that sentence is an instruction
-// about the SEGMENTS as much as about the effects: the stretch has to be kept
-// for there to be anything left to speed up. A model told to decorate a cut it
-// has already chosen cannot act on it; told both at once, it can.
-//
-// One paragraph or bullet per line, unwrapped: see describeSystem.
-// speedSystem is the wording of the speed pass: the third call, made once the
-// cut stands and its captions are placed. It is given the clips, how long each
-// is, what is said over each and which carry captions, and it answers a rate
-// per clip.
-//
-// It is a judgement, not a sum. The pass was written to make the cut FIT -- it
-// was handed the footage, the target and a formula, and told to find the
-// seconds that had to run fast -- and that made it speed things up whether or
-// not anything was dull, because the target said so. What the editor actually
-// wants is in the user context, in one of two shapes or in neither: a measure
-// ("a third of it faster", "500 s of footage, 400 when it plays") that the
-// model then spends on the right clips, or nothing at all, in which case speed
-// is for the stretches nobody would sit through and for those alone. Length is
-// the cut pass's job (footageWindow); this pass decides where speed makes sense.
-//
-// It comes AFTER the captions for a reason that has nothing to do with call
-// sizes: a caption over a stretch at 4 flashes past in a quarter of its
-// reading time. Which lines become captions is the captions pass's decision,
-// so nothing before it can know which clips must stay at 1.
-//
-// One paragraph or bullet per line, unwrapped: see describeSystem.
+// fxRules is the effects pass's wording (reply shape: cutReply); the user
+// context leads because "speed up the boring parts" is about segments too.
+// speedSystem is the speed pass's wording: a rate per clip from its own lines,
+// after the captions pass (a captioned clip stays at 1), with no target -- how
+// much to speed up is the user context's to say.
 const speedSystem = `You decide how fast each clip of a finished cut plays. The clips are chosen and are not yours to change; you answer with a rate for the clips that do not play at 1, and nothing else.
 
 Under each clip are its lines: what was said, and what the frames showed, at the seconds they happened. Read them for dullness -- a stretch with no lines is silence, a run of lines describing the same thing is the same thing going on and on, and either is a candidate. A line marked CAPTION is words already on screen.
@@ -196,13 +119,9 @@ Speed is for the stretches nobody would sit through at 1: the walk back, the loa
 
 Answer with SPEEDS.`
 
-// fxRules is the wording of the effects pass: the third call, made once the
-// cut stands and its captions are written. It sees the kept clips and what was
-// said over each, and answers with the decorations -- zooms, stops, volume --
-// each pinned to a clip. It used to ride on every cut wording, so that one
-// reply chose the moments, did the length arithmetic, and wrote the effects;
-// the three jobs interfered, and the effects half is the one that kept eating
-// the call. Here it has the kept clips in front of it and nothing to choose.
+// fxRules is the wording of the effects pass, the third call: it sees the kept
+// clips and what was said over each, and answers with zooms, stops and volume
+// pinned to clips. Nothing to choose, no arithmetic.
 //
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 const fxRules = `You decorate a cut that has already been chosen. The clips are in front of you, with what was said and shown over each; you add the effects that make a moment land, and nothing else -- the segments are not yours to change, and captions and speed are written elsewhere.
@@ -244,17 +163,10 @@ Whether there are captions at all is the USER CONTEXT's call, and it is the only
 
 Answer with CAPTIONS.`
 
-// cutReply is the end of every cut wording, Shorts included: where a segment
-// may start and end, the length arithmetic, the reply, and the check to run
-// before answering. Last on purpose -- it is the part a model acts on with the
-// answer in its hands, and the part that was written out five times before,
-// which is how the five came to disagree about the tolerance. The shape of
-// the reply is here and nowhere else: suggestParse reads one shape whichever
-// wording asked, so one wording is where it is spelled.
-//
-// The tolerance it asks for is tighter than the one the run accepts
-// (suggestWindow): a model aimed at a tenth lands inside a half, and one aimed
-// at a half does not.
+// cutReply is the end of every cut wording: where a segment may start and end,
+// the length arithmetic, the reply shape (read by suggestParse, so spelled here
+// only) and the check to run before answering. The tolerance it asks for is
+// tighter than the one the run accepts (suggestWindow).
 const cutReply = `
 
 A segment ends on the payoff, never just before it, and a moment that only makes sense because of an earlier one takes that one too or neither. Segments run from about 8 seconds to a minute, longer where a stretch has to be shown but not watched -- keep such a stretch whole, as ONE segment: it is played fast afterwards, not cut into pieces with the dull seconds left out.
@@ -263,36 +175,11 @@ Answer with SEGMENTS, and nothing else in the reply. How fast each plays, what i
 
 Check before you answer: every segment has an EVENT line inside it, every start is later than the end before it, everything the user context names is in, and the footage they come to -- end minus start, added up -- lands in the range you were given. Anywhere inside it is right; do not trim towards its middle.`
 
-// cutSeg is one piece of the finished video. Normally it is a stretch of the
-// session: S and E are session seconds and the footage under them is what plays.
-//
-// Ins turns it into an insert instead -- a file that plays in that slot rather
-// than any recording. A card reading "a few moments later", a title, a diagram,
-// an animated tier list at the end. The times still mean something, and mean the
-// same thing: S is where it sits in the cut, and E-S is how long it runs. That
-// it costs session seconds is the point of putting it on the session timeline
-// rather than in a list beside it -- everything downstream already reasons in
-// those seconds. The narration can be written over an insert like any other
-// clip, which is the whole reason a ranking card is worth having: the voice
-// reads it out while it is on screen.
-//
-// So an insert is a segment everywhere except where footage is required, and
-// those places name it: coalesce never merges one, keepFilmed never drops one
-// for having no recording under it, and the cut prompts never see one.
-//
-// That is one of the two ways to put a file in a cut, and it is the one that
-// PAYS for the card in footage: those seconds of session are gone, the card is
-// on screen instead. The other is to splice it in -- cut the footage at an
-// instant, play the card, carry on with the frame that was next -- and that one
-// costs no footage at all, so it cannot have session seconds either. A spliced
-// insert therefore sits at a POINT: S == E, and how long it runs is Dur.
-//
-// Everything that asks "how long is this clip" asks length(), which is the one
-// place the two spellings meet. Everything that asks WHERE it is still reads S,
-// and the answer is still a session time. And the sequence that gets rendered --
-// footage, card, footage again -- is not the segment list itself but
-// splitSpliced of it, since cutting the footage in half at the splice is the
-// renderer's business and not something the timeline should be storing.
+// cutSeg is one piece of the finished video: a stretch of session S..E, or an
+// insert (Ins) that plays in that slot. An overwriting insert costs the session
+// seconds it covers; a spliced one sits at a point (S == E) and runs for Dur.
+// length() is the one place the two spellings meet; splitSpliced is what the
+// render walks. coalesce never merges an insert and keepFilmed never drops one.
 type cutSeg struct {
 	S float64 `json:"s"`
 	E float64 `json:"e"`
@@ -312,23 +199,13 @@ type cutSeg struct {
 	// second for a stretch of a lane copied out of the session -- which is
 	// the whole of what makes a copy of sound different from a file.
 	Ss float64 `json:"ss,omitempty"`
-	// this insert brings no sound of its own -- the one tick the insert form
-	// asks (askInsertParams). The one flag reads
-	// two ways, and which one is decided by the mode rather than by a second
-	// flag: SPLICED, the cut is open and there is nothing else in the slot, so
-	// the insert plays silent; OVERWRITING, the footage is still underneath and
-	// keeps being heard, so only the picture is replaced. Both are the same
-	// sentence -- this insert contributes no audio -- and an ordinary cut.json
-	// is unchanged by it.
+	// this insert brings no sound of its own (askInsertParams). Read by mode:
+	// SPLICED, the insert plays silent; OVERWRITING, the footage underneath keeps
+	// being heard and only the picture is replaced.
 	Mute bool `json:"mute,omitempty"`
-	// which row of the picture band this scene's PICTURE comes from -- which
-	// camera. Nought on a session shot on one camera, which is every session
-	// this page has ever cut, so an ordinary cut.json is unchanged by it.
-	//
-	// It is the row and not the file because a row is a camera and a camera is
-	// several files: one scene can run from the end of one of them into the
-	// start of the next, and it is still one scene of one camera. Which FILE
-	// is then a question about a second, and pickVideoOn answers it.
+	// which row of the picture band this scene's PICTURE comes from. Nought on a
+	// one-camera session. The row, not the file: a row is a camera and a camera is
+	// several files; which FILE is a question about a second (pickVideoOn).
 	Cam int `json:"cam,omitempty"`
 	// for a sound laid over the footage: which recording it was put in place
 	// OF. Empty is the answer a selection scoped to picture-and-sound gives --
@@ -359,14 +236,10 @@ type cutSeg struct {
 	// its own sound or its own place in the order. The flag is what tells the
 	// two apart. Nothing else sets it, so an ordinary cut.json is unchanged.
 	Split bool `json:"split,omitempty"`
-	// which SCENE of the cut this piece came from, stamped by the render's
-	// planning and never stored (produceSegs). One scene becomes several
-	// pieces -- a splice cuts it open, a speed effect cuts it again at every
-	// rate boundary -- and "is this still the same scene" is a question only
-	// the sound asks, when its answer is to keep running at its own speed
-	// until the scene it started in ends (cut_fxsound.go). Two touching
-	// scenes are contiguous in seconds and identical in every other field, so
-	// nothing else could tell them apart.
+	// which SCENE this piece came from, stamped by the render's planning
+	// (produceSegs), never stored. One scene becomes several pieces (splices, rate
+	// boundaries), and only the sound asks whether two are the same scene
+	// (cut_fxsound.go).
 	Scene int `json:"-"`
 }
 
@@ -470,15 +343,11 @@ type cutEditor struct {
 	pps    float64 // pixels per second (zoom)
 	lastX  float64 // cursor x, for zoom centering
 	totalW float64
-	// the stretches of the session that got filmed, and where each is drawn.
-	// The one map every lane is measured against; rebuilt by relayout.
-	//
-	// filmed is the runs themselves -- what got recorded, merged where two
-	// cameras overlap. spans is those runs cut into the CELLS the page is laid
-	// out in: a run with a folded gap in it is three cells, and a folded one
-	// is drawn at a fixed width however long it is (cut_fold.go). Everything
-	// that asks "what did the cameras cover" wants runs(); everything that
-	// asks "where is this second drawn" wants xOf, which walks the cells.
+	// the stretches of the session that got filmed, and where each is drawn;
+	// rebuilt by relayout. filmed is the runs (merged across cameras); spans is
+	// those runs cut into the CELLS the page is laid out in (a folded gap splits a
+	// run, cut_fold.go). "What did the cameras cover" is runs(); "where is this
+	// second drawn" is xOf, which walks the cells.
 	spans  []tlSpan
 	filmed []tlSpan
 	// which dropped stretches are folded, in session seconds. Kept with the
@@ -784,15 +653,9 @@ func mmss(t float64) string { return fmt.Sprintf("%d:%02d", int(t)/60, int(t)%60
 func (a *App) cutDir() string  { return filepath.Join(a.outDir, "cut") }
 func (a *App) cutPath() string { return filepath.Join(a.cutDir(), "cut.json") }
 
-// cutFile is cut.json, whole. There used to be an anonymous struct at every
-// place that read or wrote it -- reload, persist, the render -- and they drifted
-// apart every time a field was added: a field the editor saved and the render
-// had never heard of is a setting that works until you close the tab. One shape,
-// three users, and adding to it is one edit.
-//
-// Shift and Rows are the timeline's own corrections rather than the cut's, and
-// they live here because they are this project's, not the files': the recordings
-// are untouched and every step re-derives the placement from these two maps.
+// cutFile is cut.json, whole: one shape for reload, persist and the render.
+// Shift and Rows are the timeline's own corrections; they are this project's,
+// not the files', and every step re-derives the placement from them.
 type cutFile struct {
 	Segs   []cutSeg `json:"segs"`
 	Aspect string   `json:"aspect,omitempty"`
@@ -1069,25 +932,9 @@ func framePostage(file string) []byte {
 
 // ---- geometry --------------------------------------------------------------
 
-// tlSpan is one stretch of the session somebody filmed, and where it is drawn.
-//
-// WHY THE AXIS IS NOT SIMPLY THE RECORDINGS. It used to be: each file laid down
-// after the last, gapPx between them, x measured from the file's own origin.
-// That reads exactly like a clock for as long as no two cameras were rolling at
-// once, and stops meaning anything the moment they were -- two files covering
-// the same minute would be drawn as two minutes end to end, and session-second
-// 3:00 would be at two different places at the same time. Every lane that has
-// to line up with another (the sound, the effects, the green) would be lining
-// up with a different story.
-//
-// So the axis is TIME, and these are the stretches of it that got filmed: the
-// union of the recordings' spans, merged where they touch or overlap. What
-// nobody filmed is not drawn -- it is collapsed to the same gapPx hatch that
-// used to sit between two files, because an hour of nothing between two clips
-// is an hour of dead pixels to scroll past.
-//
-// With one recording, or several that do not overlap, this is the old layout
-// span for span: one run per file, in the same order, at the same x.
+// tlSpan is one filmed stretch of the session and where it is drawn. The axis
+// is TIME, not the recordings laid end to end: two cameras rolling through the
+// same minute share one x. Unfilmed time collapses to gapPx.
 type tlSpan struct {
 	t0, t1 float64 // the session seconds this run covers
 	px     float64 // where t0 is on the timeline
@@ -1138,25 +985,10 @@ func (ed *cutEditor) runs() []tlSpan {
 	return timeSpans(ed.vids)
 }
 
-// assignLanes says which row of the picture band each recording is drawn on,
-// and how many rows there are.
-//
-// One camera's files, however many, share a row: they follow one another in
-// time, so laying them out side by side on one line is exactly what they are.
-// A second camera rolling THROUGH the first cannot share it -- there is no x
-// where both could be drawn -- so it gets a row of its own, and the two are
-// stacked with the same second above the same second.
-//
-// This is interval colouring, and greedy is optimal for it: walk the
-// recordings in start order and put each on the lowest row that is already
-// finished by the time it begins. A session shot on one camera comes out as
-// one row at the same y as before there were rows at all.
-// pin, when it is not nil, is the rows written down by hand (cutFile.Rows): a
-// source listed there keeps its number whatever it now overlaps, and the rest
-// are coloured around it. That is what a shifted timeline needs -- dragging two
-// cameras apart until they no longer overlap would otherwise collapse them onto
-// one row, and every scene that said "camera 2" would point at a row that is
-// not there any more.
+// assignLanes is which row each recording is drawn on: one camera's files share
+// a row, a camera rolling through another gets its own. Greedy interval
+// colouring in start order. pin (cutFile.Rows) holds rows chosen by hand, so a
+// drag that ends an overlap does not collapse two cameras onto one row.
 func assignLanes(vids []tlVideo, pin map[string]int) int {
 	ord := make([]int, len(vids))
 	for i := range ord {
@@ -1436,17 +1268,9 @@ func (ed *cutEditor) fitSrc() {
 	ed.srcArea.SetSizeRequest(-1, h)
 }
 
-// fitAudio gives the lane area the height its lanes need.
-//
-// The lanes are a fixed height each, not a share of the page: a waveform is read
-// for where it starts and stops, and 30 px says that as well as 300 would. A
-// session with no separate recording has no lanes and the area goes away rather
-// than sitting there as an empty black strip.
-//
-// Called again as each envelope lands, because how many lanes a recording draws
-// is not known until it is decoded: a stereo file with the same signal on both
-// sides collapses to one, and the area has to give the row back rather than
-// leave a hole where the second lane was.
+// fitAudio gives the lane area the height its lanes need: a fixed height per
+// lane, none at all without lanes. Called again as each envelope lands, since
+// a stereo file with identical sides collapses to one lane.
 func (ed *cutEditor) fitAudio() {
 	if ed.audArea == nil {
 		return
@@ -1546,28 +1370,11 @@ func (ed *cutEditor) setPlayhead(t float64) {
 	ed.redrawTracks()
 }
 
-// mixUnder is the separate recordings the preview should be playing while it
-// shows v, and where each of them is when v is at 0.
-//
-// The footage's own sound is not in it: that comes out of the file the preview
-// is already playing, and adding it again would be the same seconds twice, half
-// a frame apart, which sounds like a broken speaker rather than like a mistake.
-// A recording that was not running while this video was is left out too -- it
-// has nothing to contribute to any second of it.
-//
-// A further track of the capture itself IS in it. It shares the footage's
-// path, and the preview used to leave it out for that -- the same file is
-// already playing -- which left the one place a second microphone usually
-// lives (OBS records the mic as track 2) with a lit badge, a drawn waveform
-// and no sound at all, however the hush was set. It is a lane like any other:
-// its own pipeline, on the same file, told which track to decode (mixTrack.
-// track). The master track is still not here, for the reason above.
-//
-// delta is the whole difference between the two clocks, off included: the
-// master's file second is t - v.start + v.off (tlVideo.at), the lane's is t -
-// au.start + au.off, so the lane's is the master's plus this. A cut lane opens
-// partway into its file (cut_lane.go), and a delta that forgot its off seeked
-// the lane a whole window early -- past nothing, into silence.
+// mixUnder is the separate recordings to play under v, each with its offset
+// relative to v's 0. The footage's own master track is not in it (the preview
+// already plays it); a further track of the same file is, as its own pipeline
+// (mixTrack.track). delta includes both offs -- a cut lane opens partway into
+// its file.
 func (ed *cutEditor) mixUnder(v *tlVideo) []mixTrack {
 	var out []mixTrack
 	for _, au := range ed.auds {
@@ -1584,28 +1391,17 @@ func (ed *cutEditor) mixUnder(v *tlVideo) []mixTrack {
 	return out
 }
 
-// showTime prints the red line's time. The line by itself locates the playhead
-// only to the nearest pixel, and zoomed out a pixel is several seconds -- so the
-// one number a reader wants after clicking (to type into a mark, to compare with
-// a narration time, to say where something is) was the one number the page never
-// showed. Same mm:ss.d spelling the edge readouts and the Narrate page use.
-//
-// It has to be pushed rather than drawn, because three different paths move the
-// playhead -- a click, ‹f/f›, and playback following the player's own clock --
-// and because the line may well be scrolled out of view while the time is not.
+// showTime prints the red line's time (mm:ss.d, as the edge readouts and
+// Narrate). Pushed rather than drawn: three paths move the playhead, and the
+// line may be scrolled out of view while the time is not.
 func (ed *cutEditor) showTime() {
 	if ed.clock == nil {
 		return
 	}
-	// While the preview is the cut (▶✂) the readout is the cut's own clock:
-	// how far into the
-	// FINISHED video this is, which is the question that mode is asked. Same
-	// format either way, so switching modes cannot shove the bar sideways --
-	// the tooltip is what says which of the two clocks is being read.
-	// ...unless the cut is empty: then its clock has no reading -- every second
-	// of the session maps to 0:00.0 -- and a toolbar stuck on zero while the
-	// red line moves answers nothing. The session clock is the one thing that
-	// can still say where the line is, so it stays until there is a cut to read.
+	// Under ▶✂ the readout is the cut's own clock -- how far into the FINISHED
+	// video -- in the same format; the tooltip says which clock. An empty cut has
+	// no reading (everything maps to 0:00.0), so the session clock stays until
+	// there is a cut.
 	t, tip := ed.playhead, ed.playheadTip()
 	if ed.cutOnly && len(ed.segs) > 0 {
 		// through the effects, not over them: this clock claims to be the
@@ -1765,14 +1561,9 @@ func (ed *cutEditor) wheelFrames() *gtk.EventControllerScroll {
 // redrawing the timeline sixty times a second.
 const playTick = 100
 
-// liveClock is that extrapolation written as arithmetic instead of as reads of
-// one page's fields, because the Narrate preview draws the same effects on the
-// same 100ms position and needs the same clamp (narrate_fxview.go). Two copies
-// of a smoothing rule this particular would have drifted, and the drift would
-// have shown as one page's titles flickering and the other's not.
-//
-// Returns the clock now and the high-water mark to keep for next time; the
-// caller stores the mark, which is the only state there is.
+// liveClock is the extrapolation as arithmetic, shared with the Narrate preview
+// (narrate_fxview.go) so the two cannot drift. Returns the clock now and the
+// high-water mark to keep; the caller stores the mark.
 func liveClock(playhead, posT float64, posAt time.Time, liveMax, rate float64, playing bool) (now, mark float64) {
 	if !playing || posAt.IsZero() {
 		return playhead, playhead // nothing to smooth; re-arm on the line itself
@@ -1794,15 +1585,6 @@ func liveClock(playhead, posT float64, posAt time.Time, liveMax, rate float64, p
 	return liveMax, liveMax
 }
 
-// followPlayback keeps the red line on the player's clock while it runs;
-// on pause the queries stop and the line simply stays put.
-// syncPlayRate puts the preview on the clock the footage under the line runs
-// on, so a slowed stretch is slow to watch and not just rose-tinted on the
-// track. Called as the line moves under playback -- a rate change with no seek
-// on the way to carry it, which is the one case SetRate deliberately leaves to
-// its caller. SetRateNow asks the running pipeline for an instant rate change
-// and falls back to a flushing seek-in-place only where that is refused
-// (player.go has the story), so a ramp's stairs no longer each cost a hitch.
 // syncPlayGain puts the preview at the loudness the volume effects give the
 // second under the line, on top of whatever the slider says (SetFxGain). The
 // preview's half of a volume effect, and the reason it is beside syncPlayRate
@@ -1821,16 +1603,11 @@ func (ed *cutEditor) syncPlayRate() {
 	}
 }
 
-// skipGap is what makes the cut-only preview a preview of the cut: the stretch
-// between two clips is footage this page removed, the one thing the finished
-// video will never contain, so the line jumps over it instead of playing
-// through it. Reports whether it took the line somewhere, in which case the
-// caller is done -- setPlayhead has already moved everything that follows one.
-//
-// Re-entry is guarded twice, the same way the Narrate page's preview guards it:
-// setPlayhead's seek drops player.playing until the new position prerolls,
-// which keeps the tick from arriving meanwhile, and jumped covers the case
-// where the jump cannot happen at all because no recording covers that second.
+// skipGap jumps the line over the stretch between two clips in the cut-only
+// preview and reports whether it did (setPlayhead has then moved everything).
+// Re-entry is guarded twice, as on Narrate: setPlayhead's seek drops
+// player.playing until the preroll, and jumped covers a second no recording
+// covers.
 func (ed *cutEditor) skipGap() bool {
 	if !ed.cutOnly || ed.player == nil || len(ed.segs) == 0 {
 		ed.jumped = -1
@@ -1868,6 +1645,15 @@ func (ed *cutEditor) cutOnlySnap() {
 	}
 }
 
+// followPlayback keeps the red line on the player's clock while it runs;
+// on pause the queries stop and the line simply stays put.
+// syncPlayRate puts the preview on the clock the footage under the line runs
+// on, so a slowed stretch is slow to watch and not just rose-tinted on the
+// track. Called as the line moves under playback -- a rate change with no seek
+// on the way to carry it, which is the one case SetRate deliberately leaves to
+// its caller. SetRateNow asks the running pipeline for an instant rate change
+// and falls back to a flushing seek-in-place only where that is refused
+// (player.go has the story), so a ramp's stairs no longer each cost a hitch.
 func (ed *cutEditor) followPlayback() bool {
 	// ...except while a spliced card is playing, when there is no clock to
 	// follow: the footage is held and the card runs on the wall clock instead
@@ -1905,14 +1691,10 @@ func (ed *cutEditor) followPlayback() bool {
 		if ed.skipGap() {
 			return true // setPlayhead did the rest of this
 		}
-		// the cut has run onto another camera, and the preview follows it.
-		//
-		// That means loading the other file, which is a visible hiccup at every
-		// change of camera, and it is the accepted price: playing a cut
-		// smoothly across cameras needs a second pipeline kept warm on every
-		// other row, prerolled at the right frame, swapped at the seam. Not
-		// while a card is up -- the picture is the card's, and re-cueing the
-		// footage underneath it would jog the sound for nothing.
+		// the cut has run onto another camera: load the other file. A visible hiccup
+		// at every camera change, accepted -- smooth playback would need a second
+		// prerolled pipeline per row. Not while a card is up: the picture is the
+		// card's, and re-cueing underneath would jog the sound for nothing.
 		if card, _ := ed.cardNow(); card == nil || card.audioIns() {
 			if v := ed.videoAt(ed.playhead); v != nil && v != ed.playVideo {
 				ed.setPlayhead(ed.playhead)
@@ -1992,23 +1774,10 @@ func (v *tlVideo) thumbStep(th, pps float64) int {
 	return max(1, int(th*ar/(pps*v.interval)))
 }
 
-// frameRange is which of a recording's frames drawTrack has to paint for the
-// px window x0..x1: a half-open range walked in strides of step.
-//
-// The first index is snapped DOWN to a stride, which is the point of doing this
-// here rather than inline. Every frame is a candidate but only every step'th is
-// drawn, so an unsnapped start would pick a different set of frames for every
-// scroll position and the thumbnails would visibly reshuffle as the timeline
-// moved under them.
-//
-// Snapped down to a stride from the ROW's own first frame, not from the file's.
-// The two are the same thing for a recording and are not for a lane, which is a
-// window opening partway into a file: measured from the file's frame nought the
-// first stride to land inside the window can be most of a thumbnail past the
-// row's left edge, so the row began with a bite of empty band -- the picture
-// did not start where the row did. On a short lane, which is what ⇲ Lane makes
-// of a copy, there was no such stride inside the window at all and the row came
-// out with no picture in it whatsoever.
+// frameRange is the half-open range of frames to paint for px x0..x1, in
+// strides of step. The start is snapped to a stride from the ROW's first frame,
+// not the file's: thumbnails do not reshuffle on scroll, and a lane opening
+// partway into a file still starts with a picture.
 func (v *tlVideo) frameRange(pps, x0, x1 float64, step int) (first, last int) {
 	// a row with no frames to walk, or none it could tell apart: an editor
 	// built for a test, a source whose frames have not been extracted yet.
@@ -2061,15 +1830,9 @@ func pickVideo(vids []tlVideo, t float64) *tlVideo {
 	return nil
 }
 
-// pickVideoOn is pickVideo for one camera: the recording on row cam that was
-// running at t, or nil. Which FILE a scene shows is this question -- the scene
-// carries the row, and the row is several files in a line.
-//
-// Falls back to whatever was rolling at t when that row has nothing there,
-// because a cut.json written before the rows existed says row 0 for everything
-// and a session may since have been re-shot with the cameras the other way up.
-// A scene that draws no picture at all would be a black hole in the render for
-// a reason nobody could see on this page.
+// pickVideoOn is pickVideo for one camera: the recording on row cam running at
+// t, or nil. Falls back to whatever was rolling when the row has nothing there
+// -- an old cut.json says row 0 for everything -- rather than render a hole.
 func pickVideoOn(vids []tlVideo, cam int, t float64) *tlVideo {
 	if v := videoOn(vids, cam, t); v != nil {
 		return v
@@ -2095,23 +1858,9 @@ func videoOn(vids []tlVideo, cam int, t float64) *tlVideo {
 // which file a still is pulled from.
 func (ed *cutEditor) videoAt(t float64) *tlVideo { return pickVideoOn(ed.vids, ed.camAt(t), t) }
 
-// cutVideoOn is the recording the FINISHED VIDEO shows at session time t: the
-// scene covering t, on the camera that scene names. Nothing else -- no fallback
-// to a row somebody clicked, no fallback to a row a drag was last on. It is the
-// same lookup produce makes for every clip it encodes (pickVideoOn on the
-// segment's Cam), said once so the pages that preview the render can ask it.
-//
-// videoAt is the OTHER question, and it belongs to the Cut page: what is that
-// page showing. It starts from the row a click asked to watch (watchRow) --
-// which is how one camera is compared against another at the same second, and
-// most of how a scene gets stolen for it -- and outside a kept scene it falls
-// back to the row the hand was last on. Both are the editor looking around.
-// Everything that is not the editor was inheriting them: Narrate's preview
-// played whatever row the Cut page had last been asked to watch, for the whole
-// session, and the frame a stop is frozen from was cut from that row too.
-//
-// Nil in a gap. There is no finished video between two clips, and answering
-// with the footage that is there anyway is how the cut stops being respected.
+// cutVideoOn is the recording the FINISHED VIDEO shows at t: the scene's camera,
+// nil in a gap. videoAt is the Cut page's own question (what it is showing,
+// watchRow included) and is not for the render or its previews.
 func cutVideoOn(segs []cutSeg, vids []tlVideo, t float64) *tlVideo {
 	for _, s := range segs {
 		if t >= s.S && t < s.E {
@@ -2301,28 +2050,18 @@ func (ed *cutEditor) camName(lane int) string {
 // nobody reads in four seconds is a card that was too wordy to be a card.
 const insDefault = 4.0
 
-// addInsert drops a file onto the timeline at t, and is where "free items on the
-// session timeline" stops being free: the cut is a sequence, and a sequence has
-// nowhere to put something that overlaps. So the footage under it gives way --
-// the segment it lands in is split around it, exactly as Remove would, and the
-// insert takes the seconds between. That is the honest reading of dropping a
-// title card into the middle of a clip, and it is undoable like every other
-// edit.
-//
-// Landing in a gap costs nothing at all: the space between two recordings is
-// session time nobody filmed, so an insert there is pure gain.
+// addInsert drops a file onto the timeline at t. The cut is a sequence, so the
+// footage under it gives way: the segment is split around it, as Remove would,
+// and the insert takes the seconds between. Undoable. Landing in a gap between
+// recordings costs nothing.
 func (ed *cutEditor) addInsert(path string, t, dur float64, mute bool) {
 	ed.layOver(cutSeg{S: t, E: t + dur, Ins: path, Mute: mute, Cam: ed.sel.lane})
 }
 
 // addSound lays a stretch of a sound file over the footage at t: for dur
-// seconds what is heard is the file from ss, and the picture is untouched --
-// it keeps its frames, and the video does not get longer by a second. That is
-// the sound half of "insert", and it is what a selection dragged on a
-// waveform means: these seconds sound like this instead.
-//
-// It answers how many stretches of footage it landed on, which is not always
-// one: see layOverSound.
+// seconds what is heard is the file from ss; the picture is untouched and the
+// video no longer. Returns how many stretches of footage it landed on (see
+// layOverSound).
 func (ed *cutEditor) addSound(path string, t, dur, ss float64, lane string) int {
 	return ed.layOverSound(cutSeg{S: t, E: t + dur, Ins: path, Ss: ss, Lane: lane})
 }
@@ -2347,31 +2086,10 @@ func (ed *cutEditor) layOver(s cutSeg) {
 // blink, and the footage either side of it would have been split for nothing.
 const sndMinLn = 0.05
 
-// layOverSound lays a sound over the footage WITHOUT moving the picture.
-//
-// A sound insert is stored as a segment like any other, which means it takes
-// its seconds from the footage segment it lands in: the clip is split and the
-// insert holds the middle, while the render re-derives those very frames for
-// it (produce.go, case s.audioIns()). Over footage the cut keeps, that is invisible
-// -- the same picture, differently sourced -- and that is what makes it legal.
-// Over footage the cut DROPS it is not: a segment there is seconds put back in
-// the video, picture and all, and "lay a sound over this" is not permission to
-// un-cut a scene. Displacing a card is the same trespass by another road,
-// since removeSpan drops an insert whole rather than trimming it.
-//
-// So the span is cut to the footage the cut already keeps, and one sound goes
-// over each surviving piece with its own offset into the file -- a sound drawn
-// across a hole in the cut plays on either side of the hole, in step with the
-// picture that survived, which is what continuing to run means here. Cards are
-// stepped over rather than displaced.
-//
-// The splits are exact, without removeSpan's minimum-scene guard: a quarter
-// second of clip left beside a sound is not a sliver of a selection nobody
-// meant, it is the picture running on, and dropping it is the one thing this
-// function exists to prevent.
-//
-// It answers how many pieces went in, so a sound that landed entirely in cut
-// footage can say so instead of claiming an edit that never happened.
+// layOverSound lays a sound over the footage without moving the picture. The
+// span is cut to what the cut already keeps and one sound goes over each piece
+// with its own offset, so it never puts dropped footage back or displaces a
+// card. Splits are exact (no minimum-scene guard). Returns how many pieces.
 func (ed *cutEditor) layOverSound(s cutSeg) int {
 	if s.E-s.S < minSegLn {
 		s.E = s.S + insDefault
@@ -2409,15 +2127,9 @@ func (ed *cutEditor) layOverSound(s cutSeg) int {
 	return n
 }
 
-// addSplice drops a file into the cut the other way: not over the footage but
-// between it. The clip is cut open at t, the card runs for dur, and then the
-// footage picks up where it left off -- so nothing filmed is lost, and the video
-// gets longer by exactly the card.
-//
-// On the timeline it takes no session time at all, which is why it is stored as
-// a point (S == E) with its length in Dur. Session time is the footage's ruler,
-// and this card is not on it: giving it seconds there would mean claiming
-// seconds of footage, which is the other mode.
+// addSplice drops a file BETWEEN the footage: the clip is cut open at t, the
+// card runs for dur, the footage picks up where it left off. It takes no
+// session time, so it is stored as a point (S == E) with its length in Dur.
 func (ed *cutEditor) addSplice(path string, t, dur float64, mute bool, cam int) {
 	if dur < minSegLn {
 		dur = insDefault
@@ -2428,15 +2140,11 @@ func (ed *cutEditor) addSplice(path string, t, dur float64, mute bool, cam int) 
 	ed.persist()
 }
 
-// A copied selection is spelled as an insert whose "file" is the session
-// itself: copy:SECONDS, the footage second it starts playing again from, with
-// its length in Dur like any spliced card. The spelling buys every behaviour a
-// card already has -- the violet marker with the hatching, pick up and move,
-// Edit for its mode and seconds, Undo, removal, cut.json -- and costs one case
-// at render time, where the "file" is cut from its recording like any other
-// stretch of footage (see produce). No file can shadow the scheme: an insert's
-// path is project-relative, and none of the suffixes the chooser admits leaves
-// ":" in a name's way.
+// A copied selection is an insert whose "file" is the session itself:
+// copy:SECONDS, the footage second it plays from, length in Dur. It gets every
+// behaviour a card has and costs one case at render time (see produce). No file
+// can shadow the scheme: insert paths are project-relative and no admitted
+// suffix contains ":".
 const copyScheme = "copy:"
 
 // copySrc is the footage second a copy starts at, and whether ins is one.
@@ -2487,16 +2195,9 @@ func insName(s cutSeg) string {
 	return insBase(s.Ins)
 }
 
-// applyInsert is the Edit dialog's answer put into the cut: what the card says,
-// which of the two modes it is in, and how long it runs. One call and one undo
-// step, because the three were decided together and taking back the wording
-// without the length is not an edit anybody asked for.
-//
-// The modes differ in what happens to the FOOTAGE, which is why this is not a
-// field assignment. Going over the footage takes seconds out of it, exactly as
-// placing a card there does; going between it hands those seconds back, or the
-// card would cost its length in footage AND add its length to the video, which
-// is neither mode.
+// applyInsert puts the Edit dialog's answer into the cut -- words, mode, length
+// -- as one undo step. Not a field assignment: going over the footage takes
+// seconds out of it, going between hands them back.
 func (ed *cutEditor) applyInsert(i int, ins string, m insMode) {
 	if i < 0 || i >= len(ed.segs) || !ed.segs[i].isInsert() {
 		return
@@ -2626,17 +2327,9 @@ func (ed *cutEditor) removeSpan(t0, t1 float64) {
 	ed.segs = out
 }
 
-// stealSpan takes t0..t1 away from the scenes on every row BUT cam.
-//
-// This is what makes a camera a choice. Two rows green over the same second
-// would be the page claiming both pictures at once, and the render would have
-// to pick one behind your back. So the newer green wins: painting camera B over
-// camera A's green is how you switch camera, and it is the same gesture as
-// choosing the footage was in the first place.
-//
-// Inserts are left where they are. An insert is not a camera -- it replaces
-// whatever was under it whichever row that came from -- so a camera switch has
-// nothing to say about one.
+// stealSpan takes t0..t1 away from the scenes on every row BUT cam: the newer
+// green wins, which is how painting camera B over camera A's green switches
+// camera. Inserts are left alone -- an insert is not a camera.
 func (ed *cutEditor) stealSpan(t0, t1 float64, cam int) {
 	var out []cutSeg
 	for _, s := range ed.segs {
@@ -2669,34 +2362,19 @@ func (ed *cutEditor) removeRange(t0, t1 float64) {
 
 // ---- moving a clip edge by hand ---------------------------------------------
 //
-// Add and Remove work in whole regions, which is right for choosing a scene and
-// wrong for the last thing you do to one: a clip that starts half a second too
-// early is not a region you re-select, it is an edge you nudge. The green
-// borders are the handles for that, a press within a few px of one picks it up,
-// and until it is put down the frame buttons move it a frame at a time instead
-// of the playhead -- the same gesture, aimed at the thing you just said you were
-// working on.
-//
-// One button is enough because the hand is told first: the border under the
-// pointer is highlighted and the cursor is a resize arrow before the press
-// happens (hoverEdge), so a press near a border is never a surprise trim. From
-// there it is ‹f and f› for a frame at a time, or the same drag carried on for a
-// sweep -- and both put the picture on the frame the edge is now at, because an
-// edge is judged by what it cuts on and not by where it reads on a ruler.
+// The green borders are handles: hovering highlights one, a press picks it up,
+// and ‹f/f› then move it a frame at a time instead of the playhead. Both put the
+// picture on the frame the edge cuts on.
 
 // edgeAt is the clip edge nearest a point of the timeline, within edgeGrab px:
 // the segment's index and which side of it. The waveform lanes answer to it as
 // the picture band does -- a cut point is a time, and every band is the same
 // timeline seen a different way.
 func (ed *cutEditor) edgeAt(px float64) (int, bool, bool) {
-	// the borders on the press's own side of itself first, then the rest.
-	//
-	// Folded, one clip's end and the next one's start are the SAME x
-	// (cut_fold.go), and nearest-wins answers with whichever came first in the
-	// list however far the press is from the seam -- so the right-hand clip's
-	// start could not be taken at all. The clip the press is inside is the
-	// clip it means; only when it is inside neither does the plain distance
-	// decide, which is the tolerance either side of a lone border.
+	// the borders on the press's own side first, then the rest. Folded, one clip's
+	// end and the next one's start are the SAME x (cut_fold.go), so nearest-wins
+	// could never take the right-hand start; the clip the press is inside is the
+	// clip it means.
 	for _, inside := range []bool{true, false} {
 		seg, end, near := -1, false, edgeGrab
 		for i, s := range ed.segs {
@@ -2747,12 +2425,15 @@ func (ed *cutEditor) grabEdge(px float64) bool {
 	return true
 }
 
+// edgeHeld is whether a clip border is in hand.
+func (ed *cutEditor) edgeHeld() bool { return ed.edgeOn && ed.edgeSeg < len(ed.segs) }
+
 // onHeldEdge says whether a timeline x is close enough to the held edge to take
 // hold of it. This is what makes a left drag mean "move this" rather than "start
 // a new selection": the press has to land on the bar, not merely somewhere on a
 // page that happens to have an edge held.
 func (ed *cutEditor) onHeldEdge(px float64) bool {
-	if !ed.edgeOn || ed.edgeSeg >= len(ed.segs) {
+	if !ed.edgeHeld() {
 		return false
 	}
 	return math.Abs(ed.xOf(ed.edgeTime())-px) <= edgeMove
@@ -2768,7 +2449,7 @@ func (ed *cutEditor) dropEdge() {
 
 // edgeTime is where the held edge is now, or 0 when nothing is held.
 func (ed *cutEditor) edgeTime() float64 {
-	if !ed.edgeOn || ed.edgeSeg >= len(ed.segs) {
+	if !ed.edgeHeld() {
 		return 0
 	}
 	if ed.edgeEnd {
@@ -2802,7 +2483,7 @@ func clampEdge(segs []cutSeg, i int, end bool, t, lo, hi float64) float64 {
 // every motion event is a lot of work for a version of the cut that exists for
 // sixteen milliseconds. The drag's end writes the one that matters.
 func (ed *cutEditor) moveEdgeTo(t float64, live bool) {
-	if !ed.edgeOn || ed.edgeSeg >= len(ed.segs) {
+	if !ed.edgeHeld() {
 		ed.edgeOn = false
 		return
 	}
@@ -2859,7 +2540,7 @@ func (ed *cutEditor) edgeFrame() float64 {
 // then it is thinned to scrubEvery -- the seeks would otherwise queue up behind
 // the mouse and the picture would arrive after the drag had ended.
 func (ed *cutEditor) showEdge(live bool) {
-	if !ed.edgeOn || ed.edgeSeg >= len(ed.segs) {
+	if !ed.edgeHeld() {
 		return
 	}
 	if live {
@@ -2874,7 +2555,7 @@ func (ed *cutEditor) showEdge(live bool) {
 // edgeStatus reads the whole clip out, because moving one border is how you get
 // a clip of the length you wanted and the length is the thing you are watching.
 func (ed *cutEditor) edgeStatus() {
-	if !ed.edgeOn || ed.edgeSeg >= len(ed.segs) {
+	if !ed.edgeHeld() {
 		return
 	}
 	s := ed.segs[ed.edgeSeg]
@@ -2885,7 +2566,7 @@ func (ed *cutEditor) edgeStatus() {
 // nudgeEdge moves the held edge by whole frames and shows the frame it lands
 // on. False means there was no edge to move after all (see frameStep).
 func (ed *cutEditor) nudgeEdge(n int) bool {
-	if !ed.edgeOn || ed.edgeSeg >= len(ed.segs) {
+	if !ed.edgeHeld() {
 		ed.edgeOn = false
 		return false
 	}
@@ -2911,22 +2592,9 @@ func (ed *cutEditor) nudgeEdge(n int) bool {
 // was cut from: its frames are that file's frames, and sliding it into the next
 // recording would show footage nobody selected.
 
-// spliceSpan is where the marker for a spliced card is: from x to x, in view
-// px, STARTING at the point the footage is cut open at.
-//
-// The card owns no session time, so there is no span of the timeline that IS it
-// -- but it does have a length, the seconds it plays for, and that length is a
-// width at the zoom you are looking at. Drawn that way it grows and shrinks with
-// the footage around it, which is the whole point of zooming: a fixed 22 px of
-// violet beside a clip that doubles every time you zoom says the card is getting
-// shorter, and it is not. It starts AT the point rather than being centred on it
-// because the point is where the card was placed: the red line was there when
-// Insert was pressed, and a marker reaching back left of the line says the card
-// starts before the moment that was chosen, which it does not.
-//
-// Everything that hits the marker -- the press that picks the card up, the
-// playhead scrubbing through it, the outline drawn round it -- goes through
-// here, or the thing you can see and the thing you can press come apart.
+// spliceSpan is the marker of a spliced card in view px: from the splice point,
+// as wide as the card's seconds at this zoom. Every hit test and draw of the
+// marker goes through here.
 func (ed *cutEditor) spliceSpan(s cutSeg) (float64, float64) {
 	x := ed.xOf(s.S)
 	return x, x + math.Max(splicePx, s.Dur*ed.pps)
@@ -2955,13 +2623,9 @@ func (ed *cutEditor) segAtPx(px float64) int {
 }
 
 // segOnGreen is the scene a point of the picture band is actually DRAWN on:
-// segAtPx's answer about the second, and then the row, because a scene is
-// drawn on its own camera's row (segTop). The two questions differ wherever
-// the cut is showing one camera and the eye is on another: the green at that
-// second is one row up, and the row under the pointer is plain footage.
-//
-// segAtPx alone is right for everything measured along the clock -- the borders,
-// the band -- and wrong for anything answering "what did I press ON".
+// segAtPx's second, then the row (segTop) -- the two differ where the cut
+// shows one camera and the pointer is on another. segAtPx alone is right for
+// anything measured along the clock, wrong for "what did I press ON".
 func (ed *cutEditor) segOnGreen(px, y float64) int {
 	i := ed.segAtPx(px)
 	if i < 0 {
@@ -3022,14 +2686,9 @@ func (ed *cutEditor) onHeldSeg(px float64) bool {
 }
 
 // clampSeg is where a clip may sit: inside the recording it was cut from, clear
-// of the clips either side of it, and snapped flush to them when it comes close.
-// Arithmetic on its own, away from the mouse handler, because it is the whole of
-// what the gesture means and the only part of it worth testing.
-//
-// lo and hi bound the recording; segs must be in timeline order, and i is the
-// clip being moved. snap is how many seconds count as "close enough to touch",
-// which is a px tolerance at the current zoom -- a snap that is a fixed number of
-// seconds would be unreachable zoomed in and unavoidable zoomed out.
+// of its neighbours, snapped flush when close. lo/hi bound the recording; segs
+// are in timeline order, i is the clip moved; snap is seconds counting as
+// touching -- a px tolerance at the current zoom.
 func clampSeg(segs []cutSeg, i int, t, lo, hi, snap float64) float64 {
 	s := segs[i]
 	ln := s.E - s.S
@@ -3148,36 +2807,10 @@ const (
 	pickSeg
 )
 
-// pickAt is the whole of what a press at a point of the timeline means. It is
-// here rather than in the gesture because the order of the four questions it
-// asks is the gesture's entire meaning, and a mouse handler is a bad place to
-// keep something that has to be reasoned about.
-//
-// A border wins over the clip it belongs to, and it has to: a clip is the whole
-// green area and its borders are a few px inside the ends of it, so a border
-// asked about second is a border that can never be picked up -- the clips of a
-// cut sit edge to edge, so there is no press anywhere on the timeline that is
-// near a border and not on a clip.
-//
-// The held edge is asked about before any other, and with a wider tolerance
-// (edgeMove): by then you are aiming at something you can see, and the bar you
-// are aiming at may sit a few px from the border of the next clip along.
-//
-// What must not happen, and did, is the picture moving because of it. Pressing
-// the same area twice looks like the same click twice, and the second one
-// landing a few px nearer the border used to swap the clip for its end edge AND
-// cue the preview, so the red line jumped to the end of the area for no reason
-// the hand could see. So: picking something up never moves the red line, edge or
-// clip. The line follows what MOVES -- a drag or ‹f/f› on either of them puts
-// the picture on the frame it landed on -- and choosing a thing is not moving it.
-//
-// clips says whether a whole clip may be taken here. A single left press may
-// not take one: over the cut that press is how you put the red line somewhere,
-// and a gesture that both navigates and picks things up is a gesture you cannot
-// use for either. Borders are different -- they are a few px wide, they are
-// highlighted under the pointer before you commit, and taking one is the thing
-// you are there to do. So the left press asks with clips false, and the double
-// click (see pickTrack) asks with it true.
+// pickAt is what a press at a timeline point means, in the order that matters:
+// the held edge first (wider tolerance, edgeMove), then any border, then -- with
+// clips true, which is the double click -- the clip. Picking something up never
+// moves the red line; only a drag or ‹f/f› does.
 func (ed *cutEditor) pickAt(px float64, clips bool) int {
 	switch {
 	case ed.onHeldEdge(px):
@@ -3378,14 +3011,8 @@ func sameCut(a, b []cutSeg) bool {
 	return true
 }
 
-// sameSeg is what == used to be, before a scene could carry a set of silenced
-// lanes and stopped being a comparable struct. Everything scalar still compares
-// scalar; only Quiet needs its own reading.
-// Every field is named here by hand because Go will not compare a struct that
-// holds a slice, so == is gone. That is a standing hazard -- a field added
-// later and forgotten here would make Revert stop noticing it -- which is why
-// TestEverySegmentFieldCountsAsAChange walks the type by reflection and fails
-// on any field this function does not read.
+// sameSeg is == for a struct holding a slice (Quiet). Every field is named by
+// hand; TestEverySegmentFieldCountsAsAChange fails on any field this forgets.
 func sameSeg(a, b cutSeg) bool {
 	return a.S == b.S && a.E == b.E && a.Ins == b.Ins && a.Dur == b.Dur &&
 		a.Rate == b.Rate && a.Ss == b.Ss && a.Mute == b.Mute &&
@@ -3517,13 +3144,9 @@ func (ed *cutEditor) syncInsertBtn() {
 }
 
 // droppedSpans is the session time this cut throws away, as stretches: the
-// holes between the kept clips, plus whatever hangs off either end of each
-// recording. Only the cut preview's scrim uses it -- everywhere else "dropped" is
-// simply the absence of green -- so it is built on demand rather than kept.
-//
-// Inserts are skipped rather than counted as keeping their span: a spliced card
-// occupies no session time (S == E) and an overwriting one sits inside footage
-// that is kept anyway, so neither one opens or closes a hole.
+// holes between kept clips plus what hangs off either end of each recording.
+// Built on demand for the cut preview's scrim. Inserts neither open nor close
+// a hole (a spliced card has S == E, an overwriting one sits in kept footage).
 func (ed *cutEditor) droppedSpans() [][2]float64 {
 	var out [][2]float64
 	for _, sp := range ed.runs() {
@@ -3563,24 +3186,10 @@ func (ed *cutEditor) coalesce() {
 	var out []cutSeg
 	film := -1 // where the last stretch of footage went, which is what merges
 	for _, s := range ed.segs {
-		// An insert merges with nothing, in either direction. Merging is for two
-		// selections of the same footage that turned out to touch; an insert is a
-		// file, and swallowing one into the clip beside it -- or growing one over
-		// the footage that follows -- would lose the file and keep the seconds.
-		//
-		// It is the last FOOTAGE that is merged into, not the last item: a
-		// spliced card sorts between two clips without taking any session time
-		// from them, so they still touch and are still one stretch of the
-		// recording -- with a mark inside it saying where it is cut open.
-		// ...and two scenes of DIFFERENT cameras never merge, however exactly
-		// they touch. The seam between them is the cut from one camera to the
-		// other -- the whole point of the second row -- and merging them would
-		// throw the switch away and keep the seconds.
-		// ...and a border | Split made is not one of those accidents. It was
-		// drawn to give this stretch a life of its own, and merging it away
-		// on the next edit anywhere in the cut would undo a press nobody
-		// repeated. A drag that puts the two back together clears the flag
-		// itself, which is the way back (mergeDropped).
+		// An insert never merges (it is a file, not seconds); the merge is into
+		// the last FOOTAGE, since a spliced card takes no session time. Scenes of
+		// different cameras never merge -- the seam is the switch -- and a border
+		// | Split made is kept until a drag rejoins the two (mergeDropped).
 		if !s.isInsert() && !s.Split && film >= 0 && s.Cam == out[film].Cam &&
 			s.S <= out[film].E+mergeTol && allSpliced(out[film+1:]) {
 			if s.E > out[film].E {
@@ -3622,15 +3231,9 @@ func insertsOf(segs []cutSeg) []cutSeg {
 }
 
 // splitSpliced is the cut as a sequence of clips to render: every spliced
-// insert cuts the footage it sits in, and the two halves come out either side of
-// it. Nothing else changes, and a cut with no spliced insert in it comes back as
-// it went in.
-//
-// This is deliberately not what the timeline stores. On the timeline the footage
-// is one clip with a splice point marked inside it, which is what it looks like
-// and what it edits like -- dragging the clip's end still means the end of the
-// clip. The halves exist only where a sequence is required, which is every step
-// after this one, and they all read the cut through produceSegs.
+// insert cuts the footage it sits in and the halves come out either side. Not
+// what the timeline stores -- there the footage is one clip with a splice
+// point in it. Every step after this reads the cut through produceSegs.
 func splitSpliced(segs []cutSeg) []cutSeg {
 	ordered := append([]cutSeg(nil), segs...)
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -3701,17 +3304,8 @@ func (ed *cutEditor) persist() {
 	ed.redrawTracks()
 }
 
-// cutLen is how long the finished video is: every clip's own length, which for
-// a spliced card is the card, for slowed footage the stretch it plays as, and
-// for everything else the footage under it. Not the span of the timeline --
-// the timeline is the session's clock, it is as long as the recording is, and
-// no edit on this page makes it longer or shorter.
-// rawLen is the cut with the speed effects taken off: the seconds of footage
-// it keeps, as they were filmed. cutLen is the same cut as the video plays it,
-// which on a cut with a stretch at 4 is a very different number -- and both
-// are asked about. "How much have I kept" is answered by one and "how long is
-// the video" by the other, and a page showing only the second cannot say
-// whether a target was missed by keeping too much or by speeding too little.
+// rawLen is the same cut with the speed effects taken off: the footage kept as
+// filmed. "How much have I kept" and "how long is the video" are both asked.
 func (ed *cutEditor) rawLen() float64 {
 	sum := 0.0
 	for _, s := range ed.segs {
@@ -3724,6 +3318,9 @@ func (ed *cutEditor) rawLen() float64 {
 	return sum
 }
 
+// cutLen is how long the finished video is: a spliced card's own length,
+// slowed footage as it plays, everything else the footage under it -- not the
+// timeline's span.
 func (ed *cutEditor) cutLen() float64 {
 	sum := 0.0
 	for _, s := range ed.fxSegs() {
@@ -3732,30 +3329,19 @@ func (ed *cutEditor) cutLen() float64 {
 	return sum
 }
 
-// fxSegs is the cut as the render will run it: the spliced cards cut out into
-// their own clips, and every clip carrying the rate the effects over it come to
-// (splitSpliced + applyFx, which is produceSegs' own pipe).
-//
-// Every number this page prints about TIME goes through here, because the
-// question behind all of them is the same one -- how long is the video, and
-// how far into it is this -- and a clip's session seconds stopped being that
-// answer the moment speed effects existed. A ×2 over half a scene is half a
-// scene the finished video does not contain, and a total that reads the
-// segments straight says it does.
+// fxSegs is the cut as the render runs it: spliced cards cut out, every clip
+// carrying its rate (splitSpliced + applyFx, produceSegs' own pipe). Every
+// number this page prints about TIME goes through here -- a clip's session
+// seconds stopped being the answer when speed effects existed.
 func (ed *cutEditor) fxSegs() []cutSeg { return applyFx(splitSpliced(ed.segs), ed.fx) }
 
 // cutPos is where session time t falls on the finished video's clock, effects
 // and all. The reading the ▶✂ preview is asked for.
 func (ed *cutEditor) cutPos(t float64) float64 { return cutPos(ed.fxSegs(), t) }
 
-// runLen is how long the session seconds t0..t1 run in the finished video --
-// the same arithmetic as above for a stretch that is not a whole clip, which
-// is what a selection and a clip in hand both are.
-//
-// A stop is nought in the spans and runs at ×1 here, exactly as the render
-// treats it: the picture stands still and the footage under it plays on, so a
-// stop costs the video no time (rateStep.applied, cut_fxstill.go). It is the
-// speed-ups and slow-downs that move this number.
+// runLen is how long session seconds t0..t1 run in the finished video (a
+// selection or a held clip). A stop runs at ×1 here, as the render treats it:
+// the footage under the still plays on, so a stop costs no time.
 func (ed *cutEditor) runLen(t0, t1 float64) float64 {
 	if t1 <= t0 {
 		return 0
@@ -3812,14 +3398,9 @@ func (ed *cutEditor) updateTotal() {
 	ed.totalSegs.SetText(segs)
 }
 
-// updateInputs says what this page is working from: the recordings on the
-// tracks, and the session timeline that Suggest is sent.
-//
-// The timeline is the part worth spelling out. It is not "the videos" -- it is
-// every line anyone said, cleaned, merged with the event log of every
-// recording, and the whole of it goes into the request. That is a thing you
-// would otherwise have to read the code to know, and it is the difference
-// between a suggestion that can hear a joke and one that can only see.
+// updateInputs says what this page works from: the recordings on the tracks,
+// and the session timeline Suggest is sent -- every line anyone said, merged
+// with every recording's event log.
 func (ed *cutEditor) updateInputs() {
 	if ed == nil || ed.inputs == nil {
 		return
@@ -3892,14 +3473,9 @@ func (ed *cutEditor) updateInputs() {
 		detail += fmt.Sprintf("\n\nprepare/transcript/session.txt — %d kB, sent whole with the cut prompt",
 			(len(sessionText(rows, ed.a.narratorMic()))+512)/1024)
 	}
-	// the context box on Describe rides along with every request this page
-	// makes, so this row -- which is the list of what Suggest is sent -- is
-	// where it has to appear. Silent extra input is how a cut ends up obeying
-	// something the user forgot they wrote.
 	// the context rides along with every request this page makes -- in the
-	// tooltip, not on the row: the box it is written in is on the page before
-	// this one, and the word "context" on its own says nothing about what is
-	// in it.
+	// tooltip, not on the row: the box is on the page before this one and the
+	// word "context" alone says nothing about what is in it.
 	if c := ed.a.sessionCtx(); c != "" {
 		detail += "\n\nSession context (Describe), sent with Suggest and the audit:\n" + c
 	}
@@ -3918,25 +3494,9 @@ func (ed *cutEditor) updateOut() {
 
 // ---- drawing ---------------------------------------------------------------
 
-// plateText draws a label on its own dark ground, at the given baseline.
-//
-// The video name sits ON the thumbnails, and no single ink is readable there:
-// white vanishes into a bright frame, black into a dark one. Inverting what is
-// underneath (cairo's DIFFERENCE operator) sounds like the answer and is not --
-// mid-gray inverts to mid-gray, and a gameplay frame is mostly mid-gray. The
-// plate is what subtitles do, and it works on every frame.
-// hatchBand paints the band that means "the footage stops here": a dark ground
-// with yellow diagonals over it. Two things on the timeline say that -- the hole
-// between two recordings, and the point where a spliced insert cuts a clip open
-// -- and they say it with one picture, because to the footage they are the same
-// event.
-//
-// The diagonals are dashed, at a fifth of the band's height. Drawn whole they
-// were long unbroken ramps that read as a texture painted over the track rather
-// than as marks on it; short strokes read as hatching, which is what it is meant
-// to be. Everything is clipped to the band: the diagonals begin left of it so
-// that the leftmost pixels are hatched too, and without the clip that overhang
-// lands on the thumbnail beside it.
+// hatchBand paints "the footage stops here": a dark ground with dashed yellow
+// diagonals, clipped to the band. Used for holes between recordings and for
+// the point a spliced insert opens a clip.
 func hatchBand(cr *cairo.Context, x, w, top, h float64) {
 	cr.SetSourceRGB(0.22, 0.2, 0.16)
 	cr.Rectangle(x, top, w, h)
@@ -3965,6 +3525,8 @@ func hatchStrokes(cr *cairo.Context, x, w, top, h float64) {
 	}
 }
 
+// plateText draws a label on its own dark ground: no single ink is readable
+// over thumbnails, and DIFFERENCE fails on mid-grey.
 func plateText(cr *cairo.Context, x, y float64, s string) {
 	e := cr.TextExtents(s)
 	platePath(cr, x-3, y-11, e.Width+6, plateH)
@@ -3974,15 +3536,9 @@ func plateText(cr *cairo.Context, x, y float64, s string) {
 	cr.ShowText(s)
 }
 
-// plateH is how tall a plate is, and plateR how round its corners are.
-//
-// Rounded, where the bands under them are square and stay square. A band is a
-// MEASUREMENT: you aim at its ends with a few px of tolerance and trim to the
-// frame, so a corner radius blurs the one edge the whole control is about --
-// and at 4 px per second a kept clip can be three pixels wide, which is
-// narrower than any radius worth drawing. A plate is a label. Nobody aims at
-// one, none of them is ever three pixels wide, and rounded they read as chips
-// laid on the footage rather than as holes cut out of it.
+// plateH is how tall a plate is, plateR how round its corners are. Rounded,
+// where bands stay square: a band is a MEASUREMENT aimed at by its ends and
+// can be three px wide; a plate is a label nobody aims at.
 const (
 	plateH = 14.0
 	plateR = 3.0
@@ -4002,22 +3558,10 @@ func platePath(cr *cairo.Context, x, y, w, h float64) {
 	cr.ClosePath()
 }
 
-// drawTrack paints the track: the footage as it was shot, with what the cut
-// keeps tinted green over it.
-//
-// There used to be a second band under this one showing the same thumbnails
-// with the dropped stretches missing. It said nothing the green does not: the
-// question at this page is which parts are kept, and one band answers it in one
-// place instead of asking the eye to hold two rows of identical thumbnails
-// against each other.
-//
-// The widget is the size of the window onto the timeline, never the size of the
-// timeline: an hour at the top zoom is 432,000 px wide, which is thirteen times
-// what a cairo surface can even be, and every redraw -- ten a second while the
-// preview runs -- was walking all of it. So everything below is in timeline
-// coordinates with the view scrolled under it (the Translate), and every loop is
-// cut down to what is actually on screen first. The work per frame is then the
-// same whether the session is a minute or an afternoon.
+// drawTrack paints the footage with the kept stretches tinted green. The widget
+// is the window onto the timeline, never the timeline (an hour at top zoom is
+// wider than a cairo surface can be): everything is in timeline coordinates
+// under a Translate, and every loop is culled to the view first.
 func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 	th := float64(ed.thumbHt)
 	top := ed.picTop()
@@ -4107,15 +3651,9 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 		}
 	}
 
-	// The rows' names, pinned where the recorders' band pins its own
-	// (laneNameX) rather than drawn at each recording's start.
-	//
-	// They scrolled with the tape, so on a page whose other name plate sits
-	// still one label slid off the side and the other did not -- and a name
-	// that has slid off is a row you have to scroll back to identify. Which
-	// recording it names is the one under the view's left edge, so a row of
-	// several files says which of them you are looking at; with the edge over
-	// a gap it names the first one in view, which is the one the eye is on.
+	// The rows' names, pinned where the recorders' band pins its own (laneNameX)
+	// rather than scrolling with the tape. Each names the recording under the
+	// view's left edge -- over a gap, the first one in view.
 	cr.SetFontSize(10)
 	for r := 0; r < max(1, ed.laneN); r++ {
 		v := ed.rowNameVid(r, vx0, vx1)
@@ -4213,16 +3751,10 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 		cr.SetSourceRGBA(0.2, 0.8, 0.3, 0.30)
 		cr.Rectangle(x0, st, x1-x0, lh)
 		cr.Fill()
-		// ...and over the row's OWN SOUND, on the wave strip drawn under its
-		// pictures. It is the same footage: a scene the cut keeps takes the
-		// sound filmed with it, and a strip left untinted under a green
-		// stretch said the opposite -- while the recorders' band below said
-		// "kept" over every separate lane. One recording, two bands, two
-		// answers.
-		//
-		// Fainter here than over the thumbnails, exactly as the band below is
-		// fainter (drawAudio): a thumbnail is a picture and survives a tint,
-		// a waveform IS the reading and a heavy wash takes it with it.
+		// ...and over the row's OWN SOUND on the strip under its pictures: a kept
+		// scene takes the sound filmed with it, so the strip says "kept" too.
+		// Fainter than over the thumbnails (as drawAudio is): a waveform IS the
+		// reading, and a heavy wash takes it with it.
 		ph := ed.pairH(ed.segRow(s))
 		if ph > 0 {
 			cr.SetSourceRGBA(0.2, 0.8, 0.3, 0.16)
@@ -4360,15 +3892,10 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 		cr.Fill()
 	}
 
-	// What each scene does with the sound filmed on its own camera, on the
-	// strips under the pictures -- and which row it is shown from, on the rows
-	// themselves (cut_cam.go). One column of marks, one question per row.
-	//
-	// After the green above, not before it: "this scene is in the video" and
-	// "this scene silences the camera it was shot on" are two answers about
-	// the same seconds, and the second one has to be the one you see. Drawn
-	// under it they were a grey wash with a green wash over it, which is a
-	// colour that means neither.
+	// What each scene does with the sound on its own camera, on the strips under
+	// the pictures -- and which row it is shown from, on the rows (drawCamBadges).
+	// After the green, not before: "silences its camera" has to be the answer
+	// you see over "is in the video".
 	ed.drawSilences(cr, ed.pairSilences(), vx0, vx1)
 	ed.drawCamBadges(cr, vx0, vx1)
 	ed.drawHearBadges(cr, ed.hearBadgesSrc(), vx0, vx1)
@@ -4622,27 +4149,8 @@ func (ed *cutEditor) toggle() {
 		ed.monRow = 0
 		ed.redrawTracks() // the dashed outline goes with it
 	}
-	// ▶ starts where the red line is. That is the whole rule, both buttons.
-	//
-	// It used to have exceptions, and they were all one idea: whatever is in
-	// hand is what you want to watch. A held clip edge started the preview at
-	// the edge, a held clip at the clip's own start, and ⏸ then ▶ needed a rule
-	// of its own (a remembered second, and a test that the line had not moved
-	// since) to escape the same jump and carry on where it stopped.
-	//
-	// Taking a scene in hand is the commonest press on this page -- it is what
-	// a click on the green does -- so the exception fired constantly and always
-	// the same way: the line thrown back to the scene's first frame, the part
-	// you had just watched played again, and no way to watch the middle of the
-	// scene you are editing but to put it down first. ▶✂ already refused both
-	// holds for the reason that turns out to be the general one -- holding a
-	// clip is how you edit it, not how you choose where the video starts -- and
-	// the two buttons disagreeing about where play begins was the last of it.
-	//
-	// What is left is not a hold. Under ✂ Cut only a line standing in a dropped
-	// stretch stands where the finished video has nothing at all, so it moves
-	// to the next clip (cutOnlySnap). Inside a clip -- which is where a pause
-	// leaves it -- it stays exactly where it is.
+	// ▶ starts where the red line is, both buttons, whatever is in hand. Under
+	// ✂ only, a line in a dropped stretch moves to the next clip (cutOnlySnap).
 	if !ed.playing() && ed.cutOnly {
 		ed.cutOnlySnap()
 	}
@@ -4933,25 +4441,10 @@ func (a *App) buildCut() gtk.Widgetter {
 
 	formPane := ed.buildForm()
 
-	// The bar in groups rather than as one row of twenty equal buttons. Twenty
-	// things spaced identically is twenty things to read every time, and the
-	// eight pixels between each of them added up to a bar that would not fit a
-	// laptop screen. Buttons that do one job together are linked into a single
-	// segmented control -- no gaps inside, so the group reads as one object and
-	// the eye lands on four groups instead of twenty buttons.
-	//
-	// Left to right is also the order of the work: move the playhead, mark what
-	// you found, change the cut. Nothing else is on it -- every reading it
-	// used to print under a group, and every control set once, is in the
-	// column beside the video (cut_form.go). A bar of verbs fits a laptop.
-	linked := func(ws ...gtk.Widgetter) *gtk.Box {
-		b := gtk.NewBox(gtk.OrientationHorizontal, 0)
-		b.AddCSSClass("linked")
-		for _, w := range ws {
-			b.Append(w)
-		}
-		return b
-	}
+	// The bar in linked groups rather than twenty equal buttons: each group reads
+	// as one object and the bar fits a laptop. Left to right is the order of the
+	// work -- move the playhead, mark, change the cut. Readings and set-once
+	// controls live in the column beside the video (cut_form.go).
 	rule := func() *gtk.Separator {
 		s := gtk.NewSeparator(gtk.OrientationVertical)
 		s.SetMarginTop(2)
@@ -4974,23 +4467,9 @@ func (a *App) buildCut() gtk.Widgetter {
 	bar.Append(linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ed.pasteBtn, ins, ed.laneBtn))
 	bar.Append(fxDD)
 	bar.Append(linked(ed.undoBtn, ed.redoBtn, ed.revertBtn, ed.clearBtn))
-	// The two prompts this page sends -- the rules Suggest works to and the
-	// audit that reads its answer back -- were a dropdown and an Edit button
-	// here. They are on Prepare with all the others now (prepedit.go): a prompt
-	// is written before the first run and then left alone, and this bar is
-	// where the session's actual work happens.
-	// ...and that is the whole bar: everything on it changes the cut.
-	//
-	// The view controls are not on it. How far the timeline is zoomed and how
-	// big its thumbnails are get set when you arrive and then left alone, and
-	// they were sharing the one row with the verbs pressed a hundred times a
-	// session -- the row that runs out of width first. They are in the form
-	// column with the totals now (cut_form.go), which stands empty whenever no
-	// effect form is open, which is most of the time.
-	// the zoom stays on the bar: it is the one view control that is not set
-	// once -- you zoom in to trim a border and out to see the shape of the
-	// hour, a dozen times a session, and it is the wheel's own gesture with a
-	// button on it. The thumbnails go up with the rest (cut_form.go).
+	// The bar is verbs only: everything on it changes the cut. The prompts are
+	// on Prepare (prepedit.go); the view controls and every reading are in the
+	// form column (cut_form.go), except the zoom, which is pressed all session.
 	bar.Append(linked(zoomOut, zoomIn))
 	// every line of the column reads the same way: what it is, then what it
 	// says. The buttons are a reading too -- they say how big the pictures on
@@ -5077,17 +4556,10 @@ func (a *App) buildCut() gtk.Widgetter {
 			return true
 		})
 		area.AddController(scroll)
-		// The left button says WHICH SECONDS, and that is the whole of it: a
-		// drag is a selection wherever it is pressed, a click puts the red
-		// line there and takes whatever it landed on in hand.
-		//
-		// It used to trim a border and slide a held clip as well, told apart
-		// from a selection by landing within a few px of one. They were the
-		// same gesture over the same pixels: every selection begun near a
-		// boundary trimmed instead, and the only way to know which was about
-		// to happen was to have learned the tolerance. Both are the right
-		// button's now (the slide gesture below), which was already the
-		// button for "move what is under the pointer".
+		// The left button says WHICH SECONDS, and that is all: a drag is a selection
+		// wherever it is pressed, a click puts the red line there and takes what it
+		// landed on in hand. Trimming and sliding are the right button's (the slide
+		// gesture below).
 		drag := gtk.NewGestureDrag()
 		var dragStartX, dragStartY float64
 		var hadSel bool
@@ -5140,14 +4612,10 @@ func (a *App) buildCut() gtk.Widgetter {
 					grabAt = ed.tAtView(x) - a
 					return
 				}
-				// clear of the blue, the GREEN bar's ✕, which is the one
-				// thing it answers to this button. Trimming a clip's borders
-				// and sliding the clip are the right button's now, here and
-				// over the pictures alike: the left one draws selections and
-				// only selections, wherever it is pressed (see the slide
-				// gesture below). A press on the bar that goes nowhere still
-				// takes the clip in hand -- that is a click, and it is
-				// answered at the release with the picture band's.
+				// clear of the blue, the GREEN bar's ✕ is the one thing it answers to this
+				// button; trimming and sliding are the right button's. A press that goes
+				// nowhere still takes the clip in hand at the release, with the picture
+				// band's.
 				if i := ed.bandKillAt(x + ed.viewX); i >= 0 {
 					ed.killSeg(i) // the page's one "drop that scene"
 					return
@@ -5175,26 +4643,10 @@ func (a *App) buildCut() gtk.Widgetter {
 				}
 				return
 			}
-			// the cut itself: a press within a few px of a green border takes
-			// that border and the drag trims it. The border is highlighted and
-			// the pointer is a resize arrow before the press happens (see
-			// hoverEdge), which is what makes one button enough here -- the
-			// hand knows it is about to trim rather than to select, and does
-			// not have to name the edge with a second button first.
-			//
-			// The ruler, the selection row and the effects lane are not part of
-			// this: they are their own objects, and the branches above have
-			// already returned for them.
-			// the lane badges, in either area and before anything else that
-			// could claim the same ground: they only exist while a scene is in
-			// hand, and while one is, pressing one is the only thing that
-			// press can have meant (cut_hear.go)
-			// the whole-lane switch, on the band's name plates: it is at a
-			// fixed x and is always there, where a scene's badge is in
-			// timeline coordinates and comes and goes with the scene in
-			// hand -- so where the two can claim the same press (a scene
-			// beginning at the very left of the view) the permanent one
-			// wins, and the scene's badge is a hair's scroll away
+			// a green border under the press: the drag trims it (hovering
+			// highlighted it first, so one button is enough). Lane badges are
+			// asked before anything else -- they exist only while a scene is in
+			// hand -- and the permanent lane switch before a scene's badge.
 			if area == ed.audArea {
 				if base := ed.laneSwitchAt(x+ed.viewX, y); base != "" {
 					ed.toggleLaneAll(base)
@@ -5278,16 +4730,10 @@ func (a *App) buildCut() gtk.Widgetter {
 		})
 		drag.ConnectDragUpdate(func(ox, oy float64) {
 			if ed.fxMoving {
-				// nothing has moved yet and the pointer has barely left where
-				// it was pressed: this is still a CLICK, and a click on an
-				// effect opens its numbers (the release, below).
-				//
-				// Without this it moved the band it landed on. Not by the
-				// pixel the hand wobbled -- by however far the nearest cut or
-				// effect was, because the slide snaps (snapFxSpan): press an
-				// effect to open it, and it jumped to the next boundary in
-				// reach on the way. The same guard the cut's own drags keep,
-				// for the same reason (the slide gesture below).
+				// nothing has moved and the pointer has barely left the press: still a
+				// CLICK, which opens an effect's numbers at the release. Without the guard
+				// the slide snapped the band to the nearest boundary (snapFxSpan) on the
+				// way to opening it.
 				if !ed.fxDirty && math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {
 					return
 				}
@@ -5324,22 +4770,10 @@ func (a *App) buildCut() gtk.Widgetter {
 					ed.fxDirty = false
 				}
 				ed.fxStatus()
-				// a press that took an effect and put it straight back down is
-				// a CLICK on it, and a click on an effect asks for its numbers.
-				// They used to be behind a double click, which is a thing you
-				// have to be told about -- and a bar you can click, drag and
-				// resize but not open reads as an effect with no settings.
-				//
-				// Only when it did not move: a form is opened on the effect as
-				// it was at the press, and saving it looks that effect up by
-				// those numbers (updateFx). After a drag they are last second's
-				// numbers, and the save would find nothing to write to.
-				//
-				// On an idle, not here: the dialog must not open in the middle
-				// of the gesture it is answering.
-				// the same threshold the update above holds the band still
-				// for, so the two cannot disagree about what a click is: a
-				// press that did not move it opens its numbers instead
+				// a press that did not move the effect is a click, and a click
+				// opens its numbers -- on an idle, not inside the gesture, and
+				// only unmoved: the form looks the effect up by its numbers at
+				// the press (updateFx)
 				if !moved && math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {
 					glib.IdleAdd(func() { ed.a.editFx() })
 				}
@@ -5363,15 +4797,10 @@ func (a *App) buildCut() gtk.Widgetter {
 			ed.hasIn, ed.hasOut = false, false
 			ed.showMarks()
 			ed.syncSelBtns()
-			// a click on a row is also the answer to "which camera is the
-			// preview showing": that one, even where a kept scene shows
-			// another (camAt). monRow rather than sel.lane, because the
-			// selection's row follows every drag and watching is a choice
-			// only a click makes. A click elsewhere -- the band, the ruler,
-			// the recorders below -- moves the line and changes no minds.
-			// Not while playing: ▶ promised the cut, and followPlayback
-			// re-cues from camAt every tick, so a watch started here would
-			// change what PLAYS, sound and all, not just what is shown.
+			// a click on a row also says which camera the preview shows (monRow, not
+			// sel.lane: watching is a choice only a click makes). A click elsewhere
+			// moves the line and changes no minds. Not while playing: ▶ promised the
+			// cut, and followPlayback re-cues from camAt every tick.
 			if area == ed.srcArea && !ed.playing() && len(ed.vids) > 0 {
 				if l := ed.laneAt(dragStartY); l >= 0 {
 					ed.monRow = l + 1
@@ -5385,15 +4814,10 @@ func (a *App) buildCut() gtk.Widgetter {
 				ed.setPlayhead(ed.tAtView(dragStartX))
 				ed.monStatus()
 			}
-			// ...and a click ON THE GREEN takes that scene in hand, which is
-			// what the same click on the green bar in the band already does.
-			// It is one object drawn in two rows, and it answered to one click
-			// in one of them and two in the other; the drawn thing is the
-			// bigger target and the one the hand goes to first.
-			//
-			// Last, so the scene's own account of itself is the line that
-			// stands. Clear of the green nothing is taken and the drop above
-			// (dropSeg, at the press) is what the click meant.
+			// ...and a click ON THE GREEN takes that scene in hand, as the same click on
+			// the green bar does: one object drawn in two rows. Last, so the scene's own
+			// account stands; clear of the green, the drop above (dropSeg) is what the
+			// click meant.
 			if area == ed.srcArea && ed.hitPics(dragStartY) {
 				if px := dragStartX + ed.viewX; ed.segOnGreen(px, dragStartY) >= 0 {
 					ed.grabSeg(px) // the same scene: segOnGreen asked segAtPx for it
@@ -5412,24 +4836,9 @@ func (a *App) buildCut() gtk.Widgetter {
 		})
 		area.AddController(drag)
 
-		// The right button MOVES what is under it, and what that is depends
-		// on what is under it.
-		//
-		// On the green: the scene, or the border of one. Those were the left
-		// button's, sharing their pixels with the selection it draws, until
-		// the two verbs were split -- left says which seconds, right moves
-		// things (see the drag gesture above).
-		//
-		// Clear of the green: the recordings themselves. Every other gesture
-		// on this page is measured against where they sit and none of them
-		// can move one, which left no way at all to correct the one thing a
-		// file name cannot get right, the seconds (cut_shift.go). Drag a row
-		// and that camera slides along the clock until its waveform lines up
-		// with the one below it; drag a lane and that recording does.
-		//
-		// Inside a selection it is the scenes in it, all of them at once: the
-		// same verb as the single scene above, over more of the cut, which is
-		// why it is asked first.
+		// The right button MOVES what is under it: on the green a scene or its
+		// border; inside a selection every scene in it; clear of the green the
+		// recordings themselves (cut_shift.go).
 		slide := gtk.NewGestureDrag()
 		slide.SetButton(gdk.BUTTON_SECONDARY)
 		var slideSrcs []string           // what this drag moves; empty = the green
@@ -5456,22 +4865,9 @@ func (a *App) buildCut() gtk.Widgetter {
 			a0, a1 := ed.selSpan()
 			t := ed.tAtView(x)
 			px := x + ed.viewX
-			// The cut's own green, which is this button's first business.
-			//
-			// It was the left button's: a press within a few px of a border
-			// trimmed it, a press on a clip already in hand slid it, and both
-			// shared their pixels with the one gesture the left button is
-			// really for -- drawing a selection. Sharing them cost the
-			// selection: every one started near a border trimmed instead, and
-			// the way out was to know about a tolerance you could not see.
-			// Now the two buttons are two verbs. Left says WHICH SECONDS,
-			// wherever it is pressed. Right moves what is under it -- a
-			// scene, its border, or, clear of the green, the recordings
-			// themselves.
-			//
-			// Below the selection's own case, which is the same verb over
-			// more of the cut: a right-drag inside a selection moves every
-			// scene in it, and a scene inside one is one of those.
+			// The cut's own green first: left says WHICH SECONDS, right moves
+			// what is under it. Below the selection's case, which is the same
+			// verb over every scene inside it.
 			green := func() bool {
 				if area != ed.srcArea {
 					return false
@@ -5715,30 +5111,10 @@ func (a *App) buildCut() gtk.Widgetter {
 		})
 		area.AddController(slide)
 
-		// Picking up a whole clip is the second click of a double click. It used
-		// to be the right button, and the right button is the timeline's now:
-		// every other thing on this page is taken hold of by hovering it and
-		// pressing, and a border you had to name with a different button first
-		// was the one exception -- you could see the edge under the pointer and
-		// still not be able to grab it.
-		//
-		// A clip cannot follow the border onto the single press, because over
-		// the cut that press is already how you put the red line somewhere, and
-		// a gesture that both navigates and picks things up is a gesture you can
-		// use for neither. So: click to go there, click again to take the clip
-		// that is there. What each press means is pickAt, where the order of the
-		// questions is written down with its reasons.
-		//
-		// The selection row is not part of this: up there the left button does
-		// the whole job. Nor is the effects lane: a click there already holds
-		// the effect AND opens its numbers (see the drag's end), so the second
-		// click of a double one has nothing left to mean and the branch below
-		// is only there to keep the press off the playhead.
-		// The second click of a double one. A click on the GREEN already takes
-		// that scene in hand (the drag's release, below), so on a kept stretch
-		// this has nothing left to do -- what it is still for is the footage
-		// the cut does not keep and the cards it does, neither of which is
-		// green and neither of which any single click picks up.
+		// The second click of a double click takes the whole clip: a single
+		// press is how the red line is placed, so it cannot also pick things
+		// up. On the green the drag's release already took the scene; this is
+		// for dropped footage and cards (pickAt).
 		pick := gtk.NewGestureClick()
 		pick.SetButton(gdk.BUTTON_PRIMARY)
 		pick.ConnectPressed(func(n int, x, y float64) {
@@ -5832,16 +5208,9 @@ func (a *App) buildCut() gtk.Widgetter {
 	keys := gtk.NewEventControllerKey()
 	keys.ConnectKeyPressed(func(keyval, keycode uint, state gdk.ModifierType) bool {
 		switch {
-		// space is ▶/⏸, the one binding every editor has and the only one
-		// this page did not have: the hand on the mouse had to travel to the
-		// button for every look. It is the BUTTON's own verb (toggle), so it
-		// plays the cut under ▶✂ and the recording otherwise, and it starts
-		// where the red line is like every other way in.
-		//
-		// Bubble phase, like the rest of this switch: a text box or a focused
-		// button has taken the key already and never let it reach here, which
-		// is what typing a space and pressing a focused button must go on
-		// meaning.
+		// space is ▶/⏸, the BUTTON's own verb (toggle): the cut under ▶✂, the
+		// recording otherwise, from the red line. Bubble phase, like the rest of this
+		// switch: a text box or focused button that took the key keeps it.
 		case keyval == gdk.KEY_space && state&(gdk.ControlMask|gdk.AltMask) == 0:
 			ed.toggle()
 		case keyval == gdk.KEY_z && state&gdk.ControlMask != 0:
@@ -5951,17 +5320,10 @@ func (a *App) buildCut() gtk.Widgetter {
 // centered stays centered.
 func (ed *cutEditor) zoomStep(factor float64) { ed.zoomAt(ed.viewW/2, factor) }
 
-// zoomWheel is a wheel delta arriving. It is banked and applied once, on the
-// next idle, rather than zoomed on the spot.
-//
-// A wheel gesture is not one event. A touchpad, or a mouse with a free-spinning
-// wheel, delivers a notch as a run of fractional deltas -- ten or twenty in a
-// frame -- and each one used to be a whole zoom: relayout, five writes to the
-// scrollbar's adjustment (each of which could redraw), a redraw of four areas
-// and a re-sync of the preview widget. Twenty of those between two display
-// frames is the lag: the frames that get shown are the ones the work happened
-// to finish before. Banked, the twenty deltas are one factor, applied once,
-// drawn once, and the picture follows the wheel instead of trailing it.
+// zoomWheel banks a wheel delta and applies it once on the next idle. A
+// touchpad delivers a notch as ten or twenty fractional deltas, and each one
+// used to be a whole relayout and redraw -- the lag. Banked, they are one
+// factor, drawn once.
 func (ed *cutEditor) zoomWheel(dy float64) {
 	ed.zoomPend += dy
 	if ed.zoomBook {
@@ -5993,31 +5355,18 @@ func (ed *cutEditor) zoomAt(viewX, factor float64) {
 	ed.layoutPx()
 	ed.syncScroll()
 	ed.setOff(ed.xOf(t) - viewX)
-	// ...and the draw, rather than leaving it to that setOff to emit one.
-	//
-	// The adjustment only fires value-changed when the value actually MOVES,
-	// and a zoom often leaves it exactly where it was: anchored on a point
-	// with the view already hard against the start of the timeline, the new
-	// offset clamps to the same 0, and at the far end it clamps to the same
-	// maximum. The pixels underneath had all changed and nothing repainted
-	// them, so the zoom appeared to do nothing at all -- until the pointer
-	// moved, because the hover is the only other thing on this page that
-	// queues a draw by itself. "It works if I jiggle the mouse" is the shape
-	// of a missing redraw, every time.
+	// ...and the draw, rather than leaving it to setOff: the adjustment only
+	// fires value-changed when the value MOVES, and a zoom anchored against
+	// either end clamps to the same offset. The pixels changed and nothing
+	// repainted them until the pointer moved.
 	ed.queueTracks()
 	ed.updateTotal()
 }
 
-// minPps is the zoom at which the whole session fits across the window, and
-// therefore the floor: below it the timeline would be smaller than the space it
-// has and scrolling would move nothing.
-//
-// The holes between the filmed runs are drawn at a fixed width and do not
-// shrink with the zoom, so they come off the width the footage may use.
-// Dividing the window by the duration alone -- which is what this did -- left
-// the fully zoomed-out timeline wider than its window by every hole in it, so
-// the scrollbar stayed and it still slid, which reads as a timeline hiding
-// something off to the right when there is nothing out there at all.
+// minPps is the zoom at which the whole session fits the window, the floor.
+// The holes between filmed runs are drawn at a fixed width, so they come off
+// the width the footage may use -- otherwise the fully zoomed-out timeline
+// was wider than its window by every hole in it.
 func (ed *cutEditor) minPps() float64 {
 	// the gutter comes off the width the footage may use, exactly as the holes
 	// do: it is drawn at a fixed width and does not shrink with the zoom
@@ -6084,14 +5433,9 @@ func (a *App) updateCutInfo() {
 	}
 }
 
-// refreshCut brings the Cut page up to date with what a run just wrote: now if
-// that is the page on screen, and otherwise on the way in.
-//
-// Describe is what made this necessary. It writes the session timeline the Cut
-// page is gated on, the tab unlocks the moment it lands -- and nothing rebuilt
-// the tracks, so the page you were finally allowed to open was the empty box it
-// had been built as. It filled in on the next restart, which is what made it
-// look like the run had not worked rather than like the page had not looked.
+// refreshCut brings the Cut page up to date with what a run just wrote: now
+// if it is on screen, otherwise on the way in. Describe writes the timeline
+// the page is gated on, and nothing else rebuilt the tracks.
 func (a *App) refreshCut() {
 	if a.ed == nil {
 		return
@@ -6343,40 +5687,16 @@ func (ed *cutEditor) audByBase(base string) *tlAudio {
 	return nil
 }
 
-// syncSelBtns tells the buttons that act on the selection what the selection
-// now is. Called from every place one is made, resized, pointed at the other
-// band, or cleared.
-//
-// ⧉ Copy is greyed when there is nothing worth taking: the button is a verb on
-// the selection, and its being lit is the page saying a selection is there to
-// be copied.
-//
-// ＋ Add and － Remove are greyed while the selection is a sound's. They choose
-// which FOOTAGE the cut keeps, and footage here is picture and the sound filmed
-// with it in one piece: there is no way to keep the sound and drop the picture,
-// so on a selection drawn in a lane they have nothing they could honestly do.
-// Greyed rather than left quietly cutting the picture, because the wave it was
-// drawn on has just said this selection is about sound, and a button acting on
-// the other thing would make that a lie.
-//
-// Its tooltip is set here rather than where it is built, because a button whose
-// sensitivity changes has two things to say and only one of them is true at a
-// time.
+// syncSelBtns greys the verbs that have nothing to act on and says why in the
+// tooltip: a selection drawn on a wave is sound, and Add/Split/Remove act on
+// footage.
 func (ed *cutEditor) syncSelBtns() {
 	if ed == nil {
 		return
 	}
-	// A verb is live when it has something to act on, and grey when it does
-	// not. All four used to be live with nothing selected at all: the press
-	// then answered "drag a region on a track first", which is a button
-	// spending a click to say it was never the button. Greyed, the bar says
-	// which of them the page is ready for before anything is pressed.
-	//
-	// snd is the exception that has to be said in words rather than only shown:
-	// a selection drawn on a WAVE is seconds of sound, and Add, Split and
-	// Remove all act on footage. The button is grey and its tooltip says why,
-	// because "why is this dead when I have clearly selected something" is
-	// otherwise unanswerable.
+	// A verb is live when it has something to act on, grey when not. snd is the
+	// exception said in words: a selection on a WAVE is seconds of sound, and Add,
+	// Split and Remove act on footage -- the tooltip says why the button is grey.
 	snd := ed.sel.active && ed.sel.aud != ""
 	on := ed.sel.active && ed.sel.aud == ""
 	long := on && math.Abs(ed.sel.t1-ed.sel.t0) >= minSegLn
@@ -6427,15 +5747,10 @@ func (ed *cutEditor) syncSelBtns() {
 	}
 }
 
-// insertClicked drops a file into the cut at the playhead: a video sting ("a
-// few moments later"), a still, a diagram, an animated tier list. What it is for
-// is the things a session does not contain -- the ranking at the end of a rating
-// video is the case this was built for, and no camera was pointed at it.
-//
-// The playhead, not the selection: a selection says which footage to keep or
-// drop, and an insert replaces footage rather than choosing it. Where a region
-// IS selected its length is taken as the insert's, which is how to say "four
-// seconds of this, here" without editing an edge afterwards.
+// insertClicked drops a file into the cut at the playhead: a sting, a still,
+// a diagram, an animated tier list -- things a session does not contain. The
+// playhead, not the selection: an insert replaces footage rather than choosing
+// it. A selected region lends its length.
 func (a *App) insertClicked() {
 	ed := a.ed
 	// the same button opens a held card instead of choosing a new file. Holding
@@ -6477,23 +5792,7 @@ func (a *App) insertClicked() {
 	if ed.sel.active && ed.selSnd() {
 		title, name, exts = "Insert a sound over the selected seconds", "Audio", audExts
 	}
-	d := gtk.NewFileDialog()
-	d.SetTitle(title)
-	d.SetInitialFolder(gio.NewFileForPath(a.insertDir()))
-	filt := gtk.NewFileFilter()
-	filt.SetName(name)
-	for _, e := range exts {
-		filt.AddSuffix(e)
-	}
-	filters := gio.NewListStore(gtk.GTypeFileFilter)
-	filters.Append(filt.Object)
-	d.SetFilters(filters)
-	d.Open(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.OpenFinish(res)
-		if err != nil || f == nil {
-			return // dismissed
-		}
-		path := f.Path()
+	a.pickFile(title, a.insertDir(), extFilter(name, exts...), func(path string) {
 		// Which mode a file arrives in follows the gesture that placed it, and
 		// the button is called Insert: a card dropped at the playhead is put
 		// BETWEEN the footage, so the video gets longer by it and nothing
@@ -6735,16 +6034,10 @@ func (a *App) askInsertParams(verb, path string, fields []svgField, m insMode, o
 		}
 		return q
 	}
-	// How the card sits in the cut, which is a question about the FOOTAGE and so
-	// belongs beside what the card says rather than in a menu somewhere: over it,
-	// which is what a card has always done here and costs the seconds it runs, or
-	// between it, which cuts the clip open at that point and makes the video
-	// longer by exactly the card.
-	//
-	// Two lines rather than one box with a tick in it. A tick is an option, and
-	// which of these two a card is is not an option -- it is what the card DOES
-	// to the footage, and the mode nobody looked at is the one that quietly ate
-	// eight seconds of the session out of a button labelled Insert.
+	// How the card sits in the cut: over the footage (costs the seconds it runs)
+	// or between it (cuts the clip open, lengthens the video by the card). Two
+	// lines rather than a tick: it is what the card DOES to the footage, not an
+	// option.
 	between := gtk.NewCheckButtonWithLabel(
 		"Insert BETWEEN the footage — the video gets longer by the card, nothing filmed is lost")
 	over := gtk.NewCheckButtonWithLabel(
@@ -6769,16 +6062,9 @@ func (a *App) askInsertParams(verb, path string, fields []svgField, m insMode, o
 		"line, as though a camera nobody set up had been rolling there. Nothing is added to " +
 		"the cut by this: select on the new row and press ＋ Add to cut to it, the same way " +
 		"you would cut between two cameras. Its ✕ takes the row away again.")
-	// what this insert does to the sound. One flag on the segment (cutSeg.Mute)
-	// and one tick here, and the MODE decides which of its two readings is
-	// being asked about -- the same split the flag itself has, so the tick
-	// says the sentence the mode makes true rather than a general one that is
-	// true in neither. This is where the question lives now: it used to be the
-	// selection's scope, which is gone.
-	//
-	// A tick and not a pair of lines, because unlike over-versus-between this
-	// genuinely is a preference: both answers are ordinary, and neither eats a
-	// stretch of the session.
+	// what this insert does to the sound: one flag (cutSeg.Mute), read the way
+	// the MODE makes true, so the tick says that sentence. A tick, because unlike
+	// over-versus-between this is a preference: neither answer eats footage.
 	keep := gtk.NewCheckButtonWithLabel("")
 	keep.SetActive(m.mute)
 	keep.SetVisible(m.askMute)

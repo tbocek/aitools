@@ -1,30 +1,9 @@
 package main
 
-// The audio.cpp server: one endpoint, one GPU, every audio job. It listens --
-// speech recognition and diarization, for Prepare -- and it speaks --
-// the narration, for Narrate.
-//
-// Listening used to be a container run per job: docker run audiocpp_cli, one
-// model load per invocation, and a second copy of the weights in VRAM
-// alongside the resident TTS model. The server was already running for
-// narration, so now both go to it. What that costs autocut is nothing but
-// HTTP; owning the container is the stack's business.
-//
-// Two things follow from talking to a server instead of running a program.
-//
-// Paths are the SERVER's. An "audio" field is a file the server opens itself,
-// and it is in a container, so the only paths it can open are its own. Autocut
-// therefore never names a file it holds: serverFile posts the bytes and the job
-// names the path that comes back. Which folders the compose file mounts stops
-// being autocut's business, which is the point -- it was never something a
-// recording folder could be expected to know about.
-//
-// A model id names everything else. Family, task, weights and session options
-// live in audiocpp-server.json against that id, so the knobs that used to be
-// flags here (--backend, parakeet_tdt.offline_mode=long_form,
-// sortformer_diar.graph_capacity_mode=grow) are set where the model is
-// declared, once, and not per request: they are chosen when the session is
-// created, and the session outlives our call.
+// The audio.cpp server: one endpoint for listening (ASR, diarization) and
+// speaking (TTS). Paths in requests are the SERVER's -- it runs in a container
+// -- so files go up via serverFile first. A model id names family, task,
+// weights and session options (audiocpp-server.json), never per-request flags.
 
 import (
 	"bytes"
@@ -79,27 +58,9 @@ func bearer(req *http.Request, key string) {
 	}
 }
 
-// serverFile gives the audio server a copy of a local file and returns the path
-// it wrote that copy to. Every file named in every request to that server comes
-// from here.
-//
-// The requests name files rather than carrying them: "audio" and "voice_ref"
-// are opened by the server itself. That only works if it can see what we can,
-// and it cannot -- it is in a container, and only the folders its compose entry
-// mounts exist inside it. Recording somewhere unmounted used to end in a 500
-// naming a file that is plainly here, which reads like autocut writing a path
-// it never wrote.
-//
-// So we stop assuming a shared filesystem. POST /v1/ui/upload takes the bytes
-// and answers with a path under the server's own temp folder, which it can
-// always open, and that is the path the request then names. Nothing about which
-// folders happen to be mounted matters any more.
-//
-// Uploaded every time, never remembered. The chunks and reference wavs are a
-// few hundred KB over loopback, the server sweeps its temp folder when it
-// stops, and a remembered path would be wrong the moment it restarted -- which
-// is a bug that would surface hours later, in exchange for saving a copy that
-// costs milliseconds.
+// serverFile uploads a local file (POST /v1/ui/upload) and returns the
+// server-side path every request must name: the server only sees its own
+// container. Uploaded every time -- a remembered path dies with a restart.
 func (a *App) serverFile(path string) (string, error) {
 	// before the file, not after: this is now the first request of any job, so
 	// "nothing is listening" has to be answered here or it arrives as a bare
@@ -292,20 +253,10 @@ func (a *App) audioRun(model string, req map[string]any) ([]byte, error) {
 	return out, nil
 }
 
-// asrJSON transcribes one wav. It returns the whole answer -- that is what
-// words.json is -- and the plain text out of it, for transcript.txt.
-//
-// The language goes as its own field: over HTTP it lands in the request
-// options directly, so the empty --text the CLI needed to carry it is gone.
-// Multilingual models (nemotron detects the language itself) simply ignore or
-// refine it. It comes off the project, not off llm.conf -- what this session
-// is spoken in is the session's business, not the machine's.
-//
-// An answer with NO words is returned as it is rather than failed: a screen
-// capture with no mic behind it is a silent recording, and a silent recording
-// is an empty transcript, not a broken step. The misconfigurations this used
-// to catch are caught before it -- ensureAudioModels checks the id and the
-// task before the first minute of ffmpeg runs.
+// asrJSON transcribes one wav: the whole answer (words.json) and its plain text.
+// Language comes off the project, not llm.conf. An answer with no words is a
+// silent recording, not an error; misconfiguration is caught earlier
+// (ensureAudioModels).
 func (a *App) asrJSON(wav string) ([]byte, string, error) {
 	c := a.readConf()
 	up, err := a.serverFile(wav)
@@ -341,14 +292,9 @@ func (a *App) diarSpans(wav string) ([]span, error) {
 	return spansFrom(body)
 }
 
-// ensureAudioModels is Prepare's preflight. The step is minutes of ffmpeg before
-// the first model call, and "no such model" is worth hearing at the start of
-// that rather than at the end of it.
-//
-// The separation model is only asked for when a row asked to be split. It is
-// the one model here that most servers will not have -- the other three are
-// what this stack is for -- and refusing to start a session that never wanted
-// it would be refusing over a model nothing was going to call.
+// ensureAudioModels is Prepare's preflight: "no such model" is worth hearing
+// before minutes of ffmpeg. The separation model is only checked when a row
+// asked to be split -- most servers do not have it.
 func (a *App) ensureAudioModels(sep bool) error {
 	if err := a.ensureAudioServer(); err != nil {
 		return err

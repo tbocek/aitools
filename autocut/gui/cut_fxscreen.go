@@ -1,32 +1,12 @@
 package main
 
-// The finished picture, on whichever page is showing it.
-//
-// Two pages play the cut: Cut, where the effects are placed, and Narrate,
-// where a narration line is judged against the moment it is spoken over. Both
-// have to show the SAME thing -- the frame the render will make, cropped and
-// zoomed and frozen and titled -- because a line written against a wide shot
-// that the render crops to a close-up is a line written against a video that
-// will not exist.
-//
-// So there is one of these, and both pages hold one. It owns the three layers
-// over the player's picture and every number that decides where they go:
-//
-//   - the camera: a second picture of the same paintable on a GtkFixed,
-//     transformed so the camera's window fills the output box
-//   - a stop effect's frozen frame, on its own Fixed carrying the same
-//     transform, because a stop is a still the camera still moves over
-//   - a drawing area over both, for the black around the output frame and for
-//     the titles
-//
-// What differs between the pages is asked of them through fxPage, and it is
-// only ever four things: which player, which moment, how big the recording is
-// when the paintable will not say, and whether an editor is in the middle of
-// aiming something. Everything else here is the same code twice on screen and
-// once in the file.
-//
-// Cut's own overlay (cut_fxview.go) wraps this with the half only an editor
-// has: the gestures, the camera outline, the grabs, the labels.
+// The finished picture, shared by Cut and Narrate: one type both pages hold, so
+// a narration line is judged against the frame the render will make. It owns
+// the three layers over the player -- the camera (a second picture on a
+// GtkFixed, transformed so the camera window fills the output box), a stop's
+// frozen frame on its own Fixed with the same transform, and a drawing area for
+// the black around the frame and the titles. What differs per page comes
+// through fxPage. cut_fxview.go wraps this with the editor's gestures and grabs.
 
 import (
 	"fmt"
@@ -147,18 +127,9 @@ func (s *fxScreen) size() (W, H float64) {
 
 // ---- the clock --------------------------------------------------------------
 
-// livePlayhead is the playhead with the time since it was last read added back
-// on: where the picture is NOW, rather than where it was at the last tick.
-//
-// The page reads the player's clock every playTick milliseconds, which is the
-// right rate for everything it drives except one thing. A camera glide is a
-// continuous move, and sampling it ten times a second shows it as ten jumps --
-// a one second transition arriving in ten steps. The render has no such
-// problem: zoompan evaluates the same piecewise-linear path per frame, so what
-// is choppy in the preview is smooth in the file. This closes the gap the
-// other way, so that what you approve is what you get.
-//
-// The arithmetic, and the reasons for every clamp in it, is liveClock.
+// livePlayhead adds the time since the last playTick read: a camera glide
+// sampled at 10 Hz is ten jumps, while the render (zoompan per frame) is
+// smooth. Arithmetic and clamps: liveClock.
 func (s *fxScreen) livePlayhead() float64 {
 	rate, playing := 1.0, false
 	if p := s.page.fxPlayer(); p != nil && p.playing {
@@ -169,19 +140,11 @@ func (s *fxScreen) livePlayhead() float64 {
 	return now
 }
 
-// reLive re-arms the live clock on t. All three of its parts move together or
-// none of them do: the position the extrapolation runs from, the wall clock
-// that position was read at, and the high-water mark that keeps the clock from
-// running backward.
-//
-// Re-basing the mark alone was not enough, and the way it failed is the reason
-// this exists. A seek does not stop playback when it lands in the file already
-// open, so the very next read -- the overlay's, sixty times a second, long
-// before the next 100ms tick rewrites the position -- extrapolated from the
-// position the line had BEFORE the jump, found it higher than the freshly
-// lowered mark, and set the mark back to it. From there the clock was stuck in
-// the future: every effect between the line and where it had been was drawn as
-// though the jump had never happened.
+// reLive re-arms the live clock on t: the base position, the wall clock it was
+// read at, and the high-water mark move together. A seek inside the open file
+// does not stop playback, so the next overlay read would otherwise extrapolate
+// from the pre-jump position, exceed the freshly lowered mark, and pin the
+// clock in the future.
 func (s *fxScreen) reLive(t float64) {
 	s.liveMax, s.posT, s.posAt = t, t, time.Now()
 }
@@ -227,16 +190,10 @@ func (s *fxScreen) buildLayers(page fxPage, pic gtk.Widgetter, video gdk.Paintab
 	return over
 }
 
-// syncPreviewZoom puts the real camera on the preview. Whenever the cut has a
-// camera -- and nobody is framing by hand -- the layer shows the same video
-// again, transformed so the camera's window fills the output box: the preview
-// is the finished framing, glides included.
-//
-// It does NOT depend on whether the stream is running. It used to, and that
-// was wrong twice over: pausing dropped back to the raw frame letterboxed into
-// the widget, so the picture visibly changed size at every play/pause, and the
-// framing you were shown while paused was no framing at all. What the line
-// stands on is what the camera sees, moving or still.
+// syncPreviewZoom puts the real camera on the preview whenever the cut has one
+// and nobody is framing by hand: the same video again, transformed so the
+// camera's window fills the output box. Independent of whether the stream is
+// running -- paused must show the framing too.
 func (s *fxScreen) syncPreviewZoom() {
 	s.syncCamLayer()
 	s.fitStill() // whatever the camera just did, the still does too

@@ -1,23 +1,12 @@
 package main
 
-// The render's half of what the sound does over a speed effect.
-//
-// Three of the five answers are a filter and nothing else: the sound goes with
-// the picture by time-stretch (atempoChain, which is what it has always done),
-// by tape speed (asetrateChain), or not at all (hushCues). The other two are a
-// plan -- the sound comes away from the picture and has to be told, clip by
-// clip, which second of which recording it is reading and for how long.
-//
-// That plan is possible at all because of where the boundaries fall. A speed
-// effect at any rate but ×1 cuts the segment list at its own edges (applyFx),
-// a scene is never straddled by a clip, and a clip is one encode: so "the
-// sound is off the picture's clock here" is always a statement about whole
-// clips, and a clip's sound is just another input read from another second.
-//
-// What it cannot be is a crossfade at the seam. Clips are encoded one at a
-// time and joined with a stream copy, so nothing crosses the join -- the dip
-// is half of one at the end of one clip and half at the head of the next
-// (sndDip, cut_fxsound.go).
+// The render's half of the sound over a speed effect. Three answers are a
+// filter (atempoChain, asetrateChain, hushCues); the two 1× answers are a
+// plan: clip by clip, which second of which recording is read and for how
+// long. Possible because a speed effect cuts the segment list at its edges
+// (applyFx), so "off the picture's clock" is always about whole clips. No
+// crossfade at the seam: half a dip at each side of the stream-copy join
+// (sndDip).
 
 import (
 	"fmt"
@@ -25,14 +14,9 @@ import (
 )
 
 // hushCues is the seconds of one clip a speed effect asks to be silent, in the
-// clip's own output seconds. Mapped exactly as a volume effect's band is
-// (gainCues), so a stop and a title placed at the same second come and go
-// together.
-//
-// A window rather than a property of the clip, because the two rates that do
-// not cut the segment list -- ×1, and a stop, whose footage runs at ×1
-// underneath -- have bands that lie INSIDE a clip. Silencing the clip would
-// silence seconds the effect never covered.
+// clip's output seconds, mapped as a volume band is (gainCues). A window, not
+// a property of the clip: ×1 and a stop do not cut the segment list, so their
+// bands lie INSIDE a clip.
 func hushCues(fx []cutFx, sessS, span, rate, length float64) []textCue {
 	if length <= 0 || span <= 0 {
 		return nil
@@ -82,23 +66,17 @@ func asetrateChain(rate float64) string {
 	return fmt.Sprintf(",asetrate=48000*%g,aresample=48000", rate)
 }
 
-// audioPlan walks the clips and marks the ones whose sound has come away from
-// the picture: where it is read from, how far the run reaches, and where the
-// splice that closes it falls.
-//
-// The walk carries one running read-head. It opens where an effect asking for
-// 1× sound starts -- in sync, at that clip's own first second -- and advances
-// by each clip's SCREEN length, because that is all the time the sound has.
-// The picture meanwhile advances by the footage each clip covers, which under
-// a ×4 is four times as much: that difference is the gap, and where it closes
-// is the answer the effect carries.
+// audioPlan marks the clips whose sound has come away from the picture: where
+// it reads from, how far the run reaches, where the closing splice falls. One
+// running read-head opens in sync where a 1×-sound effect starts and advances
+// by each clip's SCREEN length; the picture advances by footage covered, and
+// the difference is the gap.
 //
 //	sndFx     the run is that effect's clips and no more
 //	sndScene  it runs to the end of the scene the effect is in
 //
 // A card, a held frame or a clip on no recording closes a run wherever it
-// falls: a card brings its own sound, and a run that carried on across one
-// would be reading a file nothing on screen came from.
+// falls.
 func audioPlan(clips []prodClip, fx []cutFx) {
 	run, open := 0, false
 	var mode, path string

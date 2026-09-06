@@ -208,8 +208,8 @@ func TestGreenIsHeardAndGreyIsNot(t *testing.T) {
 	// not reachable from a test, so the branch itself is the claim
 	src := readSrc(t, "cut_hear.go")
 	for _, w := range []string{
-		"if b.on {\n\t\t\tcr.SetSourceRGBA(0.2, 0.85, 0.35, 0.22)", // the wash over the scene
-		"if on {\n\t\tcr.SetSourceRGBA(0.15, 0.65, 0.3, 0.95)",     // and the plate both controls share
+		"if b.on {\n\t\t\tcr.SetSourceRGBA(0.2, 0.85, 0.35, 0.22)",             // the wash over the scene
+		"if on {\n\t\tplate(cr, cx, cy, hearR+hearPad, 0.15, 0.65, 0.3, 0.95)", // and the plate both controls share
 	} {
 		if !strings.Contains(src, w) {
 			t.Errorf("heard is no longer the green branch:\n%s", w)
@@ -585,7 +585,7 @@ func TestTheLaneSwitchIsOnTheNamePlate(t *testing.T) {
 	}
 	// both controls draw the one plate, so the mark cannot mean two things
 	hear := readSrc(t, "cut_hear.go")
-	if strings.Count(hear, "cr.Arc(cx, cy, hearR+hearPad") != 1 || !strings.Contains(hear, "hearPlate(cr, b.cx, b.cy, b.on)") {
+	if strings.Count(hear, "func litPlate(") != 1 || !strings.Contains(hear, "hearPlate(cr, b.cx, b.cy, b.on)") {
 		t.Error("the scene badge and the lane switch no longer share hearPlate")
 	}
 }
@@ -744,7 +744,7 @@ func TestThePairSwitchIsDrawnOnTheStrip(t *testing.T) {
 	// one plate for all three controls: a scene's badge, a lane's switch and
 	// a row's, or the mark would mean three things
 	hear := readSrc(t, "cut_hear.go")
-	if strings.Count(hear, "cr.Arc(cx, cy, hearR+hearPad") != 1 {
+	if strings.Count(hear, "func litPlate(") != 1 {
 		t.Error("the plate has been copied instead of shared")
 	}
 }

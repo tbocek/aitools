@@ -1,41 +1,17 @@
 package main
 
-// Animated SVG, without a browser.
+// Animated SVG, without a browser. Nothing in the render path plays SMIL
+// (librsvg, Inkscape and resvg all render t=0), so it is EVALUATED: read the
+// animation elements, compute every animated attribute at t, write a static
+// document with those values baked in, once per frame; ffmpeg reads the
+// sequence as stills.
 //
-// The problem. An SVG can animate itself with SMIL -- <animate>, <set>,
-// <animateTransform> -- and that is the obvious way to write a tier list that
-// slides its rows in, or a lower third that wipes on. Nothing in the rendering
-// stack animates it. librsvg (which is what ffmpeg's svg decoder is, and what
-// rsvg-convert is) renders the document at t=0 and stops; Inkscape does the
-// same; resvg says outright that SMIL is out of scope. The one thing that does
-// animate SVG is a browser engine, and putting Chromium in the render path of a
-// video editor to draw a coloured rectangle moving is not a trade worth making:
-// a few hundred megabytes, a sandbox, a screenshot protocol, and a dependency
-// that breaks on its own schedule.
-//
-// What this does instead. SMIL is a small, declarative language over attribute
-// values -- it says what an attribute is at time t and nothing else. So it can
-// be evaluated rather than played: read the animation elements out of the
-// document, work out every animated attribute's value at t, write the document
-// back with those values baked in as ordinary static attributes, and repeat once
-// per frame. The result is a numbered sequence of static SVGs, which librsvg
-// renders perfectly well, and which ffmpeg reads in one go as an image sequence.
-// The animation is done before ffmpeg starts; ffmpeg only ever sees stills.
-//
-// What is supported: <animate>, <set> and <animateTransform> on numbers, number
-// lists, lengths with units, and hex or rgb() colours; from/to/by, values with
-// optional keyTimes, dur, begin, repeatCount (a number or indefinite), and
-// fill="freeze". calcMode discrete steps; paced and spline are treated as
-// linear, which is a wrong easing rather than a wrong picture.
-//
-// CSS @keyframes is the other way to animate an SVG, and it is read too -- by
-// svgcss.go, which turns a stylesheet's animations into the same svgAnims and
-// leaves everything below to this file. Its subset is documented there.
-//
-// What is not read at all: begin values that chain off another animation or off
-// an event, and animation elements that target something other than their
-// parent. Either renders as the static document, which is what would have
-// happened anyway.
+// Supported: <animate>, <set>, <animateTransform> on numbers, number lists,
+// lengths with units, hex/rgb() colours; from/to/by, values with keyTimes,
+// dur, begin, repeatCount (number or indefinite), fill="freeze"; calcMode
+// discrete steps, paced and spline read as linear. CSS @keyframes is folded in
+// by svgcss.go. Not read: begin chained off another animation or an event, and
+// elements targeting something other than their parent -- both render static.
 
 import (
 	"encoding/xml"
@@ -414,12 +390,10 @@ func (an *svgAnim) valueAt(t float64, base string) (string, bool) {
 
 // ---- interpolating an attribute value ---------------------------------------
 //
-// An SVG attribute is one of a handful of shapes -- a bare number, a number
-// with a unit, a list of numbers, a colour -- and all of them interpolate the
-// same way once the numbers are found. So the parser here is deliberately dumb:
-// pull the numbers out, keep everything between them, and put new numbers back
-// between the same separators. "translate(0 40)" and "10px" and "M0 0L10 10"
-// all work, and anything with no numbers in it steps rather than slides.
+// Every attribute shape -- a bare number, a number with a unit, a list, a
+// colour -- interpolates the same way once the numbers are found, so the
+// parser is deliberately dumb: pull the numbers out, keep the separators, put
+// new numbers back. Anything with no numbers steps rather than slides.
 
 // numsOf splits a value into its numbers and the text between them, so
 // rebuilding is exact where nothing changed.
@@ -681,14 +655,9 @@ func svgDuration(root *svgNode) float64 {
 	return end
 }
 
-// bakeSVG writes one static SVG per frame into dir and returns the printf
-// pattern ffmpeg reads them back with, and how many there are.
-//
-// The animation is played at its own speed and then held: a two-second wipe in
-// a ten-second slot wipes for two seconds and stands still for eight, which is
-// what a title card is for. A document that repeats indefinitely repeats for the
-// whole slot instead, since "forever" and "as long as it is up" are the same
-// thing here.
+// bakeSVG writes one static SVG per frame into dir and returns ffmpeg's printf
+// pattern and the count. The animation plays at its own speed and is then held;
+// a document repeating indefinitely repeats for the whole slot.
 func bakeSVG(src []byte, dir string, fps, dur float64) (string, int, error) {
 	root, err := parseSVG(src)
 	if err != nil {

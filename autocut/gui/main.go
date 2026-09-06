@@ -1,29 +1,5 @@
 package main
 
-// Workflow console for the autocut pipeline. Five steps, one per tab in the
-// header bar, each gated on the previous one's output, with a shared run bar
-// and log at the bottom: 1 inputs (sources, STT, frames), 2 describe the frames
-// and fix the transcripts into one session timeline, 3 cut, 4 narrate -- the
-// voice on top and its lines below -- and 5 produce the upload.
-//
-// The voice had a step of its own, before the narration and two rows from it,
-// so the one thing you cannot judge about a voice -- how it reads THIS
-// narration -- came up before there was any. It is the top third of the narrate
-// page now, with its own ▶ and ⏹ for the sample so the run bar keeps meaning
-// "run the step on screen".
-//
-// One folder per step, named for it. Prepare's three jobs get a folder each
-// under prepare/: inputs/ = the frames, the per-source transcripts and who
-// spoke when, describe/ = the event logs, transcript/ = the fixed transcripts,
-// the subtitles and the session timeline. A project written under an older
-// layout is moved once, on the open that finds it (migrateFolders).
-//
-//   cd autocut && ./gui/autocut-gui
-//
-// Everything is written under the open project's own output folder -- the
-// project file's path with .data on the end (project.go) -- one folder per job,
-// so a run can resume where it stopped.
-
 import (
 	"context"
 	"fmt"
@@ -31,10 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
@@ -42,21 +20,18 @@ import (
 	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
-// steps is the pipeline in order, and the tab row is this table. The labels are
-// short because five of them sit side by side in the header bar, where the
-// width they ask for is a floor under the whole window -- what each step
-// actually does is on hover, which is where the sidebar's longer titles went.
-// icon is what the tab shows beside the label, and alone once the bar runs out
-// of room for words (headfit.go): five icons fit a window no width of text
-// would, and a tab that has shrunk to its icon is still a tab you can hit.
-// wait is what the tab says instead while the step cannot be entered: it names
-// the step to finish rather than its number, since the numbering has moved
-// twice already and a hint pointing at the wrong tab is worse than none.
+// Workflow console for the autocut pipeline: five steps, one per header tab,
+// each gated on the previous one's output, with a shared run bar and log at
+// the bottom. One folder per step under the project (prepare/{inputs,describe,
+// transcript}, cut, narrate, produce); an older layout is moved once on open
+// (migrateFolders). Runs resume where they stopped.
 //
-// help is the long form of tip, and it is the last of the paragraphs that used
-// to sit at the top of each page. A page explains itself once and is then
-// shorter by three lines forever: the paragraph is behind the ⓘ in the header
-// bar, which shows the open page's and only that.
+//	cd autocut && ./gui/autocut-gui
+
+// steps is the pipeline in order; the tab row is this table. label is short
+// (five sit in the header bar); icon stands alone when the bar runs out of
+// room (headfit.go); wait names the step to finish rather than a number; help
+// is the paragraph behind the header ⓘ.
 var steps = []struct{ name, label, icon, tip, wait, help string }{
 	{"prep", "Prepare", "view-list-symbolic", "The sources, their transcripts, their frames, and what the models make of them", "",
 		"Add this session's files — footage, voice recordings, or one screen capture " +
@@ -447,22 +422,8 @@ func (a *App) showStep(name string) {
 	}
 }
 
-// syncHelp points the ⓘ at the page that is open: what this step does, and
-// only that. It listed all five steps at once to begin with, which made the
-// paragraph you actually wanted something to go looking for in a scrolling
-// column of four you did not.
-//
-// A TOOLTIP, which is how every other explanation in this app is read -- the
-// settings sections', the buttons', the source rows'. It was a menu button
-// with a popover: a thing to click, that stayed up until it was dismissed,
-// over the page it was explaining. So the one mark in the header bar that
-// looks like every other ⓘ behaved like none of them, and the ⓘ's own tooltip
-// ("What this step does") was a second, shorter answer to the question the
-// popover answered -- hover for one, click for the other.
-//
-// Called from showStep, which every page change goes through -- including the
-// bounce off a locked tab, where the help must stay on the page you did not
-// leave.
+// syncHelp points the header ⓘ tooltip at the open page's help. Called from
+// showStep, including the bounce off a locked tab.
 func (a *App) syncHelp() {
 	if a.helpInfo == nil {
 		return
@@ -833,16 +794,9 @@ func (f *freqPick) parse() {
 	f.set(nearestStop(v))
 }
 
-// Where each step writes. The folders are named for their steps, as the tabs
-// and the code are; they were step1/ to step6/ once, and a project written
-// then is moved to these names the first time it is opened (migrateFolders).
-//
-// One folder per step, Prepare included. Its three jobs get a folder each
-// inside it -- the describer resumes per chunk and the fixer does not, and the
-// frames are neither -- but they are its three, so they are under its name:
-// prepare/inputs/, prepare/describe/, prepare/transcript/. They were inputs/
-// beside understand/{describe,transcript}, which made the one step two places
-// on disk and three buttons on its page.
+// Where each step writes: folders named for their steps (step1/..step6/ once;
+// migrateFolders moves them). Prepare's three jobs are under its name --
+// prepare/inputs/, prepare/describe/, prepare/transcript/.
 func (a *App) prepareDir() string    { return filepath.Join(a.outDir, "prepare") }
 func (a *App) inputsDir() string     { return filepath.Join(a.prepareDir(), "inputs") }
 func (a *App) describeDir() string   { return filepath.Join(a.prepareDir(), "describe") }
@@ -857,16 +811,10 @@ func (a *App) framesDir(base string) string {
 	return filepath.Join(a.inputsDir(), "frames", base)
 }
 
-// canCut is what the Cut page needs before it can show anything: frames, out
-// of a source marked as footage.
-//
-// It used to be session.tsv -- Describe's output -- which is not the same
-// thing. A silent screen capture has no words to fix and a session nobody
-// wants described is cut by hand; in both, Describe would be a step run for no
-// reason except to unlock the next one. The timeline is built from the sources
-// and their frames. What Describe adds is the text ON that timeline, and
-// having none of it is an empty track, not a locked page -- the page says so
-// itself, under the tracks, and the suggestion button says it again.
+// canCut is what the Cut page needs: frames out of a source marked as footage
+// -- not session.tsv. A silent capture or a session nobody wants described is
+// cut by hand; what Describe adds is text ON the timeline, and having none is
+// an empty track, not a locked page.
 func (a *App) canCut() bool {
 	vids, _ := a.snapSources()
 	for _, v := range vids {
@@ -951,14 +899,9 @@ func (a *App) loadMeta() map[string]string {
 	return m
 }
 
-// snapSources caches the session's sources. Background runners must never touch
-// the list widget -- GTK objects belong to the GUI thread -- so every run takes
-// this snapshot first and works from it.
-//
-// The pair it hands back is the list split by role: the footage, then
-// everything else. Every source is in exactly one of the two, which is what
-// makes appending them the whole session -- the reason a video that is also a
-// voice is one row here and not one row in each of two lists.
+// snapSources caches the session's sources for background runners, which must
+// never touch the list widget. Split by role: the footage, then everything
+// else; every source is in exactly one of the two.
 func (a *App) snapSources() (vids, auds []string) {
 	if a.srcList == nil {
 		return a.snappedSources()
@@ -1080,16 +1023,10 @@ func (a *App) build(app *gtk.Application) {
 		// saying "greyed out" -- so the one number a slider exists to report
 		// looked like a setting that could not be changed.
 		"scale value, scale marks label { color: @theme_fg_color; } " +
-		// the boxes you type in, with the corner the entries and buttons
-		// beside them have. Every one of them is a scrolled window given the
-		// frame class (editorFrame, and the four boxes that build their own),
-		// and the theme draws that frame square -- so a page of GTK controls
-		// had one square thing on it, which was the thing you spend the most
-		// time looking at. The scrolled window clips its child to this radius,
-		// so the text's own white corners come with it.
-		//
-		// The timeline is not in here: its bands are cairo, and they stay
-		// square because a band is a measurement (see platePath).
+		// the boxes you type in get the corner the entries and buttons have: every
+		// one is a scrolled window with the frame class (editorFrame), which the
+		// theme draws square. The timeline stays square: a band is a measurement
+		// (platePath).
 		".frame { border-radius: 6px; } .frame textview, .frame textview text { border-radius: 6px; } " +
 		// ...and one font in everything you type in. The boxes set it on
 		// themselves (SetMonospace); an entry has no such switch, so the one
@@ -1107,14 +1044,8 @@ func (a *App) build(app *gtk.Application) {
 
 	head := gtk.NewHeaderBar()
 	a.head = head
-	// Symbols, like everything else in this bar. Two spelled-out labels took
-	// more of the title bar than the four icon buttons at the other end put
-	// together, for the two things pressed least often in the app -- and they
-	// were the only words up there, so they read as the important ones. The
-	// tooltip says what the icon means, which is the deal every other button
-	// here already makes.
-	// New, then Open, then Save: the order every application puts them in, and
-	// the order they happen in
+	// Symbols, like everything else in this bar; the tooltip says what the icon
+	// means. New, then Open, then Save: the order every application uses.
 	newP := gtk.NewButtonFromIconName("document-new-symbolic")
 	newP.SetTooltipText("New project — empty the session and start over")
 	newP.ConnectClicked(a.newProjectDialog)
@@ -1127,24 +1058,9 @@ func (a *App) build(app *gtk.Application) {
 	head.PackStart(newP)
 	head.PackStart(loadP)
 	head.PackStart(saveP)
-	// Which file this session is being written to. Projects are files in a
-	// folder and several sit side by side (a recut, a variant, last week's), and
-	// until now the window said nothing about which one Save was following --
-	// the title bar was the five tabs and nothing else, so the only way to find
-	// out was to open the Save dialog and read the name it proposed.
-	//
-	// The whole path when the bar has room for it, the file name alone when it
-	// does not (fitHeader). The name alone used to be all it ever showed, on
-	// the argument that variants of one session share a folder and the leading
-	// directories are the identical half -- true, but not the only question
-	// asked of this label. "Which of the three tom.json on this machine is
-	// open" is the other one, and it is the one you ask after loading from a
-	// dialog that started somewhere else. So the path when it is free, and the
-	// name when it costs the tab row its words.
-	//
-	// Ellipsized either way: the tabs are the title widget and sit centered, so
-	// a project with a long name must not push them off center or shove the
-	// buttons at the other end off the bar.
+	// Which project this session is written to: the whole path when the bar has
+	// room, the file name when it costs the tabs their words (fitHeader).
+	// Ellipsized so a long name cannot push the centred tabs off centre.
 	a.projLabel = gtk.NewLabel("")
 	a.projLabel.SetEllipsize(pango.EllipsizeEnd)
 	a.projLabel.AddCSSClass("dim-label")
@@ -1301,10 +1217,7 @@ func (a *App) build(app *gtk.Application) {
 
 	// the shared bottom bar: run controls act on the visible step
 	ctlRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	ctlRow.SetMarginStart(8)
-	ctlRow.SetMarginEnd(8)
-	ctlRow.SetMarginTop(4)
-	ctlRow.SetMarginBottom(2)
+	margins(ctlRow, 4, 2, 8, 8)
 	ctlRow.Append(a.playBtn)
 	ctlRow.Append(a.stopBtn)
 	// No volume slider on this bar. It was here for one page: Produce, which
@@ -1409,15 +1322,9 @@ func (a *App) build(app *gtk.Application) {
 	a.win.SetVisible(true)
 }
 
-// updateGates grays the tabs whose prerequisites are missing and puts the
-// reason where the description usually is; clicking a locked tab bounces back.
-// Graying rather than desensitizing is the point: an insensitive button gets no
-// hover, so the one place that says what is missing would be the one place you
-// cannot reach.
-//
-// Describe used to gate Transcript from the sidebar, and Inputs used to gate
-// Describe. All three share a page and a ▶ now, so the ordering between them is
-// the page's business, not a locked tab's.
+// updateGates greys the tabs whose prerequisites are missing and puts the
+// reason where the description usually is; a locked tab bounces back. Greyed
+// rather than insensitive, since an insensitive button gets no hover.
 func (a *App) updateGates() {
 	if len(a.tabs) == 0 {
 		return
@@ -1478,15 +1385,9 @@ func (a *App) updateNarrateInfo() {
 
 // ---- helpers ---------------------------------------------------------------
 
-// setStatus is the answer to a click: what an edit did, or why it did nothing.
-// It sits in the log expander's header, which is the only line on screen with
-// room for a sentence, and it holds that sentence until the next press.
-//
-// It is not where a run reports. A run has the progress bar, two widgets to the
-// left of it, and everything a run had to say was being said twice -- the same
-// words on the bar and on this line at the same instant, which reads as two
-// events rather than as one. Nor does it repeat the header bar: the project it
-// names is the project the header names.
+// setStatus is the answer to a click -- what an edit did, or why nothing -- in
+// the log expander's header, held until the next press. Not where a run
+// reports (the bar does), and it does not repeat the header bar's project.
 func (a *App) setStatus(s string) {
 	if a.status == nil {
 		return // headless (tests): the status line is the window's
@@ -1494,18 +1395,9 @@ func (a *App) setStatus(s string) {
 	a.status.SetText(s)
 }
 
-// newLogPane is what a log looks like, everywhere one appears: a read-only
-// monospace view that wraps rather than scrolls sideways, in a scroller with a
-// border around it.
-//
-// There are two -- the run log at the bottom of the window and the settings
-// dialog's test log -- and they were built separately, a dozen lines apart in
-// two files, which is how they drifted: same font and same expander, but only
-// one of them had the frame, so the run log's text sat loose on the window
-// background with nothing to say where it began. One builder, one design.
-//
-// minHeight is the only thing the two disagree on, and legitimately: the run
-// log is a page of a session, the dialog's is a handful of verdicts.
+// newLogPane is what every log looks like: read-only monospace, wrapping, in a
+// framed scroller. Shared by the run log and the settings test log; minHeight
+// is the one thing they disagree on.
 func newLogPane(minHeight int) (*gtk.TextView, *gtk.ScrolledWindow) {
 	tv := gtk.NewTextView()
 	tv.SetEditable(false)
@@ -1519,14 +1411,9 @@ func newLogPane(minHeight int) (*gtk.TextView, *gtk.ScrolledWindow) {
 	return tv, sw
 }
 
-// logf writes one line to the run log and to the terminal behind it.
-//
-// A log line reports: a name, a count, a size, a failure. What a thing is, what
-// is going to happen next, and what to do about it are not log lines -- they are
-// on the page, in a tooltip, or in the source. A log that explains itself is a
-// log whose real news scrolls past unread, and the run's own news already has a
-// widget: the progress bar carries the task and the counter (see prog), so a
-// line that says only "window 7 of 60" belongs there and not here.
+// logf writes one line to the run log and the terminal. A log line reports: a
+// name, a count, a size, a failure. Explanations belong on the page, in a
+// tooltip or in the source, and per-task progress on the bar (prog).
 func (a *App) logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...) // mirror to the launching terminal
 	if a.log == nil {
@@ -1542,4 +1429,58 @@ func (a *App) logf(format string, args ...any) {
 
 func (a *App) logfIdle(format string, args ...any) {
 	glib.IdleAdd(func() { a.logf(format, args...) })
+}
+
+// A watchdog for the GTK thread: a heartbeat on the main loop, watched by its
+// own goroutine. When the beat is hangStall late, every goroutine's stack goes
+// to hang-<time>.txt beside the settings and to stderr -- the Go frames above
+// the blocked C call say which seek or state change never came back. One dump
+// per hang.
+
+const (
+	hangBeat  = 200 * time.Millisecond // how often the main loop says it is alive
+	hangStall = 3 * time.Second        // how late a beat has to be to count as a hang
+)
+
+// startHangWatch installs the heartbeat and the watcher. Called once the main
+// loop exists; harmless before the window does.
+func (a *App) startHangWatch() {
+	var last atomic.Int64
+	last.Store(time.Now().UnixNano())
+	glib.TimeoutAdd(uint(hangBeat/time.Millisecond), func() bool {
+		last.Store(time.Now().UnixNano())
+		return true
+	})
+	go func() {
+		dumped := false
+		for range time.Tick(hangBeat) {
+			late := time.Since(time.Unix(0, last.Load()))
+			if late < hangStall {
+				dumped = false
+				continue
+			}
+			if dumped {
+				continue
+			}
+			dumped = true
+			a.dumpHang(late)
+		}
+	}()
+}
+
+// dumpHang writes every goroutine's stack. Not through the log: the log is a
+// widget on the thread that is stuck.
+func (a *App) dumpHang(late time.Duration) {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	head := fmt.Sprintf("autocut: the GTK thread has not answered for %s -- every goroutine's stack follows\n\n", late.Round(100*time.Millisecond))
+	fmt.Fprint(os.Stderr, head)
+	os.Stderr.Write(buf[:n])
+	dir := configDir()
+	if dir == "" {
+		return
+	}
+	p := filepath.Join(dir, "hang-"+time.Now().Format("0102-150405")+".txt")
+	os.WriteFile(p, append([]byte(head), buf[:n]...), 0o600)
+	fmt.Fprintf(os.Stderr, "\nautocut: written to %s\n", p)
 }

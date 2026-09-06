@@ -1,24 +1,17 @@
 package main
 
-// The render's half of the effects (cut_fx.go): turning a cut's aspect,
-// views and zooms into an ffmpeg filter chain per clip, and the little audio
-// arithmetic a clip off its own speed needs.
-//
-// The shape of the problem: every clip in the produced video must come out at
-// exactly the same frame size, because the join is a stream copy. With an
-// aspect chosen, that frame is outBox. Inside each footage clip the camera is
-// somewhere -- a rectangle of the source, possibly moving -- and the chain
-// that realizes it is:
+// The render's half of the effects (cut_fx.go): per-clip ffmpeg filter chains
+// for aspect, views and zooms, plus the audio arithmetic a clip off its own
+// speed needs. Every clip must come out at the same frame size (outBox)
+// because the join is a stream copy:
 //
 //	pad  -> room around the frame, when a rectangle reaches past its edges
 //	crop -> the fixed box the whole camera journey happens inside
-//	zoompan -> the moving window, driven by piecewise-linear expressions
-//	           of in_time -- or, when the camera never moves, a plain crop
-//	           and scale, which costs nothing and resamples nothing.
+//	zoompan -> the moving window, piecewise-linear expressions of in_time --
+//	           or a plain crop and scale when the camera never moves
 //
-// The camera's position over time comes from fxRectAt -- the same function
-// the preview overlay draws -- sampled at every moment anything starts or
-// stops moving, so the render and the preview cannot drift apart.
+// The camera path comes from fxRectAt, the same function the preview draws,
+// sampled at every moment anything starts or stops moving.
 
 import (
 	"fmt"
@@ -115,15 +108,10 @@ func buildCam(fx []cutFx, aspect string, sw, sh int, sessS, span, rate, length f
 	return p
 }
 
-// gainCues maps the cut's volume effects onto one clip, on exactly the terms
-// textCues maps its titles -- the same five numbers, the same arithmetic --
-// so a title and a gain placed at the same second come and go together, and a
-// gain under a speed effect is stretched with the sound it is turning up.
-//
-// A clip that is one held session moment (span 0: a spliced card, a freeze)
-// gets none. There is no stretch of the session under it for a band to cover
-// part of, and a gain that covered all of it would be an effect the timeline
-// draws two seconds wide doing something for the whole of a ten-second card.
+// gainCues maps the cut's volume effects onto one clip on textCues' terms --
+// same five numbers -- so a title and a gain at the same second come and go
+// together, and a gain under a speed effect stretches with its sound. A clip
+// that is one held moment (span 0) gets none.
 func gainCues(fx []cutFx, sessS, span, rate, length float64) []textCue {
 	if length <= 0 || span <= 0 {
 		return nil
@@ -149,17 +137,10 @@ func gainCues(fx []cutFx, sessS, span, rate, length float64) []textCue {
 	return out
 }
 
-// gainExpr is one volume cue as an ffmpeg volume expression, in the clip's own
-// seconds: the gain across the band, 1 everywhere else, and a straight ramp
-// over each fade. The whole envelope is one expression rather than a filter per
-// piece because volume's own eval=frame already re-reads it every frame, and
-// three enable-windowed filters where one expression will do is three passes
-// over the samples for the same numbers.
-//
-// The multiplier is written with an explicit sign (1-0.5000*... rather than
-// 1+-0.5000*...) because that is the arithmetic a person reading the command
-// line expects to see, and because a quieting effect -- which is every gain
-// under 100% -- is the case that would otherwise be written the ugly way.
+// gainExpr is one volume cue as an ffmpeg volume expression in the clip's own
+// seconds: the gain across the band, 1 elsewhere, a straight ramp over each
+// fade. One expression, since volume's eval=frame re-reads it anyway. The
+// multiplier is written with an explicit sign (1-0.5000*... not 1+-0.5000*...).
 func gainExpr(c textCue) string {
 	g := clampGain(c.fx.Gain)
 	var ramps []string
@@ -279,13 +260,9 @@ func pieceExpr(ts, vs []float64) string {
 }
 
 // padBox is the border the camera needs around the recording: the padded
-// frame's size and where the recording sits inside it. What goes in that
-// border is not this file's business -- encodeClip fills it with a blurred
-// blow-up of the recording itself (bdrop) -- but its size is, because every
-// crop and every zoompan expression below is measured on the padded frame.
-//
-// ok is false when the camera never looks past the frame's edge, which is the
-// ordinary case: there is nothing to fill and nothing to pad.
+// frame's size and where the recording sits in it. encodeClip fills it
+// (bdrop); every crop and zoompan expression below is measured on the padded
+// frame. ok is false when the camera never looks past the edge.
 func (p *camPath) padBox() (w, h, l, t int, ok bool) {
 	if p.padW == p.sw && p.padH == p.sh {
 		return 0, 0, 0, 0, false
@@ -293,14 +270,10 @@ func (p *camPath) padBox() (w, h, l, t int, ok bool) {
 	return p.padW, p.padH, p.padL, p.padT, true
 }
 
-// chain is the filter steps that realize the camera: pad and crop always
-// (skipped when they would do nothing), then either a plain scale -- the
-// still camera -- or zoompan with the journey written into its expressions.
-//
-// padded says the caller has already put the recording on a padded frame of
-// its own -- which is what encodeClip does, so that the border can be a
-// blurred blow-up rather than black. Everything after it is measured the same
-// way either way.
+// chain is the filter steps that realize the camera: pad and crop (skipped
+// when no-ops), then a plain scale for a still camera or zoompan with the
+// journey in its expressions. padded says the caller already put the recording
+// on a padded frame (encodeClip, for the blurred border).
 func (p *camPath) chain() []string { return p.chainOn(false) }
 
 func (p *camPath) chainOn(padded bool) []string {
@@ -387,13 +360,9 @@ func outBox(clips []prodClip, st prodSettings, aspect string) (int, int) {
 }
 
 // tierBox is the frame a chosen aspect comes out at. The tier names the SHORT
-// side -- the height of a wide frame, the width of a tall one: "1080p" on a
-// 9:16 cut is 1080×1920, the size a Short is actually uploaded at, not a
-// 608-wide strip. With no tier ("original") the footage's height names the
-// frame's height, which for a tall cut is the full height of the crop the
-// aspect takes out of the footage. Both sides rounded even because yuv420
-// says so. Pure, so the Produce page's info line can say the same frame the
-// render will make without opening a file.
+// side: "1080p" on a 9:16 cut is 1080×1920. With no tier the footage's height
+// names the frame's. Both sides rounded even for yuv420. Pure, so the Produce
+// info line can say the frame without opening a file.
 func tierBox(a float64, h0, height int) (int, int) {
 	if a < 1 && height > 0 {
 		w := height - height%2

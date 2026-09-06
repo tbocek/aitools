@@ -209,7 +209,7 @@ func TestTheDarkPlateCoversTheMarkAndTheWords(t *testing.T) {
 
 // The seams: nothing on the timeline writes a mark any more.
 func TestTheTimelineDrawsItsMarksRatherThanWritingThem(t *testing.T) {
-	for _, file := range []string{"cut.go", "cut_fx.go", "cut_audio.go", "cut_marks.go"} {
+	for _, file := range []string{"cut.go", "cut_fx.go", "cut_audio.go", "cut_draw.go"} {
 		b, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
@@ -261,7 +261,7 @@ func TestThePlatesAreRoundedAndTheBandsAreNot(t *testing.T) {
 	// both plate painters lay the same path, so there is one radius in the app
 	for _, c := range []struct{ file, head string }{
 		{"cut.go", `func plateText\(`},
-		{"cut_marks.go", `func markPlate\(`},
+		{"cut_draw.go", `func markPlate\(`},
 	} {
 		body := funcBody(t, c.file, c.head)
 		if !strings.Contains(body, "platePath(cr, ") {

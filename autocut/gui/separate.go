@@ -1,31 +1,11 @@
 package main
 
-// Splitting the voice off a recording.
-//
-// A screen capture is one file with two things in it: the game, and whoever
-// was talking over it. Everything downstream wants them apart -- the render
-// wants to duck the game under the narration and cannot, the transcript wants
-// the speech without the shooting behind it, and a line the narration is going
-// to say again is a line the footage should not still be saying. Turning the
-// whole recording down turns the game down with it; that is the only knob one
-// file offers.
-//
-// So: ask the audio server to decompose it. The separation models take a
-// mixture and give back the voice AND everything else, not one or the other --
-// the two stems add back up to what went in. That is what makes this a split
-// rather than a filter: nothing is thrown away, the recording just stops being
-// one thing.
-//
-// What comes out is two ordinary files, and the session's row for that
-// recording becomes two ordinary rows: itself without the voice, and the voice.
-// No reader downstream is taught about stems -- a lane, a waveform, the render
-// bed and the transcript all see files, the way they always did. That is the
-// whole reason the result is written as files rather than remembered as an
-// exception on the source: an exception has to be honoured in every reader,
-// and being wrong in one of them is a bug that surfaces three steps later.
-//
-// It is a flag on the row and not a button, because the work is minutes on the
-// server's GPU. The press that spends minutes on this page is ▶.
+// Splitting the voice off a recording: the audio server decomposes a mixture
+// into the voice AND everything else (the stems add back up). The result is
+// two ordinary files and the session's row becomes two ordinary rows -- itself
+// without the voice, and the voice -- so no reader downstream is taught about
+// stems. A flag on the row, not a button: the work is minutes of GPU, spent
+// by ▶.
 
 import (
 	"encoding/base64"
@@ -93,20 +73,10 @@ func splitProduct(path string) bool {
 // now.
 type sepResult struct{ src, rest, voice string }
 
-// sepApply rewrites a list of sources for what the separation produced: the row
-// that asked now points at itself-without-the-voice, and the voice follows it
-// as a row of its own. Pure, and the one place the rule lives -- the run's
-// snapshot and the list on the page are both put through it, so what the run
-// works on and what the page shows cannot drift apart.
-//
-// The voice inherits the narrator tag. Whoever that recording was is the person
-// speaking on it, and after the split the speaking is the other file: leaving
-// the tag on the game would clone the narration's voice from a recording that
-// no longer has one in it.
-//
-// The wish is cleared by granting it. There is nothing left to ask for -- the
-// row is already voiceless -- and a wish that survived its own fulfilment would
-// be granted again on the next ▶.
+// sepApply rewrites a source list for what the separation produced: the row
+// points at itself-without-voice and the voice follows as its own row. Pure,
+// and the one place the rule lives (run snapshot and page list both go through
+// it). The voice inherits the narrator tag; the wish is cleared by granting it.
 func sepApply(items []sourceItem, res []sepResult) []sourceItem {
 	by := map[string]sepResult{}
 	for _, r := range res {
@@ -151,19 +121,10 @@ func sepStems(body []byte) ([]sepStem, error) {
 	return out.Stems, nil
 }
 
-// sepPick decides which of the stems is the voice, and which of them are
-// everything else.
-//
-// Two families answer differently and both are right. The RoFormers separate a
-// mixture into exactly "vocals" and "instrumental" -- the second derived by
-// subtracting the first, so the pair is the original. HTDemucs separates into
-// four instruments, of which "vocals" is one; there everything else is the
-// other three, and it is this function's job to say so rather than the caller's
-// to know which model it asked.
-//
-// A voice stem is required and the rest is required: a model that gave neither
-// is not doing what this step asked for, and saying so here beats writing a
-// silent file and finding out at the render.
+// sepPick decides which stem is the voice and which are everything else.
+// RoFormers give "vocals" and "instrumental"; HTDemucs gives four instruments,
+// where the rest is the other three. Both required: a model that gave neither
+// fails here, not at the render.
 func sepPick(ids []string) (voice string, rest []string, err error) {
 	for _, id := range ids {
 		if strings.EqualFold(id, "vocals") || strings.EqualFold(id, "voice") {
@@ -195,13 +156,9 @@ func sepPick(ids []string) (voice string, rest []string, err error) {
 // ---- the run ----------------------------------------------------------------
 
 // separateVoices grants the session's split wishes and hands back the source
-// lists as they are once it has. It runs before anything else on ▶: the files
-// it makes are what the frames are taken from and what the transcripts are of,
-// so it has to finish before either starts.
-//
-// Nothing here touches the widget. The snapshot is rewritten in place, which is
-// what the rest of the run reads, and the page is told separately -- the page
-// is a picture of the session, and the run cannot wait for one to be repainted.
+// lists as they are once it has. It runs before anything else on ▶: its files
+// are what the frames and transcripts come from. The snapshot is rewritten in
+// place; the page is told separately.
 func (a *App) separateVoices(videos, audios []string) ([]string, []string, error) {
 	want := a.sepWanted()
 	if len(want) == 0 {

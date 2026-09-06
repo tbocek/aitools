@@ -83,7 +83,7 @@ func TestThePlaybackTickRepaintsTheLineNotTheBands(t *testing.T) {
 		"over.AddOverlay(ed.lineArea)",
 		"x := ed.xOf(ed.playhead) - ed.viewX", // the layer does not scroll; the bands do
 	} {
-		if !strings.Contains(readSrc(t, "cut_playline.go"), want) {
+		if !strings.Contains(readSrc(t, "cut_draw.go"), want) {
 			t.Errorf("cut_playline.go no longer contains %q", want)
 		}
 	}
@@ -100,7 +100,7 @@ func TestThePlaybackTickRepaintsTheLineNotTheBands(t *testing.T) {
 		t.Error("redrawTracks no longer queues the tracks, so an edit repaints nothing")
 	}
 	// and the framing overlay still follows the clock on the cheap path
-	body = funcBody(t, "cut_playline.go", `func \(ed \*cutEditor\) redrawLine\(\) \{`)
+	body = funcBody(t, "cut_draw.go", `func \(ed \*cutEditor\) redrawLine\(\) \{`)
 	for _, want := range []string{"ed.fxArea.QueueDraw()", "ed.syncFxCursor()", "ed.syncPreviewZoom()"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("redrawLine no longer settles %q with the line", want)

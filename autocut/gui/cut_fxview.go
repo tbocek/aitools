@@ -1,23 +1,10 @@
 package main
 
-// The preview's framing overlay: the one place the camera effects are SEEN on
-// the picture rather than on the timeline.
-//
-// A transparent drawing area sits over the preview (a GtkOverlay made in
-// buildCut). Passively it draws where the camera is at the playhead -- the
-// cut's aspect as a bright rectangle, everything outside it dimmed, which is
-// exactly what the finished video will and will not show. With an effect
-// button armed, or a view/zoom held from the lane, it takes the pointer and a
-// drag draws the camera rectangle by hand: locked to the cut's aspect,
-// snapping to the full frame's width or height when it comes close, free to be
-// smaller (a zoom in) or larger (a pull back past the frame's edge). A press
-// that lands INSIDE a held rectangle slides it whole instead, its edges
-// snapping to the frame's own edges.
-//
-// The overlay only ever DRAWS; what it produces is normalized numbers handed
-// to the same cutFx everything else reads. It does not try to crop the live
-// preview -- GStreamer plays the frame as filmed, the rectangle says what the
-// render will make of it, and the render (produce_fx.go) reads the same numbers.
+// The framing overlay over the preview: a transparent drawing area showing the
+// camera at the playhead (the cut's aspect bright, the rest dimmed) and, with
+// an effect armed or held, taking a drag to draw or slide the rectangle,
+// snapped to the frame's edges. It only draws and hands normalized numbers to
+// cutFx; the render (produce_fx.go) reads the same numbers.
 
 import (
 	"math"
@@ -35,14 +22,10 @@ func (ed *cutEditor) fxCut() *cutEditor { return ed }
 func (ed *cutEditor) fxPlayer() *Player { return ed.player }
 func (ed *cutEditor) fxAt() float64     { return ed.playhead }
 
-// screen is this page's own fxScreen with the page wired into it, done here
-// rather than at construction because a cutEditor is a struct literal in a
-// hundred unit tests and none of them build a window -- the geometry and the
-// clock still have to answer there, and an editor is always its own page.
-//
-// These forwarders shadow the promoted ones, which is the whole reason they
-// exist: every ed.livePlayhead() and ed.syncPreviewZoom() in the file goes on
-// meaning what it did, and now runs the code the Narrate preview runs.
+// screen is this page's fxScreen with the page wired in, done here rather than
+// at construction because a cutEditor is a struct literal in a hundred tests.
+// These forwarders shadow the promoted ones so every ed.livePlayhead() and
+// ed.syncPreviewZoom() runs the code the Narrate preview runs.
 func (ed *cutEditor) screen() *fxScreen {
 	if ed.fxScreen.page == nil {
 		ed.fxScreen.page = ed
@@ -77,14 +60,10 @@ func (ed *cutEditor) fxSrcSize() (float64, float64) {
 	return 1920, 1080
 }
 
-// fxCamOK takes the camera layer down while an effect is being aimed by hand:
-// a zoom because you are framing and have to see everything the camera could
-// see, a text because its box is only editable on the layer that offers a grab
-// -- and a caption whose bar has been picked up but whose box cannot be found
-// on the picture is the whole of "I cannot change the text area". An armed TEXT
-// keeps the layer up: a text box lives on the OUTPUT frame, so it is drawn on
-// the finished framing, and dropping to the raw frame would have the box drawn
-// on a picture the render never shows.
+// fxCamOK takes the camera layer down while a zoom is aimed by hand (you must
+// see everything the camera could see) or a text's bar is held (its box is
+// only editable on the layer with a grab). An armed TEXT keeps the layer up:
+// its box lives on the OUTPUT frame.
 func (ed *cutEditor) fxCamOK() bool {
 	return ed.hasPlay && (ed.fxArm == "" || ed.fxOverArm()) &&
 		ed.fxRectHeld() == nil && ed.fxHeldBox() == nil
@@ -107,16 +86,10 @@ func (ed *cutEditor) camInForce(t float64) *cutFx {
 	return nil
 }
 
-// camIndexInForce is camInForce as a position in ed.fx, which is what holding
-// an effect needs: holdFx takes an index, and a pointer into a slice that undo
-// may replace wholesale is not one.
-//
-// Two answers, in order. A zoom whose band covers t owns the picture for those
-// seconds, and the latest such wins. Otherwise it is the staying zoom in force
-// -- the last one at or before t. -1 when there is neither, which is the camera
-// parked on the whole frame: a framing no effect can be edited by, and that is
-// the honest answer everywhere before the cut's first zoom, because no effect
-// reaches back to seconds ahead of its own T (camRectAt).
+// camIndexInForce is camInForce as a position in ed.fx (holdFx takes an index;
+// a pointer into a slice undo replaces is not one). A zoom whose band covers t
+// wins, latest first; otherwise the staying zoom in force; -1 when neither --
+// the camera parked on the whole frame, which no effect can be edited by.
 func (ed *cutEditor) camIndexInForce(t float64) int {
 	band, stay := -1, -1
 	for i := range ed.fx {
@@ -157,27 +130,16 @@ func camMoving(fx []cutFx, t float64) bool {
 }
 
 // fxCamSettled is whether the camera is STANDING STILL at t -- parked on one
-// zoom's own rectangle, with no fade half done.
-//
-// It is the condition for offering the camera rectangle to the hand. While the
-// camera is moving, the rectangle on the picture belongs to no single effect:
-// it is somewhere between two of them, and dragging it would have to snap to
-// one end of the journey the moment the hand touched it. Nothing to grab is
-// the honest answer, and the lane is still there for picking either end up.
+// zoom's rectangle, no fade half done -- which is the condition for offering
+// the rectangle to the hand. Mid-move it belongs to no single effect.
 func fxCamSettled(fx []cutFx, t float64) bool {
 	return len(zoomsOf(fx)) > 0 && !camMoving(fx, t)
 }
 
-// fxDragTarget is the effect a drag on the picture edits when nothing has been
-// picked up: the zoom the picture is framed by right now. This is what makes
-// the overlay direct -- the rectangle you can see is the rectangle you can
-// take hold of, without going down to the lane to pick its effect up first.
-//
-// It is deliberately narrow. Nothing is offered while the preview is playing
-// (the picture on screen is then the camera's own window, drawn by a different
-// mapping -- see syncPreviewZoom -- so a drag would move the box somewhere
-// other than where the hand went), nothing while the camera is in motion, and
-// nothing when no zoom has been placed at all.
+// fxDragTarget is the effect a drag on the picture edits when nothing is held:
+// the zoom the picture is framed by right now. Deliberately narrow: nothing
+// while playing (the camera layer uses a different mapping, syncPreviewZoom),
+// nothing while the camera moves, nothing before the first zoom.
 func (ed *cutEditor) fxDragTarget() *cutFx {
 	if f := ed.fxRectHeld(); f != nil {
 		return f
@@ -239,16 +201,11 @@ func fxCursorName(horiz, vert, left, top, inside bool) string {
 	return "default"
 }
 
-// resizeRect is a border drag, in widget pixels. The hand is at (x, y), the
-// far edge or corner the drag keeps still is (ax, ay), and pxA is the cut's
-// aspect expressed in those same pixels. horiz/vert say which borders were
-// grabbed and left/top which side of the rectangle they were on.
-//
-// ONE number is really dragged -- the height -- and the width follows from the
-// cut's ratio, because a camera window that is not the shape of the finished
-// video is not something the render can honour. A corner takes whichever axis
-// the hand moved further, so the rectangle keeps up with the pointer instead
-// of lagging behind the shorter one. Returns the new centre and height.
+// resizeRect is a border drag in widget pixels: the hand at (x, y), the fixed
+// far edge/corner at (ax, ay), pxA the cut's aspect in those pixels;
+// horiz/vert say which borders were grabbed, left/top which side. ONE number
+// is dragged -- the height -- and the width follows the aspect; a corner takes
+// the axis the hand moved further. Returns the new centre and height.
 func resizeRect(x, y, ax, ay, pxA float64, horiz, vert, left, top bool) (cx, cy, h float64) {
 	switch {
 	case horiz && vert:
@@ -472,27 +429,11 @@ func stillFit(W, H, sw, sh, outA float64, live bool, r fxRect) (s, tx, ty float6
 	return s, (W - sw*s) / 2, (H - sh*s) / 2
 }
 
-// zoomTransform is translate(tx,ty) then scale(s), as one call on no transform
-// at all.
-//
-// It is written this way on purpose, and the shape matters more than it looks.
-// Every gsk_transform_* call CONSUMES the transform it is chained onto -- gotk4
-// says so in its own generated comment ("This function consumes next") -- but
-// the Go value it consumed still carries a finalizer that will unref it again.
-// So the natural spelling,
-//
-//	gsk.NewTransform().Translate(pt).Scale(s, s)
-//
-// leaves two unrefs owing on references the C calls already took, and this runs
-// on every tick of a playing preview. Go's finalizer goroutine collects them
-// seconds later and frees memory GTK is still holding, which surfaces as GLib
-// shouting about ref counts and boxes it no longer recognises and then a
-// segfault somewhere entirely unrelated. A nil transform is the identity, so
-// starting from nil consumes nothing, and one matrix does both steps: the 2D
-// matrix [xx yx x0; xy yy y0] sends a point to (s*x + tx, s*y + ty), which is
-// what the chain meant. The one transform that comes back is handed straight
-// to SetChildTransform, which is transfer-none (GtkFixed refs it), so the
-// finalizer it does carry is the only one owing and it balances.
+// zoomTransform builds translate(tx,ty)·scale(s) as ONE matrix from a nil
+// transform. Chaining gsk_transform_* calls consumes each transform while the
+// Go value keeps a finalizer that unrefs it again -- a double free on every
+// tick. The result goes to SetChildTransform (transfer-none), so its one
+// finalizer balances.
 func zoomTransform(s, tx, ty float64) *gsk.Transform {
 	var identity *gsk.Transform
 	return identity.Matrix2D(float32(s), 0, 0, float32(s), float32(tx), float32(ty))
@@ -511,16 +452,9 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 	over.AddController(ed.wheelFrames())
 	area := ed.fxArea
 
-	// The camera's own clock. Everything else on this page is driven by a
-	// 100ms timer, which is right for a red line and wrong for a glide: ten
-	// samples is a visibly steppy second, and the render -- zoompan evaluating
-	// the path per frame -- has no such steps, so the preview was the only
-	// place a transition looked choppy.
-	//
-	// The frame clock runs at the display's rate and costs nothing while the
-	// layer is down, which is whenever the preview is not playing a camera.
-	// The timeline underneath keeps its 100ms; only the picture is redrawn
-	// here, and it is already being repainted at the video's own rate.
+	// The camera's own clock: the 100ms timer is right for a red line and wrong
+	// for a glide, and the render (zoompan per frame) has no steps. The frame
+	// clock costs nothing while the layer is down; the timeline keeps its 100ms.
 	area.AddTickCallback(func(_ gtk.Widgetter, _ gdk.FrameClocker) bool {
 		if ed.livePreview() && ed.player != nil && ed.player.playing {
 			ed.syncPreviewZoom()
@@ -531,13 +465,9 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 
 	// ---- geometry ---------------------------------------------------------
 	//
-	// Three rectangles nest inside each other, and everything below is said in
-	// terms of them. dispPx is where the video's picture actually is in the
-	// widget (GtkPicture keeps the frame's aspect, so there are bars). camPx
-	// is the camera's window on that picture -- which is exactly what the
-	// finished video shows. And a text box is a fraction of THAT, because text
-	// is placed on the output frame and has to stay put while the camera moves
-	// under it (fxtext.go).
+	// Three nested rectangles: dispPx is where the video's picture is in the
+	// widget (GtkPicture letterboxes), camPx the camera's window on it -- what
+	// the finished video shows -- and a text box is a fraction of THAT (fxtext.go).
 
 	dispPx := func() (ox, oy, dw, dh float64) {
 		aw, ah := float64(area.AllocatedWidth()), float64(area.AllocatedHeight())
@@ -840,15 +770,10 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 		}
 		gr := grabAt(x, y)
 		if gr == nil {
-			// clear of everything: with a camera rectangle held, a drag draws
-			// a new one for it; otherwise the press belongs to the picture,
-			// which answers a click with play/pause (see ConnectDragEnd).
-			//
-			// That is also why nothing is offered while the framed layer is up
-			// -- which, since the preview stopped depending on the transport,
-			// is most of the time. Framing starts by taking the effect off the
-			// lane: the layer comes off with it, the whole frame comes back,
-			// and the outline is then drawn over the picture it belongs to.
+			// clear of everything: with a camera rectangle held a drag draws a new one
+			// for it; otherwise the press is the picture's, which answers a click with
+			// play/pause (ConnectDragEnd). Nothing is offered while the framed layer is
+			// up: framing starts by taking the effect off the lane.
 			if ed.fxRectHeld() != nil {
 				drag.kind = "draw"
 			}

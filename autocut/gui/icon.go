@@ -1,43 +1,13 @@
 package main
 
-// The window icon, and why it needs code at all.
+// The window icon. Two things are needed: AddSearchPath so GTK finds the
+// hicolor tree beside the binary, and appID as the icon name (freedesktop
+// convention: icon and .desktop file are named after the application id).
 //
-// icons/ has held a drawn icon for a while and nothing ever showed it. Two
-// things were missing, and each on its own is enough to leave a window with the
-// generic placeholder:
-//
-//   - Nobody told GTK the folder exists. An icon theme searches the XDG icon
-//     directories, and a hicolor tree sitting beside the binary is not one of
-//     them until AddSearchPath says so. Installing it system-wide would also
-//     work, but then the icon only appears on a machine where somebody ran an
-//     install step, which is exactly the kind of "works here" this app has been
-//     moving away from.
-//
-//   - Nobody named it. GTK does not go looking for an icon that matches the
-//     binary: a window shows whatever icon NAME it was given, so the files were
-//     findable-in-principle and asked for by nothing.
-//
-// Hence appID as the icon name and as the file name. It is the freedesktop
-// convention -- the icon is named after the application id, which is also what
-// a .desktop file would be called -- and it means the one name in this file is
-// the same string the compositor already knows the window by, rather than a
-// second name that has to be kept in step with it.
-//
-// On X11 the icon is set on the window directly and SetIconName is the whole
-// story. On Wayland it is not, and this is the part that had the icon still
-// missing after all of the above: a window's own icon travels over the
-// xdg-toplevel-icon protocol, GTK 4.22 sends it, and mutter does not implement
-// it -- there is not one mention of the protocol in libmutter or gnome-shell as
-// of GNOME 50. So under GNOME on Wayland a window HAS no icon of its own, and
-// the only thing the shell will draw is the icon of the .desktop file it
-// matched the window's application id to.
-//
-// Which is why writing that file is done here rather than left to an install
-// step. The alternative is a program that looks broken until somebody knows to
-// run a script, and the script and the program then each hold half of the same
-// three facts -- id, binary, icon -- and drift. The entry is written from the
-// running binary's own path, so it is right by construction and rewrites itself
-// when the checkout moves.
+// On Wayland the icon travels over xdg-toplevel-icon, which mutter does not
+// implement (as of GNOME 50), so the shell only draws the icon of the .desktop
+// file matched to the app id. Hence the desktop entry is written here, from
+// the running binary's own path, so it is right by construction.
 
 import (
 	"fmt"
@@ -72,14 +42,8 @@ func (a *App) iconDirs() []string {
 }
 
 // setupIcons points the display's icon theme at the icons this build ships and
-// gives the window their name. Called from build, after the window exists --
-// the theme is per-display, and there is no display until then.
-//
-// Best-effort, like the settings file: a missing icon is a placeholder in the
-// title bar and nothing else. It does say so in the log, once, because the
-// failure is otherwise invisible in exactly the way this whole file exists to
-// fix -- the icon is there, it is simply never asked for, and nothing anywhere
-// mentions it.
+// gives the window their name; called from build, once the display exists.
+// Best-effort, logged once when missing.
 func (a *App) setupIcons() {
 	theme := gtk.IconThemeGetForDisplay(gtk.BaseWidget(a.win).Display())
 	if theme == nil {
@@ -112,19 +76,12 @@ func (a *App) setupIcons() {
 	a.installDesktop()
 }
 
-// iconExts is what the icon may be, best first, and the order is a ranking of
-// what each format survives rather than a preference:
+// iconExts, best first, ranked by what each survives:
 //
-//	.svg   drawn at whatever size the moment asks for, and the only one of the
-//	       three that is right in a title bar and in an app grid at once
-//	.png   the other format an icon theme reads. A picture, so it is the size it
-//	       is; put it under hicolor/<size>/apps/ and the size is declared
-//	.jpg   read by the shell out of the desktop entry, and NOT by the icon theme
-//	       -- GTK's theme loader does not do jpeg. See setupIcons: it still gets
-//	       drawn where it matters, and leaves the title bar generic on X11.
-//
-// Photographic compression on a small drawing is also exactly the wrong codec,
-// which is the other reason jpg is last rather than absent.
+//	.svg   any size; right in a title bar and an app grid at once
+//	.png   read by the icon theme, at the size declared by its hicolor folder
+//	.jpg   read by the shell from the desktop entry, NOT by GTK's theme loader;
+//	       leaves the title bar generic on X11 (see setupIcons)
 var iconExts = []string{".svg", ".png", ".jpg", ".jpeg"}
 
 // iconFile is the icon as a path, for whoever needs a file rather than a theme
@@ -206,22 +163,11 @@ func builtOnTheFly(exe string) bool {
 	return strings.Contains(exe, "/go-build")
 }
 
-// desktopEntry is what the shell reads. Icon takes an absolute path on purpose:
-// the spec allows it, and the alternative -- a name, resolved out of a copy of
-// the svg installed into the icon theme -- is a second copy of the drawing that
-// goes stale on its own schedule. Exec, Path and Icon all point into this
-// checkout, so they are wrong together or right together, never half.
-//
-// StartupWMClass is for X11, where the match is on WM_CLASS rather than on the
-// application id; GTK sets that from the id too, so it is the same string
-// again. On Wayland the file NAME is what does the matching, and that is why it
-// has to be the id and not "autocut".
-//
-// The %f and the MimeType line are the double-click: %f is where the file the
-// user opened is substituted into the command, and MimeType is what makes
-// Autocut one of the programs offered for it in the first place. Both, or
-// neither works -- a MimeType with no %f launches an empty session and looks
-// like the file was ignored.
+// desktopEntry is what the shell reads. Icon is an absolute path so Exec, Path
+// and Icon all point into this checkout and go stale together or not at all.
+// StartupWMClass matches on X11 (WM_CLASS = app id); on Wayland the file NAME
+// matches, which is why it must be the id. %f and MimeType together are the
+// double-click: one without the other launches an empty session.
 func desktopEntry(exe, dir, icon string) string {
 	if icon == "" {
 		icon = appID
@@ -324,17 +270,11 @@ func (a *App) installDesktop() {
 	a.installMime(data, wrote)
 }
 
-// installMime is the other half of the double-click: the entry says Autocut
-// opens application/x-autocut-project, and this says what a file of that type
-// is called. Same deal as the entry -- written into the user's own data
-// directory, best-effort, and only when it changed.
-//
-// The two update- commands are the part that cannot be skipped. Both databases
-// are caches built from the files just written, and until they are rebuilt the
-// desktop goes on believing what it believed before: the glob is unknown, and a
-// .autocut file offers no program to open it with. They are rebuilt off the
-// GUI thread because update-mime-database walks every package on the machine
-// and takes a moment, and this is the first thing a launch does.
+// installMime is the other half of the double-click: what a file of
+// application/x-autocut-project is called. Written into the user's data
+// directory, best-effort, only when changed. The two update- commands rebuild
+// the caches the desktop reads; off the GUI thread, since
+// update-mime-database walks every package.
 func (a *App) installMime(data string, entryWrote bool) {
 	path := filepath.Join(data, "mime", "packages", appID+".xml")
 	wrote, err := writeDesktop(path, mimePackage())

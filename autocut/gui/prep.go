@@ -1,41 +1,13 @@
 package main
 
-// Prepare: everything that has to happen before there is anything to cut.
-//
-// It was two pages. Inputs held the list of files, ran the speech-to-text over
-// all of them and pulled a frame out of the footage every few seconds; Describe
-// held two system prompts and ran the two model jobs that turn that output into
-// something the Cut page can read. Nobody ever ran one without the other -- the
-// second refused to start until the first had finished, and said so in a status
-// line -- so they were one step with a tab in the middle of it. Now they are one
-// tab and one ▶: the transcripts and the frames, then the describing and the
-// fixing, in the order they have to happen anyway.
-//
-// The page is halves: the sources on the left, and on the right one box
-// switched by a menu -- this session's context first, then every system prompt
-// in the app, in the order the pipeline sends them (prepedit.go). Not just this
-// page's two. A prompt is read once, edited before the first run and then left
-// alone for the rest of the project, while the pages that send them are where
-// the session's work happens, so a prompt sitting on its own page cost that
-// page room all session for a control used in the first ten minutes. Here they
-// cost nothing and gain something: reading down the menu is reading the run.
-//
-// The jobs stay separate on disk -- prepare/inputs/, prepare/describe/ and
-// prepare/transcript/ -- because the describer resumes per chunk and the fixer
-// does not. They are under one folder because they are one step: the page has
-// one output button, and what it opens is the step's own folder.
-//
-// The context is the box's first row and it is not a prompt: it is what the
-// editor knows about THIS session, and every step's requests carry it
-// (context.go). It leads because it is the one row a session actually has to
-// write, and it sits among the prompts because writing it beside them is what
-// stops it being written into them.
-//
-// Runners: pipeline.go (transcripts and frames), describe.go (describe)
-// and cut.go (fix + session timeline).
+// Prepare: everything before there is anything to cut, one tab and one ▶ --
+// transcripts and frames, then describing and fixing. Sources on the left; on
+// the right one box switched by a menu: the session context first, then every
+// system prompt in pipeline order (prepedit.go). Jobs stay separate on disk
+// (prepare/inputs, describe, transcript) because the describer resumes per
+// chunk and the fixer does not. Runners: pipeline.go, describe.go, cut.go.
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -66,20 +38,9 @@ func (a *App) buildPrep() gtk.Widgetter {
 	p.inputs = inputsLabel()
 	a.inStack.AddNamed(p.inputs, "prep")
 
-	// The session's files down the left, the context and every prompt the
-	// pipeline sends down the right (prepedit.go), and a handle between them,
-	// opening at the middle.
-	//
-	// Half each, because neither side is a sidebar any more: the right box is
-	// where the context gets written and where every prompt in the run is read,
-	// which is as much of the work as the list of files is. Both sides resize with the
-	// window, so the 50/50 holds as the window grows, and the handle is still
-	// there for the sessions where one side earns more than half.
-	//
-	// Both sides stand the same distance off the handle, so neither frame runs
-	// into it on the side where the two are compared. Six, which is what every
-	// other divider in the app leaves either side of itself -- twelve between
-	// the two columns, the same twelve the page keeps at the window's edges.
+	// Files left, context and prompts right (prepedit.go), a handle between
+	// opening at the middle; both sides resize with the window and stand six
+	// off the handle like every other divider in the app.
 	bench := a.prepEditor()
 	gtk.BaseWidget(bench).SetMarginStart(6)
 	sources := a.buildSources()
@@ -109,23 +70,9 @@ func (a *App) buildPrep() gtk.Widgetter {
 	outer.SetMarginTop(8)
 	outer.SetMarginBottom(8)
 
-	// The three folders one press of ▶ writes, and no path above them: the
-	// output folder is set once, in the row under the list, and repeating it
-	// here would be a line of chrome for something that changes once a project.
-	//
-	// What was written is in the log, by name, so this is not a listing -- it
-	// is the open-folder symbol beside the step's own folder, with how much is
-	// in it. The question it gets asked before a run is whether this already
-	// happened; the age of the newest file answers "is that from today?" and
-	// is one hover away.
-	//
-	// One button, where there were three: inputs/, describe/ and transcript/
-	// each had their own, because the step's work was in two places on disk
-	// and three counts made that look deliberate. They are prepare/'s three
-	// subfolders now (migrateFolders), so the row says what every other step's
-	// says -- here is the folder, here is how much is in it -- and which of
-	// the three a file is in is a question the folder answers better than a
-	// label can. The group rides the shared bottom bar (outStack in main.go).
+	// One open-folder button for prepare/ with how much is in it; the three
+	// subfolders are the folder's business. Rides the shared bottom bar
+	// (outStack in main.go).
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	outBtn := gtk.NewButtonFromIconName("folder-open-symbolic")
 	outBtn.SetTooltipText("prepare/ — this step's three folders:\n" +
@@ -176,15 +123,9 @@ func (a *App) buildSources() *gtk.Box {
 	a.setFrameScale("original")
 	a.scalePick.SetVAlign(gtk.AlignCenter)
 
-	// The language, on the page whose run is the one that listens. It used to be
-	// in Settings, next to the model ids -- which made it a property of the
-	// machine, so a session in the other language was transcribed into gibberish
-	// by a box nobody thought to open, three tabs away from the sources it was
-	// wrong about.
-	//
-	// Free text, not a list: the code is the server's to interpret, and a drop
-	// down would have to guess which of its models take what -- being able to
-	// type what the server documents beats a menu that is right for one model.
+	// The language, on the page whose run listens -- in Settings it was a property
+	// of the machine, three tabs from the sources it was wrong about. Free text:
+	// the code is the server's to interpret.
 	a.langEntry = gtk.NewEntry()
 	a.langEntry.SetWidthChars(4)
 	a.langEntry.SetMaxWidthChars(6)
@@ -197,15 +138,8 @@ func (a *App) buildSources() *gtk.Box {
 	// tab away is a value the next run silently disagrees with
 	a.langEntry.ConnectChanged(func() { a.setLanguage(a.langEntry.Text()) })
 
-	// One list, the width of the page. Two lists split by folder was the older
-	// idea and it could not say the thing this page is mostly about: a screen
-	// recording is the footage AND a voice, and the voice on it is everyone
-	// else. Each row says what its file is for instead.
-	// The buttons say "source" so the list above them does not need a heading
-	// to. A "Sources" title over two buttons reading "Add files…" and a list
-	// of file names was a line of the page spent on a word the buttons were
-	// one adjective away from carrying themselves -- and this half of the page
-	// is the list, so there was nothing for the heading to tell it apart from.
+	// One list, the width of the page; each row says what its file is for. The
+	// buttons say "source" so the list needs no heading.
 	addBtn := gtk.NewButtonWithLabel("Add source files…")
 	addBtn.SetTooltipText("Add recordings or footage — several at once")
 	addBtn.ConnectClicked(a.addFilesDialog)
@@ -331,14 +265,10 @@ func setOutCount(l *gtk.Label, dir string) {
 	l.SetTooltipText("newest " + humanAgo(newest))
 }
 
-// inputsSummary walks the session's sources once and answers both questions
-// about them: line is what the page shows -- how many files came in and how many
-// requests they become -- and detail is the same thing per file, for the tooltip
-// and for the log at the start of a run. One walk, because it reads every
-// video's frame directory and this runs on every edit to the list.
-//
-// framesPerReq and fixBlock decide the request counts and are compiled in;
-// these two strings are the only place they are visible.
+// inputsSummary walks the session's sources once: line is what the page shows
+// (files in, requests they become), detail the same per file for the tooltip
+// and the log. One walk, because it reads every video's frame directory on
+// every edit. framesPerReq and fixBlock are visible only here.
 func (a *App) inputsSummary() (line, detail string) {
 	if a.srcList == nil {
 		return "", ""
@@ -390,17 +320,9 @@ func (a *App) inputsSummary() (line, detail string) {
 	return line, strings.TrimRight(b.String(), "\n")
 }
 
-// inputsLabel is the line every step wears on the shared bottom bar: what that
-// step reads, in one line, with the whole of it on hover.
-//
-// It was a row at the top of each page -- an "Inputs:" heading and the line
-// beside it, four times over -- which spent a line of every page's height on a
-// question about the RUN rather than about the work on the page. The heading
-// is the bar's now, once, beside the Outputs one (main.go).
-//
-// Ellipsized and capped: this line grows with the session, and it may not push
-// the run bar's own controls off the window. What does not fit is in the
-// tooltip, which is where the detail behind every one of these lines lives.
+// inputsLabel is the line every step wears on the shared bottom bar: what the
+// step reads, whole on hover. Ellipsized and capped so it cannot push the run
+// bar's controls off the window.
 func inputsLabel() *gtk.Label {
 	l := gtk.NewLabel("")
 	l.SetXAlign(0)
@@ -435,14 +357,9 @@ func fixerLine(path string) string {
 // ---- run --------------------------------------------------------------------
 
 // prepRun validates the sources and starts the whole step: transcripts and
-// frames, then describing and fixing, in one press. They were two buttons on
-// two tabs, and the second refused to start until the first had finished -- so
-// what the two buttons offered was the chance to press them in the wrong order.
-//
-// There is still no describe-only or fix-only run inside the second half:
-// describe resumes per chunk, so running the pair costs no more than running
-// the fixer alone, and half of what the fixer is for is the events the
-// describer just wrote.
+// frames, then describing and fixing, in one press. No describe-only or
+// fix-only run: describe resumes per chunk, and half of what the fixer is for
+// is the events the describer just wrote.
 func (a *App) prepRun() {
 	if a.running {
 		return
@@ -482,19 +399,11 @@ func (a *App) prepRun() {
 	a.startPrep(vids, auds, a.frameInterval(), scaleName, scaleVF)
 }
 
-// undFreshStart is the whole difference between ⏸ and ⏹ on this page. Paused
-// is parked: the goroutine is still sitting in checkpoint and ▶ lets it go on.
-// Stopped is abandoned, and the ▶ after it starts the describing from the
-// beginning -- which means dropping the event logs it resumes from. For the
-// fixer it means nothing, since it never resumed in the first place, and for
-// the transcripts and the frames it means nothing either: those are per-file
-// and already on disk, and re-listening to an hour of audio to reach the same
-// answer is not what "start over" was asking for.
-//
-// It does nothing unless the last run ended in a stop that had reached the
-// describing, so a ▶ on a project described days ago still resumes it, and a ⏹
-// during the transcribing does not throw away last week's describe. Only ⏹
-// arms this.
+// undFreshStart is the difference between ⏸ and ⏹: paused resumes, stopped
+// restarts the describing from the beginning, dropping the event logs it
+// resumes from. Transcripts and frames are per-file on disk and untouched; the
+// fixer never resumed anyway. Only armed by a ⏹ that had reached the
+// describing.
 func (a *App) undFreshStart() error {
 	if !a.undRestart {
 		return nil
@@ -504,12 +413,7 @@ func (a *App) undFreshStart() error {
 }
 
 func (a *App) startPrep(videos, audios []string, interval float64, scaleName, scaleVF string) {
-	a.running = true
-	a.stopFlag.Store(false)
-	a.pauseFlag.Store(false)
-	a.runCtx, a.runCancel = context.WithCancel(context.Background())
-	a.qReset()
-	a.updateRunControls()
+	a.startRun()
 	a.prog(trackSTT, 0, "preparing")
 	a.logExp.SetExpanded(true)
 	// what went in, by name -- the page has room for a count and nothing more
@@ -524,8 +428,7 @@ func (a *App) startPrep(videos, audios []string, interval float64, scaleName, sc
 	go func() {
 		described, err := a.prepare(videos, audios, interval, scaleName, scaleVF)
 		glib.IdleAdd(func() {
-			a.running = false
-			a.updateRunControls()
+			a.endRun()
 			switch {
 			case errors.Is(err, errStopped):
 				// the work stays on disk until the next ▶, which is the press
@@ -618,15 +521,10 @@ func (a *App) understand(videos, audios []string) error {
 	return a.fixTranscripts(videos, audios, 0.5)
 }
 
-// openAtHalf opens a pane's handle at the middle of the window. A GtkPaned with
-// no position set gives each child what it asks for, which is whatever the
-// widest thing inside one of them happens to want -- on Prepare the file list,
-// on Produce the thumbnail -- and the other side gets the remainder. Half each
-// is the honest opening for two sides that are both the work.
-//
-// It has to wait for the widget to be measured: at build time there is no width
-// to halve. Map fires again every time the tab is shown, hence the once guard;
-// after that first placement the handle is the user's.
+// openAtHalf opens a pane's handle at the middle of the window (unset, a
+// GtkPaned gives each child what its widest content wants). It waits for the
+// widget to be measured; Map fires on every show, hence the once guard, and
+// after the first placement the handle is the user's.
 func openAtHalf(p *gtk.Paned) {
 	split := false
 	p.ConnectMap(func() {

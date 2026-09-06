@@ -1,33 +1,13 @@
 package main
 
-// Words printed on the thumbnail.
-//
-// The image model is not asked to letter anything any more. It letters well
-// enough, and that was the problem: the title was part of the instruction, so
-// changing four words meant a GPU redraw of the whole picture, the model
-// sometimes lettered them twice (see the history in publish_test.go), and
-// there was no way to put a second line anywhere. The words are printed on
-// AFTER the draw now, locally, the way the render prints a Text effect on the
-// finished video: a box, the words fitted to it (fitText), white with a dark
-// edge (drawFxText). Same layout code, so the thumbnail's words look like the
-// video's.
-//
-// Two kinds of words land this way, and they are the same kind of object. The
-// TITLE goes in a band that starts across the upper part of the picture
-// (pubTitleBox) and can be dragged anywhere; the model that draws the picture
-// is told to keep whichever part it is in calm (pubTitleWhere). Its words are
-// the YouTube title, typed in its own entry. And any number of MARKED texts:
-// drag a box on the result, type the words, and they are printed to fill it.
-//
-// Every box -- the title's included -- is outlined, dragged by its border,
-// moved by its middle and wears a ✎ that opens its words. The title's had none
-// of that once, and a thumbnail could show two blocks of words with only one
-// of them reachable.
-//
-// thumbnail-plain.png is the picture as the model drew it, no words;
-// thumbnail.png is the same picture with the words printed on. Rewording
-// either kind re-prints from the plain copy (recomposite) -- no model, no
-// GPU, no run.
+// Words printed on the thumbnail, locally, AFTER the draw -- not lettered by
+// the image model. Same layout as a Text effect (fitText, drawFxText). Two
+// kinds, the same object: the TITLE in a draggable band (pubTitleBox; the
+// model is told to keep that part calm, pubTitleWhere) whose words are the
+// YouTube title, and any number of MARKED texts drawn on the result. Every box
+// is outlined, dragged by its border, moved by its middle and wears a ✎.
+// thumbnail-plain.png is the picture without words; thumbnail.png with.
+// Rewording re-prints from the plain copy (recomposite) -- no model, no run.
 
 import (
 	"math"
@@ -55,21 +35,9 @@ type pubText struct {
 func (t pubText) box() fxBox { return fxBox{cx: t.Cx, cy: t.Cy, wf: t.Wf, hf: t.Hf}.clamp() }
 
 // pubTitleBox is where the title goes before anybody moves it: a band across
-// the upper part of the picture, which is where a thumbnail title belongs and
-// what the image model is asked to leave calm (pubNoLettering).
-//
-// It was FIXED, and the reason given was that the model is told to keep this
-// part of the frame clear, which only works if "this part" never moves. That
-// held while every thumbnail was drawn. It stopped holding when a picture
-// could be chosen instead (pubSlot.useAsThumbnail) -- there is no model to
-// tell anything then -- and it was never much of a reason anyway: the box the
-// words are in and the box the model is asked about are the same box, so the
-// instruction can simply say where it is (pubTitleWhere).
-//
-// What it cost was worse than it looked. The title was drawn on the picture
-// with no outline, no ✎ and no handle: two blocks of words on the thumbnail,
-// one of which nothing on the page could reach. The way to move a title was
-// to type it a second time as a marked text and leave the band empty.
+// the upper part of the picture, which is what the image model is asked to
+// leave calm (pubNoLettering). It moves; the instruction says where it is
+// (pubTitleWhere).
 var pubTitleBox = fxBox{cx: 0.5, cy: 0.14, wf: 0.94, hf: 0.18}
 
 // printedTitle is what the picture carries: its own line (ThumbTitle), which
@@ -212,22 +180,11 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 		ox, oy, dw, dh = fxDisp(w, h, p.shotA)
 		return ox, oy, dw, dh, dw > 0 && dh > 0
 	}
-	// The boxes on the picture are the marked texts and then the TITLE, which
-	// is index len(p.texts) throughout. The title is a box like any other --
-	// drawn, dragged, resized, and wearing a ✎ that opens its words -- and its
-	// words live in the entry on the other side of the page rather than in the
-	// list. It had none of that: it was printed on the picture with nothing to
-	// take hold of, so a thumbnail showed two blocks of words and the page
-	// could only reach one of them.
-	// ...and only while it HAS words and is being printed. A box is where
-	// words are: a marked one goes when its words go (editText), and the
-	// title's has to go the same way, or Remove leaves the dashed rectangle
-	// and its ✎ sitting there over nothing.
-	//
-	// The words are the PICTURE's, not the entry's (pubSettings.ThumbTitle).
-	// While they were the entry's, the box could not be got rid of: removing
-	// it cleared the video's title, and typing the title again -- which you
-	// must, it is the video's name -- put the box straight back.
+	// The boxes are the marked texts, then the TITLE at index len(p.texts) --
+	// a box like any other, but only while it HAS words and is being printed.
+	// The words are the PICTURE's (pubSettings.ThumbTitle), not the entry's, so
+	// Remove does not clear the video's title and retyping the title does not
+	// put the box back.
 	hasTitle := func() bool { return strings.TrimSpace(p.thumbTitle) != "" }
 	nbox := func() int {
 		if hasTitle() {
@@ -256,15 +213,9 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 		bx, by, _, _ := rectPx(i, ox, oy, dw, dh)
 		return bx + 2, by + 2
 	}
-	// snapLines is what a box lands on: the picture's own edges and middle,
-	// the band the title is printed in, and every OTHER box's edges and
-	// middle. Skip is the box being dragged -- a box snapping to itself would
-	// stick to wherever it started.
-	//
-	// The title band is in the list because the title is words on this same
-	// picture: a caption meant to sit under it, or to line up with its left
-	// edge, is a thing you can only do by hand otherwise, and at this size by
-	// hand means a pixel or two out.
+	// snapLines is what a box lands on: the picture's edges and middle, the
+	// title band, and every OTHER box's edges and middle. Skip is the box being
+	// dragged.
 	snapLines := func(skip int, ox, oy, dw, dh float64) (xs, ys []float64) {
 		xs = []float64{ox, ox + dw/2, ox + dw}
 		ys = []float64{oy, oy + dh/2, oy + dh}
@@ -470,17 +421,10 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 	return ov
 }
 
-// drawPencil is the ✎ as a path rather than as the character.
-//
-// It was cr.ShowText("✎") and it came out as an empty box: a glyph is the
-// font's idea of a pencil at 13 px, and on a machine whose sans-serif has no
-// U+270E there is no pencil at all -- only tofu, on a chip that is the only
-// way to reword a caption. Every other mark on these pages is drawn for this
-// reason (drawSpeaker in cut_hear.go says so in as many words).
-//
-// Held the way a hand holds one: tip at the lower left, barrel up to the
-// right, and a band where the lead meets the wood so the shape reads as a
-// pencil and not as an arrow.
+// drawPencil is the ✎ as a path: cr.ShowText("✎") came out as tofu on a
+// machine whose sans-serif has no U+270E (every other mark on these pages is
+// drawn for the same reason). Tip at the lower left, barrel up to the right,
+// a band where the lead meets the wood.
 func drawPencil(cr *cairo.Context, cx, cy, size float64) {
 	cr.Save()
 	cr.Translate(cx, cy)
@@ -531,14 +475,9 @@ func (p *publisher) setTitleBox(b *pubText) {
 	p.recomposite()
 }
 
-// editTitle is the title band's ✎: the words ON THE PICTURE, which are the
-// picture's own from the moment it has any. Rewording them here leaves the
-// video's title alone, exactly as rewording the title leaves these alone --
-// they are the same sentence only until one of them is improved.
-//
-// Remove takes the line off the picture and leaves the video its name. It
-// stays off: nothing seeds the words twice (seedThumbTitle), so the next draw
-// does not put them back.
+// editTitle is the title band's ✎: the words ON THE PICTURE. Rewording them
+// leaves the video's title alone and vice versa. Remove takes the line off and
+// it stays off (nothing seeds twice, seedThumbTitle).
 func (p *publisher) editTitle() {
 	p.a.askPubText(p.thumbTitle, func(s string) {
 		p.setThumbTitle(strings.TrimSpace(s))
@@ -547,15 +486,10 @@ func (p *publisher) editTitle() {
 	})
 }
 
-// setThumbTitle is the one place the picture's line changes: the state, the
-// overlay's boxes and the printed file all have to agree about what is on the
-// thumbnail.
-//
-// Setting it counts as seeding, whichever way it was set. A line taken off on
-// purpose and a line typed in by hand are both answers, and an answer is not
-// something to overwrite the next time a picture is drawn -- so the line is
-// gone for good, and words wanted on the picture afterwards are drawn as a box
-// like any other (textOverlay).
+// setThumbTitle is the one place the picture's line changes: state, overlay
+// boxes and printed file agree. Setting it counts as seeding either way, so a
+// line taken off stays off; words wanted afterwards are a box like any other
+// (textOverlay).
 func (p *publisher) setThumbTitle(s string) {
 	p.thumbTitle, p.titleSeeded = s, true
 	if p.shotOver != nil {
@@ -603,22 +537,10 @@ func (p *publisher) editText(i int) {
 // nothing else does). rm is nil for a new box -- there is nothing to remove
 // until the words exist.
 func (a *App) askPubText(initial string, ok func(string), rm func()) {
-	win := gtk.NewWindow()
-	win.SetTransientFor(&a.win.Window)
-	win.SetModal(true)
-	win.SetTitle("Words on the thumbnail")
-	win.SetDefaultSize(380, -1)
-
-	d := gtk.NewLabel("Printed to fill the box you marked — a longer line comes out " +
-		"smaller, and Enter starts a new line.")
-	d.SetXAlign(0)
-	d.SetWrap(true)
-	d.AddCSSClass("dim-label")
-
 	tv := gtk.NewTextView()
-	tv.SetMonospace(true) // every editable box in the app is this font
+	tv.SetMonospace(true)
 	tv.SetWrapMode(gtk.WrapWordChar)
-	tv.SetAcceptsTab(false) // Tab moves to the next field, as everywhere else
+	tv.SetAcceptsTab(false)
 	tv.Buffer().SetText(initial)
 	sc := gtk.NewScrolledWindow()
 	sc.SetChild(tv)
@@ -626,6 +548,15 @@ func (a *App) askPubText(initial string, ok func(string), rm func()) {
 	sc.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	sc.SetHasFrame(true)
 
+	var win *gtk.Window
+	var btns []gtk.Widgetter
+	if rm != nil {
+		del := gtk.NewButtonWithLabel("Remove")
+		del.AddCSSClass("destructive-action")
+		del.ConnectClicked(func() { win.Close(); rm() })
+		btns = append(btns, del)
+	}
+	cancel := gtk.NewButtonWithLabel("Cancel")
 	save := gtk.NewButtonWithLabel("Save")
 	save.AddCSSClass("suggested-action")
 	save.ConnectClicked(func() {
@@ -634,33 +565,9 @@ func (a *App) askPubText(initial string, ok func(string), rm func()) {
 		win.Close()
 		ok(s)
 	})
-	cancel := gtk.NewButtonWithLabel("Cancel")
+	win = a.modal("Words on the thumbnail", "Printed to fill the box you marked — a longer line comes out "+
+		"smaller, and Enter starts a new line.", 380, sc, append(btns, cancel, save)...)
 	cancel.ConnectClicked(func() { win.Close() })
-
-	btns := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	btns.SetHAlign(gtk.AlignEnd)
-	btns.SetMarginTop(8)
-	if rm != nil {
-		del := gtk.NewButtonWithLabel("Remove")
-		del.AddCSSClass("destructive-action")
-		del.ConnectClicked(func() {
-			win.Close()
-			rm()
-		})
-		btns.Append(del)
-	}
-	btns.Append(cancel)
-	btns.Append(save)
-
-	box := gtk.NewBox(gtk.OrientationVertical, 8)
-	box.SetMarginTop(16)
-	box.SetMarginBottom(16)
-	box.SetMarginStart(16)
-	box.SetMarginEnd(16)
-	box.Append(d)
-	box.Append(sc)
-	box.Append(btns)
-	win.SetChild(box)
 	tv.GrabFocus()
 	win.SetVisible(true)
 }

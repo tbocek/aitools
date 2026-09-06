@@ -1,23 +1,10 @@
 package main
 
-// Every LLM exchange, written down where it can be read. The log used to say
-// that calls happened -- "two long LLM calls" -- and nothing about what was in
-// them, which made a step a black box exactly when its output looked wrong.
-// Now each call becomes one self-contained HTML page under the output
-// folder's llm/: the system prompt, the user text, every image exactly as it
-// was sent (the data URLs ride along inside the page, so it shows them with
-// no other files around), the reply with its thinking folded away, and the
-// error if the call failed. The log gets a short preview -- sizes, duration,
-// the reply's first words -- and the page's path, clickable, so "what did the
-// model actually see?" is one click, not an argument from memory.
-//
-// The record is made along the call, not after it. A suggest call thinks for
-// minutes, and those minutes are exactly when "what did we just send?" gets
-// asked -- so the page goes to disk with the request in it the moment the
-// request goes out, link in the log and all. A streamed reply is appended to
-// the page as it arrives -- refresh mid-call and read as far as the model has
-// got -- and when the call ends the same file is rewritten whole, thinking
-// folded and verdict in place.
+// Every LLM exchange as a self-contained HTML page under the output folder's
+// llm/: system prompt, user text, every image as sent (data URLs inline), the
+// reply with thinking folded away, the error if any. The log gets a short
+// preview and the clickable path. The page is written when the request goes
+// out, appended to as a streamed reply arrives, and rewritten whole at the end.
 
 import (
 	"context"
@@ -42,20 +29,10 @@ func (a *App) llmDir() string { return filepath.Join(a.outDir, "llm") }
 
 // ---- one page per run --------------------------------------------------------
 //
-// A run is several calls -- the cut, then its captions batch by batch, then its
-// effects -- and each one used to be a file of its own. Reading what happened
-// meant opening nine of them in the order their names implied and holding the
-// thread across the tabs; the question is never "what did call four say", it is
-// "what did this run do", and that answer was spread over a directory listing.
-//
-// So the run gets a page. Every call appends a section to it, the link in the
-// log is the same link all run long, and a refresh mid-call shows the reply
-// arriving at the bottom of everything that came before it.
-//
-// The finished sections are kept in memory rather than parsed back off the
-// page: the file is rewritten whole at the end of every call, which is the
-// same write the single-call page always did, and holding the HTML costs a few
-// hundred kB for the length of a run.
+// A run's calls (cut, captions, effects) share one page: each call appends a
+// section, the link in the log stays the same all run, and a refresh mid-call
+// shows the reply arriving under everything before it. Finished sections are
+// kept in memory; the file is rewritten whole after every call.
 
 // beginRun starts a page, named for the step whose first call opened it. Every
 // step's runner calls qReset at its start, which clears the page so the next
@@ -205,15 +182,10 @@ func splitThink(reply string) (think, answer string) {
 	return "", reply
 }
 
-// done completes the record: the same page, rewritten whole with the reply --
-// or the error, which is when the record matters most -- and the verdict and
-// the answer's first words in the log.
-//
-// The verdict measures the ANSWER, and names the thinking separately. They are
-// not the same number and the difference is the one worth reading: a model that
-// spends four minutes reasoning and writes nothing has an answer of 0 B, and a
-// log line calling that "31 kB came back" sends the next reader hunting for a
-// parser bug in a reply that was never written.
+// done completes the record: the page rewritten whole with the reply or the
+// error, and the verdict in the log. The verdict measures the ANSWER and names
+// the thinking separately -- "31 kB came back" for four minutes of reasoning
+// and no words sends the reader hunting a parser bug.
 func (c *chatRec) done(reply, stop string, took time.Duration, callErr error) {
 	if c == nil {
 		return

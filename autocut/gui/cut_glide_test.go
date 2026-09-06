@@ -144,7 +144,7 @@ func TestTheGlideIsDrivenByTheFrameClock(t *testing.T) {
 			"fxLiveFit(W, H, lw, lh, outA, fx, now)",
 			"s.ed().drawFxOverlaysAt(cr, fx, now, ox, oy, ow, oh)",
 		},
-		"cut_fxpaint.go": {
+		"cut_fxdraw.go": {
 			// and the shared side asks about the clock it was handed
 			"liveZoom(W, H, sw, sh, outA, fxRectAt(fx, t, sw/sh, outA))",
 			"for _, i := range textsAt(fx, t) {",
