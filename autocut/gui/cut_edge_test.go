@@ -28,7 +28,9 @@ func edgeEd(t *testing.T) *cutEditor {
 func TestAnEdgeIsPickedUpNearItsBorder(t *testing.T) {
 	ed := edgeEd(t)
 
-	if !ed.grabEdge(402) || !ed.edgeOn || ed.edgeSeg != 0 || ed.edgeEnd {
+	// the px below are the timeline's own, which start a strip in from the
+	// widget's edge now (cut_gutter.go): xOf is what says where a second is
+	if !ed.grabEdge(ed.xOf(100)+2) || !ed.edgeOn || ed.edgeSeg != 0 || ed.edgeEnd {
 		t.Fatalf("a press 2 px from clip 1's start did not pick it up: on=%v seg=%d end=%v",
 			ed.edgeOn, ed.edgeSeg, ed.edgeEnd)
 	}
@@ -41,14 +43,14 @@ func TestAnEdgeIsPickedUpNearItsBorder(t *testing.T) {
 		seg  int
 		end  bool
 		want float64
-	}{{520, 0, true, 130}, {800, 1, false, 200}, {1040, 1, true, 260}} {
+	}{{ed.xOf(130), 0, true, 130}, {ed.xOf(200), 1, false, 200}, {ed.xOf(260), 1, true, 260}} {
 		if !ed.grabEdge(c.px) || ed.edgeSeg != c.seg || ed.edgeEnd != c.end || ed.edgeTime() != c.want {
 			t.Errorf("px %g picked up seg %d end=%v at %g, want seg %d end=%v at %g",
 				c.px, ed.edgeSeg, ed.edgeEnd, ed.edgeTime(), c.seg, c.end, c.want)
 		}
 	}
 	// ...and a press out in the middle of a clip is not an edge at all
-	if ed.grabEdge(460) {
+	if ed.grabEdge(ed.xOf(115)) {
 		t.Error("a press 15 s from any border picked up an edge")
 	}
 }
@@ -57,7 +59,7 @@ func TestAnEdgeIsPickedUpNearItsBorder(t *testing.T) {
 // would be the whole history.
 func TestOneHoldIsOneUndo(t *testing.T) {
 	ed := edgeEd(t)
-	ed.grabEdge(400)
+	ed.grabEdge(ed.xOf(100))
 	for _, to := range []float64{104, 108, 112, 105} {
 		ed.moveEdgeTo(to, true)
 	}
@@ -113,7 +115,7 @@ func TestAnEdgeStopsWhereItMust(t *testing.T) {
 // they move it by whole frames of the recording it belongs to.
 func TestTheFrameButtonsMoveTheHeldEdge(t *testing.T) {
 	ed := edgeEd(t)
-	ed.grabEdge(400)
+	ed.grabEdge(ed.xOf(100))
 	ed.frameStep(-30) // 30 fps: one second
 	if got := ed.segs[0].S; got != 99 {
 		t.Fatalf("‹‹f moved the edge to %g, want 99", got)
@@ -212,16 +214,17 @@ func TestALeftPressTakesTheEdgeOnlyOnTheEdge(t *testing.T) {
 	if ed.onHeldEdge(400) {
 		t.Error("a press took hold of an edge while none was held")
 	}
-	ed.grabEdge(400) // clip 1's start, at timeline px 400
+	x100 := ed.xOf(100)
+	ed.grabEdge(x100) // clip 1's start
 	for _, c := range []struct {
 		px   float64
 		want bool
 	}{
-		{400, true},  // on it
-		{409, true},  // on the handle's head
-		{412, true},  // the far side of the grab margin
-		{414, false}, // clear of it: a selection, and the edge goes down
-		{460, false}, // well clear
+		{x100, true},       // on it
+		{x100 + 9, true},   // on the handle's head
+		{x100 + 12, true},  // the far side of the grab margin
+		{x100 + 14, false}, // clear of it: a selection, and the edge goes down
+		{x100 + 60, false}, // well clear
 	} {
 		if got := ed.onHeldEdge(c.px); got != c.want {
 			t.Errorf("a left press at px %g takes the edge: %v, want %v", c.px, got, c.want)
@@ -230,7 +233,7 @@ func TestALeftPressTakesTheEdgeOnlyOnTheEdge(t *testing.T) {
 	// and the edge it follows is the one being moved, not the one it was
 	// picked up at: a drag that has travelled keeps its grip
 	ed.moveEdgeTo(120, true)
-	if ed.onHeldEdge(400) || !ed.onHeldEdge(ed.xOf(120)) {
+	if ed.onHeldEdge(x100) || !ed.onHeldEdge(ed.xOf(120)) {
 		t.Error("the grip stayed at the px the edge was picked up at rather than following it")
 	}
 }
@@ -240,12 +243,12 @@ func TestALeftPressTakesTheEdgeOnlyOnTheEdge(t *testing.T) {
 // the boundary itself -- the boundary's own frame is the first one dropped.
 func TestThePictureFollowsTheEdge(t *testing.T) {
 	ed := edgeEd(t) // one 30 fps recording
-	ed.grabEdge(400)
+	ed.grabEdge(ed.xOf(100))
 	ed.showEdge(false)
 	if ed.playhead != 100 || !ed.hasPlay {
 		t.Errorf("a start edge at 100 s previewed %g", ed.playhead)
 	}
-	ed.grabEdge(520) // clip 1's end, at 130 s
+	ed.grabEdge(ed.xOf(130)) // clip 1's end
 	ed.showEdge(false)
 	if want := 130 - 1.0/30; math.Abs(ed.playhead-want) > 1e-9 {
 		t.Errorf("an end edge at 130 s previewed %g, want %g — the last frame kept, not the first dropped",

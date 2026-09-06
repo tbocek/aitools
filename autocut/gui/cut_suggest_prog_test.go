@@ -129,7 +129,7 @@ func TestTheModelIsToldTheRangeItWillBeJudgedBy(t *testing.T) {
 	for _, want := range []string{
 		"lo, hi := a.footageWindow(target)",
 		`"between %.0f and %.0f seconds of footage, in at most %d segments. Stop at the "`,
-		"total := cutLen(applyFx(segs, fx))", // and measured the same way
+		"cutLen(applyFx(segs, fx))", // and what the video RUNS is measured the same way
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("cut_suggest.go no longer contains %q", want)
@@ -216,31 +216,41 @@ func TestTheWordingsAllowALongSegmentUnderSpeed(t *testing.T) {
 	}
 }
 
-// The speed budget is arithmetic, and the wording does it rather than leaving
-// the model to derive it. "Show half the session" against a shorter target is
-// two numbers and a rate: the seconds that must run fast follow from them, and
-// a model told the formula with a worked example spends its call choosing
-// WHICH stretches rather than rediscovering how many seconds -- which is what
-// eleven minutes of reasoning once went on.
-func TestTheWordingSaysHowManySecondsMustRunFast(t *testing.T) {
+// The speed pass is not handed a target. It was -- footage, target, a formula
+// with a worked example, and a length gate on the answer -- and that made it
+// speed clips up because the sum said so, whether or not anything in them was
+// dull. What the editor wants is in the user context, in one of two shapes or
+// in neither: a measure the model spends on the right clips, or nothing, in
+// which case speed goes only where a viewer would otherwise sit through
+// nothing. And the longer the nothing, the faster it runs.
+func TestTheSpeedPassJudgesRatherThanSums(t *testing.T) {
 	for _, want := range []string{
-		"(F-T)*r/(r-1) seconds must run at r",
-		"F 850, T 720, r 4 means 173 seconds fast",
-		"A clip with captions on it runs at 1",
+		"Where the USER CONTEXT says how much to speed up",
+		"Where it says nothing, speed only what would bore",
+		"a cut with nothing dull in it gets no rates at all",
+		"The longer the dull stretch, the higher the rate",
 	} {
 		if !strings.Contains(speedSystem, want) {
 			t.Errorf("the speed pass's wording no longer says %q", want)
 		}
 	}
-	// and the formula is right, or the model learns the wrong sum: 850 s of
-	// footage into a 720 s target at 4 is 173 s fast and 677 at 1
-	f, target, r := 850.0, 720.0, 4.0
-	b := (f - target) * r / (r - 1)
-	if int(b+0.5) != 173 || int(f-b+0.5) != 677 {
-		t.Errorf("the formula gives B=%.0f, N=%.0f", b, f-b)
+	src := readSrc(t, "cut_suggest.go")
+	// the request carries the footage and the clips, and no target or range
+	if !strings.Contains(src, `"FOOTAGE: %.0f seconds over %d clips.\n\n"`) {
+		t.Error("the speed request no longer says how much footage the clips come to")
 	}
-	if got := (f - b) + b/r; got < 719.5 || got > 720.5 {
-		t.Errorf("677 s at 1 and 173 s at 4 come to %.1f s, not the target", got)
+	for _, gone := range []string{"TARGET: %.0f seconds of finished video", "lo, hi := a.suggestWindow(target)\n\tuser :="} {
+		if strings.Contains(src, gone) {
+			t.Errorf("the speed pass is handed a target again: %q", gone)
+		}
+	}
+	// and no length gate on its answer: "nothing runs fast" is a right answer
+	body := funcBody(t, "cut_suggest.go", `func \(a \*App\) speedCut\(`)
+	if strings.Contains(body, "is accepted") {
+		t.Error("the speed pass's answer is gated on a length again")
+	}
+	if !strings.Contains(body, "return fx") {
+		t.Error("the speed pass keeps no answer")
 	}
 }
 

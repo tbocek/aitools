@@ -1246,6 +1246,29 @@ func (a *App) setupDialog() {
 		box.Append(info)
 		return box
 	}
+	// Sections are told apart by a rule across the page, not by a box around
+	// each one.
+	//
+	// The modern form of this is the boxed list -- one rounded card per group,
+	// its title above it -- and it was the wrong trade here twice over. A card
+	// is a container, so each section would lay its own columns out and the
+	// boxes would stop lining up down the page unless three size groups were
+	// kept in step by hand; and a card's border, padding and title line cost
+	// about twenty px a section on a dialog that already reaches the bottom of
+	// a laptop screen with the log shut. A rule costs one px and groups just
+	// as well: what it separates is the same thing the heading beside the
+	// first row already says.
+	row := 0
+	sec := func(title, why string) {
+		if row > 0 {
+			rule := gtk.NewSeparator(gtk.OrientationHorizontal)
+			rule.SetMarginTop(2)
+			rule.SetMarginBottom(2)
+			grid.Attach(rule, 0, row, 5, 1)
+			row++
+		}
+		grid.Attach(head(title, why), 0, row, 1, 1)
+	}
 	// Five columns: the section, what it is, the value, the verdict, its Test.
 	// The check lands beside the box it judges, before the button that made
 	// it, and every server section reads the same way -- Server, API key, then
@@ -1258,52 +1281,54 @@ func (a *App) setupDialog() {
 	// on. And every box then lines up with every other box by construction --
 	// they are one column of the same grid, including the key rows, which used
 	// to run wide across the columns the Test buttons are in.
-	grid.Attach(head("Writing", "The model that describes the footage, proposes the cut and "+
+	sec("Writing", "The model that describes the footage, proposes the cut and "+
 		"writes the narration.\n\nExpects an OpenAI-compatible chat API: POST /v1/chat/completions, "+
 		"and GET /v1/models for the Fetch models button. The key is sent as "+
 		"Authorization: Bearer …; leave it empty for a server that wants none. "+
 		"Test asks for one short completion; the Test beside Model shows it a small "+
-		"picture, because describing footage needs a model that can see."), 0, 0, 1, 1)
-	grid.Attach(lbl("Server:"), 1, 0, 1, 1)
-	grid.Attach(server, 2, 0, 1, 1)
-	grid.Attach(llmBadge.stack, 3, 0, 1, 1)
-	grid.Attach(testLLMBtn, 4, 0, 1, 1)
-	grid.Attach(lbl("API key:"), 1, 1, 1, 1)
-	grid.Attach(key, 2, 1, 1, 1)
+		"picture, because describing footage needs a model that can see.")
+	grid.Attach(lbl("Server:"), 1, row, 1, 1)
+	grid.Attach(server, 2, row, 1, 1)
+	grid.Attach(llmBadge.stack, 3, row, 1, 1)
+	grid.Attach(testLLMBtn, 4, row, 1, 1)
+	grid.Attach(lbl("API key:"), 1, row+1, 1, 1)
+	grid.Attach(key, 2, row+1, 1, 1)
 	// the model's own Test is the vision one: the server round trip is the row
 	// above, and what is left to prove about the MODEL is that it can see
-	grid.Attach(lbl("Model:"), 1, 2, 1, 1)
-	grid.Attach(model, 2, 2, 1, 1)
-	grid.Attach(visBadge.stack, 3, 2, 1, 1)
-	grid.Attach(testVisBtn, 4, 2, 1, 1)
+	grid.Attach(lbl("Model:"), 1, row+2, 1, 1)
+	grid.Attach(model, 2, row+2, 1, 1)
+	grid.Attach(visBadge.stack, 3, row+2, 1, 1)
+	grid.Attach(testVisBtn, 4, row+2, 1, 1)
 	// the list the server offers, in the columns the box and its button are
 	// in: Fetch where a label goes, the list where the value goes, Use where
 	// the Tests are
-	grid.Attach(fetch, 1, 3, 1, 1)
-	grid.Attach(pick, 2, 3, 1, 1)
-	grid.Attach(use, 4, 3, 1, 1)
+	grid.Attach(fetch, 1, row+3, 1, 1)
+	grid.Attach(pick, 2, row+3, 1, 1)
+	grid.Attach(use, 4, row+3, 1, 1)
+	row += 4
 
 	// one server, two sections: the same server does the listening below
-	grid.Attach(head("Speaking", "The audio.cpp server that speaks the narration.\n\n"+
+	sec("Speaking", "The audio.cpp server that speaks the narration.\n\n"+
 		"Expects an OpenAI-compatible speech API: POST /v1/audio/speech, and GET /v1/models "+
 		"to check the model id. Empty means the compose service on loopback. Autocut only "+
 		"ever talks to this server over HTTP -- starting it is the job of whoever runs the "+
 		"stack.\n\nThe TTS model is the id the server lists, not a file: which weights they "+
-		"are, and on which backend, is set in audiocpp-server.json."), 0, 4, 1, 1)
-	grid.Attach(lbl("Server:"), 1, 4, 1, 1)
-	grid.Attach(tts, 2, 4, 1, 1)
-	grid.Attach(ttsBadge.stack, 3, 4, 1, 1)
-	grid.Attach(testTTSBtn, 4, 4, 1, 1)
-	grid.Attach(lbl("API key:"), 1, 5, 1, 1)
-	grid.Attach(ttsKey, 2, 5, 1, 1)
-	grid.Attach(lbl("TTS model:"), 1, 6, 1, 1)
-	grid.Attach(ttsm, 2, 6, 1, 1)
-	grid.Attach(ttsmBadge.stack, 3, 6, 1, 1)
-	grid.Attach(testTTSMBtn, 4, 6, 1, 1)
+		"are, and on which backend, is set in audiocpp-server.json.")
+	grid.Attach(lbl("Server:"), 1, row, 1, 1)
+	grid.Attach(tts, 2, row, 1, 1)
+	grid.Attach(ttsBadge.stack, 3, row, 1, 1)
+	grid.Attach(testTTSBtn, 4, row, 1, 1)
+	grid.Attach(lbl("API key:"), 1, row+1, 1, 1)
+	grid.Attach(ttsKey, 2, row+1, 1, 1)
+	grid.Attach(lbl("TTS model:"), 1, row+2, 1, 1)
+	grid.Attach(ttsm, 2, row+2, 1, 1)
+	grid.Attach(ttsmBadge.stack, 3, row+2, 1, 1)
+	grid.Attach(testTTSMBtn, 4, row+2, 1, 1)
+	row += 3
 
 	// the one local tool here: no API, a binary. Which ffmpeg answers, and what
 	// it was built with, decides whether the render works at all
-	grid.Attach(head("Cutting", "ffmpeg, which every step shells out to, and the firefox the "+
+	sec("Cutting", "ffmpeg, which every step shells out to, and the firefox the "+
 		"model searches the web through. Not servers: local binaries.\n\nLeave the ffmpeg box empty and it comes off PATH like any other tool, "+
 		"which is what almost every machine wants. Give a path -- /usr/bin/ffmpeg, or a "+
 		"build of your own -- and that one is used instead, with ffprobe taken from the "+
@@ -1311,28 +1336,29 @@ func (a *App) setupDialog() {
 		"Test runs it and checks this build has the filters and encoders the pipeline "+
 		"uses: rubberband, subtitles, loudnorm, atempo, amix, adelay, alimiter, libx264, libx265, "+
 		"aac, libopus. A build missing one works perfectly until the step that needs it, "+
-		"which is minutes into a render."), 0, 7, 1, 1)
-	grid.Attach(lbl("ffmpeg:"), 1, 7, 1, 1)
-	grid.Attach(ff, 2, 7, 1, 1)
-	grid.Attach(ffBadge.stack, 3, 7, 1, 1)
-	grid.Attach(testFFBtn, 4, 7, 1, 1)
-	grid.Attach(lbl("firefox:"), 1, 8, 1, 1)
-	grid.Attach(fx, 2, 8, 1, 1)
-	grid.Attach(fxBadge.stack, 3, 8, 1, 1)
-	grid.Attach(testFxBtn, 4, 8, 1, 1)
+		"which is minutes into a render.")
+	grid.Attach(lbl("ffmpeg:"), 1, row, 1, 1)
+	grid.Attach(ff, 2, row, 1, 1)
+	grid.Attach(ffBadge.stack, 3, row, 1, 1)
+	grid.Attach(testFFBtn, 4, row, 1, 1)
+	grid.Attach(lbl("firefox:"), 1, row+1, 1, 1)
+	grid.Attach(fx, 2, row+1, 1, 1)
+	grid.Attach(fxBadge.stack, 3, row+1, 1, 1)
+	grid.Attach(testFxBtn, 4, row+1, 1, 1)
+	row += 2
 
 	// no server of its own: Prepare talks to the one named above. What is left
 	// is which of its models to ask -- what language to ask them in is the
 	// project's, on the Inputs page, where the footage it describes is
-	grid.Attach(head("Listening", "Speech-to-text, diarization -- who said what, and who "+
+	sec("Listening", "Speech-to-text, diarization -- who said what, and who "+
 		"is who -- and splitting a voice off a recording, all on the same audio.cpp server "+
 		"as Speaking above, so there is no second "+
 		"address to keep.\n\nExpects POST /v1/tasks/run, and GET /v1/models to check the "+
 		"ids.\n\nThese are model ids as the server lists them, not files: which weights they "+
 		"are, and on which backend, is set in audiocpp-server.json. Blank means the built-in "+
 		"default. The server opens the project folder itself, so it has to see it at this "+
-		"same path."), 0, 9, 1, 1)
-	for i, row := range []struct {
+		"same path.")
+	for i, r := range []struct {
 		name  string
 		w     *gtk.Entry
 		btn   *gtk.Button
@@ -1342,28 +1368,30 @@ func (a *App) setupDialog() {
 		{"Diarization model:", diarModel, testDiarBtn, diarBadge},
 		{"Voice split model:", sepModel, testSepBtn, sepBadge},
 	} {
-		grid.Attach(lbl(row.name), 1, 9+i, 1, 1)
-		grid.Attach(row.w, 2, 9+i, 1, 1)
-		grid.Attach(row.badge.stack, 3, 9+i, 1, 1)
-		grid.Attach(row.btn, 4, 9+i, 1, 1)
+		grid.Attach(lbl(r.name), 1, row+i, 1, 1)
+		grid.Attach(r.w, 2, row+i, 1, 1)
+		grid.Attach(r.badge.stack, 3, row+i, 1, 1)
+		grid.Attach(r.btn, 4, row+i, 1, 1)
 	}
+	row += 3
 
 	// the last step's server. No model row: unlike audio.cpp above, there is
 	// no model id to send per request, so there is nothing here to choose. Test
 	// reports which weights it found rather than checking them against a box.
-	grid.Attach(head("Drawing", "The stable-diffusion.cpp server that paints the thumbnail on "+
+	sec("Drawing", "The stable-diffusion.cpp server that paints the thumbnail on "+
 		"the Produce step. Empty means the compose service on loopback.\n\nExpects sd.cpp's own "+
 		"asynchronous API, not an OpenAI-shaped one: GET /sdcpp/v1/capabilities, POST "+
 		"/sdcpp/v1/img_gen for a job id, then GET /sdcpp/v1/jobs/{id} until the picture "+
 		"arrives.\n\nThere is no model box: sd-server loads one model when it starts and "+
 		"nothing Autocut sends can switch it, so Test reports which weights it found "+
-		"instead of holding it to a name."), 0, 12, 1, 1)
-	grid.Attach(lbl("Server:"), 1, 12, 1, 1)
-	grid.Attach(sd, 2, 12, 1, 1)
-	grid.Attach(sdBadge.stack, 3, 12, 1, 1)
-	grid.Attach(testSDBtn, 4, 12, 1, 1)
-	grid.Attach(lbl("API key:"), 1, 13, 1, 1)
-	grid.Attach(sdKey, 2, 13, 1, 1)
+		"instead of holding it to a name.")
+	grid.Attach(lbl("Server:"), 1, row, 1, 1)
+	grid.Attach(sd, 2, row, 1, 1)
+	grid.Attach(sdBadge.stack, 3, row, 1, 1)
+	grid.Attach(testSDBtn, 4, row, 1, 1)
+	grid.Attach(lbl("API key:"), 1, row+1, 1, 1)
+	grid.Attach(sdKey, 2, row+1, 1, 1)
+	row += 2
 
 	// the dialog's one verb, at the right where a dialog keeps its buttons --
 	// Save and Cancel used to be there and the settings save themselves now,
@@ -1381,12 +1409,12 @@ func (a *App) setupDialog() {
 	spring.SetHExpand(true)
 	btns.Append(spring)
 	btns.Append(testAll)
-	grid.Attach(btns, 0, 14, 5, 1)
+	grid.Attach(btns, 0, row, 5, 1)
 
 	// the log is the LAST row, below even the verbs: expanded it grows downward
 	// into space the dialog adds, instead of shoving the buttons off the bottom
 	// of the screen while a failure is being read
-	grid.Attach(logExp, 0, 15, 5, 1)
+	grid.Attach(logExp, 0, row+1, 5, 1)
 
 	win.SetChild(grid)
 	win.SetVisible(true)

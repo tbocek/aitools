@@ -35,7 +35,9 @@ func (ed *cutEditor) fxKillCentre(i int) (float64, float64, bool) {
 		return 0, 0, false
 	}
 	rows, _ := fxRows(ed.fx)
-	return x1 - killIn, ed.fxLaneTop() + (float64(rows[i])+0.5)*fxLaneH, true
+	// the middle, the green bar's own place for it (cut_selband.go): a band's
+	// two ends are its grips and the ✕ is not one of them
+	return (x0 + x1) / 2, ed.fxLaneTop() + (float64(rows[i])+0.5)*fxLaneH, true
 }
 
 // fxKillAt is the effect whose ✕ is under a press at timeline-x px and
@@ -101,4 +103,18 @@ func (ed *cutEditor) drawFxKill(cr *cairo.Context, vx0, vx1 float64) {
 		}
 		drawKillBadge(cr, cx, cy, ed.fxKillHov == i)
 	}
+}
+
+// fxLabelRoom is how many characters of a band's label fit before its ✕.
+//
+// The badge is in the middle of the band now, not against its right end, so
+// the words have the left half of it less the plate rather than the whole of
+// it less a corner. A band too narrow to wear one (killMin) keeps the whole
+// width, minus the margin the plate would have wanted.
+func fxLabelRoom(x0, x1 float64) int {
+	w := x1 - x0 - 16
+	if x1-x0 >= killMin {
+		w = (x1-x0)/2 - (segKillR + segKillPad) - 6
+	}
+	return int(w / 5)
 }

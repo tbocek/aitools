@@ -47,8 +47,7 @@ func (a *App) suggestClicked() {
 	if len(a.ed.segs) > 0 && !sameCut(a.ed.segs, a.ed.base.segs) {
 		// ▶ is the only way to run this step now, so this line is where people meet
 		// Revert -- it has to name the button as it looks, not as a glyph it lost
-		a.setStatus("you have hand edits — ▶ will not throw them away; press Revert (beside Undo) " +
-			"first if you want a fresh suggestion")
+		a.setStatus("you have hand edits — press Revert first for a fresh suggestion")
 		return
 	}
 	rows := a.sessionRows()
@@ -125,10 +124,10 @@ func (a *App) suggestClicked() {
 			a.qJob(trackSTT, "suggest", 3, 4)
 			a.prog(trackSTT, 0.85, "how fast each clip plays")
 			fx = append(fx, caps...)
-			fx = append(fx, a.speedCut(segs, caps, target)...)
+			fx = append(fx, a.speedCut(segs, caps, rows)...)
 			a.qJob(trackSTT, "suggest", 4, 4)
 			a.prog(trackSTT, 0.93, "the zooms and stops")
-			fx = append(fx, a.decorateCut(segs, rows)...)
+			fx = append(fx, a.decorateCut(segs, rows, fx)...)
 		}
 		glib.IdleAdd(func() {
 			a.running = false
@@ -138,7 +137,7 @@ func (a *App) suggestClicked() {
 					a.logf("suggest FAILED: %v", err)
 				}
 				a.progress.SetFraction(0)
-				a.progress.SetText("suggest failed — see log")
+				a.setStatus("suggest failed — see log")
 				return
 			}
 			a.ed.pushUndo() // a suggestion is a proposal; Undo clears it again
@@ -176,7 +175,7 @@ func (a *App) suggestClicked() {
 			a.ed.persist()
 			a.ed.setBase() // from here on, Revert comes back to this suggestion
 			a.progress.SetFraction(1)
-			a.progress.SetText(fmt.Sprintf("suggested %d segments", len(segs)))
+			a.setStatus(fmt.Sprintf("suggested %d segments", len(segs)))
 			// the length of the VIDEO this makes, effects included, which is
 			// what the target was a target for: read straight off the
 			// segments it would over-report every speed-up in the answer
@@ -888,15 +887,38 @@ func captionsFromReply(batch []cutSeg, first int, reply string) ([]cutFx, string
 
 // decorateCut is the effects pass: the zooms, stops and volume, in one request
 // over every kept clip. A failed answer is logged and the cut stands plain.
-func (a *App) decorateCut(segs []cutSeg, rows []tsvRow) []cutFx {
+//
+// It runs last and is told what the two passes before it decided: the captions
+// as CAPTION lines (clipBriefsWith), and the rate in each heading. Both
+// change the answer. A zoom that pushes the frame past a caption hides the
+// words; a stop or a two-second zoom on a clip running at 8 is over before it
+// registers, and a "hold on this beat" is a contradiction on a stretch chosen
+// for being worth skipping.
+func (a *App) decorateCut(segs []cutSeg, rows []tsvRow, done []cutFx) []cutFx {
 	if len(segs) == 0 {
 		return nil
 	}
 	if err := a.checkpoint(); err != nil {
 		return nil
 	}
-	brief := clipBriefsWith(segs, rows, nil, a.narratorMic(), func(i int, s cutSeg) string {
-		return fmt.Sprintf("CLIP %d: %.0f s long", i+1, s.E-s.S)
+	rate := make([]float64, len(segs))
+	for _, f := range done {
+		if f.Kind != "speed" || f.Rate <= 0 {
+			continue
+		}
+		t0, t1 := f.fxSpan()
+		for i, s := range segs {
+			if t1 > s.S && t0 < s.E {
+				rate[i] = f.Rate
+			}
+		}
+	}
+	brief := clipBriefsWith(segs, rows, done, a.narratorMic(), func(i int, s cutSeg) string {
+		h := fmt.Sprintf("CLIP %d: %.0f s long", i+1, s.E-s.S)
+		if rate[i] > 0 && rate[i] != 1 {
+			h += fmt.Sprintf(", plays at %gx", rate[i])
+		}
+		return h
 	})
 	user := a.ctxBlockFor("effects") + "THE CLIPS, AND WHAT WAS SAID AND SHOWN OVER EACH:\n" + brief
 	msgs := []map[string]any{msg("system", a.sysPrompt("effects")), msg("user", user)}
@@ -969,12 +991,10 @@ func decorationsFromReply(segs []cutSeg, reply string) ([]cutFx, string) {
 // How fast each clip plays, asked once the cut stands and its captions are
 // placed. Two reasons it is its own call and not part of the cut's answer.
 //
-// The arithmetic. Fitting F seconds of footage into a target of T is a sum,
-// and it was being asked of the same reply that chose the moments from a
-// timeline of thousands of lines. That pairing is what produced ten-minute
-// calls with no answer in them: the model would choose, add up, re-choose,
-// add up again, and run out of call. Here the sum is the whole job and the
-// brief is a list of clips.
+// The size of the other call. Speed used to ride on the reply that chose the
+// moments from a timeline of thousands of lines, and the pairing produced
+// ten-minute calls with no answer in them: the model would choose, add up,
+// re-choose, and run out of call. Here the brief is a list of clips.
 //
 // The captions. A caption over a stretch at 4 is gone before it is read, and
 // which lines become captions is the captions pass's decision -- so nothing
@@ -982,10 +1002,16 @@ func decorationsFromReply(segs []cutSeg, reply string) ([]cutFx, string) {
 // here rather than only asked for: a rate on a captioned clip is dropped, and
 // the model is told which clips carry them so it does not spend the answer on
 // rates that will be thrown away.
+//
+// What it is NOT given is a target. It was -- the footage, the target, and an
+// accepted range the answer was gated on -- and that made it speed clips up
+// because the sum said so, dull or not. How much to speed up, if anything, is
+// the user context's to say and the model's to place (speedSystem); the length
+// of the cut is the cut pass's own gate (footageWindow).
 
 // speedCut asks for a rate per clip and returns the speed effects. A failure
 // leaves the cut at 1 throughout, which is a longer video and a whole one.
-func (a *App) speedCut(segs []cutSeg, caps []cutFx, target float64) []cutFx {
+func (a *App) speedCut(segs []cutSeg, caps []cutFx, rows []tsvRow) []cutFx {
 	if len(segs) == 0 {
 		return nil
 	}
@@ -1000,20 +1026,29 @@ func (a *App) speedCut(segs []cutSeg, caps []cutFx, target float64) []cutFx {
 			}
 		}
 	}
-	var b strings.Builder
+	// ...and the clip's own lines: what was said over it and what the frames
+	// showed, at the seconds they happened.
+	//
+	// This pass used to get two counts -- how many lines were spoken, how many
+	// captions -- and was asked which clips are boring. It could not know. A
+	// long clip with nothing said over it is the walk back across the map or
+	// the silent final approach, and a count of zero is the same number for
+	// both. The other three passes after the cut have read the lines all
+	// along (clipBriefsWith); this one now reads them too, and dullness is
+	// something in front of it rather than something to infer from a duration.
 	raw := 0.0
-	for i, s := range segs {
+	for _, s := range segs {
 		raw += s.E - s.S
-		what := "nothing said over it"
-		if capped[i] > 0 {
-			what = fmt.Sprintf("%d caption(s) -- runs at 1", capped[i])
-		}
-		fmt.Fprintf(&b, "CLIP %d: %.0f s, %s\n", i+1, s.E-s.S, what)
 	}
-	lo, hi := a.suggestWindow(target)
-	user := a.ctxBlockFor("speed") + fmt.Sprintf("FOOTAGE: %.0f seconds over %d clips.\n"+
-		"TARGET: %.0f seconds of finished video, and %.0f to %.0f is accepted.\n\n"+
-		"THE CLIPS:\n%s", raw, len(segs), target, lo, hi, b.String())
+	brief := clipBriefsWith(segs, rows, caps, a.narratorMic(), func(i int, s cutSeg) string {
+		h := fmt.Sprintf("CLIP %d: %.0f s long", i+1, s.E-s.S)
+		if capped[i] > 0 {
+			h += fmt.Sprintf(", %d caption(s) -- runs at 1", capped[i])
+		}
+		return h
+	})
+	user := a.ctxBlockFor("speed") + fmt.Sprintf("FOOTAGE: %.0f seconds over %d clips.\n\n"+
+		"THE CLIPS, AND WHAT WAS SAID AND SHOWN OVER EACH:\n%s", raw, len(segs), brief)
 	msgs := []map[string]any{msg("system", a.sysPrompt("speed")), msg("user", user)}
 	for try := 0; try < 2; try++ {
 		reply, err := a.llmChatRetryOn("speed", msgs, false, nil)
@@ -1023,14 +1058,11 @@ func (a *App) speedCut(segs []cutSeg, caps []cutFx, target float64) []cutFx {
 		}
 		fx, problem := speedsFromReply(segs, capped, reply)
 		if problem == "" {
-			if total := cutLen(applyFx(segs, fx)); total < lo || total > hi {
-				problem = fmt.Sprintf("that comes to %.0f s of finished video from %.0f s of "+
-					"footage, where %.0f to %.0f is accepted", total, raw, lo, hi)
-			} else {
-				a.logfIdle(">>> speed: %d clip(s) run fast — %s of video from %s of footage",
-					len(fx), mmss(total), mmss(raw))
-				return fx
-			}
+			// no length gate: "no clip runs fast" is a right answer to a cut
+			// with nothing dull in it, and the length is the cut pass's
+			a.logfIdle(">>> speed: %d clip(s) run fast — %s of video from %s of footage",
+				len(fx), mmss(cutLen(applyFx(segs, fx))), mmss(raw))
+			return fx
 		}
 		a.logfIdle(">>> speed rejected: %s", problem)
 		msgs = retryTurn(msgs, reply, problem)
@@ -1040,8 +1072,17 @@ func (a *App) speedCut(segs []cutSeg, caps []cutFx, target float64) []cutFx {
 }
 
 // speedsFromReply reads a rate per clip into speed effects over whole clips.
-// A rate on a captioned clip is dropped: the words on it would be unreadable,
-// and that rule is not the model's to weigh against the arithmetic.
+//
+// A rate ABOVE 1 on a captioned clip is dropped: the words on it would be
+// unreadable, and that rule is not the model's to weigh against the
+// arithmetic. Below 1 is slow motion and is kept -- it costs the target
+// seconds rather than saving them, which is the arithmetic's problem and is
+// caught by the length gate, and a caption over a slowed clip is on screen
+// longer rather than shorter.
+//
+// What is SAID over a clip is not enforced here, only asked for (speedSystem):
+// the user context can ask for more speed than the silent clips can give, and
+// the wording says what to take then.
 func speedsFromReply(segs []cutSeg, capped []int, reply string) ([]cutFx, string) {
 	if p := noAnswer(reply); p != "" {
 		return nil, p
@@ -1069,11 +1110,14 @@ func speedsFromReply(segs []cutSeg, capped []int, reply string) ([]cutFx, string
 		if i < 0 || i >= len(segs) {
 			return nil, fmt.Sprintf("clip %d is not one of the clips given (1 to %d)", sp.Clip, len(segs))
 		}
-		if sp.Rate <= 1 {
-			continue // 1 is the ordinary rate and says nothing; below it is not this pass's
+		if sp.Rate <= 0 || math.Abs(sp.Rate-1) < 0.01 {
+			continue // 1 is the footage's own speed and says nothing
 		}
-		if capped[i] > 0 {
-			continue // words on screen: this clip runs at 1, whatever was asked for
+		if sp.Rate > 1 && capped[i] > 0 {
+			// words on screen: this clip runs at 1, whatever was asked for.
+			// Only the fast half of the rule -- a caption over a clip in slow
+			// motion is on screen longer, not shorter.
+			continue
 		}
 		in = append(in, sugFx{Kind: "speed", Start: segs[i].S, End: segs[i].E, Rate: sp.Rate})
 	}

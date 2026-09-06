@@ -141,7 +141,7 @@ Your voice: present tense, contractions, short sentences, and whoever the user c
 
 For each clip, in order:
 1. Say what was said, better. Take the spoken lines over that clip and give them in your voice: the same meaning and the same facts, sharper and shorter. A line that reads like broken speech-to-text is one to say properly, never to quote as it stands. Where nothing was said, write from the EVENT lines instead.
-2. Add nothing nobody said and the pictures do not show -- no name, no number, no outcome you were not given. Say less rather than fill.
+2. Add nothing nobody said and the pictures do not show -- no name, no number, no outcome you were not given. Say less rather than fill. A line marked CAPTION is already on screen and being read: do not say it again.
 3. Less is more. The clip's word count is a ceiling across all its entries, not a target, and most clips should come in far under it. Most clips get a line, a short one; a clip that carries itself gets text "" -- still an entry, no words in it -- but that is one or two clips in the video, not half of them.
 4. Place each line at the offset it happens: react to the vault after we have seen the vault.
 5. A pause is an entry, not punctuation. The voice runs straight through a comma, a dash and a full stop, so a beat cannot be written into a line -- it is made by ending the line and starting another. Two entries on the same clip, in time order, each with its own "at" and its own emotion: the second's "at" is the first's start, plus its spoken length -- about two and a half words a second, so ten words is four seconds -- plus the silence you want. A second and a half before a punchline is what makes it land, and it is the only way to get one.
@@ -170,7 +170,7 @@ Three clip blocks and the lines they should get:
 
 The first clip is what a pause looks like: one thought per entry, three seconds apart, rather than one line with dots in it.
 
-Answer in narrate's shape.`
+Answer with ENTRIES.`
 
 // narrNoMicNote rides on the narrate prompt when the finished video DOES play
 // what people said out loud, which is the one case the prompt's premise is
@@ -719,6 +719,14 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	// the picture takes this column's spare height. It used to go to the voice
 	// picker, which was a scrolling list of voices and could use it; the picker
 	// is two rows now, and height given to it is height taken off the video.
+	//
+	// On the FRAME as well as on the box around it. A box hands its spare
+	// height to children that ask for it and to no one else, and the frame
+	// asked only when a player had been built and put an expanding picture
+	// inside it -- with no player, or before one exists, the box grew and its
+	// two children did not, and what stood between the transport and the voice
+	// picker was a hand's width of nothing.
+	vframe.SetVExpand(true)
 	preview.SetVExpand(true)
 
 	// The prompt was a box filling the bottom half of this column, then a
@@ -733,29 +741,58 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	// is read alongside the sample it plays.
 	voice := a.buildVoicePicker()
 
-	// Whether this video is narrated at all, at the top of the column that is
-	// about the narration. Some videos want none -- the speakers carry them,
-	// or the words go on screen instead -- and there was no way to say so: the
-	// nearest was the captions voice, which still writes lines and still asks
-	// Produce to carry them. Off means off, and Produce loses what only a
-	// narration needs (produce.go).
+	// Whether this video is narrated at all, at the top right of the page.
+	// Some videos want none -- the speakers carry them, or the words go on
+	// screen instead -- and there was no way to say so: the nearest was the
+	// captions voice, which still writes lines and still asks Produce to carry
+	// them. Off means off, and Produce loses what only a narration needs
+	// (produce.go).
 	n.onBox = gtk.NewCheckButtonWithLabel("Narration")
 	n.onBox.SetActive(!a.narrOff)
 	n.onBox.SetTooltipText("Whether this video has a narration. Unticked, ▶ writes none, " +
 		"the lines already written are left alone, and Produce drops the game-volume " +
 		"slider and the subtitle choices -- all three exist to carry a voice-over.")
 	n.onBox.ConnectToggled(func() { a.setNarrOff(!n.onBox.Active()) })
-	head := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	head.SetHAlign(gtk.AlignEnd)
-	head.Append(n.onBox)
 
-	right := gtk.NewBox(gtk.OrientationVertical, 6)
-	right.SetMarginStart(12)
-	right.SetMarginEnd(12)
-	right.SetMarginBottom(8)
-	right.Append(head)
-	right.Append(preview)
-	right.Append(voice)
+	// the picture and the voice it is played in, in one column, under the one
+	// tick that is about the narration as a whole rather than about any line
+	// of it -- top left, where a page's first question goes
+	head := gtk.NewBox(gtk.OrientationHorizontal, 6)
+	head.SetHAlign(gtk.AlignStart)
+	head.Append(n.onBox)
+	top := gtk.NewBox(gtk.OrientationVertical, 6)
+	top.Append(head)
+	top.Append(preview)
+	// the handle under it is a control, not a rule: pressed against the
+	// transport's buttons it reads as part of them, and the hand aiming at the
+	// last button lands on the drag instead
+	top.SetMarginBottom(6)
+
+	// ...and a handle between the two, so the column can be traded: a bigger
+	// picture while the cut is being watched, a bigger waveform while the
+	// seconds to clone are being picked. It was a fixed split, and the video
+	// took whatever was left over -- which is the wrong way round twice a
+	// session and cannot be argued with either time.
+	shown := gtk.NewPaned(gtk.OrientationVertical)
+	shown.SetMarginStart(12) // the window's edge
+	shown.SetMarginEnd(6)    // ...and the handle's, which the lines match
+	shown.SetMarginTop(8)
+	shown.SetMarginBottom(8)
+	shown.SetStartChild(top)
+	shown.SetEndChild(voice)
+	shown.SetPosition(420)
+	shown.SetResizeStartChild(true)
+	shown.SetResizeEndChild(false)
+	shown.SetShrinkStartChild(false)
+	shown.SetShrinkEndChild(false)
+
+	// ...and the lines beside them
+	written := gtk.NewBox(gtk.OrientationVertical, 4)
+	written.SetMarginStart(6)
+	written.SetMarginEnd(12)
+	written.SetMarginTop(8)
+	written.SetMarginBottom(8)
+	written.Append(left)
 	// everything on this page except the tick itself: with no narration there
 	// is nothing here to do, and a page of live controls over a video that has
 	// none is a page that invites the work the tick just said not to do. The
@@ -763,30 +800,27 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	// worth pressing.
 	n.body = []gtk.Widgetter{left, preview, voice}
 
-	// ...and the narration lines run the full height beside it, with the whole
-	// of the left column to wrap in
+	// The picture on the left, the words on the right -- the shape Cut and
+	// Produce have. What a page SHOWS is on the left of all three of them, and
+	// a video editor whose preview moved side to side by page is a video
+	// editor you look for the preview on.
+	//
+	// The lines take the window's extra width, because they are sentences and
+	// sentences want width; the picture keeps what it was dragged to and
+	// cannot be crushed.
 	split := gtk.NewPaned(gtk.OrientationHorizontal)
-	split.SetStartChild(left)
-	split.SetEndChild(right)
-	split.SetPosition(790)
+	split.SetStartChild(shown)
+	split.SetEndChild(written)
+	split.SetPosition(560)
 	split.SetVExpand(true)
-	split.SetShrinkEndChild(false)
+	split.SetShrinkStartChild(false)
+	split.SetResizeStartChild(false)
+	split.SetResizeEndChild(true)
 
-	// What this step reads, at the top -- the row every other step has and
-	// this one did not. What it has written goes to the shared bottom bar
-	// (outStack in main.go), like every step's.
-	n.inputs = gtk.NewLabel("")
-	n.inputs.SetXAlign(0)
-	n.inputs.SetHExpand(true)
-	n.inputs.SetEllipsize(pango.EllipsizeEnd) // never a floor under the window
-	inLbl := gtk.NewLabel("Inputs:")
-	inLbl.AddCSSClass("heading")
-	inRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	inRow.SetMarginStart(12)
-	inRow.SetMarginEnd(12)
-	inRow.SetMarginTop(6)
-	inRow.Append(inLbl)
-	inRow.Append(n.inputs)
+	// What this step reads, on the shared bottom bar beside what it has
+	// written (inputsLabel, outStack)
+	n.inputs = inputsLabel()
+	a.inStack.AddNamed(n.inputs, "narrate")
 
 	openOut := gtk.NewButtonFromIconName("folder-open-symbolic")
 	openOut.SetTooltipText("narrate/ — narration.json, the voice reference and the synthesis cache")
@@ -798,7 +832,6 @@ func (a *App) buildNarrate() gtk.Widgetter {
 	a.outStack.AddNamed(outRow, "narrate")
 
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
-	page.Append(inRow)
 	page.Append(split)
 
 	n.load()
@@ -2112,8 +2145,7 @@ func (n *narrator) deleteLine(i int) {
 		n.a.setStatus("line removed")
 	} else {
 		n.silent = markSilent(n.silent, clip)
-		n.a.setStatus(fmt.Sprintf("line removed — the clip at %s plays its own audio now; "+
-			"put a line back with ＋ on the transport", fmtClock(e.S)))
+		n.a.setStatus(fmt.Sprintf("line removed — the clip at %s plays its own audio", fmtClock(e.S)))
 	}
 	n.save()
 	n.rebuildRows()
@@ -2374,7 +2406,11 @@ func (n *narrator) updateInputs() {
 	for _, s := range segs {
 		total += s.length()
 	}
-	line := fmt.Sprintf("%d clip(s) · %s to narrate", len(segs), mmss(total))
+	// short enough to read in one glance: each input is named, not described.
+	// What each one MEANS is the tooltip's job, and the tooltip is where the
+	// sentences went -- a row that runs the width of the window is a paragraph
+	// wearing a row's clothes, and nobody reads it twice.
+	line := fmt.Sprintf("%s · %s", plural(len(segs), "clip"), mmss(total))
 	detail := fmt.Sprintf("cut/cut.json — %d clips, %s of video to write for", len(segs), mmss(total))
 	if len(segs) == 0 {
 		line, detail = "no cut yet — build one on the Cut step", ""
@@ -2383,29 +2419,44 @@ func (n *narrator) updateInputs() {
 	// whose clip is gone. Said here rather than only when ▶ is pressed -- the
 	// page's whole job is that a narration written for another cut reads exactly
 	// like one written for this one.
+	// ...and the ⚠ says WHAT is out of date rather than that something is:
+	// "not this cut" was a verdict nobody can act on, and the counts are the
+	// two things ▶ would fix. The sentence naming the first clip is the
+	// tooltip's.
 	if why := n.staleFor(segs); why != "" && len(n.entries) > 0 {
-		line += " · ⚠ " + why
+		if miss, orph := n.staleCounts(segs); miss > 0 || orph > 0 {
+			var parts []string
+			if miss > 0 {
+				parts = append(parts, plural(miss, "clip")+" unwritten")
+			}
+			if orph > 0 {
+				parts = append(parts, plural(orph, "line")+" off the cut")
+			}
+			line += " · ⚠ " + strings.Join(parts, ", ")
+		}
 		detail += "\n\n⚠ " + why + " — ▶ writes the narration again"
 	}
+	// the session timeline is an input and its line COUNT is not: 688 is a
+	// number nothing on this page is decided by. That it is there at all is,
+	// so the row says so only when it is missing.
 	if rows := loadTSVRows(filepath.Join(a.transcriptDir(), "session.tsv")); len(rows) > 0 {
-		line += fmt.Sprintf(" · timeline %d lines", len(rows))
 		detail += fmt.Sprintf("\n\nprepare/transcript/session.tsv — %d lines; the ones falling inside a clip (±4 s) go with that clip", len(rows))
 	} else {
-		line += " · no session timeline — run Describe"
+		line += " · no timeline"
 	}
 	if c := a.sessionCtx(); c != "" {
-		line += " · session context"
 		detail += "\n\nSession context (Describe), sent with the narration:\n" + c
 	}
-	// the voice is an input too -- not to the writing, to the speaking -- and it
-	// is the one nothing else on the page states in words
+	// the voice is an input too -- not to the writing, to the speaking -- and
+	// it is named in the tooltip alone: the picker on this page says which
+	// voice, in a dropdown a hand's width away, and a row that repeats the
+	// control beside it is a row saying nothing.
 	if vp := a.voicePick; vp != nil {
 		if v, ok := vp.current(); ok {
 			st := 0.0
 			if vp.pitch != nil {
 				st = vp.pitch.Value()
 			}
-			line += " · voice: " + v.name
 			detail += fmt.Sprintf("\n\nSpoken by %s at %+.1f semitones (narrate/voice_ref.wav)", v.name, st)
 		}
 	}
@@ -2576,8 +2627,7 @@ func (n *narrator) holdForSynth(i int) {
 	}
 	e := n.entries[i]
 	wav := n.a.ttsWav(e)
-	n.a.setStatus(fmt.Sprintf("synthesizing line %d — the video waits for it"+
-		" (the first line after a cold start also loads the model)", i+1))
+	n.a.setStatus(fmt.Sprintf("synthesizing line %d", i+1))
 	n.synthWait(i, e, wav)
 }
 
@@ -2661,6 +2711,28 @@ func (n *narrator) staleFor(segs []cutSeg) string {
 		return "the narration has lines for clips the cut no longer has"
 	}
 	return ""
+}
+
+// staleCounts is what the ⚠ says: clips with no line on them, and lines
+// sitting on footage the cut no longer keeps. staleFor answers WHETHER the
+// narration is off the cut, in a sentence for the tooltip; this answers how
+// far off, which is the part worth a row.
+func (n *narrator) staleCounts(segs []cutSeg) (missing, orphan int) {
+	if len(n.entries) == 0 {
+		return 0, 0
+	}
+	ei := 0
+	for i := range segs {
+		on := 0
+		for ei < len(n.entries) && onClip(segs[i], n.entries[ei].S, n.entries[ei].E) {
+			on++
+			ei++
+		}
+		if on == 0 && !silentFor(n.silent, segs[i]) {
+			missing++
+		}
+	}
+	return missing, len(n.entries) - ei
 }
 
 // refitEntries moves the lines onto the cut as it is NOW, and does it without
@@ -3038,9 +3110,23 @@ func narrBudget(dur float64) int {
 // assumption that cannot embarrass the narration.
 func clipBriefs(segs []cutSeg, rows []tsvRow, fx []cutFx, narr string) string {
 	return clipBriefsWith(segs, rows, fx, narr, func(i int, s cutSeg) string {
-		return fmt.Sprintf("CLIP %d: %.1f–%.1f (%.0f s, at most %d words -- fewer is better, none is fine)",
-			i+1, s.S, s.E, s.length(), narrBudget(s.length()))
+		return fmt.Sprintf("CLIP %d: %.1f–%.1f (%s, at most %d words -- fewer is better, none is fine)",
+			i+1, s.S, s.E, clipPlays(s), narrBudget(s.length()))
 	})
+}
+
+// clipPlays is how long a clip is on screen, and at what speed -- the two
+// facts every brief's heading needs and only one of which is its length.
+//
+// A clip at 4 runs a quarter of the session seconds its lines are stamped in:
+// a line at [+40s] of it arrives ten seconds into what the viewer watches. The
+// briefs stamp lines in session seconds because that is what the transcript
+// has, so the heading is where the rate has to be said.
+func clipPlays(s cutSeg) string {
+	if s.Rate > 0 && s.Rate != 1 {
+		return fmt.Sprintf("%.0f s of footage at %gx, %.0f s on screen", s.E-s.S, s.Rate, s.length())
+	}
+	return fmt.Sprintf("%.0f s", s.length())
 }
 
 // clipBriefsWith is the same blocks under headings of the caller's own. The
@@ -3081,7 +3167,12 @@ func clipBriefsWith(segs []cutSeg, rows []tsvRow, fx []cutFx, narr string, head 
 			n++
 		}
 		if n == 0 {
-			b.WriteString("  (nothing recorded over this clip -- say something general, and invent nothing)\n")
+			// neutral: three passes read this brief, and "say something
+			// general" is an instruction to one of them (the narration says
+			// it in its own wording). To the speed pass the same clip is a
+			// stretch where nothing was said and nothing changed on screen,
+			// which is the plainest description of dull there is.
+			b.WriteString("  (no lines over this clip: nothing said, nothing described)\n")
 		}
 		// and the moments somebody marked. A label effect changes nothing in
 		// the video -- it exists only to be read here: it is the editor's own
@@ -3091,10 +3182,19 @@ func clipBriefsWith(segs []cutSeg, rows []tsvRow, fx []cutFx, narr string, head 
 		// user context can say what to do when one arrives.
 		for _, f := range fx {
 			t0, t1 := f.fxSpan()
-			if f.Kind != "label" || strings.TrimSpace(f.Text) == "" || t1 <= s.S || t0 >= s.E {
+			if strings.TrimSpace(f.Text) == "" || t1 <= s.S || t0 >= s.E {
 				continue
 			}
-			fmt.Fprintf(&b, "  [%+.0fs] MARKED: %s\n", t0-s.S, strings.TrimSpace(f.Text))
+			switch f.Kind {
+			case "label":
+				fmt.Fprintf(&b, "  [%+.0fs] MARKED: %s\n", t0-s.S, strings.TrimSpace(f.Text))
+			case "text":
+				// the caption the viewer READS at that second. The narration must not
+				// say again what is already on screen, the effects pass must
+				// not zoom past it, and the speed pass may not run it fast --
+				// three passes, one fact, and until now none of them had it.
+				fmt.Fprintf(&b, "  [%+.0fs] CAPTION: %s\n", t0-s.S, strings.TrimSpace(f.Text))
+			}
 		}
 	}
 	return b.String()

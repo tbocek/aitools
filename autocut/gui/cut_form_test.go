@@ -40,8 +40,27 @@ func TestTheCutPageSendsPromptsItDoesNotEdit(t *testing.T) {
 	if strings.Contains(src, `a.styleBar(`) {
 		t.Error("cut.go still builds the style dropdown -- it lives on Prepare")
 	}
-	if !strings.Contains(src, "bar.Append(rule()) // past here nothing changes the cut") {
-		t.Fatal("cut.go no longer marks where the bar stops changing the cut")
+	// ...and the bar is the cut's own verbs plus the zoom, which is the one
+	// view control pressed all session. The thumbnail size, the aspect and
+	// every reading -- set once, or read between edits -- moved into the form
+	// column, which stands empty except while a form is up.
+	for _, want := range []string{
+		"bar.Append(linked(zoomOut, zoomIn))",
+		`ed.formIdle.Append(idleRow("Thumbnails", linked(thumbMinus, thumbPlus)))`,
+		`ed.formIdle.Append(idleRow("Aspect ratio", ed.aspectDD))`,
+		// the three totals are three rows, like every other reading in the
+		// column: they were one line of facts joined by dots, which is a
+		// sentence standing in a column of readings
+		`ed.formIdle.Append(idleRow("Cut", ed.total))`,
+		`ed.formIdle.Append(idleRow("Source", ed.totalSrc))`,
+		`ed.formIdle.Append(idleRow("Segments", ed.totalSegs))`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the view controls are back on the editing bar: %q", want)
+		}
+	}
+	if strings.Contains(src, "bar.Append(totCol)") {
+		t.Error("the totals are back on the editing bar")
 	}
 	// ...and neither does Prepare: the Style dropdown that sat after Language
 	// is gone, and what kind of video this is goes in the context box beside

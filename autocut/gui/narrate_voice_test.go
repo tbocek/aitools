@@ -622,24 +622,33 @@ func TestSampleAccountsForItself(t *testing.T) {
 	}
 }
 
-// TestTheVoiceRowKeepsButtonHeight: the pitch slider is three stacked things --
-// the value, the trough, a legend of words -- and it shares a row with an entry
-// and three transport buttons. Left to fill, those buttons stretched to the
-// slider's height and the row looked broken. The height is capped from both
-// ends: the legend is set in a smaller face, and the controls beside it sit
-// centered at their own size rather than filling.
+// TestTheVoiceRowKeepsButtonHeight: the pitch slider shares a row with an
+// entry and three transport buttons. Left to fill, those buttons stretched to
+// the slider's height and the row looked broken. The height is capped from
+// both ends: the slider wears the one shape every slider in the app wears --
+// value beside the trough, not stacked over it (formSlider) -- and the
+// controls beside it sit centered at their own size rather than filling.
 func TestTheVoiceRowKeepsButtonHeight(t *testing.T) {
 	body := funcBody(t, "narrate_voice.go", `func \(a \*App\) buildVoicePicker\(\)`)
 	for _, want := range []string{
 		"hear.SetVAlign(gtk.AlignCenter)",
 		"knob.SetVAlign(gtk.AlignCenter)",
-		`vp.pitch.AddCSSClass("tinyscale")`,
+		"formSlider(vp.pitch, ",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the voice row lost %s — its buttons grow to the slider's height", want)
 		}
 	}
-	if !strings.Contains(readSrc(t, "main.go"), ".tinyscale value, .tinyscale marks label") {
-		t.Error("nothing defines .tinyscale, so the pitch legend is set in full-size body text")
+	// one recipe, so no page can grow a slider of its own shape
+	mk := funcBody(t, "player.go", `func formSlider\(sc \*gtk.Scale, tip string\) \{`)
+	for _, want := range []string{"sc.SetValuePos(gtk.PosRight)", "sc.SetVAlign(gtk.AlignCenter)", "sc.SetHAlign(gtk.AlignStart)"} {
+		if !strings.Contains(mk, want) {
+			t.Errorf("formSlider no longer does %q", want)
+		}
+	}
+	for _, f := range []string{"produce.go", "narrate_voice.go"} {
+		if strings.Contains(readSrc(t, f), "SetDrawValue(true)") {
+			t.Errorf("%s builds a slider by hand instead of through formSlider", f)
+		}
 	}
 }

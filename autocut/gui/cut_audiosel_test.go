@@ -226,14 +226,16 @@ func TestTheLanesShowWhatTheCutKeeps(t *testing.T) {
 	ed.segs = []cutSeg{{S: 30, E: 60}} // x 120-240 at four px a second
 	at := renderLanes(t, ed, 400, ed.audioHeight())
 
-	_, keptG, _ := at(180, 20)
-	_, dropG, _ := at(300, 20)
+	// +gutterPx on every x: the tape starts a strip in from the widget's edge
+	// (cut_gutter.go)
+	_, keptG, _ := at(gutterPx+180, 20)
+	_, dropG, _ := at(gutterPx+300, 20)
 	if keptG <= dropG {
 		t.Errorf("the lanes are %d green over kept footage and %d over dropped — "+
 			"what is in the cut has to be readable here", keptG, dropG)
 	}
 	// and the hard border, which is where the eye lands the sound
-	r, g, b := at(120, 20)
+	r, g, b := at(gutterPx+120, 20)
 	if g < 150 || g <= r || g <= b {
 		t.Errorf("the border of the kept stretch is rgb(%d,%d,%d), want a green line", r, g, b)
 	}

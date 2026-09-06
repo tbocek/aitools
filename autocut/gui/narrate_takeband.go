@@ -34,6 +34,12 @@ import (
 
 const (
 	takeRulerH = 12.0 // the seconds along the top
+	// ...and how tall one channel of it is drawn. Taller than a Cut lane's
+	// (waveLaneH): that band is one of a dozen rows sharing a page, and this
+	// is the only picture in its own half of the column -- the seconds worth
+	// cloning are picked by looking at it, and a 30 px strip is a strip you
+	// squint at.
+	takeLaneH  = 56.0
 	takeMaxPps = 200.0
 	// a press that travels less than this is a click, not a drag: it clears
 	// the selection instead of making a nought-length one
@@ -167,7 +173,7 @@ func (b *takeBand) laneCount() int {
 }
 
 func (b *takeBand) height() int {
-	return int(takeRulerH + float64(b.laneCount())*waveLaneH + 2*wavePad)
+	return int(takeRulerH + float64(b.laneCount())*takeLaneH + 2*wavePad)
 }
 
 // ---- building ---------------------------------------------------------------
@@ -445,8 +451,7 @@ func (b *takeBand) playClicked() {
 	}
 	q, takes := takeQueue(b.takes, b.at, b.dur)
 	if len(q) == 0 {
-		b.vp.a.setStatus("no takes yet — drag across the wave and press ＋, " +
-			"or click the wave to play the recording from there")
+		b.vp.a.setStatus("no takes yet — drag across the wave and press ＋")
 		return
 	}
 	if b.vp.player == nil {
@@ -602,7 +607,7 @@ func (b *takeBand) draw(_ *gtk.DrawingArea, cr *cairo.Context, w, h int) {
 	}
 	top := takeRulerH + wavePad
 	lanes := b.laneCount()
-	laneH := float64(lanes) * waveLaneH
+	laneH := float64(lanes) * takeLaneH
 	x0 := math.Max(0, b.xOf(0))
 	x1 := math.Min(float64(w), b.xOf(b.dur))
 	if b.dur <= 0 {
@@ -615,7 +620,7 @@ func (b *takeBand) draw(_ *gtk.DrawingArea, cr *cairo.Context, w, h int) {
 	cr.Rectangle(x0, top, x1-x0, laneH)
 	cr.Fill()
 	for ch := 0; ch < lanes; ch++ {
-		b.drawLane(cr, ch, top+float64(ch)*waveLaneH, x0, x1)
+		b.drawLane(cr, ch, top+float64(ch)*takeLaneH, x0, x1)
 	}
 	if b.wf == nil {
 		cr.SetSourceRGBA(1, 1, 1, 0.5)
@@ -724,8 +729,8 @@ func (b *takeBand) drawRuler(cr *cairo.Context, w int) {
 // per-video spans to break the sweep into (which is the whole of why the Cut
 // page's drawWaveSpan is shaped the way it is).
 func (b *takeBand) drawLane(cr *cairo.Context, ch int, y, x0, x1 float64) {
-	bot := y + waveLaneH - 1
-	full := waveLaneH - 2
+	bot := y + takeLaneH - 1
+	full := takeLaneH - 2
 	cr.SetSourceRGBA(0.35, 0.6, 1, 0.35)
 	cr.SetLineWidth(1)
 	cr.MoveTo(x0, math.Round(bot)+0.5)

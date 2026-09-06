@@ -114,8 +114,9 @@ func TestTheSameInstantIsDrawnInTheSameColumn(t *testing.T) {
 	if r0 < 0 || r1 < 0 {
 		t.Fatal("the recording's lane is empty where it was recording a tone")
 	}
-	if m0 < 74 || m0 > 86 {
-		t.Errorf("the footage's tone starts at px %d, want ~80 (2 s at 40 px/s)", m0)
+	if m0 < gutterPx+74 || m0 > gutterPx+86 {
+		t.Errorf("the footage's tone starts at px %d, want ~%g (2 s at 40 px/s, "+
+			"past the gutter)", m0, gutterPx+80)
 	}
 	// the point of the whole file: the two clocks put it in the same column
 	if d := r0 - m0; d < -4 || d > 4 {

@@ -319,16 +319,23 @@ func TestOneWordingPerJobAndTheCutGuessesNothing(t *testing.T) {
 	}
 	// it asks what the session is instead, and the user context is where the
 	// answer comes from when there is one
-	for _, want := range []string{"say what this session is", "user context", "work it out"} {
+	for _, want := range []string{"work out what this session is", "user context", "the first minutes of the timeline"} {
 		if !strings.Contains(def, want) {
 			t.Errorf("the cut wording never says %q -- with no genre to fall back "+
 				"on, reading the session first is the whole method", want)
 		}
 	}
+	// ...and it says so as a thing to work out rather than a thing to answer
+	// with: the reply is JSON and nothing else, and a step that reads like an
+	// instruction to write a sentence is a sentence in front of the JSON
+	if !strings.Contains(def, "this is for you, not for the answer") {
+		t.Error("the cut wording asks for a line of prose in a JSON-only reply")
+	}
 	// the contract the parser reads, half of it here and half said once in the
 	// system context for every job (syscontext.go)
 	for _, want := range []string{
-		`{"segments":[{"start":0,"end":28},{"start":104,"end":232},{"start":232,"end":301}]}`,
+		`{"segments":[{"start":<sec>,"end":<sec>}]}`, // the schema, named once (syscontext.go)
+		"answer with segments",
 		"target length",
 	} {
 		if !strings.Contains(strings.TrimSpace(sysSystem)+"\n\n"+def, want) {

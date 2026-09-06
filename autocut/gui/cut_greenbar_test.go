@@ -83,9 +83,11 @@ func TestTheBarHasEndsAMiddleAndAKill(t *testing.T) {
 		{ed.xOf(100) + selGripPx, 1, selStart, "the edge of the left grip"},
 		{ed.xOf(100) + selGripPx + 1, 1, selWhole, "just inboard of the grip"},
 		{ed.xOf(140), 1, selEnd, "the right end"},
-		{ed.xOf(120), 1, selWhole, "the middle"},
-		// the ✕, on its own badge-shaped target inboard of the right grip
-		{ed.xOf(140) - killIn, 1, selKill, "the ✕"},
+		{ed.xOf(110), 1, selWhole, "the middle"},
+		// the ✕, on its own badge-shaped target in the middle of the bar:
+		// both ends are grips and the seam between two bars is the fold's +,
+		// so the middle is the one part of it no other verb wants
+		{ed.xOf(120), 1, selKill, "the ✕"},
 		{ed.xOf(80), -1, selNone, "clear of it"},
 	} {
 		seg, part := ed.bandClipPartAt(c.px)
@@ -98,7 +100,7 @@ func TestTheBarHasEndsAMiddleAndAKill(t *testing.T) {
 	// clip the line is in decides which bar is drawn tallest, not which of
 	// them the hand may take
 	ed.hasPlay = false
-	if i, part := ed.bandClipPartAt(ed.xOf(120)); i != 1 || part != selWhole {
+	if i, part := ed.bandClipPartAt(ed.xOf(110)); i != 1 || part != selWhole {
 		t.Errorf("with no line the bar's middle lands on clip %d part %d, want 1/%d", i, part, selWhole)
 	}
 }
@@ -168,8 +170,11 @@ func TestTheCursorSpeaksForTheGreenBar(t *testing.T) {
 	}{
 		{ed.xOf(100), "ew-resize", "the bar's left end"},
 		{ed.xOf(140), "ew-resize", "the bar's right end"},
-		{ed.xOf(120), "grab", "the bar's middle"},
-		{ed.xOf(80), "", "clear of the bar"},
+		{ed.xOf(110), "grab", "the bar's middle"},
+		{ed.xOf(120), "pointer", "the bar's ✕, in its middle"},
+		{ed.xOf(70), "", "clear of the bar"},
+		// the middle of the dropped stretch is the fold's − (cut_fold.go)
+		{ed.xOf(80), "pointer", "the gap's fold badge"},
 	} {
 		if got := ed.wantCursor(c.x, y); got != c.want {
 			t.Errorf("over %s the cursor is %q, want %q", c.what, got, c.want)

@@ -59,9 +59,11 @@ const (
 	selMinBand = 2*(killIn+selKillW/2) + 6
 	// the GREEN bar's ✕ is the plated badge the lanes and the effects wear
 	// (drawKillBadge), because it is the same verb they answer -- and it sits
-	// at the same distance from its edge as every other one of them, for the
-	// reason killIn gives: the badge's target begins where the end grip's
-	// stops, so one press means one thing (cut_segkill.go).
+	// in the MIDDLE of its bar rather than against an end. Both ends of a
+	// green bar are grips, and the seam where two of them meet is the fold's
+	// + (cut_fold.go); the middle is what is left, and it is the same place on
+	// an effect's band (fxKillCentre). The blue's stays at its end: it has one
+	// grip per end and no seam, and its middle is the drag that moves it.
 )
 
 // bandGround is the shade the two bands that speak for the whole cut are drawn
@@ -183,7 +185,7 @@ func (ed *cutEditor) bandKillAt(px float64) int {
 	for _, i := range ed.bandBars() {
 		s := ed.segs[i]
 		x0, x1 := ed.xOf(s.S), ed.xOf(s.E)
-		if x1-x0 >= killMin && math.Abs(px-(x1-killIn)) <= segKillHit {
+		if x1-x0 >= killMin && math.Abs(px-(x0+x1)/2) <= segKillHit {
 			return i
 		}
 	}
@@ -226,13 +228,21 @@ func (ed *cutEditor) bandClipPartAt(px float64) (int, int) {
 	if cur := ed.bandClipIdx(); cur >= 0 {
 		bars = append([]int{cur}, bars...)
 	}
-	for _, i := range bars {
-		x0, x1 := ed.xOf(ed.segs[i].S), ed.xOf(ed.segs[i].E)
-		switch {
-		case math.Abs(px-x0) <= selGripPx:
-			return i, selStart
-		case math.Abs(px-x1) <= selGripPx:
-			return i, selEnd
+	// the SIDE first, then the order. Folded, one bar's end and the next
+	// one's start are the same x (cut_fold.go), and the only thing left to
+	// tell them apart is which side of the seam the press landed on -- the
+	// press is in one bar or the other, and that bar's border is the one it
+	// means. Everywhere else there is one border in reach and it answers from
+	// either side of itself, which is what the second pass is.
+	for _, inside := range []bool{true, false} {
+		for _, i := range bars {
+			x0, x1 := ed.xOf(ed.segs[i].S), ed.xOf(ed.segs[i].E)
+			switch {
+			case math.Abs(px-x0) <= selGripPx && (!inside || px >= x0):
+				return i, selStart
+			case math.Abs(px-x1) <= selGripPx && (!inside || px <= x1):
+				return i, selEnd
+			}
 		}
 	}
 	if k := ed.bandKillAt(px); k >= 0 {
@@ -403,9 +413,7 @@ func (ed *cutEditor) holdSel(part int) {
 	ed.dropFx()
 	ed.selOn = true
 	a, b := ed.selSpan()
-	ed.a.setStatus(fmt.Sprintf("selection %s – %s (%s) — drag its middle to move it, "+
-		"either end to change that end (both snap to the cuts), ✕ throws it away, "+
-		"⌦ removes the footage in it", mmss(a), mmss(b), ed.spanSecs(a, b)))
+	ed.a.setStatus(fmt.Sprintf("selection %s – %s (%s)", mmss(a), mmss(b), ed.spanSecs(a, b)))
 	ed.redrawTracks()
 }
 
@@ -440,6 +448,8 @@ func (ed *cutEditor) hoverTracks(x, y float64) {
 			ed.srcArea.QueueDraw()
 		}
 	}
+	ed.hoverFold(x, y)
+	ed.hoverFoldAll(x, y)
 	ed.hoverLaneKill(x, y)
 	ed.hoverEdge(x, x >= 0 && ed.hitPics(y))
 	ed.setCursor(ed.srcArea, ed.wantCursor(x, y))
@@ -503,8 +513,20 @@ func (ed *cutEditor) wantCursor(x, y float64) string {
 	if x < 0 {
 		return ""
 	}
+	// the gutter's controls stand in front of second zero, where nothing on
+	// the tape reaches (cut_gutter.go)
+	if ed.foldAllAt(x+ed.viewX, y) || ed.pairSwitchAt(x+ed.viewX, y) != nil ||
+		ed.rowKillAt(x+ed.viewX, y) >= 0 {
+		return "pointer"
+	}
 	switch {
 	case ed.hitSelBand(y):
+		// the fold's own badge first, and for the reason every badge is asked
+		// first: it sits between two bars, where a press would otherwise be
+		// read as one of their ends (cut_fold.go)
+		if ed.foldBadgeAt(x+ed.viewX, y) >= 0 {
+			return "pointer"
+		}
 		switch ed.selPartAt(x + ed.viewX) {
 		case selStart, selEnd:
 			return "ew-resize"
@@ -653,7 +675,7 @@ func (ed *cutEditor) drawSelBand(cr *cairo.Context, vx0, vx1 float64) {
 		// same way everywhere (drawKillBadge). Not the blue's flat mark --
 		// the blue's ✕ throws away a selection and leaves the footage alone.
 		if gx1-gx0 >= killMin {
-			drawKillBadge(cr, gx1-killIn, y+selBandH/2, ed.bandKillHov == i)
+			drawKillBadge(cr, (gx0+gx1)/2, y+selBandH/2, ed.bandKillHov == i)
 		}
 		if i != cur {
 			continue

@@ -102,9 +102,7 @@ func (ed *cutEditor) setSegCam(r int) {
 	ed.persist()
 	ed.showInsert() // the preview is standing on a frame that came from the old row
 	ed.redrawTracks()
-	ed.a.setStatus(fmt.Sprintf("the scene at %s is shown from %s now — "+
-		"the seconds and the sound are untouched (↶ Undo takes it back)",
-		mmss(s.S), ed.camName(r)))
+	ed.a.setStatus(fmt.Sprintf("the scene at %s is shown from %s now", mmss(s.S), ed.camName(r)))
 }
 
 // drawCamBadges paints them over the pictures, from inside drawTrack's

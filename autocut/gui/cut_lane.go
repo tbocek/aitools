@@ -306,8 +306,7 @@ func (ed *cutEditor) killLane(name string) {
 	ed.closeRow(row)
 	ed.relayout()
 	ed.persist()
-	ed.a.setStatus(fmt.Sprintf("removed the %s lane and everything the cut took from it "+
-		"— ↶ Undo takes it back", name))
+	ed.a.setStatus(fmt.Sprintf("removed the %s lane", name))
 	ed.redrawTracks()
 }
 
@@ -492,7 +491,7 @@ func (ed *cutEditor) rowKillAt(px, y float64) int {
 		if !ed.rowEmpty(r) {
 			continue
 		}
-		cx, cy := ed.viewX+killIn, ed.laneTop(r)+segKillTop
+		cx, cy := gutterMid, ed.laneTop(r)+segKillTop
 		if math.Abs(px-cx) <= segKillHit && math.Abs(y-cy) <= segKillHit {
 			return r
 		}
@@ -501,10 +500,11 @@ func (ed *cutEditor) rowKillAt(px, y float64) int {
 }
 
 // drawRowKill paints them, in drawTrack's own translation like drawLaneKill.
-// vx is the VIEW's left edge in timeline px, which is what these ride: the
-// badge stays at the left of the widget while the tape scrolls under it, so it
-// is the same number rowKillAt tests a press against.
-func (ed *cutEditor) drawRowKill(cr *cairo.Context, vx float64) {
+// They stand in the gutter at the head of the tape (cut_gutter.go), which is
+// where every permanent control on this page is: an empty row has no footage
+// to be drawn over, but it has neighbours that do, and one rule for the lot is
+// worth more than one exception.
+func (ed *cutEditor) drawRowKill(cr *cairo.Context) {
 	if ed.laneN <= 1 {
 		return
 	}
@@ -512,8 +512,7 @@ func (ed *cutEditor) drawRowKill(cr *cairo.Context, vx float64) {
 		if !ed.rowEmpty(r) {
 			continue
 		}
-		cx, cy := vx+killIn, ed.laneTop(r)+segKillTop
-		drawKillBadge(cr, cx, cy, ed.rowHov == r)
+		drawKillBadge(cr, gutterMid, ed.laneTop(r)+segKillTop, ed.rowHov == r)
 	}
 }
 
@@ -529,8 +528,7 @@ func (ed *cutEditor) killRow(row int) {
 	ed.closeRow(row)
 	ed.relayout()
 	ed.persist()
-	ed.a.setStatus(fmt.Sprintf("removed the empty row %d — the rows below it came up one; "+
-		"↶ Undo takes it back", row+1))
+	ed.a.setStatus(fmt.Sprintf("removed the empty row %d", row+1))
 	ed.redrawTracks()
 }
 

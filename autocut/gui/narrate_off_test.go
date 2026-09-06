@@ -38,8 +38,10 @@ func TestNoNarrationTakesAwayWhatOnlyANarrationNeeds(t *testing.T) {
 	for _, want := range []string{
 		`n.onBox = gtk.NewCheckButtonWithLabel("Narration")`,
 		"n.onBox.ConnectToggled(func() { a.setNarrOff(!n.onBox.Active()) })",
-		"head.SetHAlign(gtk.AlignEnd)", // top right of the column it is about
-		"right.Append(head)",
+		// top left of the page, over the picture: a page's first question
+		"head.SetHAlign(gtk.AlignStart)",
+		"head.Append(n.onBox)",
+		"top.Append(head)",
 		// ...and the run refuses rather than writing lines nobody asked for
 		`a.setStatus("this video has no narration — tick Narration at the top of this page to write one")`,
 	} {
@@ -58,8 +60,8 @@ func TestNoNarrationTakesAwayWhatOnlyANarrationNeeds(t *testing.T) {
 	prod := readSrc(t, "produce.go")
 	for _, want := range []string{
 		"func (a *App) syncNarrOff() {",
-		"p.subs, p.subsLbl, p.subsFrom, p.subsFromLbl, p.gvol, p.gvolLbl,",
-		`st.Subs, spoken = "none", nil`,
+		"p.subs, p.subsLbl, p.gvol, p.gvolLbl,",
+		`st.Subs = "none"`,
 		"defer a.syncNarrOff()", // a project that loaded before the page was built
 	} {
 		if !strings.Contains(prod, want) {

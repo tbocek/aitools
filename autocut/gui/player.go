@@ -559,6 +559,25 @@ var volScales []*gtk.Scale
 // true.
 var volSyncing bool
 
+// formSlider is what a slider with a number on it looks like, everywhere one
+// appears: its own width rather than the column's, its value beside the trough
+// rather than over it, and centred in whatever row it lands in.
+//
+// The value's POSITION is the whole of it. GTK draws it above the slider by
+// default, which makes the control a line and a half tall -- so a form of
+// one-line rows gets two rows standing out of it, with the space above and
+// below them belonging to nothing, and the eye reads the gap as a group
+// boundary that is not there. Beside the trough it is one line, like every
+// other row, and the number is closer to the handle it belongs to.
+func formSlider(sc *gtk.Scale, tip string) {
+	sc.SetDrawValue(true)
+	sc.SetValuePos(gtk.PosRight)
+	sc.SetSizeRequest(150, -1)
+	sc.SetHAlign(gtk.AlignStart)
+	sc.SetVAlign(gtk.AlignCenter)
+	sc.SetTooltipText(tip)
+}
+
 // volumeCtl is the preview volume control: a speaker and a slider, built fresh
 // for each place a video can be played from. Built rather than shared because
 // a GTK widget has one parent, and the alternative to one per transport is

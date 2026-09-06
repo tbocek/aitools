@@ -96,8 +96,8 @@ func TestTheMonoToggleIsWired(t *testing.T) {
 	}
 	src := string(b)
 	for _, want := range []string{
-		`p.mono = gtk.NewCheckButtonWithLabel("Mono (one channel)")`,
-		"check(2, 3, p.mono)", // a tick needs no leading label
+		`p.mono = gtk.NewCheckButtonWithLabel("mono")`,
+		`check(0, 2, "Channels:", p.mono)`, // named in the label column, like every other row
 		`Mono:      p.mono.Active(),`,
 		`p.mono.SetActive(st.Mono)`,
 		`audLayout(st)`,
@@ -108,41 +108,75 @@ func TestTheMonoToggleIsWired(t *testing.T) {
 	}
 }
 
-// The settings grid: three columns, one subject each, and a tick that says
-// what it is on itself.
+// The settings grids: three columns of menus, then two columns of everything
+// else, and rows of one kind of control in each.
 //
 // It was two columns and seven rows -- the sound settings stacked under the
 // picture settings, the page's whole right-hand half empty -- and every tick
 // carried a leading label that said the same thing the tick did ("Frame
-// timing: [x] Peak frame rate (VFR)"). VFR in particular sat two rows below
-// the frame rate it qualifies, where it reads as a setting of its own rather
-// than as what the number above it MEANS.
+// timing: [x] Peak frame rate (VFR)"). Then it was three columns of one
+// subject each, which put a slider in with the dropdowns of every column and
+// left the six menus in three tall rows: a form is read across, and a column
+// whose rows are not the same height is not a column anybody reads down.
+//
+// So: six dropdowns in two rows of three, the narration's three in the row
+// under them, then the sliders and the ticks.
 func TestTheProduceSettingsAreThreeColumns(t *testing.T) {
 	body := funcBody(t, "produce.go", `func \(a \*App\) buildProduce\(\)`)
 	for _, want := range []string{
-		// the encoder column, the shape column, the sound-and-words column
+		// two rows of three menus, in the order a render is described in
 		`at(0, 0, "Container:", p.container)`,
-		`at(1, 0, "Resolution:", p.height)`,
-		`p.subsLbl = at(2, 0, "Subtitles:", p.subs)`,
-		// ...and the ticks, in the control column with no label of their own
-		"check := func(col, row int, w gtk.Widgetter) { grid.Attach(w, col*2+1, row, 1, 1) }",
-		"check(1, 3, p.vfr)", // beside the frame rate's own column, on the CRF row
+		`at(2, 0, "Preset:", p.preset)`,
+		`at(0, 1, "Resolution:", p.height)`,
+		`at(2, 1, "Audio:", p.abr)`,
+		// the second block is a grid of its own: the same rows two across,
+		// because a dropdown-and-slider row is wider per item than a menu and
+		// one set of columns cannot serve both widths
+		"low := gtk.NewGrid()",
+		"box.Append(low)",
+		// the narration's own row, which goes when the narration does
+		`p.subsLbl = lbl(low, 0, 0, "Subtitles:", p.subs)`,
+		`p.gvolLbl = lbl(low, 1, 0, "Game audio:", p.gvol)`,
+		// ...and the ticks, which are rows like any other: the subject in the
+		// label column, dim, and the answer on the tick
+		"check := func(col, row int, name string, w *gtk.CheckButton) {",
+		`check(1, 1, "Frame timing:", p.vfr)`, // on the CRF row, beside it
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the settings grid no longer contains %q", want)
 		}
 	}
-	// the leading words are gone, not merely moved
-	for _, gone := range []string{`"Frame timing:"`, `"Frame edges:"`, `"Audio channels:"`} {
+	// a tick's own label is the ANSWER, one word where one will do: the
+	// subject is in the label column beside it, and "Frame timing: [x] Peak
+	// frame rate (VFR)" was the same sentence twice
+	for _, gone := range []string{`"Peak frame rate (VFR)"`, `"Mono (one channel)"`, `"Blurred backdrop"`} {
 		if strings.Contains(body, gone) {
-			t.Errorf("a tick still carries %s, which is what the tick says", gone)
+			t.Errorf("a tick says its subject twice: %s", gone)
 		}
 	}
 	// VFR shares the row with the CRF slider it was two rows under
-	crf := strings.Index(body, `at(0, 3, "Quality (CRF):", p.crf)`)
-	vfr := strings.Index(body, "check(1, 3, p.vfr)")
+	crf := strings.Index(body, `lbl(low, 0, 1, "Quality (CRF):", p.crf)`)
+	vfr := strings.Index(body, `check(1, 1, "Frame timing:", p.vfr)`)
 	if crf < 0 || vfr < 0 {
 		t.Fatal("the CRF slider and the VFR tick are not both placed")
+	}
+	// ...and the slider is its own width rather than the column's: a grid
+	// stretches what it holds, and a scale filling two columns is half the
+	// form spent on one number between 14 and 34
+	if !strings.Contains(body, "formSlider(p.crf, ") || !strings.Contains(body, "formSlider(p.gvol, ") {
+		t.Error("a slider is built by hand rather than in the app's one shape (formSlider)")
+	}
+	// ...and a tick's own words are not dimmed: dim is how this app draws a
+	// control that does not work, so a dimmed label on a live checkbox says
+	// the two disagree
+	if strings.Contains(body, `w.AddCSSClass("dim-label")`) {
+		t.Error("the ticks are dimmed, which is what a dead control looks like")
+	}
+	// nothing in a row is stretched to the height of the slider in it
+	for _, want := range []string{"l.SetVAlign(gtk.AlignCenter)", "d.SetVAlign(gtk.AlignCenter)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the grid no longer centres its rows: %q", want)
+		}
 	}
 	// a slider's own reading is drawn in the foreground colour: dimmed, it is
 	// the app's own way of saying a control is dead

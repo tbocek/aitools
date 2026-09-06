@@ -40,7 +40,6 @@ import (
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
-	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
 const (
@@ -134,7 +133,7 @@ const cutSystem = `You choose the moments a video is cut from. The recording is 
 
 Work in this order.
 
-1. Say what this session is, in one line. The user context usually says it in its first sentence; with none, work it out from the timeline -- what the speakers say they are doing in the first minutes, and what the EVENT lines keep showing. Cut for THAT, not for what a session like it usually contains.
+1. Work out what this session is before you choose anything. The user context usually says it in its first sentence; with none, the first minutes of the timeline do -- what the speakers say they are doing, and what the EVENT lines keep showing. Cut for THAT, not for what a session like it usually contains. This is for you, not for the answer: the answer is segments and nothing else.
 
 2. List what the user context names: every thing, moment, person or part. Each one gets a segment where it happens on the timeline. Find the place by the speech and the EVENT lines around it, and take the whole beat -- the setup, the thing itself, and what came of it, even when they are minutes apart. These come first and are never dropped for length.
 
@@ -164,30 +163,38 @@ Each segment starts a beat before the first word you want and ends after the rea
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 // speedSystem is the wording of the speed pass: the third call, made once the
 // cut stands and its captions are placed. It is given the clips, how long each
-// is, and which of them carry captions, and it answers a rate per clip.
+// is, what is said over each and which carry captions, and it answers a rate
+// per clip.
 //
-// Speed used to ride on the cut's own reply, and the length arithmetic with
-// it: the same answer chose the moments AND made them fit the target. That is
-// the pairing that ate ten-minute calls. Here the arithmetic is the whole job,
-// the brief is a list of clips rather than a timeline, and an answer that
-// misses can be corrected in seconds.
+// It is a judgement, not a sum. The pass was written to make the cut FIT -- it
+// was handed the footage, the target and a formula, and told to find the
+// seconds that had to run fast -- and that made it speed things up whether or
+// not anything was dull, because the target said so. What the editor actually
+// wants is in the user context, in one of two shapes or in neither: a measure
+// ("a third of it faster", "500 s of footage, 400 when it plays") that the
+// model then spends on the right clips, or nothing at all, in which case speed
+// is for the stretches nobody would sit through and for those alone. Length is
+// the cut pass's job (footageWindow); this pass decides where speed makes sense.
 //
-// It also comes AFTER the captions for a reason that has nothing to do with
-// call sizes: a caption over a stretch at 4 flashes past in a quarter of its
+// It comes AFTER the captions for a reason that has nothing to do with call
+// sizes: a caption over a stretch at 4 flashes past in a quarter of its
 // reading time. Which lines become captions is the captions pass's decision,
 // so nothing before it can know which clips must stay at 1.
 //
 // One paragraph or bullet per line, unwrapped: see describeSystem.
-const speedSystem = `You decide how fast each clip of a finished cut plays. The clips are chosen and are not yours to change; you answer with a rate for the ones that should run fast, and nothing else.
+const speedSystem = `You decide how fast each clip of a finished cut plays. The clips are chosen and are not yours to change; you answer with a rate for the clips that do not play at 1, and nothing else.
 
-The arithmetic is the job. You are given the footage F the clips come to, the target T, and the range the answer is judged by. To fit F seconds into T at rate r, (F-T)*r/(r-1) seconds must run at r and the rest at 1: F 850, T 720, r 4 means 173 seconds fast. If that is more than the footage you may speed, say so by speeding what you can -- the range has room in it.
+Under each clip are its lines: what was said, and what the frames showed, at the seconds they happened. Read them for dullness -- a stretch with no lines is silence, a run of lines describing the same thing is the same thing going on and on, and either is a candidate. A line marked CAPTION is words already on screen.
 
-- Take the fast seconds from the clips with nothing being said: the walk back, the loading, the waiting. Longest first.
-- A clip with captions on it runs at 1. Words on screen at 4 are gone before they are read, and the request says which clips carry them.
-- speed 2 rushes a few seconds, 4 to 8 a whole minute. Never below 1 unless the user context asks for slow motion.
+Speed is for the stretches nobody would sit through at 1: the walk back, the loading screen, the same action done again, the wait for something to happen. Where the USER CONTEXT says how much to speed up -- a share of the video, a length it should play down to, a rate for the dull parts -- that is the brief, and you choose which clips deliver it. Where it says nothing, speed only what would bore, and leave the rest at 1; a cut with nothing dull in it gets no rates at all.
+
+- The longer the dull stretch, the higher the rate: a few seconds at 2, a minute at 4 to 8, ten minutes of nothing up to 100. A short clip at 20 is a flicker, and a long one at 2 is still a long wait.
+- A clip with something spoken over it plays at 1. The video plays that sound, and speech at 4 is noise. Go past this only when the user context asks for more than the silent clips can give, and then take the clips that say least.
+- A clip with captions on it plays at 1 whatever else is true: words on screen at 4 are gone before they are read. The request says which clips carry them.
+- Below 1 is slow motion, and it costs seconds instead of saving them: 0.5 on a SHORT clip that is the moment the video is about -- the impact, the reveal, the disaster -- and nowhere else. Never on a clip tens of seconds long.
 - A clip is one rate from end to end. Half a clip fast is two clips, and the cut is not yours to change.
 
-Answer in the speed pass's shape.`
+Answer with SPEEDS.`
 
 // fxRules is the wording of the effects pass: the third call, made once the
 // cut stands and its captions are written. It sees the kept clips and what was
@@ -200,13 +207,16 @@ Answer in the speed pass's shape.`
 // One paragraph or bullet per line, unwrapped: see describeSystem.
 const fxRules = `You decorate a cut that has already been chosen. The clips are in front of you, with what was said and shown over each; you add the effects that make a moment land, and nothing else -- the segments are not yours to change, and captions and speed are written elsewhere.
 
+Your three kinds. zoom punches in on the centre of the seconds it covers. stop holds the picture still while the sound runs on. volume sets how loud those seconds are, 1 as recorded, 0 silent.
+
 - Few and deliberate: three or four across five minutes of finished video, each with a reason you could say out loud. Not one on every clip, and not none.
 - That count is a DEFAULT, and the USER CONTEXT outranks it. Asked for more, write more; asked for none, write none.
 - Pick the kind by what the moment needs, not by variety. Something important on screen and easy to miss -> zoom onto it. The one beat everything else was leading to -> stop. Sound that does not sit right against the rest -> volume.
 - A zoom runs two to four seconds, onto the score, the face, the mistake, while the speech is about it. One stop per video, a second or two on the beat the video is about. volume for a stretch recorded too quiet or too loud, for ducking a background under a line that matters, and for muting seconds the user context says are not to be heard: 1 as recorded, 0 silent.
 - Every effect names its clip and its seconds FROM THAT CLIP'S START, inside the clip: a zoom at 0 to 3 of clip 4 starts where clip 4 does.
+- The captions are already written and are marked CAPTION: do not zoom past words the viewer is reading. A heading saying the clip plays at a rate is a stretch that was kept to be skipped through -- nothing to zoom onto and nothing to stop on.
 
-Answer in the effects' shape.`
+Answer with EFFECTS.`
 
 // effectsSystem is fxRules under the name the bench's conventions expect: a
 // wording ends in System, and the registry test counts them by that.
@@ -224,14 +234,15 @@ const effectsSystem = fxRules
 // verdicts, none at all -- outranks the default, as everywhere.
 //
 // One paragraph or bullet per line, unwrapped: see describeSystem.
-const captionSystem = `You put what was said on screen. You are given a few clips of a finished cut, each with the lines spoken over it, stamped in seconds from that clip's start. You answer with the text effects for each clip, and nothing else: the clips are chosen and are not yours to change.
+const captionSystem = `You put words on screen over a cut that has already been chosen. You are given a few clips, each with the lines spoken over it stamped in seconds from that clip's start. The clips are not yours to change.
 
-- One text effect per spoken line, by default: it starts when the line starts, ends when the line ends, and says what was said. The user context outranks this default -- asked for fewer, or only certain lines, or none, do that.
-- Clean the words as a subtitler would: no ehm, no ehh, no stutters ("I I" is "I"), no repeated words, sentence case, the swearing kept. Otherwise the speaker's own words, not a paraphrase.
-- A line that is not about the video -- an aside to the editor, "cut this part" -- is not captioned. The user context says which lines are directions.
-- Seconds are offsets from the clip's start, and every effect lies inside its clip. A line that runs past the clip's end is captioned up to the end.
+Whether there are captions at all is the USER CONTEXT's call, and it is the only thing that decides it. Said nothing about them, caption nothing: answer with an empty list. Where it asks -- every spoken line, only the verdicts, only what is named on screen, one line per clip -- write exactly that and no more.
 
-Answer in the captions' shape.`
+- A caption starts when its line starts and ends when it ends, in seconds from the clip's own start, and stays inside the clip: a line running past the end is captioned up to the end.
+- Clean the words as a subtitler would: no ehm, no ehh, no stutters ("I I" is "I"), no repeated words, sentence case, the swearing kept. The speaker's own words otherwise, never a paraphrase.
+- A line that is not about the video -- an aside to the editor, "cut this part" -- is never captioned. The user context says which lines are directions.
+
+Answer with CAPTIONS.`
 
 // cutReply is the end of every cut wording, Shorts included: where a segment
 // may start and end, the length arithmetic, the reply, and the check to run
@@ -248,7 +259,7 @@ const cutReply = `
 
 A segment ends on the payoff, never just before it, and a moment that only makes sense because of an earlier one takes that one too or neither. Segments run from about 8 seconds to a minute, longer where a stretch has to be shown but not watched -- keep such a stretch whole, as ONE segment: it is played fast afterwards, not cut into pieces with the dull seconds left out.
 
-Answer in the cut's shape: the segments alone. How fast each plays, what is captioned over it and what is drawn on it are asked for afterwards, clip by clip, once the cut stands.
+Answer with SEGMENTS, and nothing else in the reply. How fast each plays, what is captioned over it and what is drawn on it are asked for afterwards, clip by clip, once the cut stands.
 
 Check before you answer: every segment has an EVENT line inside it, every start is later than the end before it, everything the user context names is in, and the footage they come to -- end minus start, added up -- lands in the range you were given. Anywhere inside it is right; do not trim towards its middle.`
 
@@ -461,8 +472,25 @@ type cutEditor struct {
 	totalW float64
 	// the stretches of the session that got filmed, and where each is drawn.
 	// The one map every lane is measured against; rebuilt by relayout.
-	spans []tlSpan
-	laneN int // how many rows the picture band is stacked into (at least 1)
+	//
+	// filmed is the runs themselves -- what got recorded, merged where two
+	// cameras overlap. spans is those runs cut into the CELLS the page is laid
+	// out in: a run with a folded gap in it is three cells, and a folded one
+	// is drawn at a fixed width however long it is (cut_fold.go). Everything
+	// that asks "what did the cameras cover" wants runs(); everything that
+	// asks "where is this second drawn" wants xOf, which walks the cells.
+	spans  []tlSpan
+	filmed []tlSpan
+	// which dropped stretches are folded, in session seconds. Kept with the
+	// cut (cutFile.Folds) because a fold is about a gap between two of its
+	// segments, and matched back to those gaps by overlap rather than by
+	// identity, so a trim that moves a gap's edge keeps its fold.
+	folds [][2]float64
+	// the fold badge under the pointer, or -1 (cut_fold.go)
+	foldHov int
+	// ...and whether the fold-all control in the gutter has it (cut_gutter.go)
+	foldAllHov bool
+	laneN      int // how many rows the picture band is stacked into (at least 1)
 	// nRows is the row count the band holds on to even when the HIGHEST rows
 	// are empty. An empty row between two full ones survives relayout because
 	// the pins hold the gap open; an empty row at the bottom has nothing under
@@ -595,11 +623,14 @@ type cutEditor struct {
 	// tick has something thin to repaint (cut_playline.go); lineIdx is the
 	// scene the green bar stood on when the bands were last painted, the one
 	// other thing on them the running clock alone can move
-	lineArea *gtk.DrawingArea
-	lineIdx  int
-	total    *gtk.Label
-	clock    *gtk.Label // the red line's time in numbers, beside the transport
-	marks    *gtk.Label // the two marks in numbers, under the buttons that set them
+	lineArea  *gtk.DrawingArea
+	lineIdx   int
+	total     *gtk.Label // the cut's length, and the three readings under it
+	totalRaw  *gtk.Label // ...the same cut with no speed effects on it
+	totalSrc  *gtk.Label
+	totalSegs *gtk.Label
+	clock     *gtk.Label // the red line's time in numbers, beside the transport
+	marks     *gtk.Label // the two marks in numbers, under the buttons that set them
 
 	target *gtk.Entry
 	inputs *gtk.Label // what this page reads, and what Suggest is sent
@@ -613,7 +644,7 @@ type cutEditor struct {
 	formHead    *gtk.Box
 	formFoot    *gtk.Box // pinned under the scroller: the form's buttons live here
 	formTitle   *gtk.Label
-	formIdle    *gtk.Label
+	formIdle    *gtk.Box
 	formCur     gtk.Widgetter
 	formFootCur gtk.Widgetter
 	formGone    func()
@@ -672,6 +703,10 @@ type cutEditor struct {
 	// track still draws every second of the session underneath.
 	cutOnly    bool
 	cutPlayBtn *gtk.Button // the second ▶: plays the CUT (cutOnly follows it)
+	// the play/pause half of that button's face. An image and not the label,
+	// because the label was two glyphs and the pause one falls to another font
+	// -- see syncCutPlay.
+	cutPlayIcon *gtk.Image
 	// the clip a gap was last skipped to, so a jump that cannot be made is not
 	// attempted again on every tick. -1 is "not in a gap"; see skipGap.
 	jumped int
@@ -715,7 +750,8 @@ type cutEditor struct {
 
 	undoBtn, redoBtn, revertBtn *gtk.Button
 	playBtn                     *gtk.Button // ▶/⏸ for the preview; drawn by syncPlayIcons
-	insBtn                      *gtk.Button // ⧉ Insert, or ✎ Edit while a card is held
+	insBtn                      *gtk.Button // insert a file, or edit the card in hand
+	pasteBtn                    *gtk.Button // put the copy in hand down (syncInsertBtn)
 	// ⇲ Lane, which is on the bar only while a copy of footage is in hand: it
 	// is the other place a copy can go (cut_lane.go), and a permanent button
 	// for it would be greyed out for the whole of every session that never
@@ -776,6 +812,12 @@ type cutFile struct {
 	// how many rows the band keeps even while the highest stand empty: a row
 	// vacated by a drag waits for its ✕ across a restart too (cutEditor.nRows)
 	NRows int `json:"nrows,omitempty"`
+	// the dropped stretches that are folded away on the page (cut_fold.go).
+	// A fold changes nothing about the video and is here all the same: it is
+	// about the gaps between THESE segments, and a view of a long session that
+	// had to be folded again on every open would be folded once and never
+	// again. The render reads this file and ignores the field.
+	Folds [][2]float64 `json:"folds,omitempty"`
 }
 
 // reload rebuilds the timeline from the current selection + step outputs.
@@ -847,6 +889,7 @@ func (ed *cutEditor) reload() error {
 	ed.fxOn = false
 	ed.cutLanes = nil // another cut's own rows are not on this band
 	ed.nRows = 0      // nor its empty rows
+	ed.folds = nil    // nor which of its gaps were folded away
 	ed.setAspect("")
 	ed.syncButtons()
 	var c cutFile
@@ -862,6 +905,7 @@ func (ed *cutEditor) reload() error {
 			}
 			ed.shift, ed.rows = c.Shift, c.Rows
 			ed.nRows = c.NRows
+			ed.folds = c.Folds
 			ed.setAspect(c.Aspect)
 		}
 	}
@@ -1047,6 +1091,14 @@ func framePostage(file string) []byte {
 type tlSpan struct {
 	t0, t1 float64 // the session seconds this run covers
 	px     float64 // where t0 is on the timeline
+	// this stretch is FOLDED: drawn at no width at all however long it is, so
+	// the footage either side of it meets (cut_fold.go). A filmed run is cut
+	// into cells at its folded gaps, so a span is a run or a piece of one.
+	fold bool
+	// ...and a hole comes before this one: the run it belongs to is not the
+	// one before it. The hatch is drawn on that, and only that -- the pieces a
+	// fold cuts a run into are the same run and have nothing between them.
+	hole bool
 }
 
 // dur is the run's length in seconds.
@@ -1080,8 +1132,8 @@ func timeSpans(vids []tlVideo) []tlSpan {
 // asks here instead, so it still answers on an editor that has no widgets and
 // has never been laid out.
 func (ed *cutEditor) runs() []tlSpan {
-	if len(ed.spans) > 0 {
-		return ed.spans
+	if len(ed.filmed) > 0 {
+		return ed.filmed
 	}
 	return timeSpans(ed.vids)
 }
@@ -1186,16 +1238,22 @@ func (ed *cutEditor) relayout() {
 // every recording sits in timeline px at the current zoom. On its own it is
 // what a zoom needs, and nothing a zoom does not.
 func (ed *cutEditor) layoutPx() {
-	ed.spans = timeSpans(ed.vids)
-	x := 0.0
+	ed.filmed = timeSpans(ed.vids)
+	ed.spans = ed.cells()
+	// the black strip in front of second zero, which the switches at the left
+	// of every band stand in rather than on the footage (cut_gutter.go)
+	x := gutterPx
 	for i := range ed.spans {
-		if i > 0 {
+		if ed.spans[i].hole {
 			x += gapPx
 		}
 		ed.spans[i].px = x
-		x += ed.spans[i].dur() * ed.pps
+		x += ed.spanW(ed.spans[i])
 	}
 	ed.totalW = x
+	if len(ed.spans) == 0 {
+		ed.totalW = 0 // nothing loaded: no tape, and so no strip in front of it
+	}
 	// a recording is contiguous and the runs are the union of all of them, so
 	// each file sits inside exactly one run, and x is linear in t inside a run:
 	// a file's origin is just its start read off the map. Still kept as a field
@@ -1260,6 +1318,31 @@ func (ed *cutEditor) pairAud(base string) *tlAudio {
 func (ed *cutEditor) picBottom() float64 {
 	last := max(0, ed.laneN-1)
 	return ed.laneTop(last) + ed.laneH() + ed.pairH(last)
+}
+
+// rowNameVid is the recording a row's name plate speaks for: the one under the
+// view's left edge, and -- when the edge is over a gap or before the row's
+// first file -- the first one in view. Nil for a row with nothing on screen,
+// which is a row with nothing to name.
+func (ed *cutEditor) rowNameVid(row int, vx0, vx1 float64) *tlVideo {
+	var first *tlVideo
+	for i := range ed.vids {
+		v := &ed.vids[i]
+		if v.lane != row {
+			continue
+		}
+		x0, x1 := v.pxOrigin, v.pxOrigin+v.dur*ed.pps
+		if x1 < vx0 || x0 > vx1 {
+			continue // off screen entirely
+		}
+		if x0 <= ed.viewX && ed.viewX < x1 {
+			return v // under the left edge: the one the eye is on
+		}
+		if first == nil || x0 < first.pxOrigin {
+			first = v
+		}
+	}
+	return first
 }
 
 // hitPics is whether a y of the source area is on the picture band -- the
@@ -1429,6 +1512,7 @@ func (ed *cutEditor) setPlayhead(t float64) {
 	ed.cancelHold()
 	ed.syncFxHold() // and an effect being aimed is being aimed at THIS frame
 	ed.showTime()
+	ed.syncSelBtns()  // | Split cuts at the line, and now there is one
 	ed.syncPlayGain() // the line may have landed inside a volume effect
 	if v := ed.videoAt(t); v != nil && ed.player != nil {
 		wasPlaying := ed.player.playing
@@ -1535,7 +1619,7 @@ func (ed *cutEditor) showTime() {
 			"(the ▶✂ preview), the speed effects included. Session time here is %s.",
 			mmss(t), mmss(ed.cutLen()), playheadClock(ed.playhead, ed.hasPlay))
 	}
-	ed.clock.SetMarkup("<small>" + playheadClock(t, ed.hasPlay) + "</small>")
+	ed.clock.SetText(playheadClock(t, ed.hasPlay))
 	ed.clock.SetTooltipText(tip)
 }
 
@@ -1557,7 +1641,7 @@ func (ed *cutEditor) showMarks() {
 	if ed.marks == nil {
 		return
 	}
-	ed.marks.SetMarkup("<small>" + marksClock(ed.markIn, ed.markOut, ed.hasIn, ed.hasOut) + "</small>")
+	ed.marks.SetText(marksClock(ed.markIn, ed.markOut, ed.hasIn, ed.hasOut))
 }
 
 // marksClock is the small print under the in/out buttons: both marks in the
@@ -1801,6 +1885,11 @@ func (ed *cutEditor) followPlayback() bool {
 		ed.posT, ed.posAt = ed.playhead, time.Now() // the camera's clock; see livePlayhead
 		ed.syncFxHold()                             // ▶ walks the line off whatever was picked up
 		ed.showTime()
+		// ▶ plays the dropped stretches too, so a seam the line has walked
+		// into comes open and stays open (cut_fold.go). ▶✂ never enters one.
+		if !ed.cutOnly {
+			ed.walkFold()
+		}
 		// a card comes up as the line reaches it and goes as the line leaves,
 		// and while it is up this is what advances it frame by frame -- unless
 		// the line has just run into a card the footage is cut open for, which
@@ -1850,6 +1939,9 @@ func (ed *cutEditor) xOf(t float64) float64 {
 			if t < s.t0 {
 				return s.px // in an unfilmed stretch: the next run's edge
 			}
+			if s.fold {
+				return s.px // a folded cell has no width: every second in it is the seam
+			}
 			return s.px + (t-s.t0)*ed.pps
 		}
 	}
@@ -1864,7 +1956,12 @@ func (ed *cutEditor) tAt(x float64) float64 {
 		if x < s.px {
 			return s.t0 // inside a hatched hole: clamp to the next run's start
 		}
-		if x <= s.px+s.dur()*ed.pps {
+		if w := ed.spanW(s); x <= s.px+w {
+			if s.fold {
+				// a seam is one x standing for the whole gap; a press on it is
+				// its first second, which is where the footage stops being kept
+				return s.t0
+			}
 			return s.t0 + (x-s.px)/ed.pps
 		}
 	}
@@ -2592,25 +2689,39 @@ func (ed *cutEditor) removeRange(t0, t1 float64) {
 // the picture band does -- a cut point is a time, and every band is the same
 // timeline seen a different way.
 func (ed *cutEditor) edgeAt(px float64) (int, bool, bool) {
-	seg, end, near := -1, false, edgeGrab
-	for i, s := range ed.segs {
-		// A spliced card has no borders to trim: it sits at one point of the
-		// footage and its length is its own, typed in the dialog. Both its edges
-		// are that one x -- the middle of the marker you press to take hold of
-		// the card -- so answering with an edge here would hand you a border of a
-		// clip with no length instead of the card you pressed, and the border
-		// wins over the clip.
-		if s.spliced() {
-			continue
+	// the borders on the press's own side of itself first, then the rest.
+	//
+	// Folded, one clip's end and the next one's start are the SAME x
+	// (cut_fold.go), and nearest-wins answers with whichever came first in the
+	// list however far the press is from the seam -- so the right-hand clip's
+	// start could not be taken at all. The clip the press is inside is the
+	// clip it means; only when it is inside neither does the plain distance
+	// decide, which is the tolerance either side of a lone border.
+	for _, inside := range []bool{true, false} {
+		seg, end, near := -1, false, edgeGrab
+		for i, s := range ed.segs {
+			// A spliced card has no borders to trim: it sits at one point of the
+			// footage and its length is its own, typed in the dialog. Both its edges
+			// are that one x -- the middle of the marker you press to take hold of
+			// the card -- so answering with an edge here would hand you a border of a
+			// clip with no length instead of the card you pressed, and the border
+			// wins over the clip.
+			if s.spliced() {
+				continue
+			}
+			x0, x1 := ed.xOf(s.S), ed.xOf(s.E)
+			if d := math.Abs(x0 - px); d < near && (!inside || px >= x0) {
+				seg, end, near = i, false, d
+			}
+			if d := math.Abs(x1 - px); d < near && (!inside || px <= x1) {
+				seg, end, near = i, true, d
+			}
 		}
-		if d := math.Abs(ed.xOf(s.S) - px); d < near {
-			seg, end, near = i, false, d
-		}
-		if d := math.Abs(ed.xOf(s.E) - px); d < near {
-			seg, end, near = i, true, d
+		if seg >= 0 {
+			return seg, end, true
 		}
 	}
-	return seg, end, seg >= 0
+	return -1, false, false
 }
 
 // grabEdge picks up the edge under a timeline x, and says whether it found one.
@@ -3347,10 +3458,35 @@ func (ed *cutEditor) syncInsertBtn() {
 	if ed == nil || ed.insBtn == nil {
 		return
 	}
+	// what the copy in hand would be put down as, on the button that puts it
+	// there. Grey with nothing in hand, which is most of the time.
+	if ed.pasteBtn != nil {
+		ed.pasteBtn.SetSensitive(ed.copyOn)
+		switch {
+		case !ed.copyOn:
+			ed.pasteBtn.SetTooltipText("put a copy down at the red line — ⧉ takes one first")
+		case ed.copyAud != "":
+			ed.pasteBtn.SetTooltipText(fmt.Sprintf("lay the copied sound (%.1f s of %s, %s – %s) "+
+				"over the footage at the red line: the picture runs on and the video stays "+
+				"exactly as long. Esc drops the copy",
+				ed.copyLen, ed.copyAud, mmss(ed.copyFrom), mmss(ed.copyFrom+ed.copyLen)))
+		default:
+			ed.pasteBtn.SetTooltipText(fmt.Sprintf("splice the copied footage (%s – %s, %.1f s) into "+
+				"the cut at the red line: the cut is opened there, those seconds play again, and "+
+				"the video gets longer by them. Esc drops the copy",
+				mmss(ed.copyFrom), mmss(ed.copyFrom+ed.copyLen), ed.copyLen))
+		}
+	}
 	if ed.laneBtn != nil {
 		// footage only: a copied SOUND has no picture to put on a row, and the
-		// lane it stands in for is already chosen (cutSeg.Lane)
-		ed.laneBtn.SetVisible(ed.copyOn && ed.copyAud == "")
+		// lane it stands in for is already chosen (cutSeg.Lane). Grey rather
+		// than hidden, like the paste beside it: a button that comes and goes
+		// moves every button after it, and a bar whose contents shift as you
+		// work is one you cannot aim at.
+		ed.laneBtn.SetSensitive(ed.copyOn && ed.copyAud == "")
+		if !ed.copyOn {
+			ed.laneBtn.SetTooltipText("put a copy on a row of its own — ⧉ takes one first")
+		}
 		if ed.copyOn {
 			ed.laneBtn.SetTooltipText(fmt.Sprintf("put the copied footage (%s – %s, %.1f s) "+
 				"on a row of its own starting at the red line, instead of splicing it into "+
@@ -3360,32 +3496,17 @@ func (ed *cutEditor) syncInsertBtn() {
 		}
 	}
 	if s := ed.heldSeg(); s != nil && s.isInsert() {
-		ed.insBtn.SetLabel("✎ Edit")
+		ed.insBtn.SetIconName("document-edit-symbolic")
 		ed.insBtn.SetTooltipText("change the held card — what it says, and whether it plays " +
 			"over the footage (overwrite) or between it (insert)")
 		return
 	}
 	if f := ed.heldFx(); f != nil {
-		ed.insBtn.SetLabel("✎ Edit")
+		ed.insBtn.SetIconName("document-edit-symbolic")
 		ed.insBtn.SetTooltipText("change the held effect — " + f.fxLabel())
 		return
 	}
-	if ed.copyOn {
-		ed.insBtn.SetLabel("⧉ Paste")
-		if ed.copyAud != "" {
-			ed.insBtn.SetTooltipText(fmt.Sprintf("lay the copied sound (%.1f s of %s, %s – %s) "+
-				"over the footage at the red line: the picture runs on and the video stays "+
-				"exactly as long. Esc drops the copy",
-				ed.copyLen, ed.copyAud, mmss(ed.copyFrom), mmss(ed.copyFrom+ed.copyLen)))
-			return
-		}
-		ed.insBtn.SetTooltipText(fmt.Sprintf("splice the copied footage (%s – %s, %.1f s) into "+
-			"the cut at the red line: the cut is opened there, those seconds play again, and "+
-			"the video gets longer by them. Esc drops the copy",
-			mmss(ed.copyFrom), mmss(ed.copyFrom+ed.copyLen), ed.copyLen))
-		return
-	}
-	ed.insBtn.SetLabel("⧉ Insert")
+	ed.insBtn.SetIconName("insert-object-symbolic")
 	ed.insBtn.SetTooltipText("put a file in the cut at the playhead — a video sting, a still, " +
 		"or an SVG that animates itself. A selected region gives it its length; " +
 		"otherwise the file's own. With the selection drawn in a lane's own wave " +
@@ -3555,8 +3676,12 @@ func (ed *cutEditor) persist() {
 	// keyed, because cutFile.Sound is read on load and never written: an old
 	// project's whole-cut choice is migrated into the scenes once (migrateSound)
 	// and the field goes out of the file on the very next save
+	// what is stored is the gaps as they now are: a fold is matched to a gap
+	// by overlap, and this is where that reading is written back (syncFolds)
+	ed.syncFolds()
 	b, _ := json.MarshalIndent(cutFile{Segs: ed.segs, Aspect: ed.aspect, Fx: ed.fx,
-		Shift: ed.shift, Rows: ed.rows, Lanes: ed.cutLanes, NRows: ed.nRows}, "", "  ")
+		Shift: ed.shift, Rows: ed.rows, Lanes: ed.cutLanes, NRows: ed.nRows,
+		Folds: ed.folds}, "", "  ")
 	os.MkdirAll(filepath.Dir(ed.a.cutPath()), 0o755)
 	if err := os.WriteFile(ed.a.cutPath(), append(b, '\n'), 0o644); err != nil {
 		ed.a.logf("save cut: %v", err)
@@ -3581,6 +3706,24 @@ func (ed *cutEditor) persist() {
 // for everything else the footage under it. Not the span of the timeline --
 // the timeline is the session's clock, it is as long as the recording is, and
 // no edit on this page makes it longer or shorter.
+// rawLen is the cut with the speed effects taken off: the seconds of footage
+// it keeps, as they were filmed. cutLen is the same cut as the video plays it,
+// which on a cut with a stretch at 4 is a very different number -- and both
+// are asked about. "How much have I kept" is answered by one and "how long is
+// the video" by the other, and a page showing only the second cannot say
+// whether a target was missed by keeping too much or by speeding too little.
+func (ed *cutEditor) rawLen() float64 {
+	sum := 0.0
+	for _, s := range ed.segs {
+		if s.Dur > 0 {
+			sum += s.Dur // a card runs for its own length, whatever is around it
+			continue
+		}
+		sum += math.Max(0, s.E-s.S)
+	}
+	return sum
+}
+
 func (ed *cutEditor) cutLen() float64 {
 	sum := 0.0
 	for _, s := range ed.fxSegs() {
@@ -3643,6 +3786,11 @@ func (ed *cutEditor) spanSecs(t0, t1 float64) string {
 	return fmt.Sprintf("%.1f s, %.1f s in the video", raw, run)
 }
 
+// updateTotal fills the three readings at the foot of the quiet column: how
+// long the cut runs, how much footage it was cut from, and how many pieces it
+// is in. One line each, in the column the playhead and the selection are read
+// in -- they were one line of three facts separated by dots, which is a
+// sentence in a column of readings.
 func (ed *cutEditor) updateTotal() {
 	if ed.total == nil {
 		return
@@ -3651,15 +3799,17 @@ func (ed *cutEditor) updateTotal() {
 	for _, v := range ed.vids {
 		src += v.dur
 	}
-	line := fmt.Sprintf("cut %s  ·  source %s  ·  %d segment(s)",
-		mmss(sum), mmss(src), len(ed.segs))
+	ed.total.SetText(mmss(sum))
+	ed.totalRaw.SetText(mmss(ed.rawLen()))
+	ed.totalSrc.SetText(mmss(src))
+	segs := strconv.Itoa(len(ed.segs))
 	// counted separately because they are not segments of the session: two of
 	// the "segments" being cards is the difference between a five-minute cut of
 	// footage and a five-minute cut with a minute of graphics in it
 	if n := len(insertsOf(ed.segs)); n > 0 {
-		line += fmt.Sprintf(", %d inserted", n)
+		segs += fmt.Sprintf(", %d inserted", n)
 	}
-	ed.total.SetMarkup("<small>" + line + "</small>")
+	ed.totalSegs.SetText(segs)
 }
 
 // updateInputs says what this page is working from: the recordings on the
@@ -3680,7 +3830,9 @@ func (ed *cutEditor) updateInputs() {
 		src += v.dur
 		names = append(names, fmt.Sprintf("%s  %s", mmss(v.dur), v.base))
 	}
-	line := fmt.Sprintf("%d recording(s) · %s of footage", len(ed.vids), mmss(src))
+	// short enough to read in one glance: each input is named and counted, and
+	// what each one MEANS is the tooltip's (see narrate.go's own row)
+	line := fmt.Sprintf("%s · %s", plural(len(ed.vids), "video"), mmss(src))
 	detail := strings.Join(names, "\n")
 	if len(names) == 0 {
 		line, detail = "nothing to cut — no source on Inputs is marked as footage", ""
@@ -3697,7 +3849,7 @@ func (ed *cutEditor) updateInputs() {
 				sep++
 			}
 		}
-		line += fmt.Sprintf(" · %d separate recording(s) on %d lane(s)", sep, ed.audioLanes())
+		line += " · +" + plural(sep, "recording")
 		detail += "\n\nEvery sound in the session, placed by its own clock — only the part running while the footage ran is drawn, and all of it is what the preview plays:"
 		for _, au := range ed.auds {
 			kind := "mono"
@@ -3720,7 +3872,7 @@ func (ed *cutEditor) updateInputs() {
 	rows := loadTSVRows(filepath.Join(ed.a.transcriptDir(), "session.tsv"))
 	switch {
 	case len(rows) == 0:
-		line += " · no session timeline — run Describe"
+		line += " · no timeline"
 	default:
 		speech, events := 0, 0
 		for _, r := range rows {
@@ -3730,7 +3882,11 @@ func (ed *cutEditor) updateInputs() {
 				speech++
 			}
 		}
-		line += fmt.Sprintf(" · timeline %d lines (%d spoken, %d on screen) → all of it goes to Suggest",
+		// the COUNT is not information: nothing on this page is decided by 688
+		// rather than 700. That the timeline is there at all is, so the row
+		// speaks only when it is missing -- which is the state that stops
+		// Suggest.
+		detail += fmt.Sprintf("\n\n%d lines: %d spoken, %d what was on screen, all of it sent with Suggest",
 			speech+events, speech, events)
 		// the same string the request will carry, so the size is the real one
 		detail += fmt.Sprintf("\n\nprepare/transcript/session.txt — %d kB, sent whole with the cut prompt",
@@ -3740,8 +3896,11 @@ func (ed *cutEditor) updateInputs() {
 	// makes, so this row -- which is the list of what Suggest is sent -- is
 	// where it has to appear. Silent extra input is how a cut ends up obeying
 	// something the user forgot they wrote.
+	// the context rides along with every request this page makes -- in the
+	// tooltip, not on the row: the box it is written in is on the page before
+	// this one, and the word "context" on its own says nothing about what is
+	// in it.
 	if c := ed.a.sessionCtx(); c != "" {
-		line += " · session context"
 		detail += "\n\nSession context (Describe), sent with Suggest and the audit:\n" + c
 	}
 	ed.inputs.SetText(line)
@@ -3883,8 +4042,8 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 	// the hatched holes: every stretch nobody filmed, whatever its real length,
 	// drawn as the one gap width. On the runs and not on the recordings, because
 	// two overlapping files have no hole between them to draw
-	for i, sp := range ed.spans {
-		if i > 0 && sp.px >= vx0 && sp.px-gapPx <= vx1 {
+	for _, sp := range ed.spans {
+		if sp.hole && sp.px >= vx0 && sp.px-gapPx <= vx1 {
 			hatchBand(cr, sp.px-gapPx, gapPx, top, bandH)
 		}
 	}
@@ -3895,36 +4054,74 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 		}
 		lt := ed.laneTop(v.lane)        // this camera's row
 		step := v.thumbStep(th, ed.pps) // thumbnails, only the ones in view
-		first, last := v.frameRange(ed.pps, vx0, vx1, step)
-		for i := first; i < last; i += step {
-			t := v.sessionAt(float64(i) * v.interval)
-			// ready, or nothing: a frame that has not been read yet is asked
-			// for and the band's own ground stands in for it until it lands
-			// (cut_thumbs.go). Nothing is decoded from inside a draw.
-			pic := ed.thumb(v.frames[i])
-			if pic == nil || pic.surf == nil {
-				continue
+		// per CELL, not per recording: a folded gap inside this row's footage
+		// is 32 px standing for minutes, so the frames on either side of it
+		// are two runs of pictures at two origins, and none at all belongs in
+		// the middle (cut_fold.go). With nothing folded this is one cell and
+		// one pass, exactly as before.
+		for _, cell := range ed.cellsOf(v.start, v.start+v.dur) {
+			cv := v
+			// where this recording's frame nought WOULD be drawn if the cell
+			// carried on backwards: the origin frameRange counts indices from
+			cv.pxOrigin = cell.px - (cell.t0-v.start)*ed.pps
+			cx0, cx1 := math.Max(vx0, cell.px), math.Min(vx1, cell.px+ed.spanW(cell))
+			first, last := cv.frameRange(ed.pps, cx0, cx1, step)
+			for i := first; i < last; i += step {
+				t := v.sessionAt(float64(i) * v.interval)
+				// ready, or nothing: a frame that has not been read yet is asked
+				// for and the band's own ground stands in for it until it lands
+				// (cut_thumbs.go). Nothing is decoded from inside a draw.
+				pic := ed.thumb(v.frames[i])
+				if pic == nil || pic.surf == nil {
+					continue
+				}
+				x := ed.xOf(t)
+				// never wider than the row it belongs to, nor than the cell:
+				// a lane's last thumbnail is a whole frame's worth of a file
+				// the row stops partway through, and the last one before a
+				// fold must not spill across the seam
+				w := math.Min(pic.w, float64(step)*v.interval*ed.pps)
+				w = math.Min(w, ed.xOf(v.start+v.dur)-x)
+				w = math.Min(w, cell.px+ed.spanW(cell)-x)
+				if w <= 0 {
+					continue
+				}
+				cr.SetSourceSurface(pic.surf, x, lt+2)
+				cr.Rectangle(x, lt+2, w, th)
+				cr.Fill()
 			}
-			x := ed.xOf(t)
-			// never wider than the row it belongs to: a lane's last thumbnail
-			// is a whole frame's worth of a file the row stops partway through
-			w := math.Min(pic.w, float64(step)*v.interval*ed.pps)
-			w = math.Min(w, ed.xOf(v.start+v.dur)-x)
-			if w <= 0 {
-				continue
-			}
-			cr.SetSourceSurface(pic.surf, x, lt+2)
-			cr.Rectangle(x, lt+2, w, th)
-			cr.Fill()
 		}
 
-		// file boundary + name
+		// where this recording begins, which is the one thing about it that
+		// IS a place on the tape. Its name is not: that is pinned, below.
 		cr.SetSourceRGB(0.9, 0.7, 0.2)
 		cr.SetLineWidth(2)
 		cr.MoveTo(v.pxOrigin, lt)
 		cr.LineTo(v.pxOrigin, lt+ed.laneH())
 		cr.Stroke()
-		cr.SetFontSize(10)
+
+		if au := ed.pairAud(v.base); au != nil {
+			// and the row's own sound directly under its pictures, edge to
+			// edge: the pair is one piece of footage seen twice
+			ed.drawPairStrip(cr, v, *au, lt+ed.laneH(), vx0, vx1)
+		}
+	}
+
+	// The rows' names, pinned where the recorders' band pins its own
+	// (laneNameX) rather than drawn at each recording's start.
+	//
+	// They scrolled with the tape, so on a page whose other name plate sits
+	// still one label slid off the side and the other did not -- and a name
+	// that has slid off is a row you have to scroll back to identify. Which
+	// recording it names is the one under the view's left edge, so a row of
+	// several files says which of them you are looking at; with the edge over
+	// a gap it names the first one in view, which is the one the eye is on.
+	cr.SetFontSize(10)
+	for r := 0; r < max(1, ed.laneN); r++ {
+		v := ed.rowNameVid(r, vx0, vx1)
+		if v == nil {
+			continue
+		}
 		name := v.base
 		if v.off > 0 {
 			// which seconds of the file this row is showing. A lane cut from a
@@ -3938,19 +4135,16 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 			// the right button did (cut_shift.go)
 			name += fmt.Sprintf(" %+.2f s", d)
 		}
-		plateText(cr, v.pxOrigin+4, lt+12, name)
-
-		if au := ed.pairAud(v.base); au != nil {
-			// and the row's own sound directly under its pictures, edge to
-			// edge: the pair is one piece of footage seen twice
-			ed.drawPairStrip(cr, v, *au, lt+ed.laneH(), vx0, vx1)
-		}
+		plateText(cr, ed.viewX+laneNameX, ed.laneTop(r)+12, name)
 	}
 
 	// ruler
 	stepS := tickStep(ed.pps)
 	cr.SetFontSize(9)
 	for _, sp := range ed.spans {
+		if sp.fold {
+			continue // a whole gap in 32 px: every tick in it lands on the same pixel
+		}
 		if sp.px > vx1 || sp.px+sp.dur()*ed.pps < vx0 {
 			continue
 		}
@@ -4178,29 +4372,33 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 	ed.drawSilences(cr, ed.pairSilences(), vx0, vx1)
 	ed.drawCamBadges(cr, vx0, vx1)
 	ed.drawHearBadges(cr, ed.hearBadgesSrc(), vx0, vx1)
-	// and the switch for that sound in the whole cut, at the strip's left where
-	// a recorded lane's sits on its name plate
-	ed.drawPairSwitches(cr)
-
 	// the ✕ that takes a whole row away, over everything else the picture band
 	// draws: a control the inserts or the cut preview's dimming could paint
 	// over would be a control that is there on some frames and not others.
 	// The one that drops a scene is not here -- it is on the green bar in the
 	// selection row (drawSelBand), which is drawn just below.
 	ed.drawLaneKill(cr, vx0, vx1)
-	// and an emptied row's ✕, which removes the space. The VIEW's left edge,
-	// not vx0: that is the culling edge and sits a margin further left, which
-	// is where this badge used to be painted -- off the side of the widget,
-	// while the press for it worked at the edge you can see (rowKillAt).
-	ed.drawRowKill(cr, ed.viewX)
+	// the black strip in front of second zero, drawn over the picture band and
+	// under the two rows below -- nothing on the tape may reach into it, and
+	// the switches above stand in it (cut_gutter.go). The bands get their own
+	// pass because they are drawn after this one.
+	ed.drawGutter(cr, top, bandH)
+	ed.drawPairSwitches(cr)
+	ed.drawRowKill(cr)
 
 	// the two rows that speak for the whole cut, over the pictures rather than
 	// under them now: the green bar under the clock and the effects lane under
 	// it (cut_fx.go). Drawn after the band so the hairline that closes the
 	// group lands on the pictures' own top edge rather than beneath it.
 	ed.drawSelBand(cr, vx0, vx1)
+	ed.drawFoldBadges(cr, vx0, vx1)
 	ed.drawFxLane(cr, vx0, vx1)
 	ed.drawFxKill(cr, vx0, vx1)
+	// the same strip across the two bands, and the one control that belongs to
+	// the whole page rather than to a row: fold every dropped stretch away, or
+	// bring them all back (cut_gutter.go)
+	ed.drawGutter(cr, float64(rulerH), ed.picTop()-float64(rulerH))
+	ed.drawFoldAll(cr)
 
 	// the clip a double click has picked up, outlined in white. The edge marker
 	// below says which BORDER is about to move; this says which whole clip is,
@@ -4362,8 +4560,7 @@ func (ed *cutEditor) setCutOnly(cut bool) {
 			ed.a.setStatus("preview is the cut — and the cut is empty, so ▶✂ has " +
 				"nothing to play until a clip is added")
 		} else {
-			ed.a.setStatus("preview is the cut — removed stretches are skipped and the " +
-				"clock reads the finished video's own time")
+			ed.a.setStatus("preview is the cut — the clock reads the finished video")
 		}
 	} else {
 		ed.a.setStatus("preview is the recording again — everything plays, cuts and all")
@@ -4373,19 +4570,27 @@ func (ed *cutEditor) setCutOnly(cut bool) {
 	ed.redrawTracks()
 }
 
-// syncCutPlay draws the ▶✂ button: ⏸✂ while its preview is the one running,
-// and a lit face for as long as the preview is the cut at all -- the lamp the
-// old toggle button's pressed state used to be. Label states, not icon states,
-// because no stock icon says "play, but the cut": the ✂ has to share the face.
+// syncCutPlay draws the ▶✂ button: a pause face while its preview is the one
+// running, and lit for as long as the preview is the cut at all -- the lamp
+// the old toggle button's pressed state used to be.
+//
+// The play/pause half is the stock ICON, and the ✂ beside it is the label. It
+// was one label of two glyphs, "▶✂" and "⏸✂", because no stock icon says
+// "play, but the cut" -- and swapping those two glyphs moved the whole page.
+// ⏸ (U+23F8) is in a different font from ▶ (U+25B6) on an ordinary Linux
+// desktop: Pango falls back to the emoji face for it, which is taller, so the
+// button grew a few px on every press, the toolbar row grew with it, and the
+// timeline under it stepped down and back up as the preview started and
+// stopped. An icon is the same size in both states, and the ✂ never changes.
 func (ed *cutEditor) syncCutPlay() {
-	if ed.cutPlayBtn == nil {
+	if ed.cutPlayBtn == nil || ed.cutPlayIcon == nil {
 		return
 	}
 	if ed.playing() && ed.cutOnly {
-		ed.cutPlayBtn.SetLabel("⏸✂")
+		ed.cutPlayIcon.SetFromIconName("media-playback-pause-symbolic")
 		ed.cutPlayBtn.SetTooltipText("pause the cut preview")
 	} else {
-		ed.cutPlayBtn.SetLabel("▶✂")
+		ed.cutPlayIcon.SetFromIconName("media-playback-start-symbolic")
 		ed.cutPlayBtn.SetTooltipText("play the CUT instead of the recording: the removed " +
 			"stretches are skipped, so this runs the finished video. The clock reads the " +
 			"cut's own time while it does. Changes nothing that is saved.")
@@ -4465,7 +4670,7 @@ func (ed *cutEditor) stop() {
 
 func (a *App) buildCut() gtk.Widgetter {
 	ed := &cutEditor{a: a, pps: 4, thumbHt: 64, jumped: -1, rowHov: -1, fxKillHov: -1,
-		bandKillHov: -1, thumbs: map[string]*thumbPic{}}
+		bandKillHov: -1, foldHov: -1, thumbs: map[string]*thumbPic{}}
 	a.ed = ed
 	if p, err := NewPlayer(); err == nil {
 		ed.player = p // the preview above the tracks; independent of Review's
@@ -4481,39 +4686,62 @@ func (a *App) buildCut() gtk.Widgetter {
 	// the run bar's ▶. There is nothing here for it any more: the length it
 	// aims at is a sentence in the user context on Prepare ("about 12 min"),
 	// beside everything else the run is told.
-	ed.addBtn = gtk.NewButtonWithLabel("＋ Add")
+	// Not the blue one. suggested-action is the page's primary verb, and this
+	// is not it -- ▶ on the run bar is -- so the colour was saying "press this
+	// first" about a button that cannot be pressed at all until seconds are
+	// marked. The bar is a row of equal verbs, and which of them is live says
+	// what to do next (syncSelBtns).
+	// Icons, like the transport and the undo group either side of them. Five
+	// words on five buttons is a third of the bar spent saying what a symbol
+	// says -- and these five are the page's own verbs, pressed all session,
+	// which is exactly the set a hand learns by position. What each one is
+	// stays in the tooltip and in the status line the press writes.
+	ed.addBtn = gtk.NewButtonFromIconName("list-add-symbolic")
 	add := ed.addBtn
-	add.AddCSSClass("suggested-action")
 	add.ConnectClicked(func() { a.addSelClicked() })
 	// the same selection, cut out of what it lies in rather than kept or
 	// dropped: the third thing that can be done to a span (cut_split.go).
-	ed.splitBtn = gtk.NewButtonWithLabel("| Split")
+	ed.splitBtn = gtk.NewButtonFromIconName("edit-cut-symbolic")
 	ed.splitBtn.ConnectClicked(func() { a.splitSelRange() })
 	// the same selection, dropped instead of kept. Beside Add because they are
 	// one pair, and greyed by the same rule -- see cut_selrm.go for why a
 	// remove is back on the bar at all.
-	ed.remBtn = gtk.NewButtonWithLabel("－ Remove")
+	ed.remBtn = gtk.NewButtonFromIconName("list-remove-symbolic")
 	ed.remBtn.ConnectClicked(func() { a.removeSelRange() })
 	// Copy takes the selected seconds in hand rather than acting on the cut:
 	// while a copy is held, Insert reads ⧉ Paste and splices those seconds in
 	// again at the red line. Greyed until there is a selection, because a copy
 	// IS the selection taken in hand, and with nothing selected the press
 	// could only explain itself.
-	ed.copyBtn = gtk.NewButtonWithLabel("⧉ Copy")
+	ed.copyBtn = gtk.NewButtonFromIconName("edit-copy-symbolic")
 	ed.copyBtn.ConnectClicked(func() { a.copyClicked() })
 	ed.syncSelBtns()
 	// One button, two jobs, because they are the same job seen from either end:
 	// with nothing held it puts a card in, and with a card held it opens that
 	// card. A second button that is greyed out unless you happen to be holding an
 	// insert would say the same thing and take up the bar saying it.
-	ed.insBtn = gtk.NewButtonWithLabel("⧉ Insert")
+	// Paste is its own button, greyed when there is nothing in hand.
+	//
+	// It used to BE the Insert button, relabelled while a copy was held: one
+	// press meaning "choose a file" or "put the copy down" depending on a
+	// state nothing on the bar showed. That was a trade for width, and the
+	// width is not the price any more -- these are icons. A button that is
+	// there and grey says both things at once: this is where a copy goes, and
+	// you are not holding one.
+	ed.pasteBtn = gtk.NewButtonFromIconName("edit-paste-symbolic")
+	ed.pasteBtn.SetSensitive(false)
+	ed.pasteBtn.ConnectClicked(func() { a.pasteCopy() })
+
+	ed.insBtn = gtk.NewButtonFromIconName("insert-object-symbolic")
 	ins := ed.insBtn
 	ins.ConnectClicked(func() { a.insertClicked() })
 	// the second thing a copy of footage can be. Paste puts it back into the
 	// cut in sequence; this puts it on a row of its own, beside the cameras, so
 	// the green can choose between the two. It comes and goes with the copy --
 	// there is nothing it could mean with nothing in hand.
-	ed.laneBtn = gtk.NewButtonWithLabel("⇲ Lane")
+	// down, into a row of its own: not the ＋ two buttons along, which keeps
+	// footage in the cut. Two identical icons in one group is one icon
+	ed.laneBtn = gtk.NewButtonFromIconName("go-down-symbolic")
 	ed.laneBtn.ConnectClicked(func() { a.pasteLane() })
 	ed.syncInsertBtn() // its label and tooltip depend on what is held
 	// Undo and Revert are icons, not words. They were the two widest buttons in
@@ -4543,29 +4771,23 @@ func (a *App) buildCut() gtk.Widgetter {
 	ed.redoBtn.SetTooltipText("Redo — put back what Undo took (Ctrl+Shift+Z)")
 	ed.redoBtn.SetSensitive(false)
 	ed.redoBtn.ConnectClicked(func() { ed.redoLast() })
-	// The playhead's time, printed. It sits with the transport keys because
-	// those are the buttons that move it, and it is monospaced ("numeric") so
-	// the digits do not dance under ‹f/f› -- a readout that reflows on every
-	// frame is one you cannot read while stepping.
+	// The playhead's time, printed. Monospaced ("numeric") so the digits do
+	// not dance under ‹f/f› -- a readout that reflows on every frame is one
+	// you cannot read while stepping. In the quiet column with the page's
+	// other readings (cut_form.go): it was small print under the transport,
+	// which is a caption on a control rather than a number to read.
 	ed.clock = gtk.NewLabel("")
 	ed.clock.AddCSSClass("numeric")
-	ed.clock.SetWidthChars(8) // "--:--.-" and "59:59.9" both fit; the bar never twitches
-	ed.clock.AddCSSClass("dim-label")
-	ed.clock.SetMarginStart(2)
-	ed.clock.SetMarginEnd(2)
+	ed.clock.SetWidthChars(8) // "--:--.-" and "59:59.9" both fit; the column never twitches
+	ed.clock.SetXAlign(0)
 	ed.showTime() // opens as "--:--.-", not as a blank gap in the bar
 
-	ed.total = gtk.NewLabel("")
-	ed.total.AddCSSClass("dim-label")
-	ed.total.SetHExpand(true)
-	ed.total.SetXAlign(1)
-	// a label with no ellipsis reports its whole text as a minimum, and this bar
-	// is a plain box, so that minimum was a floor under the window itself:
-	// measured, the bar could not be narrower than 1527px, of which this line
-	// was 272. Ellipsized it still shows in full wherever there is room -- the
-	// natural width does not move -- and the window is free to be narrower than
-	// the sentence.
-	ed.total.SetEllipsize(pango.EllipsizeEnd)
+	// What the cut comes to. It was the small print under the view buttons at
+	// the right end of the toolbar, where it was the first thing the bar cut
+	// off -- "cut 6:39 · source 28:15 · 9 segm…" -- and it is not a control:
+	// it is read between edits, like the panel it now lives in.
+	ed.total, ed.totalRaw = idleRead(), idleRead()
+	ed.totalSrc, ed.totalSegs = idleRead(), idleRead()
 
 	// Two pairs that both step something up and down, so they must not look
 	// alike: one zooms the timeline, the other sizes the thumbnails drawn on it.
@@ -4685,7 +4907,15 @@ func (a *App) buildCut() gtk.Widgetter {
 	// Produce will make. Whichever ran last still colors the page (dimming,
 	// clock), and the ▶✂ face stays lit while the preview is the cut.
 	// Nothing about it is saved.
-	ed.cutPlayBtn = gtk.NewButtonWithLabel("▶✂")
+	//
+	// Its face is the stock play/pause icon with a ✂ beside it, rather than a
+	// label of two glyphs: see syncCutPlay for what the label cost.
+	ed.cutPlayIcon = gtk.NewImageFromIconName("media-playback-start-symbolic")
+	face := gtk.NewBox(gtk.OrientationHorizontal, 2)
+	face.Append(ed.cutPlayIcon)
+	face.Append(gtk.NewLabel("✂"))
+	ed.cutPlayBtn = gtk.NewButton()
+	ed.cutPlayBtn.SetChild(face)
 	ed.cutPlayBtn.ConnectClicked(func() { ed.playAs(true) })
 	ed.syncCutPlay() // opens with its tooltip and face in the recording state
 
@@ -4697,7 +4927,7 @@ func (a *App) buildCut() gtk.Widgetter {
 	// buttons that CONSUME a selection instead (see the bar below).
 	ed.marks = gtk.NewLabel("")
 	ed.marks.AddCSSClass("numeric")
-	ed.marks.AddCSSClass("dim-label")
+	ed.marks.SetXAlign(0)
 	ed.marks.SetTooltipText("the selection, in session time")
 	ed.showMarks() // opens as dashes, not as a blank sliver under the buttons
 
@@ -4711,8 +4941,9 @@ func (a *App) buildCut() gtk.Widgetter {
 	// the eye lands on four groups instead of twenty buttons.
 	//
 	// Left to right is also the order of the work: move the playhead, mark what
-	// you found, change the cut. Then a rule, and past it the view controls,
-	// which change what you SEE and never what is saved.
+	// you found, change the cut. Nothing else is on it -- every reading it
+	// used to print under a group, and every control set once, is in the
+	// column beside the video (cut_form.go). A bar of verbs fits a laptop.
 	linked := func(ws ...gtk.Widgetter) *gtk.Box {
 		b := gtk.NewBox(gtk.OrientationHorizontal, 0)
 		b.AddCSSClass("linked")
@@ -4728,23 +4959,11 @@ func (a *App) buildCut() gtk.Widgetter {
 		return s
 	}
 
-	// A control and what it says, as one column: the buttons on top, their
-	// numbers in small print underneath. The readout sits UNDER its control
-	// rather than beside it because side by side each pair read as two bar
-	// items, and the eye had to learn which number belonged to which buttons.
-	col := func(top, under gtk.Widgetter) *gtk.Box {
-		c := gtk.NewBox(gtk.OrientationVertical, 0)
-		c.SetVAlign(gtk.AlignCenter)
-		c.Append(top)
-		c.Append(under)
-		return c
-	}
-
 	bar := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	// the wheel over the bar steps frames, so a hand hovering the transport
 	// never has to land on one exact button to scrub
 	bar.AddController(ed.wheelFrames())
-	bar.Append(col(linked(ed.playBtn, ed.cutPlayBtn, prev5, prevF, nextF, next5), ed.clock))
+	bar.Append(linked(ed.playBtn, ed.cutPlayBtn, prev5, prevF, nextF, next5))
 	// how loud the preview is, next to the two ▶s that use it -- the run bar
 	// at the bottom of the window has one too, and both are the same number
 	// (volumeCtl). Here as well as there because this is the page a cut is
@@ -4752,12 +4971,7 @@ func (a *App) buildCut() gtk.Widgetter {
 	// bar is a long way to go to turn the game down
 	bar.Append(volumeCtl())
 	bar.Append(rule())
-	bar.Append(col(linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))
-	aspLbl := gtk.NewLabel("")
-	aspLbl.SetMarkup("<small>aspect</small>")
-	aspLbl.AddCSSClass("dim-label")
-	aspLbl.SetTooltipText("the shape of the finished video")
-	bar.Append(col(ed.aspectDD, aspLbl))
+	bar.Append(linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ed.pasteBtn, ins, ed.laneBtn))
 	bar.Append(fxDD)
 	bar.Append(linked(ed.undoBtn, ed.redoBtn, ed.revertBtn, ed.clearBtn))
 	// The two prompts this page sends -- the rules Suggest works to and the
@@ -4765,16 +4979,40 @@ func (a *App) buildCut() gtk.Widgetter {
 	// here. They are on Prepare with all the others now (prepedit.go): a prompt
 	// is written before the first run and then left alone, and this bar is
 	// where the session's actual work happens.
-	bar.Append(rule()) // past here nothing changes the cut
-	// the totals are the small print under the view controls: the last column,
-	// pushed to the right edge, its line growing leftwards into the free space
-	viewRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	viewRow.SetHAlign(gtk.AlignEnd)
-	viewRow.Append(linked(zoomOut, zoomIn))
-	viewRow.Append(linked(thumbMinus, thumbPlus))
-	totCol := col(viewRow, ed.total)
-	totCol.SetHExpand(true)
-	bar.Append(totCol)
+	// ...and that is the whole bar: everything on it changes the cut.
+	//
+	// The view controls are not on it. How far the timeline is zoomed and how
+	// big its thumbnails are get set when you arrive and then left alone, and
+	// they were sharing the one row with the verbs pressed a hundred times a
+	// session -- the row that runs out of width first. They are in the form
+	// column with the totals now (cut_form.go), which stands empty whenever no
+	// effect form is open, which is most of the time.
+	// the zoom stays on the bar: it is the one view control that is not set
+	// once -- you zoom in to trim a border and out to see the shape of the
+	// hour, a dozen times a session, and it is the wheel's own gesture with a
+	// button on it. The thumbnails go up with the rest (cut_form.go).
+	bar.Append(linked(zoomOut, zoomIn))
+	// every line of the column reads the same way: what it is, then what it
+	// says. The buttons are a reading too -- they say how big the pictures on
+	// the tracks are -- and a pair of them with no name was the one row you had
+	// to recognise by its icons.
+	ed.formIdle.Append(idleRow("Thumbnails", linked(thumbMinus, thumbPlus)))
+	// the shape of the finished video, with them: it is chosen once, out of
+	// three answers, and it was the only dropdown on a bar of verbs
+	ed.formIdle.Append(idleRow("Aspect ratio", ed.aspectDD))
+	// ...and every reading the bar used to print under a group of buttons.
+	// A number under a button is a caption on a control; a number in a column
+	// of numbers is something to read. The bar is verbs now, and this is what
+	// they are doing.
+	ed.formIdle.Append(idleRow("Playhead", ed.clock))
+	ed.formIdle.Append(idleRow("Selection", ed.marks))
+	// the cut as the video plays it, and the same cut with the speed effects
+	// taken off (rawLen): a target missed by 90 s was either 90 s too much
+	// footage or 90 s not sped up, and one number cannot say which
+	ed.formIdle.Append(idleRow("Cut", ed.total))
+	ed.formIdle.Append(idleRow("Cut at 1×", ed.totalRaw))
+	ed.formIdle.Append(idleRow("Source", ed.totalSrc))
+	ed.formIdle.Append(idleRow("Segments", ed.totalSegs))
 
 	ed.srcArea = gtk.NewDrawingArea()
 	ed.srcArea.SetDrawFunc(func(_ *gtk.DrawingArea, cr *cairo.Context, w, h int) {
@@ -4875,7 +5113,22 @@ func (a *App) buildCut() gtk.Widgetter {
 			// and making the hand name it twice is a tax on the only thing
 			// there is to do here.
 			selPart = selNone
+			// the fold-all control, in the black strip at the head of the tape
+			// (cut_gutter.go). Before the band's own answers: it stands in
+			// front of second zero, where none of them reach.
+			if area == ed.srcArea && ed.foldAllAt(x+ed.viewX, y) {
+				ed.toggleFoldAll()
+				return
+			}
 			if area == ed.srcArea && ed.hitSelBand(y) {
+				// the − that folds a dropped stretch away and the + that
+				// brings it back, between the two bars they hold apart
+				// (cut_fold.go). Asked first: the badge sits where a press
+				// would otherwise land on one of those bars' ends.
+				if i := ed.foldBadgeAt(x+ed.viewX, y); i >= 0 {
+					ed.toggleFold(i, x+ed.viewX)
+					return
+				}
 				if selPart = ed.selPartAt(x + ed.viewX); selPart == selKill {
 					ed.killSel()
 					selPart = selNone
@@ -4943,7 +5196,7 @@ func (a *App) buildCut() gtk.Widgetter {
 			// beginning at the very left of the view) the permanent one
 			// wins, and the scene's badge is a hair's scroll away
 			if area == ed.audArea {
-				if base := ed.laneSwitchAt(x, y); base != "" {
+				if base := ed.laneSwitchAt(x+ed.viewX, y); base != "" {
 					ed.toggleLaneAll(base)
 					return
 				}
@@ -4952,7 +5205,7 @@ func (a *App) buildCut() gtk.Widgetter {
 			// paired strip under them: one per camera row, and asked here for
 			// the reason above
 			if area == ed.srcArea {
-				if bases := ed.pairSwitchAt(x, y); len(bases) > 0 {
+				if bases := ed.pairSwitchAt(x+ed.viewX, y); len(bases) > 0 {
 					ed.toggleLanesAll(bases, pairSwitchName(bases))
 					return
 				}
@@ -5025,6 +5278,19 @@ func (a *App) buildCut() gtk.Widgetter {
 		})
 		drag.ConnectDragUpdate(func(ox, oy float64) {
 			if ed.fxMoving {
+				// nothing has moved yet and the pointer has barely left where
+				// it was pressed: this is still a CLICK, and a click on an
+				// effect opens its numbers (the release, below).
+				//
+				// Without this it moved the band it landed on. Not by the
+				// pixel the hand wobbled -- by however far the nearest cut or
+				// effect was, because the slide snaps (snapFxSpan): press an
+				// effect to open it, and it jumped to the next boundary in
+				// reach on the way. The same guard the cut's own drags keep,
+				// for the same reason (the slide gesture below).
+				if !ed.fxDirty && math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {
+					return
+				}
 				if fxPart == fxStart || fxPart == fxEnd {
 					ed.resizeFxTo(fxPart == fxEnd, ed.tAtView(dragStartX+ox))
 				} else if f := ed.heldFx(); f != nil {
@@ -5071,7 +5337,10 @@ func (a *App) buildCut() gtk.Widgetter {
 				//
 				// On an idle, not here: the dialog must not open in the middle
 				// of the gesture it is answering.
-				if !moved && math.Abs(ox) < 5 && math.Abs(oy) < 5 {
+				// the same threshold the update above holds the band still
+				// for, so the two cannot disagree about what a click is: a
+				// press that did not move it opens its numbers instead
+				if !moved && math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {
 					glib.IdleAdd(func() { ed.a.editFx() })
 				}
 				return
@@ -5172,10 +5441,12 @@ func (a *App) buildCut() gtk.Widgetter {
 		var slideGrab float64 // where in the held clip the press landed
 		var slideRows bool    // this drag may change rows (it moves sources on the picture band)
 		var slideOn, slideTimeOn bool
+		var foldShutList []foldGap // seams opened for the hold, put back on release
 		slide.ConnectDragBegin(func(x, y float64) {
 			area.GrabFocus()
 			slideSrcs, slideFrom, slideSegs = nil, nil, nil
 			slideD, slideOn, slideTimeOn = 0, false, false
+			foldShutList = nil
 			trimming, moving = false, false
 			slideX0, slideY0 = x, y
 			a0, a1 := ed.selSpan()
@@ -5206,8 +5477,14 @@ func (a *App) buildCut() gtk.Widgetter {
 					// the bar stands for the clip, so its ends are that clip's
 					// borders and its middle is the clip (bandClipPartAt)
 					i, part := ed.bandClipPartAt(px)
-					if part == selNone || part == selKill {
+					if part == selNone {
 						return false
+					}
+					// the ✕ is in the middle of the bar now (cut_selband.go),
+					// and this button has no remove: over it a press means the
+					// clip, like any other press on a bar's middle.
+					if part == selKill {
+						part = selWhole
 					}
 					ed.holdBandClip(i, part)
 					if part == selWhole {
@@ -5253,7 +5530,17 @@ func (a *App) buildCut() gtk.Widgetter {
 				(ed.hitPics(y) || ed.hitSelBand(y)):
 				slideSegs = append([]cutSeg(nil), ed.segs...)
 				slideWhat = "the selected scenes"
+				foldShutList = ed.foldOpen(a0, a1, px) // same rule as one scene, over all of them
 			case green():
+				// what is in hand can be dragged across a seam, so the seams
+				// around it come open for as long as the button is down: the
+				// drag then runs on the ordinary timeline, where a pixel is a
+				// pixel (cut_fold.go)
+				if s := ed.heldSeg(); s != nil {
+					foldShutList = ed.foldOpen(s.S, s.E, px)
+				} else if trimming {
+					foldShutList = ed.foldOpen(t, t, px)
+				}
 				return // a scene or a border in hand; the update drags it
 			default:
 				l := ed.laneAt(y)
@@ -5342,6 +5629,14 @@ func (a *App) buildCut() gtk.Widgetter {
 			}
 		})
 		slide.ConnectDragEnd(func(ox, oy float64) {
+			// the seams this hold opened go back, anchored on the column the
+			// press landed in so the page does not jump out from under the
+			// hand that just let go (cut_fold.go). Deferred: the branches
+			// below return early, and every one of them ends the same hold.
+			defer func() {
+				ed.foldShut(foldShutList, slideX0+ed.viewX)
+				foldShutList = nil
+			}()
 			if trimming {
 				trimming = false
 				// a border trimmed out until it meets the next clip closes the
@@ -5412,10 +5707,7 @@ func (a *App) buildCut() gtk.Widgetter {
 			// same footage at a different second, and a preview still showing
 			// the old one is the page disagreeing with itself
 			ed.setPlayhead(ed.playhead)
-			ed.a.setStatus(shiftLabel(slideWhat, slideD) +
-				" — right-drag the green to move a scene or trim its border, a row " +
-				"clear of the green to line its sound up with another camera's, a lane " +
-				"to move one recording, or inside a selection to move the scenes in it")
+			ed.a.setStatus(shiftLabel(slideWhat, slideD))
 		})
 		area.AddController(slide)
 
@@ -5603,9 +5895,9 @@ func (a *App) buildCut() gtk.Widgetter {
 		// Between the two, the framing overlay: the rectangle that says what a
 		// vertical (or zoomed) cut of this picture will show (cut_fxview.go).
 		vframe := videoFrame(ed.buildFxOverlay())
-		vframe.SetMarginTop(10)
-		vframe.SetMarginStart(12)
-		vframe.SetMarginEnd(12)
+		vframe.SetMarginTop(8)
+		vframe.SetMarginStart(12) // the window's edge
+		vframe.SetMarginEnd(6)    // ...and the handle's, which the form column matches
 		vframe.SetMarginBottom(6)
 		top.SetStartChild(vframe)
 	} else {
@@ -5613,22 +5905,13 @@ func (a *App) buildCut() gtk.Widgetter {
 	}
 	top.SetPosition(660)
 
-	// What this page reads, at the top, where Inputs and Describe put theirs.
-	// The question it answers is the one asked just before pressing Suggest --
-	// is everything in here, and does the model get to hear as well as see --
-	// and it was answerable only by opening session.txt.
-	ed.inputs = gtk.NewLabel("")
-	ed.inputs.SetXAlign(0)
-	ed.inputs.SetHExpand(true)
-	ed.inputs.SetEllipsize(pango.EllipsizeEnd) // never a floor under the window
-	inLbl := gtk.NewLabel("Inputs:")
-	inLbl.AddCSSClass("heading")
-	inRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	inRow.SetMarginStart(12)
-	inRow.SetMarginEnd(12)
-	inRow.SetMarginTop(6)
-	inRow.Append(inLbl)
-	inRow.Append(ed.inputs)
+	// What this page reads, on the shared bottom bar beside what it has
+	// written (inputsLabel). The question it answers is the one asked just
+	// before pressing Suggest -- is everything in here, and does the model get
+	// to hear as well as see -- and it was answerable only by opening
+	// session.txt.
+	ed.inputs = inputsLabel()
+	a.inStack.AddNamed(ed.inputs, "cut")
 	ed.updateInputs()
 
 	// which half of the page matters depends on whether you are cutting or
@@ -5649,7 +5932,6 @@ func (a *App) buildCut() gtk.Widgetter {
 	pane.SetResizeEndChild(false)
 
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
-	page.Append(inRow)
 	page.Append(pane)
 	// and the empty timeline is laid out from the start: the ruler, the
 	// and an empty row are a page with no cut yet, which is a real state, and
@@ -5706,7 +5988,19 @@ func (ed *cutEditor) zoomAt(viewX, factor float64) {
 	// layer too, and a zoom changes only where things are drawn.
 	ed.layoutPx()
 	ed.syncScroll()
-	ed.setOff(ed.xOf(t) - viewX) // its value-changed is the one redraw
+	ed.setOff(ed.xOf(t) - viewX)
+	// ...and the draw, rather than leaving it to that setOff to emit one.
+	//
+	// The adjustment only fires value-changed when the value actually MOVES,
+	// and a zoom often leaves it exactly where it was: anchored on a point
+	// with the view already hard against the start of the timeline, the new
+	// offset clamps to the same 0, and at the far end it clamps to the same
+	// maximum. The pixels underneath had all changed and nothing repainted
+	// them, so the zoom appeared to do nothing at all -- until the pointer
+	// moved, because the hover is the only other thing on this page that
+	// queues a draw by itself. "It works if I jiggle the mouse" is the shape
+	// of a missing redraw, every time.
+	ed.queueTracks()
 	ed.updateTotal()
 }
 
@@ -5721,7 +6015,10 @@ func (ed *cutEditor) zoomAt(viewX, factor float64) {
 // the scrollbar stayed and it still slid, which reads as a timeline hiding
 // something off to the right when there is nothing out there at all.
 func (ed *cutEditor) minPps() float64 {
-	return fitPps(ed.viewW, ed.filmedDur(), len(ed.runs()))
+	// the gutter comes off the width the footage may use, exactly as the holes
+	// do: it is drawn at a fixed width and does not shrink with the zoom
+	// (cut_gutter.go)
+	return fitPps(ed.viewW-gutterPx, ed.filmedDur(), len(ed.runs()))
 }
 
 // fitPps is that floor without a widget in the way: the zoom at which dur
@@ -5857,8 +6154,7 @@ func (a *App) addSelClicked() {
 	// Add keeps FOOTAGE, and a sound-scoped selection is not about footage. The
 	// button is greyed for this; the guard is for every other way in.
 	if ed.sel.aud != "" {
-		a.setStatus(fmt.Sprintf("＋ Add keeps footage, and the selection is %s's sound — "+
-			"drag on the pictures instead — a selection is of what it was drawn on", ed.sel.aud))
+		a.setStatus(fmt.Sprintf("＋ Add keeps footage — the selection is %s's sound", ed.sel.aud))
 		return
 	}
 	// a selection lying in the gap between two recordings, or one shorter than
@@ -5866,8 +6162,7 @@ func (a *App) addSelClicked() {
 	// -- and leaving an undo step that undoes nothing -- is the one status line
 	// that cannot be trusted afterwards, so measure first and say what happened.
 	if len(ed.rangePieces(ed.sel.t0, ed.sel.t1)) == 0 {
-		a.setStatus(fmt.Sprintf("nothing to add: %.2f s of footage selected — a scene "+
-			"is %.0f s or more, and the gaps between recordings hold none",
+		a.setStatus(fmt.Sprintf("nothing to add: %.2f s selected, a scene is %.0f s or more",
 			math.Abs(ed.sel.t1-ed.sel.t0), minSegLn))
 		return
 	}
@@ -5915,13 +6210,12 @@ func (a *App) copyClicked() {
 	ed.copyAud, ed.copyCam = ed.sel.aud, ed.sel.lane
 	ed.syncInsertBtn()
 	if ed.copyAud != "" {
-		a.setStatus(fmt.Sprintf("copied %.1f s of sound from %s (%s – %s) — click the timeline "+
-			"where it goes, then ⧉ Paste lays it over the footage there. Esc drops the copy",
+		a.setStatus(fmt.Sprintf("copied %.1f s of %s (%s – %s) — click where it goes, then ⧉ Paste",
 			ln, ed.copyAud, mmss(t0), mmss(t0+ln)))
 		return
 	}
-	a.setStatus(fmt.Sprintf("copied %s – %s (%.1f s) — click the timeline where it goes, "+
-		"then press ⧉ Paste. Esc drops the copy", mmss(t0), mmss(t0+ln), ln))
+	a.setStatus(fmt.Sprintf("copied %s – %s (%.1f s) — click where it goes, then ⧉ Paste",
+		mmss(t0), mmss(t0+ln), ln))
 }
 
 // pasteCopy splices the copied footage into the cut at the red line, as a copy
@@ -5946,8 +6240,7 @@ func (a *App) pasteCopy() {
 		false, ed.copyCam)
 	ed.copyOn = false
 	ed.syncInsertBtn()
-	a.setStatus(fmt.Sprintf("pasted %.1f s of footage from %s at %s — the cut is now %s "+
-		"(was %s). Right-click it to play it silent — ↶ Undo takes it back",
+	a.setStatus(fmt.Sprintf("pasted %.1f s from %s at %s — the cut is %s, was %s",
 		ed.copyLen, mmss(ed.copyFrom), mmss(ed.playhead), mmss(ed.cutLen()), mmss(was)))
 }
 
@@ -5975,8 +6268,7 @@ func (a *App) pasteLane() {
 	}
 	v := pickVideoOn(ed.vids, ed.copyCam, ed.copyFrom)
 	if v == nil {
-		a.setStatus(fmt.Sprintf("nothing is rolling at %s any more — the copy was taken "+
-			"from a recording this page has since moved or dropped", mmss(ed.copyFrom)))
+		a.setStatus(fmt.Sprintf("nothing is rolling at %s any more", mmss(ed.copyFrom)))
 		return
 	}
 	// the FILE second, which is what a lane is a window on: the copy was taken
@@ -5990,10 +6282,8 @@ func (a *App) pasteLane() {
 	ed.syncInsertBtn()
 	ed.sel.active = false
 	ed.clearMarks()
-	a.setStatus(fmt.Sprintf("%.1f s of footage from %s is now the %s lane, starting at %s "+
-		"— select on that row and press ＋ Add to cut to it; its ✕ takes the row away "+
-		"again, and ↶ Undo takes this back", ed.copyLen, mmss(ed.copyFrom), name,
-		mmss(ed.playhead)))
+	a.setStatus(fmt.Sprintf("%.1f s from %s is now the %s lane, starting at %s",
+		ed.copyLen, mmss(ed.copyFrom), name, mmss(ed.playhead)))
 	ed.redrawTracks()
 }
 
@@ -6024,9 +6314,7 @@ func (a *App) pasteSound() {
 	// and press again, not to go and copy the same seconds a second time
 	n := ed.addSound(a.relToRoot(au.path), at, ed.copyLen, ss, ed.copyAud)
 	if n == 0 {
-		a.setStatus(fmt.Sprintf("the cut keeps no footage at %s — a sound is laid OVER the "+
-			"picture, so there has to be a picture there; move the red line into a green "+
-			"stretch and press ⧉ Paste again", mmss(at)))
+		a.setStatus(fmt.Sprintf("the cut keeps no footage at %s — a sound needs a picture under it", mmss(at)))
 		return
 	}
 	ed.copyOn = false
@@ -6037,9 +6325,7 @@ func (a *App) pasteSound() {
 		// a puzzling second marker in the lanes and an expected one
 		over = fmt.Sprintf("%d stretches of footage", n)
 	}
-	a.setStatus(fmt.Sprintf("laid %.1f s of %s over %s at %s — the picture runs on "+
-		"under it and the cut is still %s — ↶ Undo takes it back",
-		ed.copyLen, ed.copyAud, over, mmss(at), mmss(ed.cutLen())))
+	a.setStatus(fmt.Sprintf("laid %.1f s of %s over %s at %s", ed.copyLen, ed.copyAud, over, mmss(at)))
 }
 
 // audByBase is the recording with this base name, or nil when the session no
@@ -6076,37 +6362,62 @@ func (ed *cutEditor) syncSelBtns() {
 	if ed == nil {
 		return
 	}
+	// A verb is live when it has something to act on, and grey when it does
+	// not. All four used to be live with nothing selected at all: the press
+	// then answered "drag a region on a track first", which is a button
+	// spending a click to say it was never the button. Greyed, the bar says
+	// which of them the page is ready for before anything is pressed.
+	//
+	// snd is the exception that has to be said in words rather than only shown:
+	// a selection drawn on a WAVE is seconds of sound, and Add, Split and
+	// Remove all act on footage. The button is grey and its tooltip says why,
+	// because "why is this dead when I have clearly selected something" is
+	// otherwise unanswerable.
 	snd := ed.sel.active && ed.sel.aud != ""
+	on := ed.sel.active && ed.sel.aud == ""
+	long := on && math.Abs(ed.sel.t1-ed.sel.t0) >= minSegLn
 	if ed.copyBtn != nil {
 		ed.copyBtn.SetSensitive(ed.sel.active && math.Abs(ed.sel.t1-ed.sel.t0) >= minSegLn)
 	}
 	if ed.addBtn != nil {
-		ed.addBtn.SetSensitive(!snd)
+		// a scene has a floor: a selection under it adds nothing, and a button
+		// that reports "nothing to add" is a button that should have been grey
+		ed.addBtn.SetSensitive(long)
 		tip := "keep the selected region (Undo takes it back)"
-		if snd {
-			tip = "＋ Add keeps footage, and this selection is " + ed.sel.aud +
-				"'s sound — drag on the pictures instead — a selection is of what it was drawn on"
+		switch {
+		case snd:
+			tip = "＋ Add keeps footage, and this selection is " + ed.sel.aud + "'s sound"
+		case !ed.sel.active:
+			tip = "drag a region on a track, then ＋ Add keeps it"
+		case !long:
+			tip = fmt.Sprintf("the selection is under %.0f s — too short to keep as a scene", minSegLn)
 		}
 		ed.addBtn.SetTooltipText(tip)
 	}
 	if ed.splitBtn != nil {
-		ed.splitBtn.SetSensitive(!snd)
+		// the one verb that works with nothing selected: it cuts at the red
+		// line instead, so it needs a line or a selection and not both
+		ed.splitBtn.SetSensitive(!snd && (on || ed.hasPlay))
 		tip := "cut the selected region free: a border at each end, nothing removed, " +
 			"so those seconds become a scene of their own. With nothing selected it " +
 			"cuts once, at the red line (Undo takes it back)"
-		if snd {
-			tip = "| Split cuts footage, and this selection is " + ed.sel.aud +
-				"'s sound — drag on the pictures instead — a selection is of what it was drawn on"
+		switch {
+		case snd:
+			tip = "| Split cuts footage, and this selection is " + ed.sel.aud + "'s sound"
+		case !on && !ed.hasPlay:
+			tip = "click a track to put the red line somewhere, then | Split cuts there"
 		}
 		ed.splitBtn.SetTooltipText(tip)
 	}
 	if ed.remBtn != nil {
-		ed.remBtn.SetSensitive(!snd)
+		ed.remBtn.SetSensitive(on)
 		tip := "drop the selected region — through the middle of a scene it " +
 			"leaves two, one either side (Undo takes it back)"
-		if snd {
-			tip = "－ Remove drops footage, and this selection is " + ed.sel.aud +
-				"'s sound — drag on the pictures instead — a selection is of what it was drawn on"
+		switch {
+		case snd:
+			tip = "－ Remove drops footage, and this selection is " + ed.sel.aud + "'s sound"
+		case !ed.sel.active:
+			tip = "drag a region on a track, then － Remove drops it"
 		}
 		ed.remBtn.SetTooltipText(tip)
 	}
@@ -6133,12 +6444,6 @@ func (a *App) insertClicked() {
 	// and a held effect the same way: while one is held, the button is its Edit
 	if ed.heldFx() != nil {
 		a.editFx()
-		return
-	}
-	// a copy in hand is what the button places: Paste is Insert with the file
-	// already chosen
-	if ed.copyOn {
-		a.pasteCopy()
 		return
 	}
 	if !ed.hasPlay && !ed.sel.active {
@@ -6296,9 +6601,8 @@ func (a *App) placeInsert(ins string, at float64, m insMode) {
 		// that must leave the picture exactly as it found it (layOverSound)
 		n := a.ed.addSound(rel, at, m.dur, 0, m.lane)
 		if n == 0 {
-			a.setStatus(fmt.Sprintf("the cut keeps no footage at %s — %s is a sound, and a "+
-				"sound is laid OVER the picture; move the red line into a green stretch "+
-				"and insert it again", mmss(at), filepath.Base(file)))
+			a.setStatus(fmt.Sprintf("the cut keeps no footage at %s — %s is a sound, and one needs a picture under it",
+				mmss(at), filepath.Base(file)))
 			return
 		}
 		how = "over the footage, which keeps its frames — drag its edges to retime it"
@@ -6678,8 +6982,7 @@ func (a *App) revertClicked() {
 	ed.persist()
 	switch {
 	case len(ed.base.segs) == 0:
-		a.setStatus(fmt.Sprintf("reverted — your %d hand-made segment(s) are gone, "+
-			"the cut is empty again (↶ Undo brings them back)", was))
+		a.setStatus(fmt.Sprintf("reverted — %s gone, the cut is empty", plural(was, "hand-made segment")))
 	default:
 		a.setStatus(fmt.Sprintf("reverted to the %d segment(s) of the last suggestion "+
 			"(↶ Undo brings your edits back)", len(ed.base.segs)))
@@ -6716,9 +7019,7 @@ func (a *App) removeSelClicked() {
 		// the selection is a sound's, and ⌦ drops FOOTAGE. Falling through to
 		// "the scene under the playhead" would be worse than refusing: it
 		// would remove something nobody pointed at.
-		a.setStatus(fmt.Sprintf("⌦ drops footage, and the selection is %s's sound "+
-			"— drag on the pictures instead — a selection is of what it was drawn on",
-			ed.sel.aud))
+		a.setStatus(fmt.Sprintf("⌦ drops footage — the selection is %s's sound", ed.sel.aud))
 	case ed.sel.active:
 		before := len(ed.segs)
 		ed.pushUndo()

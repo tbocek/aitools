@@ -167,10 +167,10 @@ func TestDraggingAClipOntoItsNeighbourJoinsThem(t *testing.T) {
 func TestTheSplitButtonIsWired(t *testing.T) {
 	src := readSrc(t, "cut.go")
 	for _, want := range []string{
-		`ed.splitBtn = gtk.NewButtonWithLabel("| Split")`,
+		`ed.splitBtn = gtk.NewButtonFromIconName("edit-cut-symbolic")`,
 		"ed.splitBtn.ConnectClicked(func() { a.splitSelRange() })",
-		"linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ins, ed.laneBtn)",
-		"ed.splitBtn.SetSensitive(!snd)",
+		"linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ed.pasteBtn, ins, ed.laneBtn)",
+		"ed.splitBtn.SetSensitive(!snd && (on || ed.hasPlay))",
 		// the drop: the join is decided before the write, so what lands on
 		// disk is the merged cut
 		"merged := ed.segDirty && ed.mergeDropped()",

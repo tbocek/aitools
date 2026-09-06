@@ -737,14 +737,15 @@ func (a *App) buildVoicePicker() gtk.Widgetter {
 	// in the finished video, so it belongs next to the choice of voice rather
 	// than next to the render
 	vp.pitch = gtk.NewScaleWithRange(gtk.OrientationHorizontal, -pitchRange, pitchRange, 0.5)
-	vp.pitch.SetDrawValue(true)
-	vp.pitch.SetHExpand(true)
-	vp.pitch.SetTooltipText("Shift the reference recording before it is cloned — " +
+	formSlider(vp.pitch, "Shift the reference recording before it is cloned — "+
 		"a different speaker, not the same one transposed")
-	vp.pitch.AddMark(-pitchRange, gtk.PosBottom, "deeper")
-	vp.pitch.AddMark(0, gtk.PosBottom, "as recorded")
-	vp.pitch.AddMark(pitchRange, gtk.PosBottom, "higher")
-	vp.pitch.AddCSSClass("tinyscale") // the legend under it sets the row height
+	// One unlabelled tick, at the recording's own pitch. It had three labels
+	// under it -- deeper, as recorded, higher -- and a row of words under a
+	// slider is a whole line of height for a legend nobody reads twice: which
+	// way is deeper is what a slider means. The tick keeps the one position
+	// worth finding again, the semitones over the handle say where it is, and
+	// the tooltip says what it does.
+	vp.pitch.AddMark(0, gtk.PosBottom, "")
 	// dragging crosses two dozen stops; only the one it is let go on is worth
 	// an ffmpeg pass, so each move cancels the pass the previous one queued
 	vp.pitch.ConnectValueChanged(func() {
@@ -772,28 +773,34 @@ func (a *App) buildVoicePicker() gtk.Widgetter {
 	knob.Append(pitchLbl)
 	knob.Append(vp.pitch)
 
-	// half each, homogeneous rather than two expanding children: the sample and
-	// the pitch are both judged by dragging or reading across their whole width,
-	// and left to negotiate it the entry's text would decide the split.
+	// The sentence takes what the pitch does not. It was half each --
+	// homogeneous, so that neither side could be squeezed by the other's
+	// content -- and that was written when the slider stretched to fill its
+	// half. It does not any more (formSlider: 150 px, aligned left), so
+	// "half each" spent a quarter of the row on nothing while the entry, which
+	// is a line of text to be read, was cut off at "This is the voice the".
 	tune := gtk.NewBox(gtk.OrientationHorizontal, 12)
-	tune.SetHomogeneous(true)
 	tune.Append(hear)
 	tune.Append(knob)
+	hear.SetHExpand(true)
 	// homogeneous is about the WIDTH. Left alone the entry and its three
-	// transport buttons also grow to the height of the pitch slider -- value on
-	// top, legend underneath -- and a play button three lines tall reads as a
-	// mistake. Centered, they keep the size a button has everywhere else.
+	// transport buttons also grow to the height of the pitch slider -- the
+	// semitones are drawn over the handle -- and a play button two lines tall
+	// reads as a mistake. Centered, they keep the size a button has everywhere
+	// else, and the row is as tall as the slider and no taller.
 	hear.SetVAlign(gtk.AlignCenter)
 	knob.SetVAlign(gtk.AlignCenter)
 
-	box := gtk.NewBox(gtk.OrientationVertical, 8)
-	box.SetMarginStart(12)
-	box.SetMarginEnd(12)
-	box.SetMarginTop(6)
-	box.SetMarginBottom(8)
+	// no side margins of its own: the column already has them (buildNarrate),
+	// and a second 12 px here indented this half of it past the transport
+	// above -- two blocks in one column, starting at two different x.
+	box := gtk.NewBox(gtk.OrientationVertical, 6)
+	box.SetMarginTop(8) // clear of the handle above it (buildNarrate)
+	box.SetMarginBottom(4)
+	// Which voice, then the recording it is cut from, then the sentence it
+	// will be speaking: the ＋ － ▶ sit on the dropdown's row, an arm's length
+	// over the band they act on.
 	box.Append(who)
-	// under the dropdown, over the sample: the recording, then the seconds of
-	// it, then the sentence they will be speaking
 	box.Append(bandFrame)
 	box.Append(tune)
 
@@ -972,8 +979,7 @@ func (vp *voicePicker) choose(i int) {
 			// none at all
 			vp.band.sync()
 			if v.id == captionsVoice {
-				a.setStatus("no audio — the narration is written and timed but never spoken; " +
-					"Produce burns the captions in or ships them as subtitles")
+				a.setStatus("no audio — the narration is written and timed, never spoken")
 				return
 			}
 			if n := narratorSlot(v.id); n > 0 {

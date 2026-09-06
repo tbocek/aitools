@@ -954,7 +954,7 @@ func TestTheNarrationColumnWrapsRatherThanScrollingSideways(t *testing.T) {
 		"left.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)",    // the column
 		"tScroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)", // and each box in it
 		"tl.SetEllipsize(pango.EllipsizeEnd)",                     // the stamp line is not a floor
-		"n.inputs.SetEllipsize(pango.EllipsizeEnd)",               // nor is the Inputs line
+		"n.inputs = inputsLabel()",                                // the Inputs line ellipsizes too
 		"text.SetWrapMode(gtk.WrapWord)",                          // and the words themselves wrap
 	} {
 		if !strings.Contains(src, want) {

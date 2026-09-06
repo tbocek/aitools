@@ -132,10 +132,42 @@ func TestEveryTimeOnThePageReadsTheSamePipe(t *testing.T) {
 	// and the model is measured against its target the same way
 	sg := readSrc(t, "cut_suggest.go")
 	for _, want := range []string{
-		"total := cutLen(applyFx(segs, fx))",
+		"mmss(cutLen(applyFx(segs, fx))), mmss(raw))", // what the speed pass reports
 	} {
 		if !strings.Contains(sg, want) {
 			t.Errorf("cut_suggest.go no longer contains %q", want)
+		}
+	}
+}
+
+// Both lengths, because both are asked about: how much footage the cut keeps,
+// and how long the video made of it runs. A cut with a minute at 4 is fifteen
+// seconds of video, and a page showing only one of those numbers cannot say
+// whether a target was missed by keeping too much or by speeding too little.
+func TestThePageSaysTheCutWithAndWithoutTheSpeed(t *testing.T) {
+	ed := newTestEd(t)
+	ed.segs = []cutSeg{{S: 0, E: 60}, {S: 100, E: 160}}
+	ed.fx = []cutFx{{Kind: "speed", T: 100, Dur: 60, Rate: 4}}
+	if got := ed.rawLen(); got != 120 {
+		t.Errorf("the footage kept measures %g s, want 120", got)
+	}
+	if got := ed.cutLen(); math.Abs(got-75) > 0.01 {
+		t.Errorf("the video runs %g s, want 75 — 60 at 1 and 60 at 4", got)
+	}
+	// a card takes no session time and still runs for its own length, in both
+	ed.segs = append(ed.segs, cutSeg{S: 200, E: 200, Ins: "card.svg", Dur: 5})
+	if got := ed.rawLen(); got != 125 {
+		t.Errorf("a 5 s card left the kept footage at %g s, want 125", got)
+	}
+	// and both are on the page, named apart
+	src := readSrc(t, "cut.go")
+	for _, want := range []string{
+		`ed.formIdle.Append(idleRow("Cut", ed.total))`,
+		`ed.formIdle.Append(idleRow("Cut at 1×", ed.totalRaw))`,
+		"ed.totalRaw.SetText(mmss(ed.rawLen()))",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the page no longer reads both lengths: %q", want)
 		}
 	}
 }

@@ -32,8 +32,16 @@ func TestAClickOnAnEffectOpensItsNumbers(t *testing.T) {
 	// as it was at the press and saved by looking that effect up again by those
 	// numbers (updateFx); after a drag they are last second's numbers and the
 	// save finds nothing to write to
-	if !strings.Contains(body, "if !moved && math.Abs(ox) < 5 && math.Abs(oy) < 5 {") {
+	if !strings.Contains(body, "if !moved && math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {") {
 		t.Error("a drag along the lane opens a form on numbers that are already stale")
+	}
+	// ...and the update holds the band still under exactly that threshold, or
+	// the two disagree about what a click is: the band moved on the press and
+	// the form opened on where it used to be
+	up := funcBody(t, "cut.go", `drag\.ConnectDragUpdate\(func\(ox, oy float64\) \{`)
+	if !strings.Contains(up, "if !ed.fxDirty && math.Abs(ox) < dragSlop && math.Abs(oy) < dragSlop {") {
+		t.Error("a press on an effect slides it before it has travelled, which on a lane " +
+			"that snaps means jumping to the nearest cut")
 	}
 	if i, j := strings.Index(body, "moved := ed.fxDirty"), strings.Index(body, "ed.fxDirty = false"); i < 0 || i > j {
 		t.Error("`moved` is read after the drag has cleared it, so every click reads as a move")

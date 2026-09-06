@@ -575,7 +575,7 @@ func TestTheLaneSwitchIsOnTheNamePlate(t *testing.T) {
 	// and the press asks for it in the band, before the scene badge that can
 	// share the same pixels at the left of the view
 	cut := readSrc(t, "cut.go")
-	i := strings.Index(cut, "if base := ed.laneSwitchAt(x, y); base != \"\" {")
+	i := strings.Index(cut, "if base := ed.laneSwitchAt(x+ed.viewX, y); base != \"\" {")
 	j := strings.Index(cut, "if base := ed.hearAt(x+ed.viewX, y, area == ed.srcArea); base != \"\" {")
 	if i < 0 || j < 0 || i > j {
 		t.Errorf("the whole-lane switch is not asked in the band before the scene's badge (switch %d, badge %d)", i, j)
@@ -733,7 +733,7 @@ func TestThePairSwitchIsDrawnOnTheStrip(t *testing.T) {
 	if !strings.Contains(src, "ed.drawPairSwitches(cr)") {
 		t.Error("the picture band does not draw the strip's switches")
 	}
-	i := strings.Index(src, "if bases := ed.pairSwitchAt(x, y); len(bases) > 0 {")
+	i := strings.Index(src, "if bases := ed.pairSwitchAt(x+ed.viewX, y); len(bases) > 0 {")
 	j := strings.Index(src, "if base := ed.hearAt(x+ed.viewX, y, area == ed.srcArea); base != \"\" {")
 	if i < 0 || j < 0 || i > j {
 		t.Errorf("the strip's switch is not asked before the scene's badge (switch %d, badge %d)", i, j)

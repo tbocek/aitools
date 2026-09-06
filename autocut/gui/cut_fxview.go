@@ -1011,8 +1011,7 @@ func (ed *cutEditor) buildFxOverlay() *gtk.Overlay {
 						// the form is live and this is its first answer, given
 						// as it opened: there is nothing to place until a file
 						// is chosen, and choosing one is an answer too (fxWin)
-						ed.a.setStatus("choose a drawing and it goes on the picture — " +
-							"the rest of the form applies as you fill it in")
+						ed.a.setStatus("choose a drawing and it goes on the picture")
 						return
 					}
 					ed.addFx(nf)

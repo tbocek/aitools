@@ -78,24 +78,50 @@ func TestEveryTabExplainsItself(t *testing.T) {
 	}
 }
 
-// Every page that reads something says so the same way. "What does this step
-// get?" is asked once per tab and answered in the same place, in the same
-// words, at the same indent -- Describe answered it with an unlabelled line of
-// grey text set 4 px further in than the identical row on Cut and Narrate,
-// which is enough to make a reader stop and check they are on the page they
-// think they are. Source-level: nothing at run time can tell that three rows
-// are meant to be one row.
+// Every page that reads something says so the same way, and in the same place
+// as every page that WRITES something: the two groups at the right of the
+// shared bottom bar, Inputs left of Outputs, in the order the step happens.
+//
+// It used to be a row at the top of each page, built line for line four times
+// over -- and before that it was four rows that differed by an indent and a
+// colour, which is enough to make a reader stop and check they are on the page
+// they think they are. Now there is one heading, one constructor, and a page
+// owns only the line under it. Source-level: nothing at run time can tell that
+// four rows are meant to be one row.
 func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
-	// the row, line for line, as all three build it
-	same := []string{
+	// one constructor for the line itself, so no page can grow its own
+	// ellipsizing, its own width cap or its own alignment
+	mk := funcBody(t, "prep.go", `func inputsLabel\(\) \*gtk.Label \{`)
+	for _, want := range []string{
+		"l.SetXAlign(0)",
+		"l.SetEllipsize(pango.EllipsizeEnd)", // never a floor under the window
+		"l.SetMaxWidthChars(60)",             // nor a bar with its buttons pushed off
+	} {
+		if !strings.Contains(mk, want) {
+			t.Errorf("inputsLabel no longer does %q", want)
+		}
+	}
+	// the shared bar carries the one heading and the one stack behind it
+	main := readSrc(t, "main.go")
+	for _, want := range []string{
 		`inLbl := gtk.NewLabel("Inputs:")`,
 		`inLbl.AddCSSClass("heading")`,
-		`inRow := gtk.NewBox(gtk.OrientationHorizontal, 8)`,
-		`inRow.SetMarginStart(12)`,
-		`inRow.SetMarginEnd(12)`,
-		`inRow.SetMarginTop(6)`,
-		`inRow.Append(inLbl)`,
-		`.SetEllipsize(pango.EllipsizeEnd)`, // never a floor under the window
+		"ctlRow.Append(inLbl)",
+		"ctlRow.Append(a.inStack)",
+		"a.inStack.SetVisibleChildName(name)",
+	} {
+		if !strings.Contains(main, want) {
+			t.Errorf("the shared bar no longer carries the Inputs group: %q", want)
+		}
+	}
+	// ...and Inputs comes before Outputs on it, the order the step happens in
+	if i, j := strings.Index(main, "ctlRow.Append(a.inStack)"), strings.Index(main, "ctlRow.Append(a.outStack)"); i < 0 || j < 0 || i > j {
+		t.Errorf("what a step reads is not left of what it wrote (%d, %d)", i, j)
+	}
+	// each page builds its line the one way and hands it over under its own
+	// step name -- and none of them keeps a row of its own at the top
+	same := []string{
+		`= inputsLabel()`,
 	}
 	// publish.go is absent: since the merge it builds panes inside Produce's
 	// page, and Produce's Inputs row is the one above them
@@ -107,8 +133,18 @@ func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
 		src := string(b)
 		for _, want := range same {
 			if !strings.Contains(src, want) {
-				t.Errorf("%s's Inputs row is missing %s", f, want)
+				t.Errorf("%s's Inputs line is missing %s", f, want)
 			}
+		}
+		name := strings.TrimSuffix(f, ".go")
+		if !strings.Contains(src, `a.inStack.AddNamed(`) {
+			t.Errorf("%s does not hand its Inputs line to the shared bar", f)
+		}
+		if !strings.Contains(src, `"`+name+`")`) {
+			t.Errorf("%s registers nothing under its own step name", f)
+		}
+		if strings.Contains(src, `gtk.NewLabel("Inputs:")`) {
+			t.Errorf("%s grew its own Inputs heading back beside the global one", f)
 		}
 		// and it is the page's own text that is dimmed nowhere: the heading
 		// carries the weight, the reading itself is plain, as on Inputs
@@ -121,7 +157,6 @@ func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
 		// visible tab (outStack in main.go). A page owns only its group,
 		// registered under its step name; a heading of its own would put a
 		// second "Outputs:" on screen beside the global one.
-		name := strings.TrimSuffix(f, ".go")
 		if !strings.Contains(src, `a.outStack.AddNamed(outRow, "`+name+`")`) {
 			t.Errorf("%s does not hand its Outputs group to the shared bar", f)
 		}
@@ -375,5 +410,61 @@ func TestPreparesFoldersAreMovedUnderItsOwn(t *testing.T) {
 	fresh.migrateFolders()
 	if _, err := os.Stat(filepath.Join(fresh.outDir, "prepare")); !os.IsNotExist(err) {
 		t.Error("a project with no work in it was given a prepare/ folder to be empty in")
+	}
+}
+
+// One set of numbers for the space around a page's work, on all four of them.
+//
+// They had drifted: 10 px under the tabs on Cut and Produce, 4 on the
+// thumbnail's column and none at all on Prepare and Narrate; 12 either side of
+// Prepare's handle, 12 and nothing either side of Narrate's, 6 and 6 on
+// Produce's. Two columns of the same app started at two different x, which is
+// the kind of difference you feel without being able to name.
+//
+// The rule: 12 at the window's edges, 6 either side of a handle -- so two
+// columns stand 12 apart, the same as the edges -- and 8 above and below the
+// work.
+func TestEveryPageKeepsTheSameMarginsAroundItsWork(t *testing.T) {
+	for _, c := range []struct {
+		file, fn string
+		want     []string
+	}{
+		{"prep.go", `func \(a \*App\) buildPrep\(`, []string{
+			"outer.SetMarginStart(12)", "outer.SetMarginEnd(12)",
+			"outer.SetMarginTop(8)", "outer.SetMarginBottom(8)",
+			"gtk.BaseWidget(bench).SetMarginStart(6)", "sources.SetMarginEnd(6)",
+		}},
+		{"cut.go", `func \(a \*App\) buildCut\(`, []string{
+			"vframe.SetMarginTop(8)", "vframe.SetMarginStart(12)", "vframe.SetMarginEnd(6)",
+		}},
+		{"cut_form.go", `func \(ed \*cutEditor\) buildForm\(\) \*gtk.Box \{`, []string{
+			"col.SetMarginTop(8)", "col.SetMarginBottom(8)",
+			"col.SetMarginStart(6)", "col.SetMarginEnd(12)",
+		}},
+		{"narrate.go", `func \(a \*App\) buildNarrate\(`, []string{
+			"shown.SetMarginStart(12)", "shown.SetMarginEnd(6)",
+			"shown.SetMarginTop(8)", "shown.SetMarginBottom(8)",
+			"written.SetMarginStart(6)", "written.SetMarginEnd(12)",
+		}},
+		{"publish.go", `func \(a \*App\) buildPublishPanes\(`, []string{
+			"col.SetMarginStart(12)", "col.SetMarginEnd(6)", "col.SetMarginTop(8)",
+			"wrote.SetMarginStart(6)", "wrote.SetMarginEnd(12)", "wrote.SetMarginTop(8)",
+		}},
+	} {
+		body := funcBody(t, c.file, c.fn)
+		for _, want := range c.want {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: %q — the page's margins are its own again", c.file, want)
+			}
+		}
+	}
+	// ...and a column inside one of those halves does not add margins of its
+	// own on top: Produce's settings grid was indented 12 further than the
+	// title and the description directly above it
+	prod := funcBody(t, "produce.go", `func \(a \*App\) buildProduce\(`)
+	for _, gone := range []string{"box.SetMarginStart(12)", "box.SetMarginEnd(12)"} {
+		if strings.Contains(prod, gone) {
+			t.Errorf("the settings grid indents itself past the words above it: %q", gone)
+		}
 	}
 }

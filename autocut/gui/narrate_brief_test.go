@@ -96,10 +96,16 @@ func TestClipBriefsCarryTheWordsTheKindAndTheTiming(t *testing.T) {
 		t.Errorf("a line 47 s before the clip was handed to it:\n%s", got)
 	}
 	// ...and a clip with nothing over it says so, rather than leaving the model
-	// to fill an unexplained silence out of the story so far
+	// to fill an unexplained silence out of the story so far. Neutrally: four
+	// passes read this brief now, and "invent nothing" is an instruction to
+	// one of them -- the narration's own wording carries it (narrCraft rule 2),
+	// while to the speed pass the same clip is simply a dull one.
 	clip2 := got[strings.Index(got, "CLIP 2"):]
-	if !strings.Contains(clip2, "invent nothing") {
+	if !strings.Contains(clip2, "nothing said, nothing described") {
 		t.Errorf("a clip with no material says nothing about it:\n%s", clip2)
+	}
+	if !strings.Contains(narrCraft, "Add nothing nobody said and the pictures do not show") {
+		t.Error("the narration wording no longer tells it to invent nothing")
 	}
 	// the offsets are what make the order legible, so they have to be there for
 	// every line, not only the ones inside the clip
@@ -529,7 +535,7 @@ func TestTheExampleIsInventedAndNotTheSessions(t *testing.T) {
 // mix. Each is edited separately and none notices the others drift.
 func TestTheLineLandsWhereTheWriterPutIt(t *testing.T) {
 	for _, want := range []string{
-		`"at" the second the line starts`, // the field, defined where the model reads it
+		`"at" is seconds from that clip's start`, // the field, defined where the model reads it
 		"react to the vault after we have seen the vault",
 		`"at":<sec>`, // ...and in the JSON it returns
 		"a sign-off if the user context wants one", // the sign-off, on request

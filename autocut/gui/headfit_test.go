@@ -141,3 +141,31 @@ func TestTheBarRefitsWhenTheWindowChangesWidth(t *testing.T) {
 		t.Error("nothing turns the queued fit away -- a drag across the screen queues one per pixel")
 	}
 }
+
+// The ⓘ in the header bar explains the open step the way every other ⓘ in this
+// app explains its own thing: you hover it. It was a menu button with a
+// popover -- a thing to click, that stayed up over the page it was explaining,
+// while its own tooltip gave a second, shorter answer to the same question --
+// so the one mark up there that looks like the settings page's ⓘ behaved like
+// none of them.
+func TestTheStepHelpIsATooltipLikeEveryOtherExplanation(t *testing.T) {
+	src := readSrc(t, "main.go")
+	for _, want := range []string{
+		`info := gtk.NewImageFromIconName("help-about-symbolic")`,
+		"a.helpInfo = info",
+		`a.helpInfo.SetTooltipText(steps[i].label + "\n\n" + steps[i].help)`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the header's ⓘ no longer explains itself by tooltip: %q", want)
+		}
+	}
+	for _, gone := range []string{"helpPopover", `SetTooltipText("What this step does")`} {
+		if strings.Contains(src, gone) {
+			t.Errorf("the step help is still a popover: %q", gone)
+		}
+	}
+	// and it follows the tabs: the page you are on is the paragraph you get
+	if !strings.Contains(funcBody(t, "main.go", `func \(a \*App\) showStep\(name string\) \{`), "a.syncHelp()") {
+		t.Error("changing step leaves the ⓘ on the last page's help")
+	}
+}

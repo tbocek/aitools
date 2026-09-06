@@ -406,9 +406,11 @@ func (a *App) showStep(name string) {
 	}
 	a.tabGuard = false
 	a.stack.SetVisibleChildName(name)
-	a.outStack.SetVisibleChildName(name) // the Outputs group on the shared bar is this page's
-	a.updateRunControls()                // ▶ ⏹ belong to the new page's playback now
-	a.syncHelp()                         // and so does the ⓘ
+	// the two groups on the shared bar are this page's
+	a.inStack.SetVisibleChildName(name)
+	a.outStack.SetVisibleChildName(name)
+	a.updateRunControls() // ▶ ⏹ belong to the new page's playback now
+	a.syncHelp()          // and so does the ⓘ
 	// Cut's Inputs row lists what Suggest will be sent, and one of those things
 	// is the context box on Describe -- the page you have usually just come
 	// from. Refreshed on arrival rather than on every keystroke over there,
@@ -445,49 +447,31 @@ func (a *App) showStep(name string) {
 	}
 }
 
-// helpPopover is what the ⓘ in the header bar drops down: what the open page
-// does, and only that. It listed all five steps at once to begin with, which
-// made the paragraph you actually wanted something to go looking for in a
-// scrolling column of four you did not.
+// syncHelp points the ⓘ at the page that is open: what this step does, and
+// only that. It listed all five steps at once to begin with, which made the
+// paragraph you actually wanted something to go looking for in a scrolling
+// column of four you did not.
 //
-// The two labels are kept because the popover now follows the tabs; the table
-// they are filled from is a compile-time constant, so syncHelp is all there is.
-func (a *App) helpPopover() *gtk.Popover {
-	a.helpTitle = gtk.NewLabel("")
-	a.helpTitle.SetXAlign(0)
-	a.helpTitle.AddCSSClass("heading")
-	a.helpBody = gtk.NewLabel("")
-	a.helpBody.SetXAlign(0)
-	a.helpBody.SetWrap(true)
-	a.helpBody.SetMaxWidthChars(64) // wrapping needs a width to wrap at, or it never does
-	a.helpBody.AddCSSClass("dim-label")
-
-	box := gtk.NewBox(gtk.OrientationVertical, 4)
-	box.SetMarginTop(4)
-	box.SetMarginBottom(4)
-	box.SetMarginStart(4)
-	box.SetMarginEnd(4)
-	box.Append(a.helpTitle)
-	box.Append(a.helpBody)
-
-	p := gtk.NewPopover()
-	p.SetChild(box)
-	return p
-}
-
-// syncHelp points the ⓘ at the page that is open. Called from showStep, which
-// every page change goes through -- including the bounce off a locked tab,
-// where the help must stay on the page you did not leave.
+// A TOOLTIP, which is how every other explanation in this app is read -- the
+// settings sections', the buttons', the source rows'. It was a menu button
+// with a popover: a thing to click, that stayed up until it was dismissed,
+// over the page it was explaining. So the one mark in the header bar that
+// looks like every other ⓘ behaved like none of them, and the ⓘ's own tooltip
+// ("What this step does") was a second, shorter answer to the question the
+// popover answered -- hover for one, click for the other.
+//
+// Called from showStep, which every page change goes through -- including the
+// bounce off a locked tab, where the help must stay on the page you did not
+// leave.
 func (a *App) syncHelp() {
-	if a.helpTitle == nil {
+	if a.helpInfo == nil {
 		return
 	}
 	i := stepIndex(a.stack.VisibleChildName())
 	if i < 0 {
 		return
 	}
-	a.helpTitle.SetText(steps[i].label)
-	a.helpBody.SetText(steps[i].help)
+	a.helpInfo.SetTooltipText(steps[i].label + "\n\n" + steps[i].help)
 }
 
 type App struct {
@@ -505,8 +489,7 @@ type App struct {
 	narrateLocked bool          // no cut yet -- nothing to narrate
 	produceLocked bool          // no cut yet -- nothing to produce
 	logExp        *gtk.Expander // collapsed until something actually runs
-	helpTitle     *gtk.Label    // the ⓘ popover, refilled per page by syncHelp
-	helpBody      *gtk.Label
+	helpInfo      *gtk.Image    // the ⓘ in the header bar, retooltipped per page by syncHelp
 	log           *gtk.TextView
 	linkTag       *gtk.TextTag      // paths in the log that open on a click (logPath)
 	linkPaths     map[string]string // what a tagged path displays -> where it really is
@@ -562,7 +545,11 @@ type App struct {
 	progress *gtk.ProgressBar
 	playBtn  *gtk.Button
 	stopBtn  *gtk.Button
-	outStack *gtk.Stack // the visible step's Outputs group; each page adds its own by step name
+	// the visible step's Inputs line and Outputs group, each page adding its
+	// own by step name. The two live side by side at the right of the shared
+	// bottom bar: what the step reads, then what it has written.
+	inStack  *gtk.Stack
+	outStack *gtk.Stack
 
 	// pipeline control: pause parks the runners at the next checkpoint, stop
 	// kills the in-flight subprocesses; finished stages stay on disk either
@@ -1082,10 +1069,6 @@ func (a *App) build(app *gtk.Application) {
 		// the bars a preview's aspect leaves over, in the color every other
 		// player puts there instead of the page background (see videoFrame)
 		".videoframe { background-color: #101010; } " +
-		// a slider whose scale marks are words rather than numbers: three lines
-		// of body text stacked under a trough make the row taller than
-		// everything beside it, and the words are a legend, not a reading
-		".tinyscale value, .tinyscale marks label { font-size: 0.78em; } " +
 		// a slider's own reading, in the colour of a reading. The theme draws
 		// the value over the handle and the numbers under the marks in a
 		// dimmed foreground, which on a live control is the app's own way of
@@ -1172,10 +1155,12 @@ func (a *App) build(app *gtk.Application) {
 	setup.SetTooltipText("Settings — the LLM and audio.cpp endpoints")
 	setup.ConnectClicked(a.setupDialog)
 	head.PackEnd(setup)
-	info := gtk.NewMenuButton()
-	info.SetIconName("help-about-symbolic")
-	info.SetTooltipText("What this step does")
-	info.SetPopover(a.helpPopover())
+	// what this step does, hovered rather than clicked (syncHelp): a mark that
+	// looks like every other ⓘ in the app has to behave like them
+	info := gtk.NewImageFromIconName("help-about-symbolic")
+	info.SetMarginStart(6)
+	info.SetMarginEnd(6)
+	a.helpInfo = info
 	head.PackEnd(info)
 	// what the bar spends on things other than the tabs and the project name
 	a.headBtns = []gtk.Widgetter{newP, loadP, saveP, rescan, setup, info}
@@ -1194,8 +1179,12 @@ func (a *App) build(app *gtk.Application) {
 	a.stopBtn.SetSensitive(false)
 	a.stopBtn.ConnectClicked(a.stopClicked)
 	a.progress = gtk.NewProgressBar()
-	a.progress.SetShowText(true)
-	a.progress.SetText("nothing running")
+	// no text on the bar. It drew its line above the trough, so an idle page
+	// carried a sentence over an empty bar at the far LEFT of the window --
+	// "prepared (1 frame set(s))", "nothing running" -- while everything else
+	// this bar says lives at its right. The bar is a fraction now, and what
+	// the run is doing goes to the status line down there with it (showProg).
+	a.progress.SetShowText(false)
 	// the bar reads "describe 1/2: chunk 4/12": the job, which of the run's jobs
 	// it is, and where the work queue has got to. Which file is in the log --
 	// the tooltip a run replaces this one with counts the tasks instead
@@ -1212,6 +1201,13 @@ func (a *App) build(app *gtk.Application) {
 	// pages fill it as they are built.
 	a.outStack = gtk.NewStack()
 	a.outStack.SetHhomogeneous(false) // prep's three folders must not set the width for every tab
+	// ...and what it READS, beside it. That line was a row at the top of every
+	// page: four copies of the same heading, each costing its page a line of
+	// height above the work, and each answering a question about the run --
+	// which is what this bar is for. Inputs left of Outputs, in the order the
+	// step happens.
+	a.inStack = gtk.NewStack()
+	a.inStack.SetHhomogeneous(false)
 
 	a.stack = gtk.NewStack()
 	a.stack.SetTransitionType(gtk.StackTransitionTypeCrossfade)
@@ -1319,6 +1315,10 @@ func (a *App) build(app *gtk.Application) {
 	// with its prompt and its cards; the prompts are edited on Prepare.
 	// the one Outputs heading in the app; the group behind it is the visible
 	// page's own, swapped by showStep
+	inLbl := gtk.NewLabel("Inputs:")
+	inLbl.AddCSSClass("heading")
+	ctlRow.Append(inLbl)
+	ctlRow.Append(a.inStack)
 	outLbl := gtk.NewLabel("Outputs:")
 	outLbl.AddCSSClass("heading")
 	ctlRow.Append(outLbl)

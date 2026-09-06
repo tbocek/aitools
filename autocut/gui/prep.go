@@ -38,7 +38,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -60,24 +59,12 @@ func (a *App) buildPrep() gtk.Widgetter {
 	p := &preproc{a: a}
 	a.prep = p
 
-	// One line, not a listing. The names and the per-source arithmetic go to
-	// the log when the run starts -- that is scrollable and this is not, and a
-	// block of grey text at the top of the page only pushes the page down.
-	//
-	// The same row as Cut's and Narrate's, down to the word and the margins: an
-	// "Inputs:" in heading weight and the line in plain text beside it.
-	p.inputs = gtk.NewLabel("")
-	p.inputs.SetXAlign(0)
-	p.inputs.SetHExpand(true)
-	p.inputs.SetEllipsize(pango.EllipsizeEnd) // never a floor under the window
-	inLbl := gtk.NewLabel("Inputs:")
-	inLbl.AddCSSClass("heading")
-	inRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	inRow.SetMarginStart(12)
-	inRow.SetMarginEnd(12)
-	inRow.SetMarginTop(6)
-	inRow.Append(inLbl)
-	inRow.Append(p.inputs)
+	// One line, not a listing, and it goes on the shared bottom bar beside the
+	// Outputs group (inputsLabel): what the step reads, left of what it has
+	// written. The names and the per-source arithmetic go to the log when the
+	// run starts -- that is scrollable and this is not.
+	p.inputs = inputsLabel()
+	a.inStack.AddNamed(p.inputs, "prep")
 
 	// The session's files down the left, the context and every prompt the
 	// pipeline sends down the right (prepedit.go), and a handle between them,
@@ -90,11 +77,13 @@ func (a *App) buildPrep() gtk.Widgetter {
 	// there for the sessions where one side earns more than half.
 	//
 	// Both sides stand the same distance off the handle, so neither frame runs
-	// into it on the side where the two are compared.
+	// into it on the side where the two are compared. Six, which is what every
+	// other divider in the app leaves either side of itself -- twelve between
+	// the two columns, the same twelve the page keeps at the window's edges.
 	bench := a.prepEditor()
-	gtk.BaseWidget(bench).SetMarginStart(12)
+	gtk.BaseWidget(bench).SetMarginStart(6)
 	sources := a.buildSources()
-	sources.SetMarginEnd(12)
+	sources.SetMarginEnd(6)
 
 	outer := gtk.NewPaned(gtk.OrientationHorizontal)
 	outer.SetStartChild(sources)
@@ -114,10 +103,11 @@ func (a *App) buildPrep() gtk.Widgetter {
 	// tab over.
 	outer.SetMarginStart(12)
 	outer.SetMarginEnd(12)
-	// and 6 off the shared bar below, so the Freq row and the editor frame do
-	// not sit on the transport buttons -- the breathing room every other edge
-	// of the page already has
-	outer.SetMarginBottom(6)
+	// and 8 off the tabs above and the shared bar below, so the Freq row and
+	// the editor frame do not sit on the transport buttons -- the breathing
+	// room every other edge of every page has
+	outer.SetMarginTop(8)
+	outer.SetMarginBottom(8)
 
 	// The three folders one press of ▶ writes, and no path above them: the
 	// output folder is set once, in the row under the list, and repeating it
@@ -149,11 +139,11 @@ func (a *App) buildPrep() gtk.Widgetter {
 	outRow.Append(p.prepOut)
 	a.outStack.AddNamed(outRow, "prep")
 
-	// Inputs at the top and the work below -- no prompt row at the bottom any
-	// more, because this page's prompts live in the right-hand box now, behind
-	// its menu. The Outputs group is on the shared bar below all of it.
+	// The work, and nothing above it -- no prompt row at the bottom any more,
+	// because this page's prompts live in the right-hand box now, behind its
+	// menu, and no Inputs row at the top: what this step reads and what it has
+	// written are the two groups on the shared bar below all of it.
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
-	page.Append(inRow)
 	page.Append(outer)
 
 	p.refresh()
@@ -301,17 +291,6 @@ func (p *preproc) refresh() {
 	p.inputs.SetTooltipText(detail) // the per-file arithmetic, on hover
 	setOutCount(p.prepOut, p.a.prepareDir())
 
-	if p.a.progress == nil || p.a.running {
-		return // the runner owns the bar's text while it is going
-	}
-	// The bar says what this project has already got when nothing is running:
-	// which is the one thing the three counts above cannot say at a glance,
-	// since a project can have transcripts and no frames.
-	if frames, _ := os.ReadDir(filepath.Join(p.a.inputsDir(), "frames")); len(frames) > 0 {
-		p.a.progress.SetText(fmt.Sprintf("prepared (%d frame set(s))", len(frames)))
-	} else {
-		p.a.progress.SetText("Prepare has not run yet")
-	}
 }
 
 // setOutCount fills one of the three output readings: how many files on the
@@ -322,13 +301,13 @@ func setOutCount(l *gtk.Label, dir string) {
 	if l == nil {
 		return
 	}
-	n, newest := countOutputs(dir)
+	n, newest, size := countOutputs(dir)
 	if n == 0 {
 		l.SetText("nothing yet")
 		l.SetTooltipText("")
 		return
 	}
-	l.SetText(fmt.Sprintf("%d files", n))
+	l.SetText(fmt.Sprintf("%d files, %s", n, humanSize(size)))
 	l.SetTooltipText("newest " + humanAgo(newest))
 }
 
@@ -380,14 +359,44 @@ func (a *App) inputsSummary() (line, detail string) {
 		count(base)
 		b.WriteString(fixerLine(a.transcriptPath(base)))
 	}
-	// no "names in the log" on the end of it. The per-file arithmetic is the
-	// detail beside this line -- it is the tooltip ON it (refresh) and it is
-	// written to the log when ▶ starts (prepRun) -- so before a run the
-	// sentence pointed at the one of those two places that was still empty.
-	line = fmt.Sprintf("%d input files loaded (%d footage, %d voice) · %d frames → %d vision requests · "+
-		"%d transcript lines → %d fixer requests",
-		len(vids)+len(auds), len(vids), len(auds), frames, vision, lines, fixes)
+	// Names and counts, nothing else: the per-file arithmetic is the detail
+	// beside this line -- the tooltip ON it (refresh), and the log when ▶
+	// starts (prepRun) -- and a row that spells out what each number is FOR is
+	// a paragraph wearing a row's clothes. Nobody reads it twice.
+	// no count of the files: the list of them is directly under this row, with
+	// what each one is for on its own button (srcRowKey). A row that counts
+	// what the page below it shows is a row saying nothing.
+	line = fmt.Sprintf("%d frames → %d vision · %d lines → %d fixer", frames, vision, lines, fixes)
 	return line, strings.TrimRight(b.String(), "\n")
+}
+
+// inputsLabel is the line every step wears on the shared bottom bar: what that
+// step reads, in one line, with the whole of it on hover.
+//
+// It was a row at the top of each page -- an "Inputs:" heading and the line
+// beside it, four times over -- which spent a line of every page's height on a
+// question about the RUN rather than about the work on the page. The heading
+// is the bar's now, once, beside the Outputs one (main.go).
+//
+// Ellipsized and capped: this line grows with the session, and it may not push
+// the run bar's own controls off the window. What does not fit is in the
+// tooltip, which is where the detail behind every one of these lines lives.
+func inputsLabel() *gtk.Label {
+	l := gtk.NewLabel("")
+	l.SetXAlign(0)
+	l.SetEllipsize(pango.EllipsizeEnd)
+	l.SetMaxWidthChars(60)
+	return l
+}
+
+// plural is "1 clip" and "2 clips": the Inputs rows are read at a glance and
+// "1 clip(s)" is a word nobody says out loud. Only the plural-by-s cases are
+// on those rows, so this is the whole of the grammar needed.
+func plural(n int, one string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %ss", n, one)
 }
 
 func (a *App) transcriptPath(base string) string {
@@ -504,17 +513,17 @@ func (a *App) startPrep(videos, audios []string, interval float64, scaleName, sc
 				// the describing is thrown away, so a stop during the
 				// transcribing arms nothing
 				a.undRestart = described
-				a.progress.SetText("stopped — finished work is kept; ⏸ was the way to keep a place")
+				a.setStatus("stopped — finished work is kept")
 			case err != nil:
 				a.logf("prepare FAILED: %v", err)
-				a.progress.SetText("failed — see log")
+				a.setStatus("prepare failed — see log")
 			default:
 				a.progress.SetFraction(1)
 				a.logf(">>> prepare wrote:")
 				n := a.logOutputs("inputs", a.inputsDir()) +
 					a.logOutputs("describe", a.describeDir()) +
 					a.logOutputs("transcript", a.transcriptDir())
-				a.progress.SetText(fmt.Sprintf("prepared — %d files", n))
+				a.setStatus(fmt.Sprintf("prepared — %d files", n))
 			}
 			a.prep.refresh()
 			a.updateGates()

@@ -107,11 +107,11 @@ func TestTheWordingAndTheParserNameTheSameEffects(t *testing.T) {
 	// speed rides on a segment in the cut's reply, text is the captions
 	// pass's, and the other three are the effects pass's
 	for _, want := range []string{
-		`"rate":4`, `"text":"I will be showcasing the new tower"`,
-		`"kind":"zoom"`, `"kind":"stop"`, `"kind":"volume"`,
+		`"rate":<x>`, `"text":"<words>"`,
+		`"kind":"zoom"|"stop"|"volume"`,
 	} {
 		if !strings.Contains(sysSystem, want) {
-			t.Errorf("no job's reply shape in the system context offers %s", want)
+			t.Errorf("no job's schema in the system context offers %s", want)
 		}
 	}
 	src := funcBody(t, "cut_suggest.go", `func fxFrom\(`)
@@ -133,8 +133,8 @@ func TestTheWordingSaysWhichEffectAMomentNeeds(t *testing.T) {
 		{fxRules, "Pick the kind by what the moment needs"},
 		{fxRules, "easy to miss -> zoom onto it"},
 		{fxRules, "The one beat everything else was leading to -> stop"},
-		{captionSystem, "One text effect per spoken line"},
-		{speedSystem, "Take the fast seconds from the clips with nothing being said"},
+		{captionSystem, "Whether there are captions at all is the USER CONTEXT's call"},
+		{speedSystem, "Speed is for the stretches nobody would sit through at 1"},
 	} {
 		if !strings.Contains(c.in, c.want) {
 			t.Errorf("no wording says %q, so the kind is a free choice rather than one the moment makes", c.want)

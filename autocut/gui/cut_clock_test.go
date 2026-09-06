@@ -122,9 +122,11 @@ func TestEveryPathThatMovesTheLineSaysSo(t *testing.T) {
 		t.Errorf("found %d places that move the playhead, expected the click, the frame "+
 			"buttons and playback -- if one was removed, drop it from this count", n)
 	}
-	// and the label has to be on the bar, next to the buttons that move it
-	if !strings.Contains(string(b), "bar.Append(col(linked(ed.playBtn, ed.cutPlayBtn, prev5, prevF, nextF, next5), ed.clock))") {
-		t.Error("the clock is built but never added to the toolbar")
+	// and the reading is on the page, named: it was small print under the
+	// transport, which is a caption on a control; it is a line in the quiet
+	// column now, with the selection and the totals (cut_form.go)
+	if !strings.Contains(string(b), `ed.formIdle.Append(idleRow("Playhead", ed.clock))`) {
+		t.Error("the clock is built but never shown")
 	}
 }
 
@@ -184,11 +186,11 @@ func TestTheMarksReadTheSelectionUnderTheCutButtons(t *testing.T) {
 		t.Errorf("found %d places that change a mark, expected clearMarks and the click that "+
 			"dismisses a selection -- if one was removed, drop it from this count", n)
 	}
-	// and the label sits in the bar, in a column under the buttons that act on
-	// what it describes, in small print
+	// and the reading is a named line in the quiet column, not small print
+	// under the buttons that consume a selection
 	for _, want := range []string{
-		"bar.Append(col(linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))",
-		`ed.marks.SetMarkup("<small>" + marksClock(ed.markIn, ed.markOut, ed.hasIn, ed.hasOut) + "</small>")`,
+		`ed.formIdle.Append(idleRow("Selection", ed.marks))`,
+		`ed.marks.SetText(marksClock(ed.markIn, ed.markOut, ed.hasIn, ed.hasOut))`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("cut.go no longer contains %q -- the marks readout came unwired", want)

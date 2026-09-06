@@ -30,10 +30,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
-	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
 const (
@@ -102,71 +100,27 @@ type prodSettings struct {
 	// Stored the wrong way round on purpose: the blurred backdrop is the
 	// default, and a project written before this setting existed has to keep
 	// getting it.
-	Bare bool   `json:"bare,omitempty"`
-	Subs string `json:"subs"` // burn | mux | sidecar | none
-	// what the subtitles ARE: the narration written over the cut ("", the
-	// default and everything a project saved before this field), or the words
-	// the people in the recording actually said ("spoken") -- the transcript,
-	// cleaned by Prepare's fix step, placed on the finished video's clock.
-	// This is how "put what I said on screen" is done: by the app, from the
-	// transcript it already has, not by asking a model to write one caption
-	// per line of speech and watching it run out of room.
-	SubsFrom string `json:"subs_from,omitempty"`
-	OutFile  string `json:"out_file"`
+	Bare    bool   `json:"bare,omitempty"`
+	Subs    string `json:"subs"` // burn | mux | sidecar | none
+	OutFile string `json:"out_file"`
+	// There was a second subtitle setting here: what the track CARRIES -- the
+	// narration, or the transcript of what the people in the recording said.
+	// It is gone, and the track is the narration.
+	//
+	// The transcript half was a second answer to a question the app already
+	// answers twice: the Cut page's captions put chosen lines on screen as
+	// text effects, and the user context is where "put what I say on screen"
+	// is asked for. A dropdown offering a third path -- every spoken line,
+	// automatically, in a subtitle track -- is a setting whose result nothing
+	// on the pages before it can show you. Old projects that stored subs_from
+	// simply lose it: unknown keys are ignored, and their subtitles become the
+	// narration's.
 }
 
 // captionLines is what the subtitle track carries for one clip: the narration
-// lines the writer put on it, or -- with SubsFrom "spoken" -- the words said
-// during it, read off the session rows and placed in the clip's own output
-// seconds, speed and all. The two never mix: a video captioned with what was
-// said is a video whose narration, if it has one, is heard and not read.
-//
-// EVENT lines are never captions; they describe the picture to the model. A
-// row is kept if any of it falls inside the clip, and clipped to the clip's
-// edges, so a sentence that straddles a cut is captioned for the part that is
-// in the video and not the part that is not.
-func captionLines(c prodClip, sessS, sessE float64, spoken []tsvRow, from string) []prodLine {
-	if from != "spoken" {
-		return c.lines
-	}
-	var out []prodLine
-	for _, r := range spoken {
-		if r.spk == "EVENT" || strings.TrimSpace(r.text) == "" || r.e <= sessS || r.s >= sessE {
-			continue
-		}
-		s0, e0 := math.Max(r.s, sessS), math.Min(r.e, sessE)
-		// the clock the words are placed on is the SOUND's: with the sound on
-		// the picture's clock that is the clip's rate, and with it on its own
-		// it is 1× (cut_fxsound.go) -- either way it is the rate at which
-		// what is written is being said.
-		rate := c.speed()
-		if c.audOwn {
-			rate = 1
-		}
-		at := (s0 - sessS) / rate
-		dur := (e0 - s0) / rate
-		if dur < 0.3 {
-			continue // a flash nobody can read, cut off by the clip's edge
-		}
-		out = append(out, prodLine{text: strings.TrimSpace(r.text), at: at, delay: at, dur: dur})
-	}
-	return out
-}
-
-// spokenRows is the transcript as captions read it: every line anybody said,
-// on the cut's own corrected clock (sessionRows), and nothing the picture
-// showed. Loaded once per render rather than once per clip.
-func (a *App) spokenRows(st prodSettings) []tsvRow {
-	if st.SubsFrom != "spoken" {
-		return nil
-	}
-	var out []tsvRow
-	for _, r := range a.sessionRows() {
-		if r.spk != "EVENT" {
-			out = append(out, r)
-		}
-	}
-	return out
+// lines the writer put on it.
+func captionLines(c prodClip) []prodLine {
+	return c.lines
 }
 
 var (
@@ -178,29 +132,23 @@ var (
 	prodABR        = []string{"128", "192", "256", "320"}
 	prodSubsLbl    = []string{"burned in", "track in file", "sidecar .srt", "none"}
 	prodSubsKey    = []string{"burn", "mux", "sidecar", "none"}
-	// what the subtitles are made of (prodSettings.SubsFrom): the narration,
-	// or the transcript of what people said
-	prodSubsFromLbl = []string{"the narration", "what was said"}
-	prodSubsFromKey = []string{"", "spoken"}
 )
 
 type producer struct {
 	a *App
 
 	container, codec, preset, height, fps, abr, subs *gtk.DropDown
-	subsFrom                                         *gtk.DropDown // what the subtitles carry
-	// the three controls that exist to carry a narration, with their labels:
-	// how loud the game sits UNDER the voice, and what becomes of the voice's
+	// the two controls that exist to carry a narration, with their labels: how
+	// loud the game sits UNDER the voice, and what becomes of the voice's
 	// subtitles. With no narration they are about nothing, and they go
 	// (syncNarrOff).
-	subsLbl, subsFromLbl, gvolLbl *gtk.Label
-	vfr, mono, blur               *gtk.CheckButton
-	crf, gvol                     *gtk.Scale
-	outLbl                        *gtk.Label
-	outFile                       string
-	outAuto                       bool       // still the default -- follows the output folder
-	inputs, out                   *gtk.Label // the two rows every step has
-	guard                         bool       // suppresses feedback while applying a project
+	subsLbl, gvolLbl *gtk.Label
+	vfr, mono, blur  *gtk.CheckButton
+	crf, gvol        *gtk.Scale
+	again            *gtk.Button // ↻ on the Transcode heading: encode again
+	outFile          string      // always produce/final.<container> (setOut)
+	inputs, out      *gtk.Label  // the two rows every step has
+	guard            bool        // suppresses feedback while applying a project
 }
 
 // ---- settings ---------------------------------------------------------------
@@ -239,7 +187,7 @@ func (a *App) syncNarrOff() {
 	}
 	on := !a.narrOff
 	for _, w := range []interface{ SetVisible(bool) }{
-		p.subs, p.subsLbl, p.subsFrom, p.subsFromLbl, p.gvol, p.gvolLbl,
+		p.subs, p.subsLbl, p.gvol, p.gvolLbl,
 	} {
 		if w != nil {
 			w.SetVisible(on)
@@ -307,7 +255,6 @@ func (a *App) prodSettings() prodSettings {
 		Bare:      !p.blur.Active(),
 		GameVol:   p.gvol.Value(),
 		Subs:      prodSubsKey[int(p.subs.Selected())],
-		SubsFrom:  prodSubsFromKey[int(p.subsFrom.Selected())],
 		OutFile:   p.outFile,
 	}
 	// webm carries neither h264 nor aac; silently producing an unplayable
@@ -338,11 +285,6 @@ func (a *App) applyProdSettings(st *prodSettings) {
 			p.subs.SetSelected(uint(i))
 		}
 	}
-	for i, k := range prodSubsFromKey {
-		if k == st.SubsFrom {
-			p.subsFrom.SetSelected(uint(i))
-		}
-	}
 	if st.CRF > 0 {
 		p.crf.SetValue(float64(st.CRF))
 	}
@@ -351,25 +293,21 @@ func (a *App) applyProdSettings(st *prodSettings) {
 	// default for a project that stored none.
 	p.gvol.SetValue(st.GameVol)
 	p.guard = false
-	if st.OutFile != "" {
-		out := st.OutFile
-		if !filepath.IsAbs(out) {
-			out = filepath.Join(a.root, out)
-		}
-		p.setOut(out)
-		p.outAuto = false
-	}
+	// the destination is not restored from the project: it is produce/final,
+	// and where produce/ is follows the project itself (followOutDir)
+	p.setOut(filepath.Join(a.produceDir(), "final"+filepath.Ext(p.outFile)))
+	p.syncExt()
 }
 
-// followOutDir retargets the produced file when the user changes the output
-// folder -- but only while they have not named a file of their own.
+// followOutDir retargets the produced file when the project moves: the video
+// is always produce/final beside the rest of the step's work, and produce/ is
+// under the project's own folder.
 func (a *App) followOutDir() {
 	p := a.prod
-	if p == nil || !p.outAuto {
+	if p == nil {
 		return
 	}
-	p.setOut(filepath.Join(a.outDir, filepath.Base(p.outFile)))
-	p.outAuto = true
+	p.setOut(filepath.Join(a.produceDir(), filepath.Base(p.outFile)))
 }
 
 // fmtOpt renders a numeric dropdown value, with 0 meaning "source".
@@ -393,8 +331,6 @@ func fmtOpt(v float64) string {
 
 func (p *producer) setOut(path string) {
 	p.outFile = path
-	p.outLbl.SetText(path)
-	p.outLbl.SetTooltipText(path)
 }
 
 // syncExt keeps the output filename's extension on the chosen container.
@@ -421,20 +357,49 @@ func (a *App) buildProduce() gtk.Widgetter {
 	grid.SetColumnSpacing(10)
 	grid.SetRowSpacing(6)
 	grid.SetColumnHomogeneous(false)
-	at := func(col, row int, label string, w gtk.Widgetter) *gtk.Label {
+	// The second grid: the same rows, two across instead of three.
+	//
+	// A form is read down its columns, and a column only holds together when
+	// its rows are the same KIND of thing. The six menus are one kind and fit
+	// three across; what follows them -- a dropdown with a slider, a slider
+	// with a tick, two ticks -- is wider per item and there are six of those
+	// too, so they are three rows of two. Both blocks in one grid meant one
+	// set of columns for two different widths, which is what put the ticks
+	// against the far edge of the page with a hand's width of nothing before
+	// them.
+	low := gtk.NewGrid()
+	low.SetColumnSpacing(10)
+	low.SetRowSpacing(6)
+	// a label and the thing it names, in whichever grid the caller is filling
+	lbl := func(g *gtk.Grid, col, row int, label string, w gtk.Widgetter) *gtk.Label {
 		l := gtk.NewLabel(label)
 		l.SetXAlign(1)
 		l.AddCSSClass("dim-label")
-		grid.Attach(l, col*2, row, 1, 1)
-		grid.Attach(w, col*2+1, row, 1, 1)
+		// centred in the row rather than filling it: a row holding a slider is
+		// as tall as the slider -- which draws its number above itself -- and
+		// everything else in that row was being stretched to match. A dropdown
+		// three times its own height reads as a text field somebody typed into.
+		l.SetVAlign(gtk.AlignCenter)
+		g.Attach(l, col*2, row, 1, 1)
+		g.Attach(w, col*2+1, row, 1, 1)
 		return l
 	}
-	// a tick says what it is on itself: "Frame timing: [x] Peak frame rate
-	// (VFR)" is the same sentence twice, and the leading word was there only
-	// to fill the label column. It goes in the control column all the same, so
-	// the ticks line up with the dropdowns above them rather than starting a
-	// finger's width to their left.
-	check := func(col, row int, w gtk.Widgetter) { grid.Attach(w, col*2+1, row, 1, 1) }
+	at := func(col, row int, label string, w gtk.Widgetter) *gtk.Label {
+		return lbl(grid, col, row, label, w)
+	}
+	// a tick is a row like any other: the subject in the label column, dim,
+	// and the answer on the control. It used to carry the whole sentence on
+	// itself with the label column left empty -- "[x] Set audio to mono" --
+	// which read as a different kind of thing from every row above it, and
+	// started a finger's width to their left because nothing named it.
+	//
+	// The tick's own words are NOT dimmed, any more than a dropdown's are.
+	// Dim is what this app draws a dead control in (the greyed ＋ Add, a
+	// switch with nothing to switch), so a dimmed tick beside a lit checkbox
+	// says the two disagree about whether it works.
+	check := func(col, row int, name string, w *gtk.CheckButton) {
+		lbl(low, col, row, name, w)
+	}
 	dd := func(list []string, sel int, tip string) *gtk.DropDown {
 		d := gtk.NewDropDownFromStrings(list)
 		d.SetSelected(uint(sel))
@@ -443,6 +408,7 @@ func (a *App) buildProduce() gtk.Widgetter {
 		// CRF slider, and "mp4" stretched to slider width reads as a text
 		// field, not a menu
 		d.SetHAlign(gtk.AlignStart)
+		d.SetVAlign(gtk.AlignCenter) // see at(): a row is only as tall as its tallest thing
 		return d
 	}
 
@@ -455,16 +421,12 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.abr = dd(prodABR, 0, "audio bitrate in kbit/s")
 	p.subs = dd(prodSubsLbl, 2, "what to do with the subtitles: burned "+
 		"into the picture, a separate track inside the file, an .srt beside it, or nothing")
-	p.subsFrom = dd(prodSubsFromLbl, 0, "what the subtitles say: the narration written over the "+
-		"cut, or the words the people in the recording actually said -- the transcript, "+
-		"cleaned by Prepare, on the finished video's clock. Pick the second and burn them in "+
-		"to put what was said on screen without asking the cut for a caption per line")
 
 	// VFR makes the rate above a ceiling. Capture from a headset is variable by
 	// nature -- it renders what it can, and the rate above is the peak it
 	// reaches, not the rate it holds. Forced up to a constant rate that becomes
 	// duplicated frames, which cost bitrate and buy nothing.
-	p.vfr = gtk.NewCheckButtonWithLabel("Peak frame rate (VFR)")
+	p.vfr = gtk.NewCheckButtonWithLabel("peak rate (VFR)")
 	p.vfr.SetTooltipText("Treat the frame rate above as a ceiling: footage faster than it is " +
 		"dropped down to it, footage slower keeps its own rate instead of having frames " +
 		"duplicated. Off, every clip is resampled to exactly that rate.")
@@ -475,7 +437,7 @@ func (a *App) buildProduce() gtk.Widgetter {
 	// carrying that signal a second time. Off by default all the same, because
 	// a game that really is in stereo is a game whose stereo you would miss,
 	// and this must not quietly flatten it.
-	p.mono = gtk.NewCheckButtonWithLabel("Mono (one channel)")
+	p.mono = gtk.NewCheckButtonWithLabel("mono")
 	p.mono.SetTooltipText("Mix the finished audio down to a single channel. Worth it when " +
 		"the capture's two sides carry the same signal — the same bitrate then goes on " +
 		"one channel instead of two. Leave it off for anything with a real stereo image.")
@@ -488,65 +450,76 @@ func (a *App) buildProduce() gtk.Widgetter {
 	// It is a toggle rather than a setting the cut carries because the preview
 	// cannot draw it -- the timeline paints those edges black -- so this is
 	// also how you make the finished video match what you were shown.
-	p.blur = gtk.NewCheckButtonWithLabel("Blurred backdrop")
+	p.blur = gtk.NewCheckButtonWithLabel("blurred")
 	p.blur.SetActive(true)
 	p.blur.SetTooltipText("Fill the empty edges of the frame with a blown-up, blurred " +
 		"copy of the picture itself, instead of black. Off gives plain black bars — " +
 		"which is also what the Cut preview draws, so turn it off if you want the " +
 		"finished video to look exactly like the preview did.")
 
+	// The two sliders, in the shape every slider in the app wears
+	// (formSlider): its own width, its value beside the trough, one line tall.
+	// A grid stretches what it holds, so these filled two columns each -- half
+	// the form's width to choose one number between 14 and 34.
+	//
+	// The mark is the CRF's alone, and unlabelled: it carried the default's
+	// number under the trough, which made the row three lines deep -- a
+	// reading, a trough and a legend -- for a control that is set once. Where
+	// the default was is worth finding again; what it says is the tooltip's.
 	p.crf = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 14, 34, 1)
 	p.crf.SetValue(24)
-	p.crf.SetDrawValue(true)
-	p.crf.SetSizeRequest(200, -1)
-	p.crf.SetTooltipText("quality: lower is better and bigger (18–24 is the usual range)")
-	p.crf.AddMark(24, gtk.PosBottom, "24")
+	formSlider(p.crf, "quality: lower is better and bigger (18–24 is the usual range; 24 is the default, marked)")
+	p.crf.AddMark(24, gtk.PosBottom, "")
 
 	p.gvol = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 1, 0.02)
 	p.gvol.SetValue(0.22)
-	p.gvol.SetDrawValue(true)
-	p.gvol.SetSizeRequest(200, -1)
-	p.gvol.SetTooltipText("how loud the original game audio sits under the narration")
+	formSlider(p.gvol, "how loud the original game audio sits under the narration")
 
-	// Three columns, one subject each: how it is encoded, what shape it comes
-	// out, what is heard and read over it. Two columns and seven rows put the
-	// sound settings under the picture settings and left the page's whole
-	// right-hand half empty, on the one page that has room to spare.
+	// One word a label wherever one will do -- "Encoder preset" is a preset,
+	// "Audio bitrate" is the audio, and the three words they cost were three
+	// words of width in every column. What each one means is its dropdown's
+	// tooltip.
+	//
+	// Three columns, and as few rows as the things fill: the six settings
+	// every render has are two rows of three, the three the narration adds are
+	// the row under them, and the two sliders and four ticks are the two rows
+	// under that.
+	//
+	// It was three columns of four -- one subject per column -- which left the
+	// dropdowns in three tall rows with a slider in each, and every dropdown
+	// stretched to its slider's height. The subject that owns a column is the
+	// wrong thing to lay a form out by when the column's rows are not the same
+	// height: what the eye reads here is rows of one kind of control.
 	at(0, 0, "Container:", p.container)
-	at(0, 1, "Video codec:", p.codec)
-	at(0, 2, "Encoder preset:", p.preset)
-	at(0, 3, "Quality (CRF):", p.crf)
-	check(0, 4, p.blur)
+	at(1, 0, "Codec:", p.codec)
+	at(2, 0, "Preset:", p.preset)
 
-	at(1, 0, "Resolution:", p.height)
+	at(0, 1, "Resolution:", p.height)
 	at(1, 1, "Frame rate:", p.fps)
-	at(1, 2, "Audio bitrate:", p.abr)
-	// beside the rate it qualifies: VFR is what the number above it MEANS, a
-	// ceiling rather than a rate held, and it sat two rows under it
-	check(1, 3, p.vfr)
+	at(2, 1, "Audio:", p.abr)
 
-	p.subsLbl = at(2, 0, "Subtitles:", p.subs)
-	p.subsFromLbl = at(2, 1, "Subtitles say:", p.subsFrom)
-	p.gvolLbl = at(2, 2, "Game audio:", p.gvol)
-	check(2, 3, p.mono)
+	// ...and the second block, two across. The narration's pair is its first
+	// row and goes with the narration: with the tick off it collapses
+	// (syncNarrOff) rather than leaving labelled holes in the middle of the
+	// form. Then the quality, with the frame timing that qualifies the rate
+	// two rows above it, and last the two ticks about the finished file.
+	p.subsLbl = lbl(low, 0, 0, "Subtitles:", p.subs)
+	p.gvolLbl = lbl(low, 1, 0, "Game audio:", p.gvol)
 
-	// Where the video is written. This is a setting, not the Outputs line: it
-	// says where the file WILL go, and the row at the foot of the page says
-	// what is actually there -- which is why it is no longer labelled "Output",
-	// one letter from the heading below and meaning something else.
-	choose := gtk.NewButtonWithLabel("Choose…")
-	choose.ConnectClicked(func() { a.chooseOutFileDialog() })
-	p.outLbl = gtk.NewLabel("")
-	p.outLbl.SetXAlign(0)
-	p.outLbl.SetHExpand(true)
-	p.outLbl.SetEllipsize(pango.EllipsizeMiddle)
-	p.outLbl.SetSelectable(true)
-	destRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	destRow.Append(choose)
-	destRow.Append(gtk.NewLabel("Save to:"))
-	destRow.Append(p.outLbl)
-	p.setOut(filepath.Join(a.outDir, "final.mp4"))
-	p.outAuto = true
+	lbl(low, 0, 1, "Quality (CRF):", p.crf)
+	check(1, 1, "Frame timing:", p.vfr)
+	check(0, 2, "Channels:", p.mono)
+	check(1, 2, "Frame edges:", p.blur)
+
+	// Where the video is written is not a question any more: produce/final,
+	// with the extension the container above chose (syncExt).
+	//
+	// It was a Choose… button and a path across the foot of the settings -- a
+	// file chooser for a name that was "final.mp4" in every project anybody
+	// ever made, and a line of chrome repeating a folder the Outputs group
+	// already opens. One folder holds everything this step writes; the file in
+	// it has the one name.
+	p.setOut(filepath.Join(a.produceDir(), "final.mp4"))
 
 	// No buttons of its own down here. Rendering is what this page does, so it
 	// is what ▶ in the run bar means, and a finished run cues its result into
@@ -560,36 +533,37 @@ func (a *App) buildProduce() gtk.Widgetter {
 	// same words, and this page used to answer neither -- what it had instead
 	// was one dim paragraph in the middle that mixed its inputs in with its
 	// encoder settings.
-	p.inputs = gtk.NewLabel("")
-	p.inputs.SetXAlign(0)
-	p.inputs.SetHExpand(true)
-	p.inputs.SetEllipsize(pango.EllipsizeEnd) // never a floor under the window
-	inLbl := gtk.NewLabel("Inputs:")
-	inLbl.AddCSSClass("heading")
-	inRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	inRow.SetMarginStart(12)
-	inRow.SetMarginEnd(12)
-	inRow.SetMarginTop(6)
-	inRow.Append(inLbl)
-	inRow.Append(p.inputs)
+	p.inputs = inputsLabel()
+	a.inStack.AddNamed(p.inputs, "produce") // the shared bar's Inputs line; see inStack in main.go
 
 	openOut := gtk.NewButtonFromIconName("folder-open-symbolic")
-	openOut.SetTooltipText("Open the folder holding the produced file (produce/ beside it holds the per-clip encodes)")
-	openOut.ConnectClicked(func() { a.openFolder(filepath.Dir(p.outFile)) })
+	openOut.SetTooltipText("produce/ — the finished video, the per-clip encodes, the thumbnail and the upload text")
+	openOut.ConnectClicked(func() { a.openFolder(a.produceDir()) })
 	p.out = gtk.NewLabel("")
 	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	outRow.Append(openOut)
 	outRow.Append(p.out)
 	a.outStack.AddNamed(outRow, "produce") // the shared bar's Outputs group; see outStack in main.go
 
+	// no side margins: this box is one of the right column's rows, and the
+	// column already stands 6 off the handle and 12 off the window (the words
+	// above it are at those same two numbers). Its own 12 indented the whole
+	// settings grid past the title and the description it sits under.
 	box := gtk.NewBox(gtk.OrientationVertical, 10)
-	box.SetMarginTop(10)
+	box.SetMarginTop(8)
 	box.SetMarginBottom(8)
-	box.SetMarginStart(12)
-	box.SetMarginEnd(12)
+	// the heading this half of the column is under, with the ↻ that runs it
+	// again beside it -- the same mark, in the same corner, as the ↻ over the
+	// thumbnail on the other half of the page
+	p.again = gtk.NewButtonFromIconName("view-refresh-symbolic")
+	p.again.AddCSSClass("flat")
+	p.again.SetTooltipText("Encode the video again from the cut and these settings — " +
+		"no model call, and the thumbnail and the upload text are left alone")
+	p.again.ConnectClicked(func() { a.transcodeClicked() })
+	box.Append(a.heading("Transcode", "How the finished video is encoded, and where it goes: "+
+		"produce/final, beside everything else this step writes", p.again))
 	box.Append(grid)
-	box.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
-	box.Append(destRow)
+	box.Append(low)
 
 	a.updateProduceInfo() // the rows say something before anything is clicked
 
@@ -599,9 +573,7 @@ func (a *App) buildProduce() gtk.Widgetter {
 	// sit under them -- the knobs set once, below the text reread every run.
 	// One page because one ▶ runs it all (produceClicked), and what that ▶
 	// makes is one thing: the upload.
-	drawSide, said, pubOuts := a.buildPublishPanes()
-	outRow.Append(gtk.NewSeparator(gtk.OrientationVertical))
-	outRow.Append(pubOuts) // publish's files ride the same Outputs group, fenced off the video's
+	drawSide, said := a.buildPublishPanes()
 
 	// only the settings scroll: the words above stay put, and a settings grid
 	// taller than its half slides rather than pushing the title off the page
@@ -631,24 +603,8 @@ func (a *App) buildProduce() gtk.Widgetter {
 	openAtHalf(outer)
 
 	page := gtk.NewBox(gtk.OrientationVertical, 4)
-	page.Append(inRow)
 	page.Append(outer)
 	return page
-}
-
-func (a *App) chooseOutFileDialog() {
-	d := gtk.NewFileDialog()
-	d.SetInitialFolder(gio.NewFileForPath(filepath.Dir(a.prod.outFile)))
-	d.SetInitialName(filepath.Base(a.prod.outFile))
-	d.Save(context.Background(), &a.win.Window, func(res gio.AsyncResulter) {
-		f, err := d.SaveFinish(res)
-		if err != nil || f == nil {
-			return
-		}
-		a.prod.setOut(f.Path())
-		a.prod.outAuto = false
-		a.prod.syncExt()
-	})
 }
 
 // updateProduceInfo redraws both rows: what the render reads and what it has
@@ -679,7 +635,7 @@ func (p *producer) updateInputs() {
 	for _, s := range segs {
 		total += s.length()
 	}
-	line := fmt.Sprintf("%d clip(s) · %s of video", len(segs), mmss(total))
+	line := fmt.Sprintf("%s · %s", plural(len(segs), "clip"), mmss(total))
 	detail := fmt.Sprintf("cut/cut.json — %d clips, %s of video (the produced file grows a little where the narration needs room)",
 		len(segs), mmss(total))
 	if len(segs) == 0 {
@@ -691,48 +647,38 @@ func (p *producer) updateInputs() {
 			spoken++
 		}
 	}
+	// What the run will DO, and nothing it will merely use. How many lines
+	// there are, which voice speaks them, how many recordings are mixed in and
+	// how many candidate thumbnails are on the page are all either said by
+	// another page or shown by this one; what is worth a row here is the work
+	// still owed -- lines with no wav yet, and an upload text nobody has
+	// written -- because that is what the next ▶ spends its minutes on.
 	switch {
 	case len(entries) == 0:
-		line += " · no narration — the clips would carry only game audio"
+		line += " · no narration"
 	case spoken < len(entries):
-		line += fmt.Sprintf(" · %d line(s), %d still to speak", len(entries), len(entries)-spoken)
+		line += fmt.Sprintf(" · %d to speak", len(entries)-spoken)
 		detail += fmt.Sprintf("\n\nnarrate/narration.json — %d lines, %d already in narrate/tts; the other %d are spoken first, before any video is encoded",
 			len(entries), spoken, len(entries)-spoken)
 	default:
-		line += fmt.Sprintf(" · %d line(s), all spoken", len(entries))
 		detail += fmt.Sprintf("\n\nnarrate/narration.json — %d lines, all of them already in narrate/tts", len(entries))
 	}
-	// the separate recordings go into the sound now, so this row has to say so:
-	// a render whose game audio suddenly has the room in it is otherwise a
-	// surprise arriving after the encode rather than before it
 	if _, auds := a.snappedSources(); len(auds) > 0 {
-		line += fmt.Sprintf(" · %d separate recording(s) mixed in", len(auds))
 		detail += "\n\nMixed into each clip's own audio, for the stretch of it that was running while that clip was:"
 		for _, p := range auds {
 			detail += "\n" + baseName(p)
 		}
 	}
-	// the voice is named on Narrate's inputs row too: it is what the cached
-	// takes were spoken in, and the thing nothing else on this page says
 	if vp := a.voicePick; vp != nil && len(entries) > 0 {
 		if v, ok := vp.current(); ok {
-			line += " · voice: " + v.name
 			detail += "\n\nSpoken by " + v.name + " (narrate/voice_ref.wav)"
 		}
 	}
-	// the thumbnail half's inputs, now that this page owns both: what the
-	// image model is given, and whether the first ▶ still owes the language
-	// model the text -- the once-per-project call the publish record gates
-	// (publishStage)
-	if pub := a.pub; pub != nil {
-		if n := len(pub.frames); n > 0 {
-			line += fmt.Sprintf(" · %d thumbnail image(s)", n)
-		}
+	if a.pub != nil {
 		if a.publishRecorded() {
-			line += " · upload text written"
 			detail += "\n\npublish/publish.json — the upload text is written; ▶ redraws and re-renders without asking the model again (deleting publish/ starts the text over)"
 		} else {
-			line += " · upload text still to write"
+			line += " · no upload text"
 			detail += "\n\nNo publish/publish.json yet — the first ▶ writes the title, the thumbnail instruction and the description before drawing anything"
 		}
 	}
@@ -740,27 +686,25 @@ func (p *producer) updateInputs() {
 	p.inputs.SetTooltipText(strings.TrimSpace(detail))
 }
 
-// updateOut is the line every step ends on. Here it is one file rather than a
-// folder: the video is the whole point of the page, so its size and age are
-// what "what is on disk" means -- with produce/ named too, because a run that
-// stopped half way leaves its finished clips there and nothing else says so.
+// updateOut is the line every step ends on, and here it is one folder like
+// everywhere else: how many files and how big.
+//
+// It was two readings side by side -- the finished video by name, size and
+// age, then produce/ counted, then a second folder button for the thumbnail --
+// three answers to one question, on the one page that also shows you the file
+// it made. Everything this step writes is under produce/ now (produceDir,
+// publishDir), so there is one folder to name and one number to read.
 func (p *producer) updateOut() {
 	if p == nil || p.out == nil {
 		return
 	}
-	part := ""
-	if s := summarizeOutputs(p.a.produceDir()); s != "nothing yet" {
-		part = " · produce/ " + s
+	p.out.SetText(summarizeOutputs(p.a.produceDir()))
+	tip := p.a.produceDir()
+	if fi, err := os.Stat(p.outFile); err == nil {
+		tip = fmt.Sprintf("%s — %s, %s\n\n%s", p.outFile,
+			humanSize(fi.Size()), humanAgo(fi.ModTime()), p.a.produceDir())
 	}
-	fi, err := os.Stat(p.outFile)
-	if err != nil {
-		p.out.SetText("nothing produced yet" + part)
-		p.out.SetTooltipText("nothing at " + p.outFile)
-		return
-	}
-	p.out.SetText(fmt.Sprintf("%s — %s, %s%s", filepath.Base(p.outFile),
-		humanSize(fi.Size()), humanAgo(fi.ModTime()), part))
-	p.out.SetTooltipText(p.outFile)
+	p.out.SetTooltipText(tip)
 }
 
 // subsIndex is the label for a stored subtitle mode, defaulting to the first
@@ -1297,7 +1241,52 @@ func (c prodClip) name() string {
 // (publishStage -- seconds, and the part a dead server fails fast), and only
 // then is the video rendered -- minutes that must not be paid before the cheap
 // half has succeeded, and must not be re-paid to get a reworded thumbnail.
+// produceClicked is ▶ on this page: the video, the upload text and the
+// thumbnail. transcodeClicked is the ↻ on the Transcode heading: the video
+// alone, from the cut and the settings as they stand.
+//
+// Both ask first when there is already a file to overwrite. The video is
+// minutes of encoding and the one thing on this page that cannot be undone --
+// and "produce/final.mp4" is a name every run in every project writes, so the
+// file standing there is not obviously last week's rather than this hour's.
+// ...and ▶ asks nothing when there is nothing to overwrite: a video that is
+// already the video this page describes is not encoded again (renderStale).
 func (a *App) produceClicked() {
+	if !a.renderWanted() {
+		a.produceRun(true)
+		return
+	}
+	a.askOverwrite(func() { a.produceRun(true) })
+}
+
+func (a *App) transcodeClicked() { a.askOverwrite(func() { a.produceRun(false) }) }
+
+// renderWanted is renderStale with the page's own inputs read for it, for the
+// two callers that have not gathered them yet.
+func (a *App) renderWanted() bool {
+	if a.prod == nil {
+		return false
+	}
+	vids, auds := a.snapSources()
+	return a.renderStale(a.produceSegs(), a.produceEntries(), a.prodSettings(), vids, auds)
+}
+
+func (a *App) askOverwrite(run func()) {
+	p := a.prod
+	if p == nil || !exists(p.outFile) {
+		run()
+		return
+	}
+	fi, err := os.Stat(p.outFile)
+	detail := p.outFile
+	if err == nil {
+		detail = fmt.Sprintf("%s — %s, %s", p.outFile, humanSize(fi.Size()), humanAgo(fi.ModTime()))
+	}
+	a.confirm("Overwrite "+filepath.Base(p.outFile)+"?",
+		detail+"\n\nThe encode takes minutes and there is no undo for it.", "Overwrite", run)
+}
+
+func (a *App) produceRun(words bool) {
 	if a.running {
 		a.setStatus("a run is already active — stop it first (⏹)")
 		return
@@ -1326,10 +1315,22 @@ func (a *App) produceClicked() {
 	a.runCtx, a.runCancel = context.WithCancel(context.Background())
 	a.updateRunControls()
 	a.logExp.SetExpanded(true)
-	if written {
+	// ▶ leaves an up-to-date video alone; ↻ Transcode is the press that means
+	// "encode it anyway", so it never asks this question.
+	encode := !words || a.renderStale(segs, entries, st, vids, auds)
+	if !encode {
+		a.logf(">>> the video is already what this page describes — not encoding it again " +
+			"(↻ beside Transcode encodes anyway)")
+	}
+	switch {
+	case !encode:
+	case !words:
+		a.logf(">>> transcoding %s: %d clips at %s/%s crf %d — the thumbnail and the upload text are left as they are",
+			filepath.Base(st.OutFile), len(segs), st.Container, st.Codec, st.CRF)
+	case written:
 		a.logf(">>> producing %s: %d clips at %s/%s crf %d, and the thumbnail redrawn beside them",
 			filepath.Base(st.OutFile), len(segs), st.Container, st.Codec, st.CRF)
-	} else {
+	default:
 		a.logf(">>> producing %s: %d clips at %s/%s crf %d, and the upload text and thumbnail written beside them",
 			filepath.Base(st.OutFile), len(segs), st.Container, st.Codec, st.CRF)
 	}
@@ -1340,8 +1341,10 @@ func (a *App) produceClicked() {
 	// is what it has to say for itself.
 	a.qJob(trackSTT, "render", 0, 0)
 	a.prog(trackSTT, 0, "preparing")
-	a.qJob(trackFrames, "publish", 0, 0)
-	a.prog(trackFrames, 0, "thinking")
+	if words {
+		a.qJob(trackFrames, "publish", 0, 0)
+		a.prog(trackFrames, 0, "thinking")
+	}
 	a.pulseUntilCounted()
 
 	go func() {
@@ -1359,21 +1362,28 @@ func (a *App) produceClicked() {
 		// an sd.cpp that is down is not a reason to spend the encode again.
 		var wg sync.WaitGroup
 		var pubErr error
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			pubErr = a.publishStage(trackFrames, pst, aspect, segs, entries, !written, written, false)
-			a.qDone(trackFrames, 0) // its own line goes quiet; the needle was never its
-			glib.IdleAdd(func() {
-				if p := a.pub; p != nil {
-					p.refresh() // whatever landed, up as soon as it is written
+		if words {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pubErr = a.publishStage(trackFrames, pst, aspect, segs, entries, !written, written, false, false)
+				a.qDone(trackFrames, 0) // its own line goes quiet; the needle was never its
+				glib.IdleAdd(func() {
+					if p := a.pub; p != nil {
+						p.refresh() // whatever landed, up as soon as it is written
+					}
+				})
+				if pubErr != nil && !errors.Is(pubErr, errStopped) {
+					a.logfIdle("!!! the upload text and thumbnail failed: %v -- the render carries on", pubErr)
 				}
-			})
-			if pubErr != nil && !errors.Is(pubErr, errStopped) {
-				a.logfIdle("!!! the upload text and thumbnail failed: %v -- the render carries on", pubErr)
+			}()
+		}
+		var err error
+		if encode {
+			if err = a.produce(segs, entries, st, vids, auds); err == nil {
+				a.markRendered(segs, entries, st, vids, auds)
 			}
-		}()
-		err := a.produce(segs, entries, st, vids, auds)
+		}
 		wg.Wait()
 		// the render's word is the run's: it is what the press was for, and a
 		// title that did not get written is a line in the log, not a failure
@@ -1390,14 +1400,14 @@ func (a *App) produceClicked() {
 					a.logf("produce FAILED: %v", err)
 				}
 				if errors.Is(err, errStopped) {
-					a.progress.SetText("production stopped")
+					a.setStatus("production stopped")
 				} else {
-					a.progress.SetText("production failed — see log")
+					a.setStatus("production failed — see log")
 				}
 				return
 			}
 			a.progress.SetFraction(1)
-			a.progress.SetText("done")
+			a.setStatus("done")
 			// the bar carries the outcome; filled in below, once the file has
 			// been measured
 			dur, _ := ffprobeDur(st.OutFile)
@@ -1776,21 +1786,11 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 	// hides the choice for the same reason (syncNarrOff).
 	srt, cum := "", 0.0
 	cue := 0
-	spoken := a.spokenRows(st)
 	if a.narrOff {
-		st.Subs, spoken = "none", nil // no lines, no track (produceEntries)
+		st.Subs = "none" // no lines, no track (produceEntries)
 	}
 	for _, c := range clips {
-		// the window the captions are cut from is the SOUND's, not the
-		// picture's. They transcribe what is heard, and on a clip whose sound
-		// has come away from the picture (cut_fxsound.go) those are different
-		// seconds of the session -- subtitles taken off the picture's clock
-		// would print one sentence over another being spoken.
-		from, to := c.sessS, c.sessS+c.length*c.speed()
-		if c.audOwn {
-			from, to = c.audSess, c.audSess+c.length
-		}
-		caps := captionLines(c, from, to, spoken, st.SubsFrom)
+		caps := captionLines(c)
 		for k, ln := range caps {
 			end := cum + ln.delay + ln.dur/c.tempo
 			if ln.dur == 0 { // unspoken: hold the caption until the next line, or the clip's end
@@ -1834,13 +1834,7 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		}
 		name := stem + ext
 		var cueFile string
-		// the burned-in captions read the same window the track above does:
-		// the sound's, which on a shifted clip is not the picture's
-		capS, capE := c.sessS, c.sessS+c.length*c.speed()
-		if c.audOwn {
-			capS, capE = c.audSess, c.audSess+c.length
-		}
-		caps := captionLines(c, capS, capE, spoken, st.SubsFrom)
+		caps := captionLines(c)
 		if st.Subs == "burn" && len(caps) > 0 {
 			cueFile = filepath.Join(clipDir, stem+".srt")
 			one := ""

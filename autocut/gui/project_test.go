@@ -65,9 +65,12 @@ func TestOutputSummaryCountsEveryFrame(t *testing.T) {
 	if !strings.HasPrefix(got, "4 files") {
 		t.Errorf("summary = %q, want it to start with 4 files", got)
 	}
-	// freshly written, so the age has to read as now rather than as a date
-	if !strings.Contains(got, "just now") {
-		t.Errorf("summary = %q, want the age of files written this second", got)
+	// ...and how big they are, which with the count is the whole of the line
+	if !strings.Contains(got, " B") {
+		t.Errorf("summary = %q, want the size beside the count", got)
+	}
+	if strings.Contains(got, "ago") || strings.Contains(got, "just now") {
+		t.Errorf("summary = %q — the age is the tooltip's", got)
 	}
 }
 
@@ -433,8 +436,12 @@ func TestOnlyProduceWritesTheProduceFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range files {
-		if f == "produce.go" || f == "main.go" || strings.HasSuffix(f, "_test.go") {
-			continue // main.go defines it; produce.go is the step that owns it
+		// main.go defines it; produce.go is the step that owns it, and
+		// publish.go is the other half of that step -- the thumbnail and the
+		// upload text are written under produce/ with the video, so the page
+		// has one folder to open and one to count (publishDir)
+		if f == "produce.go" || f == "main.go" || f == "publish.go" || strings.HasSuffix(f, "_test.go") {
+			continue
 		}
 		b, err := os.ReadFile(f)
 		if err != nil {

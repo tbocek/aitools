@@ -230,7 +230,10 @@ func TestProduceSaysWhatItReadsAndWroteLikeEveryOtherStep(t *testing.T) {
 		"func (p *producer) updateInputs()",
 		"func (p *producer) updateOut()",
 		"p.updateInputs()\n\tp.updateOut()",
-		`gtk.NewLabel("Save to:")`,
+		// the destination is not a question: produce/final, with the
+		// container's extension, in the folder that holds everything else
+		// this step writes
+		`p.setOut(filepath.Join(a.produceDir(), "final.mp4"))`,
 		// a dropdown at its own width, not stretched to the CRF slider's
 		"d.SetHAlign(gtk.AlignStart)",
 	} {
@@ -388,5 +391,55 @@ func TestTheEncodeStaysWithinAHardwareDecodersLevel(t *testing.T) {
 		t.Errorf("uncapped and capped both declare level %s -- the test proves nothing", bad)
 	} else {
 		t.Logf("uncapped level %s, capped level %s", bad, got)
+	}
+}
+
+// Where the video goes is not a question. It was a Choose… button and a path
+// across the foot of the settings -- a file chooser for a name that was
+// "final.mp4" in every project anybody ever made, and a line repeating a
+// folder the Outputs group already opens.
+//
+// What replaced it is the heading the settings were always under, with the ↻
+// that runs them again beside it, and a question that is worth asking: the
+// encode takes minutes, there is no undo for it, and "produce/final.mp4" is a
+// name every run writes, so the file standing there is not obviously last
+// week's rather than this hour's.
+func TestTheVideoIsAlwaysFinalAndOverwritingIsAsked(t *testing.T) {
+	src := readSrc(t, "produce.go")
+	for _, gone := range []string{"chooseOutFileDialog", "outAuto", "p.outLbl"} {
+		if strings.Contains(src, gone) {
+			t.Errorf("the destination is a choice again: %q", gone)
+		}
+	}
+	for _, want := range []string{
+		`p.setOut(filepath.Join(a.produceDir(), "final.mp4"))`,
+		`p.again = gtk.NewButtonFromIconName("view-refresh-symbolic")`,
+		`box.Append(a.heading("Transcode"`,
+		"a.transcodeClicked()",
+		// ...and both doors ask before they overwrite, with the red button --
+		// ▶ only when it has something to overwrite (renderWanted)
+		"a.askOverwrite(func() { a.produceRun(true) })",
+		"func (a *App) transcodeClicked() { a.askOverwrite(func() { a.produceRun(false) }) }",
+		`a.confirm("Overwrite "+filepath.Base(p.outFile)+"?",`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("produce.go no longer has %q", want)
+		}
+	}
+	// the confirmation is the app's one destructive dialog, red button and all
+	if !strings.Contains(funcBody(t, "project.go", `func \(a \*App\) confirm\(`), `go1.AddCSSClass("destructive-action")`) {
+		t.Error("the overwrite question is not asked with the red button")
+	}
+	// ↻ encodes and nothing else: no model call, no thumbnail
+	run := funcBody(t, "produce.go", `func \(a \*App\) produceRun\(words bool\) \{`)
+	for _, want := range []string{"if words {\n\t\t\twg.Add(1)", "case !words:"} {
+		if !strings.Contains(run, want) {
+			t.Errorf("↻ Transcode still runs the writing half: %q", want)
+		}
+	}
+	// and the project stores no destination, so a project that moves takes its
+	// video's folder with it
+	if !strings.Contains(funcBody(t, "project.go", `func \(a \*App\) currentProject\(\) Project \{`), "st.OutFile = \"\"") {
+		t.Error("the project file carries a destination again")
 	}
 }

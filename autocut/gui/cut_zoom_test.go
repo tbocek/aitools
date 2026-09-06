@@ -44,7 +44,14 @@ func TestAZoomDrawsOnceAndLeavesThePreviewAlone(t *testing.T) {
 		t.Fatal("zoomAt is gone")
 	}
 	body := src[i : strings.Index(src[i:], "\n}\n")+i]
-	for _, want := range []string{"ed.layoutPx()", "ed.syncScroll()", "ed.setOff(ed.xOf(t) - viewX)"} {
+	for _, want := range []string{"ed.layoutPx()", "ed.syncScroll()", "ed.setOff(ed.xOf(t) - viewX)",
+		// ...and draws itself. The adjustment only fires value-changed when
+		// its value actually MOVES, and a zoom anchored with the view already
+		// hard against either end of the timeline clamps to the offset it
+		// already had: every pixel underneath had changed and nothing
+		// repainted them, so the wheel did nothing until the pointer moved and
+		// the hover queued a draw of its own.
+		"ed.queueTracks()"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("zoomAt no longer does %q", want)
 		}

@@ -581,7 +581,7 @@ func TestTheClipToolAndTheEditButtonAreWired(t *testing.T) {
 		"ed.dropSeg()",
 		// the button is one button with two jobs, and which one it is doing
 		// follows what is held
-		"ed.insBtn.SetLabel(\"✎ Edit\")",
+		"ed.insBtn.SetIconName(\"document-edit-symbolic\")",
 		"a.editInsert()",
 		"em := insMode{splice: was.spliced(), dur: was.length(), mute: was.Mute, lane: was.Lane}",
 		"between := gtk.NewCheckButtonWithLabel(",

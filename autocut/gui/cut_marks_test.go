@@ -230,7 +230,7 @@ func TestTheTimelineDrawsItsMarksRatherThanWritingThem(t *testing.T) {
 		"cut_fx.go": {
 			// every kind passes the room its bar has, because any of them can
 			// carry a name the user typed (cutFx.Label)
-			"mark, label := laneLabel(f, int((x1-x0-16)/5))",
+			"mark, label := laneLabel(f, fxLabelRoom(x0, x1))",
 			"markPlate(cr, x0+3, y+fxLaneH-4, mark, label)",
 		},
 		"cut.go":       {`markPlate(cr, x0+4, top+th-2, "card", insName(s))`},

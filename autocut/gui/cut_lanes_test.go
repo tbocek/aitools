@@ -15,6 +15,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -286,5 +287,66 @@ func TestASceneFindsItsOwnCamerasFile(t *testing.T) {
 	}
 	if pickVideoOn(vids, 0, 500) != nil {
 		t.Error("a second nobody filmed found a file to show")
+	}
+}
+
+// A row's name stays where the recorders' band keeps its own.
+//
+// It was drawn at the recording's start, so it travelled with the tape: scroll
+// a minute into a file and the row's name was a minute off the left of the
+// widget, while the lane names below it -- pinned at laneNameX, un-translated
+// -- sat still. One page, two rules, and the one that moves is the one you
+// have to scroll back to read.
+//
+// Which recording it names is the one under the view's left edge, so a row of
+// several files still says which of them is on screen.
+func TestARowsNameIsPinnedAndNamesWhatIsUnderTheEdge(t *testing.T) {
+	ed := newTestEd(t) // 4 px per second
+	ed.vids = []tlVideo{
+		{base: "a", path: "/f/a.mkv", start: 0, dur: 60, lane: 0},
+		{base: "b", path: "/f/b.mkv", start: 90, dur: 60, lane: 0},
+	}
+	ed.laneN = 1
+	ed.relayout()
+	name := func(row int) *tlVideo { return ed.rowNameVid(row, ed.viewX-80, ed.viewX+900) }
+
+	// the view's left edge inside the first file: that is the name
+	ed.viewX = 40 // 10 s in
+	if v := name(0); v == nil || v.base != "a" {
+		t.Errorf("over the first file the row is named %v, want a", v)
+	}
+	// scrolled into the second: the name follows what is under the edge
+	ed.viewX = ed.xOf(100)
+	if v := name(0); v == nil || v.base != "b" {
+		t.Errorf("over the second file the row is named %v, want b", v)
+	}
+	// the edge over the gap between them: the first file in view, not nothing
+	ed.viewX = ed.xOf(70)
+	if v := name(0); v == nil || v.base != "b" {
+		t.Errorf("over the gap the row is named %v, want the next one in view", v)
+	}
+	// a row with nothing on screen has nothing to name
+	ed.viewX = 5000 // px, well past the end of both files
+	if v := name(0); v != nil {
+		t.Errorf("a row scrolled past is still named %q", v.base)
+	}
+	// a row nobody filmed on
+	ed.viewX = 0
+	if v := name(3); v != nil {
+		t.Errorf("an empty row is named %q", v.base)
+	}
+
+	// and it is drawn at the fixed x, the same one the lanes below use
+	src := readSrc(t, "cut.go")
+	if !strings.Contains(src, "plateText(cr, ed.viewX+laneNameX, ed.laneTop(r)+12, name)") {
+		t.Error("the row's name is no longer pinned where the lane names are")
+	}
+	if strings.Contains(src, "plateText(cr, v.pxOrigin+4") {
+		t.Error("the row's name travels with the tape again")
+	}
+	// the yellow boundary is still at the file's own start: where a recording
+	// BEGINS is a place on the tape, where its name is drawn is not
+	if !strings.Contains(src, "cr.MoveTo(v.pxOrigin, lt)") {
+		t.Error("the file boundary no longer marks where the file starts")
 	}
 }

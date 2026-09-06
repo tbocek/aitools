@@ -16,7 +16,7 @@ func newTestEd(t *testing.T) *cutEditor {
 	// on no badge", and a zero there would light the first one red on a page
 	// nobody has touched yet
 	return &cutEditor{a: &App{outDir: t.TempDir()}, pps: 4, thumbHt: 64,
-		rowHov: -1, fxKillHov: -1, bandKillHov: -1}
+		rowHov: -1, fxKillHov: -1, bandKillHov: -1, foldHov: -1}
 }
 
 func TestCutUndoRestores(t *testing.T) {

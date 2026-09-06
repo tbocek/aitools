@@ -90,7 +90,7 @@ Every line is stamped, and the request says which clock. Answer on the same one.
 
 THE FOUR STEPS
   Prepare writes those lines: frames described into EVENT lines, microphones transcribed into SPEAKER and NARRATOR lines. No later step sees the footage -- from here the lines ARE the session.
-  Cut picks the segments the video is made of. Captions and effects are asked for after it, clip by clip.
+  Cut picks the segments the video is made of. What is captioned over each, how fast each plays and what is drawn on each are asked for after it, clip by clip.
   Narrate writes the voice-over over those segments. Each clip keeps its own sound underneath.
   Produce writes the upload text, draws the thumbnail, renders the video.
 
@@ -99,7 +99,7 @@ The finished video is those segments played one after another, so it has a clock
 THE CUT
 A segment is a stretch of session seconds: chronological, never overlapping, each boundary in the gap between two lines, and not all the same length -- what is on screen decides, never an average.
 
-An effect decorates a stretch inside one clip; one outside every clip is thrown away. zoom punches in on the centre. text puts a caption on screen. speed rescales the clock, above 1 rushing. stop holds the picture still while the sound runs on. volume sets how loud those seconds are, 1 as recorded, 0 silent.
+The segments are chosen first and are not changed afterwards. What is written over each clip, how fast it plays and what is drawn on it are three later jobs, each given the clips and answering in the clip's own seconds. An effect belongs to one clip; one outside every clip is thrown away.
 
 WHAT EACH JOB IS GIVEN, AND WHAT IT ANSWERS WITH -- nothing around the answer:
 
@@ -107,16 +107,21 @@ WHAT EACH JOB IS GIVEN, AND WHAT IT ANSWERS WITH -- nothing around the answer:
     EVENT: Calm; the tower fires into the crowd and a health bar empties.
     STATE: On the second map, defending the left lane with the new tower.
   transcript: a context block, then N lines of TSV -- start, end, speaker, text. Answers exactly those N lines in order, start, end and speaker copied character for character and only the text changed. No line merged, split, dropped, added or emptied; no tabs in the text; no line numbers. Any difference in count, order, times or speakers discards the block.
-  cut: the footage range and the session timeline. Answers the segments alone, in session seconds:
-    {"segments":[{"start":0,"end":28},{"start":104,"end":232},{"start":232,"end":301}]}
-  captions: a few clips, "CLIP n" with its length, then the lines said over it stamped as offsets from that clip's start. Answers one entry per clip given, its number as given, "start" and "end" as offsets from that clip's start:
-    {"clips":[{"i":6,"fx":[{"start":2,"end":5,"text":"I will be showcasing the new tower"}]}]}
-  speed: the clips with their lengths and which carry captions, the footage they come to, the target and the range. Answers a rate for the clips that run fast, the rest at 1:
-    {"speeds":[{"clip":2,"rate":4},{"clip":5,"rate":2}]}
-  effects: every clip of the cut, the same way. Answers effects named to a clip, "start" and "end" as offsets from that clip's start:
-    {"fx":[{"clip":4,"kind":"zoom","start":0,"end":3},{"clip":7,"kind":"stop","start":11,"end":13},{"clip":9,"kind":"volume","start":0,"end":20,"gain":0}]}
-  narrate: one block per clip -- "CLIP n" with its start, end, length and word ceiling, then what happened over it stamped as offsets from that clip's start. Answers an entry per line, its clip's start and end as given, "at" the second the line starts inside the clip ("at":<sec>):
-    {"entries":[{"start":104,"end":232,"at":3,"text":"And there it goes.","emotion":"surprised=0.6"}]}
+  cut: the footage range and the session timeline. Answers SEGMENTS, strict JSON and nothing else:
+    {"segments":[{"start":<sec>,"end":<sec>}]}
+    <sec> is session seconds, a number. Segments in order, never overlapping, and inside the range the request gives.
+  captions: a few clips, "CLIP n" with its length, then the lines said over it stamped as offsets from that clip's start. Answers CAPTIONS, strict JSON and nothing else:
+    {"clips":[{"i":<n>,"fx":[{"start":<sec>,"end":<sec>,"text":"<words>"}]}]}
+    <n> is the clip's number exactly as the request gave it; <sec> is seconds from that clip's start, inside the clip. A clip with nothing to caption is left out, and {"clips":[]} is a whole answer.
+  speed: the clips with their lengths, what is spoken over each and which carry captions, the footage they come to, the target and the range. Answers SPEEDS, strict JSON and nothing else:
+    {"speeds":[{"clip":<n>,"rate":<x>}]}
+    <x> is the playback rate: 1 is the footage's own speed, above 1 runs fast, below 1 is slow motion. A clip left out plays at 1.
+  effects: every clip of the cut, "CLIP n" with its length, then what was said and shown over it stamped as offsets from that clip's start. Answers EFFECTS, strict JSON and nothing else:
+    {"fx":[{"clip":<n>,"kind":"zoom"|"stop"|"volume","start":<sec>,"end":<sec>,"gain":<x>}]}
+    <sec> is seconds from that clip's start, inside the clip. "gain" belongs to volume alone: 1 as recorded, 0 silent.
+  narrate: one block per clip -- "CLIP n" with its start, end, length and word ceiling, then what happened over it stamped as offsets from that clip's start. Answers ENTRIES, strict JSON and nothing else:
+    {"entries":[{"start":<sec>,"end":<sec>,"at":<sec>,"text":"<words>","emotion":"<name>=<0..1>"}]}
+    "start" and "end" are the clip's own, copied from the request; "at" is seconds from that clip's start.
     emotion is how the TTS reads it: a base -- happy, angry, sad, afraid, disgusted, melancholic, surprised, calm -- or close kin, weighted 0 to 1 ("angry=1", "happy=0.8, surprised=0.4"); named mixes (excited, awed, alarmed, confused, frustrated, desperate, tender, proud, dismayed, horrified, ominous) take a weight the same way. Loud or fast is not an emotion.
   upload text: the clips, each with where it starts in the finished video, what was seen and said in each, and the narration over it. Answers three parts with a blank line between them -- the title on one line prefixed exactly "TITLE: ", the thumbnail instruction on one line prefixed exactly "THUMBNAIL: ", then the description as prose. No JSON. The instruction goes to an image model that edits the first frame it is given, the others as references named by position ("the ship from the second image"); the title is printed onto the finished picture afterwards, so ask for no text, no lettering and no logo, and for the part it lands in to stay calm and uncluttered.
 

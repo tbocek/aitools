@@ -292,9 +292,14 @@ func TestTheTracksSayNothingOverThemselves(t *testing.T) {
 			t.Errorf("%s pops a tooltip over the tracks", area)
 		}
 	}
-	// the drags that had no other advertisement still say what they did, in
-	// the row that can hold a sentence
-	if !strings.Contains(src, `" — right-drag the green to move a scene or trim its border, a row "`) {
-		t.Error("the right button's verbs are not named anywhere at all now")
+	// a drag says what it DID, and only that: "camera 1 −0.42 s". The list of
+	// what else the right button can be dragged on used to ride on the end of
+	// it -- four clauses, on every drag, about verbs the cursor is already
+	// advertising under the hand (wantCursor).
+	if !strings.Contains(src, "ed.a.setStatus(shiftLabel(slideWhat, slideD))") {
+		t.Error("a drag no longer says what it moved")
+	}
+	if strings.Contains(src, "right-drag the green to move a scene") {
+		t.Error("the status line is a lesson on the right button again")
 	}
 }

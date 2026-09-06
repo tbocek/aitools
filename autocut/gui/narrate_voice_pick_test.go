@@ -71,7 +71,10 @@ func TestThePickerIsTheChoiceAndTheWayToHearIt(t *testing.T) {
 	for _, want := range []string{
 		"who.Append(vp.pick)", "who.Append(add)", // the choice
 		"hear.Append(vp.sample)", "knob.Append(vp.pitch)", // and how it sounds
-		"tune.SetHomogeneous(true)", // half each: both are judged across their width
+		// the sentence takes what the pitch does not: the slider is 150 px and
+		// aligned left (formSlider), so half each spent a quarter of the row
+		// on nothing and cut the sample off mid-word
+		"hear.SetHExpand(true)",
 		"tune.Append(hear)", "tune.Append(knob)",
 		"box.Append(who)", "box.Append(tune)",
 	} {

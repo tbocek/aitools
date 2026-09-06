@@ -195,10 +195,15 @@ func TestTheCopyIsWired(t *testing.T) {
 	}
 	src := string(b)
 	for _, want := range []string{
-		`ed.copyBtn = gtk.NewButtonWithLabel("⧉ Copy")`,
+		`ed.copyBtn = gtk.NewButtonFromIconName("edit-copy-symbolic")`,
 		`ed.copyBtn.ConnectClicked(func() { a.copyClicked() })`,
-		"bar.Append(col(linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ins, ed.laneBtn), ed.marks))",
-		`ed.insBtn.SetLabel("⧉ Paste")`,
+		"bar.Append(linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ed.pasteBtn, ins, ed.laneBtn))",
+		// Paste is a button of its own, greyed with nothing in hand: it used
+		// to be the Insert button relabelled, so one press meant "choose a
+		// file" or "put the copy down" depending on a state nothing showed
+		`ed.pasteBtn = gtk.NewButtonFromIconName("edit-paste-symbolic")`,
+		"ed.pasteBtn.SetSensitive(ed.copyOn)",
+		"ed.pasteBtn.ConnectClicked(func() { a.pasteCopy() })",
 		// Esc empties the hand along with every other hold
 		`(ed.edgeOn || ed.segOn || ed.fxOn || ed.selOn || ed.copyOn || ed.fxArm != "") && keyval == gdk.KEY_Escape:`,
 		// the marker is named by insName, which is what says "copy of 0:12",

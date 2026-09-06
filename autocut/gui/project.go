@@ -212,15 +212,11 @@ func (a *App) currentProject() Project {
 	var prod *prodSettings
 	if a.prod != nil {
 		st := a.prodSettings()
-		// an untouched destination is left unset so it keeps tracking the
-		// output folder; a chosen one is stored relative when it lives under
-		// root, for the same reason as OutDir -- surviving a move
-		switch {
-		case a.prod.outAuto:
-			st.OutFile = ""
-		default:
-			st.OutFile = a.relToRoot(st.OutFile)
-		}
+		// the destination is not stored: it is produce/final with the
+		// container's extension, worked out from where the project is
+		// (setOut, followOutDir), so a project that moves takes its video's
+		// folder with it and a project file cannot disagree with the page
+		st.OutFile = ""
 		prod = &st
 	}
 	var srcs []ProjectSource
@@ -499,7 +495,7 @@ func (a *App) saveProjectTo(path string) {
 // Silent when there is nothing to move, which is the ordinary case: a project
 // saved before it has been run has an empty folder or none at all.
 func (a *App) moveOutputs(from, to string) {
-	n, _ := countOutputs(from)
+	n, _, _ := countOutputs(from)
 	if n == 0 {
 		return
 	}
@@ -932,28 +928,34 @@ func (a *App) openFolder(dir string) {
 // about four thousand files. The age is what tells a finished step from a
 // stale one at a glance.
 func summarizeOutputs(dir string) string {
-	n, newest := countOutputs(dir)
+	n, _, size := countOutputs(dir)
 	if n == 0 {
 		return "nothing yet"
 	}
-	return fmt.Sprintf("%d files, newest %s", n, humanAgo(newest))
+	// how many and how big, and nothing else. It used to end on "newest 12 min
+	// ago", which is a fact about the last run rather than about what is on
+	// disk -- and the run that wrote it finished in front of you.
+	return fmt.Sprintf("%s, %s", plural(n, "file"), humanSize(size))
 }
 
 // countOutputs is the same walk with the two halves kept apart. Prepare
 // shows three of these at once and puts the age on hover: three sentences of
 // the form above, side by side, is a paragraph across the bottom of a page.
-func countOutputs(dir string) (n int, newest time.Time) {
+func countOutputs(dir string) (n int, newest time.Time, size int64) {
 	filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil // an unreadable subtree is not worth a whole error line here
 		}
 		n++
-		if fi, err := d.Info(); err == nil && fi.ModTime().After(newest) {
-			newest = fi.ModTime()
+		if fi, err := d.Info(); err == nil {
+			size += fi.Size()
+			if fi.ModTime().After(newest) {
+				newest = fi.ModTime()
+			}
 		}
 		return nil
 	})
-	return n, newest
+	return n, newest, size
 }
 
 func humanAgo(t time.Time) string {

@@ -455,7 +455,7 @@ func TestPublishWritesTheTextBeforeItDraws(t *testing.T) {
 	// frame -- is that the gate is the record on disk and not the state of the
 	// boxes: a title you emptied is a deletion you made, not a gap to refill.
 	// The gate is read where ▶ lands, on the GTK thread, and handed in.
-	clicked := funcBody(t, "produce.go", `func \(a \*App\) produceClicked\(\) \{`)
+	clicked := funcBody(t, "produce.go", `func \(a \*App\) produceRun\(words bool\) \{`)
 	if !strings.Contains(clicked, "written := a.publishRecorded()") ||
 		!strings.Contains(clicked, "!written, written, false") {
 		t.Error("▶ no longer gates the model call on the step6 record; " +
@@ -463,7 +463,7 @@ func TestPublishWritesTheTextBeforeItDraws(t *testing.T) {
 	}
 	// and Suggest again is the opposite: it always rewrites and never draws
 	sug := funcBody(t, "publish.go", `func \(a \*App\) publishSuggest\(\) \{`)
-	if !strings.Contains(sug, "true, written, true)") {
+	if !strings.Contains(sug, "true, written, true, true)") {
 		t.Error("Suggest again no longer forces a rewrite (needText, textOnly)")
 	}
 	if !strings.Contains(body, "if textOnly {\n\t\treturn nil\n\t}") {
@@ -512,15 +512,22 @@ func TestThePageIsSplitBetweenTheDrawingAndTheWords(t *testing.T) {
 	if iSaid < 0 || iSet < 0 || iSaid > iSet {
 		t.Errorf("the words are no longer above the encoder settings: %d %d", iSaid, iSet)
 	}
-	// the Inputs line that belongs to neither pane stays above the split,
-	// full width, and step6's files ride the shared Outputs group
-	iRun := strings.Index(prod, "page.Append(inRow)")
-	iOuter := strings.Index(prod, "page.Append(outer)")
-	if iRun < 0 || iOuter < 0 || iRun > iOuter {
-		t.Errorf("the Inputs row is no longer above the split: %d %d", iRun, iOuter)
+	// the page is the split and nothing else: the Inputs line belongs to
+	// neither pane and rides the shared bottom bar with the Outputs group
+	if strings.Contains(prod, "page.Append(inRow)") {
+		t.Error("the Inputs row is back on the page, above the split")
 	}
-	if !strings.Contains(prod, "outRow.Append(gtk.NewSeparator(gtk.OrientationVertical))\n\toutRow.Append(pubOuts)") {
-		t.Error("step6's files fell off the shared Outputs group, or sit unfenced against the video's")
+	if !strings.Contains(prod, `a.inStack.AddNamed(p.inputs, "produce")`) {
+		t.Error("Produce hands no Inputs line to the shared bar")
+	}
+	// one Outputs group for the whole page: the thumbnail and the upload text
+	// are written under produce/ with the video (publishDir), so there is one
+	// folder to open and one count to read
+	if strings.Contains(prod, "pubOuts") {
+		t.Error("the thumbnail half has an Outputs group of its own again")
+	}
+	if !strings.Contains(readSrc(t, "publish.go"), "filepath.Join(a.produceDir(), \"publish\")") {
+		t.Error("publish/ is outside produce/, so the page's one count misses it")
 	}
 }
 
@@ -620,9 +627,12 @@ func TestPublishIsFoldedIntoProduce(t *testing.T) {
 	// ...and the page's Inputs row speaks for both halves: the images going
 	// to the image model, and whether the first ▶ still owes the text
 	ins := funcBody(t, "produce.go", `func \(p \*producer\) updateInputs\(`)
-	if !strings.Contains(ins, "if pub := a.pub; pub != nil {") ||
-		!strings.Contains(ins, "thumbnail image(s)") ||
-		!strings.Contains(ins, "a.publishRecorded()") {
+	// ...which on the row itself is the one thing still owed: an upload text
+	// nobody has written yet. How many candidate images are on the page is
+	// something the page is showing you.
+	if !strings.Contains(ins, "if a.pub != nil {") ||
+		!strings.Contains(ins, "a.publishRecorded()") ||
+		!strings.Contains(ins, `line += " · no upload text"`) {
 		t.Error("the merged Inputs row says nothing about the thumbnail half")
 	}
 	// an edit to the image row is an edit to that line, wherever it came from
@@ -633,7 +643,7 @@ func TestPublishIsFoldedIntoProduce(t *testing.T) {
 	// the words and the picture run BESIDE the render, not before it: neither
 	// reads a file the other writes, and the render is minutes where they are
 	// seconds
-	body := funcBody(t, "produce.go", `func \(a \*App\) produceClicked\(\) \{`)
+	body := funcBody(t, "produce.go", `func \(a \*App\) produceRun\(words bool\) \{`)
 	// the model call has no byte count to report, so the bar pulses until the
 	// first real part is counted -- without this ▶ looks hung while it thinks
 	if !strings.Contains(body, "a.pulseUntilCounted()") {
@@ -690,7 +700,7 @@ func TestRegeneratingWearsTheOneMark(t *testing.T) {
 	if strings.Contains(pub, `NewButtonWithLabel("Suggest again")`) {
 		t.Error("the suggest button is a label again, beside three icons that mean the same thing")
 	}
-	if !strings.Contains(pub, `p.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above",`) ||
+	if !strings.Contains(pub, `p.a.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above",`) ||
 		!strings.Contains(pub, "p.export, p.redraw))") {
 		t.Error("the redraw button is not on the thumbnail's heading")
 	}
@@ -701,7 +711,7 @@ func TestRegeneratingWearsTheOneMark(t *testing.T) {
 // whole encode.
 func TestTheRedrawDrawsAndNothingElse(t *testing.T) {
 	body := funcBody(t, "publish.go", `func \(a \*App\) publishRedraw\(\) \{`)
-	if !strings.Contains(body, "a.publishStage(trackSTT, st, aspect, segs, entries, false, written, false)") {
+	if !strings.Contains(body, "a.publishStage(trackSTT, st, aspect, segs, entries, false, written, false, true)") {
 		t.Errorf("publishRedraw does not run the picture half of publishStage:\n%s", body)
 	}
 	if strings.Contains(body, "writeUpload") || strings.Contains(body, "a.produce(") {
@@ -824,7 +834,7 @@ func TestTheEditMarkIsAPathAndNotAGlyph(t *testing.T) {
 // sd.cpp to change as little as possible.
 func TestAnImageCanBeUsedAsTheThumbnailAsItIs(t *testing.T) {
 	src := readSrc(t, "publish.go")
-	if !strings.Contains(src, `use := gtk.NewButtonWithLabel("Use as thumbnail")`) ||
+	if !strings.Contains(src, `use := gtk.NewButtonWithLabel("Set Thumbnail")`) ||
 		!strings.Contains(src, "s.useAsThumbnail()") {
 		t.Error("an image in the row has no way to become the thumbnail as it is")
 	}
@@ -1009,23 +1019,39 @@ func TestTheTitleIsAReachableBoxLikeAnyOther(t *testing.T) {
 			t.Errorf("publish_text.go no longer contains %q -- the title is unreachable again", want)
 		}
 	}
-	// its words are the entry's, not a list item's: this is the YouTube title
-	// first and words on a picture second
+	// its words are the PICTURE's: the first thumbnail to exist takes the
+	// video's title as its line and the two are separate from then on, so the
+	// ✎ here rewords what is printed and leaves the upload's title alone
 	body := funcBody(t, "publish_text.go", `func \(p \*publisher\) editTitle\(\) \{`)
-	if !strings.Contains(body, "p.title.SetText(strings.TrimSpace(s))") {
-		t.Errorf("the title's ✎ does not edit the title entry:\n%s", body)
+	if !strings.Contains(body, "p.setThumbTitle(strings.TrimSpace(s))") {
+		t.Errorf("the title's ✎ does not edit the picture's own line:\n%s", body)
 	}
-	// Remove means what it means on every other box: take these words off the
-	// picture. It used to put the BAND back instead, which on a band nobody
-	// had moved was a no-op -- so Remove did nothing at all.
-	if !strings.Contains(body, `p.title.SetText("")`) {
+	if strings.Contains(body, "p.title.SetText") {
+		t.Error("rewording the picture's line still rewrites the video's title")
+	}
+	// Remove takes the words off the PICTURE and leaves the video its name.
+	// It used to clear the entry, which is one press meaning two things -- the
+	// thumbnail loses the words and the upload loses its title -- and typing
+	// the title again, which you must, printed it again.
+	if !strings.Contains(body, `p.setThumbTitle("")`) {
 		t.Errorf("Remove on the title leaves the words on the picture:\n%s", body)
 	}
-	if !strings.Contains(body, "p.setTitleBox(nil)") {
-		t.Error("Remove leaves the band where a removed title was, not where a title starts")
+	// ...and it stays removed: setting the line counts as answering the
+	// question, so nothing seeds it again
+	seed := funcBody(t, "publish_text.go", `func \(p \*publisher\) seedThumbTitle\(\) \{`)
+	if !strings.Contains(seed, "if p == nil || p.titleSeeded {") {
+		t.Error("a removed line comes back the next time a thumbnail is drawn")
 	}
-	if i, j := strings.Index(body, `p.title.SetText("")`), strings.Index(body, "p.setTitleBox(nil)"); i > j {
-		t.Error("the band is reset before the words are cleared, so the reprint uses the old words")
+	if !strings.Contains(funcBody(t, "publish_text.go", `func \(p \*publisher\) setThumbTitle\(s string\) \{`),
+		"p.thumbTitle, p.titleSeeded = s, true") {
+		t.Error("setting the picture's line does not count as answering the question")
+	}
+	// and there is no tick beside the heading offering to put it back: words
+	// wanted on the picture after the line is removed are dragged out as a box
+	// like any other (textOverlay), which is the same gesture as every other
+	// word on that picture
+	if strings.Contains(readSrc(t, "publish.go"), "titleOn") {
+		t.Error("the Title heading grew a print-on-thumbnail tick again")
 	}
 	if !strings.Contains(funcBody(t, "publish_text.go", `func \(st pubSettings\) titleBox\(\)`), "return pubTitleBox") {
 		t.Error("a project that never moved the title has no default band")
@@ -1085,7 +1111,7 @@ func TestTheTitleIsAReachableBoxLikeAnyOther(t *testing.T) {
 	// a box is where words are. A marked one goes when its words go, and the
 	// title's goes the same way -- Remove used to take the words off the
 	// picture and leave the dashed rectangle and its ✎ sitting over nothing.
-	if !strings.Contains(src, `hasTitle := func() bool { return strings.TrimSpace(p.title.Text()) != "" }`) {
+	if !strings.Contains(src, `hasTitle := func() bool { return strings.TrimSpace(p.thumbTitle) != "" }`) {
 		t.Error("the title's box is drawn whether or not there is a title in it")
 	}
 
@@ -1180,5 +1206,51 @@ func TestTheThumbnailExportsAsAJPEGThatFits(t *testing.T) {
 	// every uploader argues about
 	if !strings.Contains(body, `out += ".jpg"`) {
 		t.Error("the export can be written under a name that does not say what it is")
+	}
+}
+
+// The picture's line and the video's title are one sentence exactly once.
+//
+// The first thumbnail to exist -- drawn by a run, redrawn by ↻, or chosen off
+// the row -- takes the title as the words printed on it. After that they are
+// two facts: a thumbnail's line is read at the size of a phone's sidebar and a
+// title is read in a list, so improving one is not an instruction to rewrite
+// the other. Nothing seeds it twice, which is also what makes a line removed
+// on purpose stay removed.
+func TestTheThumbnailsLineIsSeededOnceAndThenItsOwn(t *testing.T) {
+	// the run seeds it where a thumbnail comes into existence, and only then
+	stage := funcBody(t, "publish.go", `func \(a \*App\) publishStage\(`)
+	if !strings.Contains(stage, `if !st.TitleSeeded && strings.TrimSpace(st.Title) != "" {`) ||
+		!strings.Contains(stage, "st.ThumbTitle, st.TitleSeeded = strings.TrimSpace(st.Title), true") {
+		t.Error("a run never gives the first thumbnail the video's title")
+	}
+	// ...and so does choosing a picture off the row
+	if !strings.Contains(funcBody(t, "publish.go", `func \(s \*pubSlot\) useAsThumbnail\(\) \{`), "p.seedThumbTitle()") {
+		t.Error("a chosen picture never takes the title as its line")
+	}
+	// what is printed is the picture's own line, not the entry's
+	if !strings.Contains(readSrc(t, "publish_text.go"), "func (st pubSettings) printedTitle() string { return st.ThumbTitle }") {
+		t.Error("the picture is printed with the video's title again")
+	}
+	// both ride the project, and a project from before this reads as already
+	// answered -- its picture was printing the entry's words
+	blob, err := json.Marshal(pubSettings{Title: "a name", ThumbTitle: "a line", TitleSeeded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back pubSettings
+	if err := json.Unmarshal(blob, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.ThumbTitle != "a line" || back.Title != "a name" || !back.TitleSeeded {
+		t.Errorf("the two lines do not round-trip: %+v", back)
+	}
+	old := pubSettings{Title: "a name"}.migrate()
+	if old.ThumbTitle != "a name" || !old.TitleSeeded {
+		t.Errorf("a project from before the split reads as %+v, want its title on the picture", old)
+	}
+	off := pubSettings{Title: "a name", TitleOff: true}.migrate()
+	if off.ThumbTitle != "" || !off.TitleSeeded || off.TitleOff {
+		t.Errorf("a project that had taken the line off reads as %+v, want it still off", off)
 	}
 }

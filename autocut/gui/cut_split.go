@@ -52,8 +52,7 @@ func (a *App) splitSelRange() {
 		return
 	}
 	if ed.sel.aud != "" {
-		a.setStatus(fmt.Sprintf("| Split cuts footage, and the selection is %s's sound — "+
-			"drag on the pictures instead — a selection is of what it was drawn on", ed.sel.aud))
+		a.setStatus(fmt.Sprintf("| Split cuts footage — the selection is %s's sound", ed.sel.aud))
 		return
 	}
 	t0, t1 := math.Min(ed.sel.t0, ed.sel.t1), math.Max(ed.sel.t0, ed.sel.t1)
@@ -65,8 +64,7 @@ func (a *App) splitSelRange() {
 	// asked before the undo entry is pushed: a press that draws no border must
 	// not leave a step in the history that undoes nothing
 	if ed.splitIdx(t0) < 0 && ed.splitIdx(t1) < 0 {
-		a.setStatus(fmt.Sprintf("nothing to split: %s – %s is already a scene of its own, "+
-			"or the pieces would be under %.0f s", mmss(t0), mmss(t1), minSegLn))
+		a.setStatus(fmt.Sprintf("nothing to split at %s – %s", mmss(t0), mmss(t1)))
 		return
 	}
 	before := len(ed.segs)
@@ -90,8 +88,7 @@ func (a *App) splitSelRange() {
 	// the selection stays up. It is exactly the scene that was just made, and
 	// the reason for making one is nearly always the next press -- ⧉ Copy, a
 	// camera, a lane switched off -- which wants that span still in hand.
-	a.setStatus(fmt.Sprintf("split at %s — %d scene(s), was %d; the footage is untouched "+
-		"(↶ Undo takes it back)", strings.Join(at, " and "), len(ed.segs), before))
+	a.setStatus(fmt.Sprintf("split at %s — %d scenes, was %d", strings.Join(at, " and "), len(ed.segs), before))
 	ed.syncSelBtns()
 }
 
@@ -102,14 +99,12 @@ func (a *App) splitSelRange() {
 func (a *App) splitAtLine() {
 	ed := a.ed
 	if !ed.hasPlay {
-		a.setStatus("| Split cuts where the red line is — click a track to put it " +
-			"somewhere, or drag a region to cut that free instead")
+		a.setStatus("| Split cuts at the red line — click a track to put it somewhere")
 		return
 	}
 	t := ed.playhead
 	if ed.splitIdx(t) < 0 {
-		a.setStatus(fmt.Sprintf("nothing to split at %s: the cut keeps nothing there, "+
-			"or the pieces would be under %.0f s", mmss(t), minSegLn))
+		a.setStatus(fmt.Sprintf("nothing to split at %s", mmss(t)))
 		return
 	}
 	before := len(ed.segs)
@@ -124,8 +119,7 @@ func (a *App) splitAtLine() {
 		ed.segOn, ed.segSel, ed.segDirty = true, i, false
 		ed.edgeOn, ed.fxOn = false, false
 	}
-	a.setStatus(fmt.Sprintf("split at %s — %d scene(s), was %d; the footage is untouched "+
-		"(↶ Undo takes it back)", mmss(t), len(ed.segs), before))
+	a.setStatus(fmt.Sprintf("split at %s — %d scenes, was %d", mmss(t), len(ed.segs), before))
 	ed.syncSelBtns()
 }
 

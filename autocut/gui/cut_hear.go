@@ -154,17 +154,23 @@ func (ed *cutEditor) hearBadgesAud() []hearBadge {
 // sound, off" must not mean "off until the camera restarted".
 
 const (
-	// the switch's centre, in from the widget's left edge, and where a name
-	// starts beside it. Same plate and same speaker as a scene's badge
-	// (hearPlate): one mark to learn, in the two places sound is switched.
-	laneSwX   = 12.0
-	laneNameX = 26.0
+	// the switch's centre, and where a name starts beside it. Same plate and
+	// same speaker as a scene's badge (hearPlate): one mark to learn, in the
+	// two places sound is switched.
+	//
+	// The switch stands in the black strip at the head of the timeline
+	// (cut_gutter.go) rather than pinned to the widget's left edge. Pinned, it
+	// was drawn over the waveform at every scroll position, and the reading it
+	// covered is the reading the band exists to show. The name is still
+	// pinned, and starts where that strip ends, so the two never meet.
+	laneSwX   = gutterMid
+	laneNameX = gutterPx + 4
 )
 
 // laneSwitch is one recording's whole-lane switch: where it is drawn in the
-// recorders' band, in WIDGET coordinates -- the band scrolls under it and the
-// switch does not, like the name it sits beside -- and whether the cut hears
-// the lane anywhere.
+// recorders' band, in TIMELINE coordinates -- it stands in the gutter, which
+// is the head of the tape and scrolls with it -- and whether the cut hears the
+// lane anywhere.
 type laneSwitch struct {
 	base   string
 	cx, cy float64
@@ -202,11 +208,11 @@ func (ed *cutEditor) laneSwitches() []laneSwitch {
 	return out
 }
 
-// laneSwitchAt is the switch under a press, or "". x is the WIDGET x: the
-// switch does not scroll with the tape.
-func (ed *cutEditor) laneSwitchAt(x, y float64) string {
+// laneSwitchAt is the switch under a press, or "". px is a TIMELINE x: the
+// switch stands in the gutter and scrolls with the tape.
+func (ed *cutEditor) laneSwitchAt(px, y float64) string {
 	for _, s := range ed.laneSwitches() {
-		if math.Abs(x-s.cx) <= hearHit && math.Abs(y-s.cy) <= hearHit {
+		if math.Abs(px-s.cx) <= hearHit && math.Abs(y-s.cy) <= hearHit {
 			return s.base
 		}
 	}
@@ -218,10 +224,10 @@ func (ed *cutEditor) laneSwitchAt(x, y float64) string {
 // pairSwitch is one camera ROW's whole-cut switch for the sound filmed with
 // its pictures: every master lane drawn on that row, one plate over the lot.
 //
-// cx is a WIDGET x, like the band's switches: the tape scrolls under the
-// switch and the switch stays where it is, so it is there to press wherever
-// the view happens to be. cy is an area y, which in this widget is the same
-// thing -- only x is translated (drawTrack).
+// cx is a TIMELINE x, like the band's switches: it stands in the gutter at the
+// head of the tape (cut_gutter.go) rather than over the strip it is about. cy
+// is an area y, which in this widget is the same thing -- only x is
+// translated (drawTrack).
 type pairSwitch struct {
 	bases  []string
 	cx, cy float64
@@ -257,11 +263,11 @@ func (ed *cutEditor) pairSwitches() []pairSwitch {
 	return out
 }
 
-// pairSwitchAt is the recordings whose switch is under a press, or nil. x is
-// the WIDGET x: the switch does not scroll with the tape.
-func (ed *cutEditor) pairSwitchAt(x, y float64) []string {
+// pairSwitchAt is the recordings whose switch is under a press, or nil. px is
+// a TIMELINE x: the switch stands in the gutter and scrolls with the tape.
+func (ed *cutEditor) pairSwitchAt(px, y float64) []string {
 	for _, s := range ed.pairSwitches() {
-		if math.Abs(x-s.cx) <= hearHit && math.Abs(y-s.cy) <= hearHit {
+		if math.Abs(px-s.cx) <= hearHit && math.Abs(y-s.cy) <= hearHit {
 			return s.bases
 		}
 	}
@@ -277,18 +283,15 @@ func pairSwitchName(bases []string) string {
 	return fmt.Sprintf("the sound filmed with %s and %d more", bases[0], len(bases)-1)
 }
 
-// drawPairSwitches paints them, from inside drawTrack's translation -- so a
-// widget x has to be put back on the tape's own scale by the view's left edge,
-// the way an emptied row's ✕ is (drawRowKill). ed.viewX and not drawTrack's
-// vx0: that one is the CULLING edge, 80 px further left so a thumbnail or a
-// tick's label reaching into view still gets drawn, and a control drawn there
-// is a control 80 px off the side of the widget.
-//
-// Over the scene badges, which is the precedence the press keeps too: the
-// permanent control wins the pixels the two can share.
+// drawPairSwitches paints them, from inside drawTrack's translation and in the
+// tape's own coordinates: the switch is in the gutter, which is part of the
+// tape (cut_gutter.go). It used to be a widget x put back on the tape's scale
+// by the view's left edge, so that it stayed pinned as the footage went past
+// underneath -- and underneath is the word: it was drawn on the wave strip it
+// is about.
 func (ed *cutEditor) drawPairSwitches(cr *cairo.Context) {
 	for _, s := range ed.pairSwitches() {
-		hearPlate(cr, ed.viewX+s.cx, s.cy, s.on)
+		hearPlate(cr, s.cx, s.cy, s.on)
 	}
 }
 
@@ -325,8 +328,7 @@ func (ed *cutEditor) toggleLanesAll(bases []string, name string) {
 		return
 	}
 	if len(ed.segs) == 0 {
-		ed.a.setStatus(name + " has no scenes to be heard in yet — a lane is switched " +
-			"where the cut keeps it, so cut something first")
+		ed.a.setStatus(name + " is in no scene yet — cut something first")
 		return
 	}
 	on := true
@@ -362,8 +364,7 @@ func (ed *cutEditor) toggleLanesAll(bases []string, name string) {
 		ed.a.setStatus(fmt.Sprintf("%s is on for the whole cut — every scene hears it (%d changed)", name, n))
 		return
 	}
-	ed.a.setStatus(fmt.Sprintf("%s is off for the whole cut — every scene silences it, and the "+
-		"switch beside it brings it back (%d changed)", name, n))
+	ed.a.setStatus(fmt.Sprintf("%s off for the whole cut — %d scene(s) changed", name, n))
 }
 
 // ---- what every scene hears, said on every scene -----------------------------
@@ -529,9 +530,7 @@ func (ed *cutEditor) toggleHear(base string) {
 	if on {
 		word = "heard in"
 	}
-	ed.a.setStatus(fmt.Sprintf("%s is %s the scene at %s — every lane still green is "+
-		"mixed at the level it was recorded at, and the finished clip is kept off the "+
-		"ceiling so two at once cannot clip", base, word, mmss(s.S)))
+	ed.a.setStatus(fmt.Sprintf("%s is %s the scene at %s", base, word, mmss(s.S)))
 }
 
 // drawHearBadges paints them, and the held scene's own stretch of each lane
@@ -566,9 +565,9 @@ func (ed *cutEditor) drawHearBadges(cr *cairo.Context, badges []hearBadge, vx0, 
 	}
 }
 
-// drawLaneSwitches paints the whole-lane switches on the band's name plates.
-// Un-translated, from drawAudio's label pass: the switch belongs beside the
-// name, and both stay put while the tape scrolls past.
+// drawLaneSwitches paints the whole-lane switches in the gutter. Called from
+// inside drawAudio's translated pass: the strip they stand in is the head of
+// the tape, so they scroll with it (cut_gutter.go).
 func (ed *cutEditor) drawLaneSwitches(cr *cairo.Context) {
 	for _, s := range ed.laneSwitches() {
 		hearPlate(cr, s.cx, s.cy, s.on)

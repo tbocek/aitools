@@ -109,10 +109,10 @@ func TestTheRemoveButtonIsWired(t *testing.T) {
 	}
 	cut := string(src)
 	for _, want := range []string{
-		`ed.remBtn = gtk.NewButtonWithLabel("－ Remove")`,
+		`ed.remBtn = gtk.NewButtonFromIconName("list-remove-symbolic")`,
 		"ed.remBtn.ConnectClicked(func() { a.removeSelRange() })",
-		"linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ins, ed.laneBtn)",
-		"ed.remBtn.SetSensitive(!snd)",
+		"linked(add, ed.splitBtn, ed.remBtn, ed.copyBtn, ed.pasteBtn, ins, ed.laneBtn)",
+		"ed.remBtn.SetSensitive(on)",
 	} {
 		if !strings.Contains(cut, want) {
 			t.Errorf("cut.go has lost %q", want)
@@ -133,5 +133,37 @@ func TestTheStatusNamesTheSplitAndCountsTheRest(t *testing.T) {
 	}
 	if got := removedMsg(30, 3, 2); strings.Contains(got, "is two now") {
 		t.Errorf("a cut that lost a scene claimed a split: %q", got)
+	}
+}
+
+// A verb is live when it has something to act on. All four of the bar's verbs
+// used to be live with nothing selected at all, and the press then answered
+// "drag a region on a track first" -- a click spent to be told it was never
+// the button. And ＋ Add was the blue one, which says "press this first" about
+// a control that cannot be pressed until seconds are marked.
+func TestTheCutVerbsAreLiveOnlyWhenTheyHaveSomethingToActOn(t *testing.T) {
+	body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) syncSelBtns\(\) \{`)
+	for _, want := range []string{
+		// a footage selection, and one long enough to be a scene
+		`on := ed.sel.active && ed.sel.aud == ""`,
+		"long := on && math.Abs(ed.sel.t1-ed.sel.t0) >= minSegLn",
+		"ed.addBtn.SetSensitive(long)",
+		"ed.remBtn.SetSensitive(on)",
+		// ...except Split, which cuts at the red line when nothing is selected
+		"ed.splitBtn.SetSensitive(!snd && (on || ed.hasPlay))",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the bar's verbs are live with nothing to act on: %q", want)
+		}
+	}
+	// the gate follows the line as well as the selection, or Split would stay
+	// grey until something was selected
+	if !strings.Contains(funcBody(t, "cut.go", `func \(ed \*cutEditor\) setPlayhead\(t float64\) \{`), "ed.syncSelBtns()") {
+		t.Error("putting the red line down does not wake | Split")
+	}
+	// and Add is not the page's primary verb: ▶ on the run bar is
+	src := readSrc(t, "cut.go")
+	if strings.Contains(src, `add.AddCSSClass("suggested-action")`) {
+		t.Error("＋ Add is blue again")
 	}
 }

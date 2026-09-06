@@ -492,15 +492,16 @@ func TestADragIsClippedToTheRecordingEitherWayRound(t *testing.T) {
 	}
 }
 
-// Where the controls are, which is the request: the picture under the video,
-// and ＋ － ▶ on the dropdown's own row rather than a row of their own.
+// Where the controls are: ＋ － ▶ on the dropdown's own row rather than a row
+// of their own, and the band under that row -- which voice, then the recording
+// it is cut from, then the sentence it will speak.
 func TestTheTakeControlsSitOnTheVoiceRowAndTheBandUnderIt(t *testing.T) {
 	src := funcBody(t, "narrate_voice.go", `func \(a \*App\) buildVoicePicker\(`)
 	for _, pin := range []string{
 		"bandFrame, bandBtns := vp.buildTakeBand()",
 		"who.Append(bandBtns)", // the buttons are on the dropdown's row...
 		"box.Append(who)",
-		"box.Append(bandFrame)", // ...and the band is its own row under it
+		"box.Append(bandFrame)",
 		"box.Append(tune)",
 	} {
 		if !strings.Contains(src, pin) {
@@ -512,6 +513,18 @@ func TestTheTakeControlsSitOnTheVoiceRowAndTheBandUnderIt(t *testing.T) {
 	}
 	if strings.Index(src, "box.Append(bandFrame)") > strings.Index(src, "box.Append(tune)") {
 		t.Error("the band is below the sample rather than between it and the voice")
+	}
+	// and the handle above it all: the picture and the voice picker share the
+	// column, and which of them gets the height is the hand's to say
+	nar := readSrc(t, "narrate.go")
+	for _, want := range []string{
+		"shown := gtk.NewPaned(gtk.OrientationVertical)",
+		"shown.SetStartChild(top)",
+		"shown.SetEndChild(voice)",
+	} {
+		if !strings.Contains(nar, want) {
+			t.Errorf("the left column has no handle between the picture and the voice: %q", want)
+		}
 	}
 }
 

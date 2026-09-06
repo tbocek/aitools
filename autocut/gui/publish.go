@@ -62,6 +62,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -176,6 +178,25 @@ type pubSettings struct {
 	// Text is never read and never written.
 	TitleBox *pubText `json:"title_box,omitempty"`
 
+	// ...and the WORDS in it, which are the picture's own.
+	//
+	// They start as the video's title and stop being it the moment either one
+	// is edited: a thumbnail's line is read at the size of a phone's sidebar
+	// and a YouTube title is read in a list, so the two are the same sentence
+	// only until somebody improves one of them. The first thumbnail to exist
+	// -- drawn, or chosen from the row -- takes the title as its words
+	// (seedThumbTitle) and nothing seeds them again, so a title reworded
+	// afterwards leaves the picture alone and a picture reworded leaves the
+	// upload alone.
+	ThumbTitle string `json:"thumb_title,omitempty"`
+	// ...and whether that has happened, which is not the same as the words
+	// being empty: a line taken off the picture on purpose must not come back
+	// the next time a thumbnail is drawn.
+	TitleSeeded bool `json:"title_seeded,omitempty"`
+	// the old spelling of "not printed", read once by migrate: it meant the
+	// entry's words were the picture's and were being withheld.
+	TitleOff bool `json:"title_off,omitempty"`
+
 	// The words printed onto the picture after the draw (publish_text.go):
 	// each a box in fractions of the finished thumbnail and the text fitted
 	// into it. The title is not one of them -- it has its own field below and
@@ -221,6 +242,16 @@ func (st pubSettings) basePath() string {
 func (st pubSettings) migrate() pubSettings {
 	st.Frames = moveToFront(append([]string(nil), st.Frames...), st.Base)
 	st.Base = 0
+	// a project from when the picture printed the entry's words: it was
+	// printing them unless title_off said otherwise, and either way that
+	// question has been answered once already
+	if !st.TitleSeeded && (st.TitleOff || st.Title != "") {
+		st.TitleSeeded = true
+		if !st.TitleOff {
+			st.ThumbTitle = st.Title
+		}
+	}
+	st.TitleOff = false
 	return st
 }
 
@@ -257,9 +288,14 @@ type publisher struct {
 	// the thumbnail is a picture chosen from the row, not a drawn one
 	// (pubSettings.Own)
 	own bool
-	// where the title is printed, nil for the default band (pubSettings.TitleBox)
+	// where the picture's line is printed, nil for the default band
+	// (pubSettings.TitleBox)
 	titleBox *pubText
-	aspect   string
+	// the words printed there, and whether they have ever been put on a
+	// picture (pubSettings.ThumbTitle, TitleSeeded)
+	thumbTitle  string
+	titleSeeded bool
+	aspect      string
 
 	// the marked words and the layer that shows them (publish_text.go).
 	// texts is the state, like frames; shotPath and shotA are what showShot
@@ -270,7 +306,6 @@ type publisher struct {
 	shotOver *gtk.DrawingArea
 	shotPath string
 	shotA    float64
-	letter   debounce
 	quiet    bool
 
 	title *gtk.Entry
@@ -295,7 +330,16 @@ type pubSlot struct {
 	path string
 }
 
-func (a *App) publishDir() string { return filepath.Join(a.outDir, "publish") }
+// publishDir is under produce/ with the video and the per-clip encodes: what
+// this step makes is one upload, and an upload is one folder to open and copy
+// away. A project written before that keeps its own publish/ -- the thumbnail
+// and the description are work, and a folder move is not a reason to redo it.
+func (a *App) publishDir() string {
+	if old := filepath.Join(a.outDir, "publish"); exists(old) {
+		return old
+	}
+	return filepath.Join(a.produceDir(), "publish")
+}
 
 // publishRecorded reports whether the model has already written this session's
 // text. publish.json is that record: writePublishFiles lays it down as soon as
@@ -318,7 +362,7 @@ func (a *App) publishRecorded() bool {
 // goes left, the words top right above the encoder settings, and one ▶ makes
 // everything the upload needs. No Inputs row of its own any more either --
 // the page's row (Produce's) already says what both halves read.
-func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
+func (a *App) buildPublishPanes() (draw, said gtk.Widgetter) {
 	p := &publisher{a: a}
 	a.pub = p
 
@@ -336,7 +380,7 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 		"the rest are only there to be named (\"the ship from the second image\")")
 	p.addFrame.ConnectClicked(func() { p.addImage() })
 
-	framesHead := p.heading("Images", fmt.Sprintf("What the image model is given, in order. The FIRST is "+
+	framesHead := p.a.heading("Images", fmt.Sprintf("What the image model is given, in order. The FIRST is "+
 		"the base — the picture being edited — and the others are references the instruction can name. "+
 		"%d are taken from the cut the first time this page runs; after that the row is yours: add, "+
 		"remove, swap, or make another one the base. An empty row is allowed, and draws the thumbnail "+
@@ -359,8 +403,15 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	// the same place you asked for it.
 	p.shot = gtk.NewPicture()
 	p.shot.SetCanShrink(true)
-	p.shot.SetSizeRequest(-1, 320)
-	p.shot.SetVExpand(true)
+	// no fixed height. It asked for 320 px and got exactly that forever: this
+	// column scrolls, and a scrolling column hands its child the child's own
+	// natural height and scrolls the rest -- so vexpand bought nothing and the
+	// request was the whole answer. Left to itself a GtkPicture takes the
+	// width it is given and asks for the height that width implies, which is
+	// the thumbnail growing and shrinking with the pane. The floor is for the
+	// empty state alone: with nothing drawn there is no picture to measure,
+	// and the frame would be a black hairline.
+	p.shot.SetSizeRequest(-1, 120)
 	shotFrame := videoFrame(p.textOverlay(p.shot))
 	shotFrame.SetMarginTop(4)
 
@@ -394,16 +445,17 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	// came back. Nothing on this side calls the language model: the instruction
 	// arrives from the one call the words' side makes, and is then this side's.
 	col := gtk.NewBox(gtk.OrientationVertical, 6)
-	col.SetMarginTop(4)
-	col.SetMarginStart(12)
-	col.SetMarginEnd(6)
+	col.SetMarginTop(8)
+	col.SetMarginBottom(8)
+	col.SetMarginStart(12) // the window's edge
+	col.SetMarginEnd(6)    // ...and the handle's
 	col.Append(framesHead)
 	col.Append(p.framesBox)
-	col.Append(p.heading("Edit instruction", "What to change about the first image, sent to sd.cpp with the whole row — ▶ writes one, and it is yours to rewrite"))
+	col.Append(p.a.heading("Edit instruction", "What to change about the first image, sent to sd.cpp with the whole row — ▶ writes one, and it is yours to rewrite"))
 	col.Append(promptBox)
-	col.Append(p.heading("Negative prompt", "What must not appear"))
+	col.Append(p.a.heading("Negative prompt", "What must not appear"))
 	col.Append(negBox)
-	col.Append(p.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above",
+	col.Append(p.a.heading("Thumbnail", "What sd.cpp drew from the images and the instruction above",
 		p.export, p.redraw))
 	col.Append(shotFrame)
 
@@ -425,19 +477,15 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	p.title = gtk.NewEntry()
 	p.title.SetHExpand(true)
 	p.title.SetPlaceholderText("the video's title, also printed on the thumbnail — ▶ suggests one")
-	p.title.SetTooltipText("The YouTube title, printed across the thumbnail's title band " +
-		"after it is drawn — retyping it re-prints the words without redrawing the picture. " +
-		"Four to seven words: a thumbnail is read at the size of a phone's sidebar. " +
-		"Empty means no title on the picture.")
-	// retyping the title re-prints it on the picture, a beat after the typing
-	// stops -- through the same one place every word lands (recomposite).
-	// quiet, because apply writes this entry with what a run just printed.
-	p.title.ConnectChanged(func() {
-		if p.quiet {
-			return
-		}
-		p.letter.call(p.recomposite)
-	})
+	p.title.SetTooltipText("The YouTube title. The first thumbnail to exist takes it as the " +
+		"line printed across it; after that the two are separate — reword this and the picture " +
+		"keeps its line, reword the picture's (its ✎) and the upload keeps this. " +
+		"Four to seven words: a thumbnail is read at the size of a phone's sidebar.")
+	// ...and it does NOT re-print the picture. The thumbnail carries its own
+	// line, taken from this one the first time a thumbnail exists and its own
+	// words from then on (pubSettings.ThumbTitle): rewording the upload's
+	// title is not an instruction to redraw the words on a picture that may
+	// have been cropped, moved and reworded around them.
 
 	p.desc, descBox = p.textBox(8, "The text under the video on the YouTube page. Written by the "+
 		"prompt above, and yours to rewrite.")
@@ -454,32 +502,29 @@ func (a *App) buildPublishPanes() (draw, said, outs gtk.Widgetter) {
 	p.suggest.ConnectClicked(func() { a.publishSuggest() })
 
 	wrote := gtk.NewBox(gtk.OrientationVertical, 6)
-	wrote.SetMarginTop(4)
-	wrote.SetMarginStart(6)
-	wrote.Append(p.heading("Title", "The YouTube title, printed across the top of the thumbnail", p.suggest))
+	wrote.SetMarginTop(8)
+	wrote.SetMarginStart(6) // the handle's side, matching the drawing beside it
+	wrote.SetMarginEnd(12)  // ...and the window's
+	wrote.Append(p.a.heading("Title", "The YouTube title, printed across the top of the thumbnail",
+		p.suggest))
 	wrote.Append(p.title)
-	wrote.Append(p.heading("YouTube description", "The text under the video on the upload page"))
+	wrote.Append(p.a.heading("YouTube description", "The text under the video on the upload page"))
 	wrote.Append(descBox)
 	descBox.SetVExpand(true)
 	wrote.SetVExpand(true)
 
-	openOut := gtk.NewButtonFromIconName("folder-open-symbolic")
-	openOut.SetTooltipText("publish/ — the thumbnail, the title and the description")
-	openOut.ConnectClicked(func() { a.openFolder(a.publishDir()) })
-	p.out = gtk.NewLabel("")
-	outRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	outRow.Append(openOut)
-	outRow.Append(p.out)
-
+	// no Outputs row of its own: the thumbnail and the words are written
+	// under produce/ with the video, and the page has one Outputs group
+	// (producer.updateOut)
 	p.refresh()
-	return drawScroll, wrote, outRow
+	return drawScroll, wrote
 }
 
 // heading is the one-line label above each field, with anything the caller
 // wants on its right. It joins the same size group every prompt box's heading
 // row is in, so the fields on this side of the divider line up with the prompts
 // on the other.
-func (p *publisher) heading(title, tip string, extra ...gtk.Widgetter) *gtk.Box {
+func (a *App) heading(title, tip string, extra ...gtk.Widgetter) *gtk.Box {
 	l := gtk.NewLabel(title)
 	l.SetXAlign(0)
 	l.SetHExpand(true)
@@ -491,10 +536,10 @@ func (p *publisher) heading(title, tip string, extra ...gtk.Widgetter) *gtk.Box 
 	for _, w := range extra {
 		row.Append(w)
 	}
-	if p.a.headGroup == nil {
-		p.a.headGroup = gtk.NewSizeGroup(gtk.SizeGroupVertical)
+	if a.headGroup == nil {
+		a.headGroup = gtk.NewSizeGroup(gtk.SizeGroupVertical)
 	}
-	p.a.headGroup.AddWidget(row)
+	a.headGroup.AddWidget(row)
 	return row
 }
 
@@ -630,6 +675,7 @@ func (s *pubSlot) useAsThumbnail() {
 	st := p.snapshot()
 	st.Own = true
 	p.apply(st)
+	p.seedThumbTitle() // the first picture to exist takes the title as its line
 	p.a.logf(">>> publish: %s is the thumbnail, as it is — no model, no GPU, and ▶ will not redraw it",
 		filepath.Base(s.path))
 	p.recomposite() // the title and the marked words go on, as on a drawn one
@@ -649,32 +695,30 @@ func (s *pubSlot) build() gtk.Widgetter {
 	// the base wears the thumbnail's own frame, draggable (publish_crop.go)
 	pf := videoFrame(s.cropOverlay(pic))
 
-	// The position, spelled out. "Base" and "Ref 2" say what the image model
-	// is going to do with each picture, which "1" and "2" do not -- and the
-	// numbers are also what the instruction refers to them by.
-	role := gtk.NewLabel(fmt.Sprintf("Ref %d", s.i+1))
-	if s.i == 0 {
-		role = gtk.NewLabel("Base")
-	}
-	role.AddCSSClass("heading")
-	role.SetTooltipText("The picture being edited — the instruction changes this one")
-	if s.i > 0 {
-		role.SetTooltipText(fmt.Sprintf("A reference: unchanged, and there to be named. "+
-			"The instruction calls this one \"the %s image\"", ordinal(s.i+1)))
-	}
-
+	// Which file it is, on the row of buttons under the picture rather than on
+	// a heading over it.
+	//
+	// That heading read "Base 2026-08-30_17-11-19" -- a word for the image
+	// model's benefit ("Base", "Ref 2": what it does with each picture, and
+	// what the instruction calls them) in front of a name for the user's, on a
+	// line of its own above every picture in the row. What the word means is
+	// not guessable from it, and the row already says it: the base is the one
+	// with no "Make base" button on it. So the word goes to the tooltip, where
+	// the explanation was all along, and the name goes down with the buttons
+	// that act on the file it names.
 	name := gtk.NewLabel(strings.TrimSuffix(filepath.Base(s.path), filepath.Ext(s.path)))
 	name.SetXAlign(0)
 	name.SetHExpand(true)
 	name.SetEllipsize(pango.EllipsizeMiddle)
 	name.AddCSSClass("dim-label")
-	name.SetTooltipText(s.path)
-
-	top := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	top.Append(role)
-	top.Append(name)
+	name.SetTooltipText(s.path + "\n\nThe picture being edited — the instruction changes this one")
+	if s.i > 0 {
+		name.SetTooltipText(fmt.Sprintf("%s\n\nA reference: unchanged, and there to be named. "+
+			"The instruction calls this one \"the %s image\"", s.path, ordinal(s.i+1)))
+	}
 
 	row := gtk.NewBox(gtk.OrientationHorizontal, 4)
+	row.Append(name)
 	if s.i > 0 {
 		mk := gtk.NewButtonWithLabel("Make base")
 		mk.AddCSSClass("flat")
@@ -682,7 +726,7 @@ func (s *pubSlot) build() gtk.Widgetter {
 		mk.ConnectClicked(func() { s.p.setFrames(moveToFront(s.p.frames, s.i)) })
 		row.Append(mk)
 	}
-	use := gtk.NewButtonWithLabel("Use as thumbnail")
+	use := gtk.NewButtonWithLabel("Set Thumbnail")
 	use.AddCSSClass("flat")
 	use.SetTooltipText("Put this picture on the thumbnail as it is -- cropped to the video's " +
 		"shape, no model and no GPU. The title and any marked words are printed onto it, and " +
@@ -700,14 +744,12 @@ func (s *pubSlot) build() gtk.Widgetter {
 	drop.AddCSSClass("flat")
 	drop.SetTooltipText("Remove this image from the row")
 	drop.SetHAlign(gtk.AlignEnd)
-	drop.SetHExpand(true)
 	drop.ConnectClicked(func() {
 		s.p.setFrames(append(append([]string(nil), s.p.frames[:s.i]...), s.p.frames[s.i+1:]...))
 	})
 	row.Append(drop)
 
 	box := gtk.NewBox(gtk.OrientationVertical, 2)
-	box.Append(top)
 	box.Append(pf)
 	box.Append(row)
 	return box
@@ -776,7 +818,8 @@ func (p *publisher) pickImage(title, start string, done func(string)) {
 // out before the run is a value the run cannot see change under it.
 func (p *publisher) snapshot() pubSettings {
 	st := pubSettings{Frames: append([]string(nil), p.frames...), Crop: p.crop,
-		Own: p.own, TitleBox: p.titleBox, Texts: append([]pubText(nil), p.texts...)}
+		Own: p.own, TitleBox: p.titleBox, ThumbTitle: p.thumbTitle,
+		TitleSeeded: p.titleSeeded, Texts: append([]pubText(nil), p.texts...)}
 	st.Title = strings.TrimSpace(p.title.Text())
 	st.Prompt = strings.TrimSpace(viewText(p.prompt))
 	st.Negative = strings.TrimSpace(viewText(p.neg))
@@ -788,6 +831,7 @@ func (p *publisher) snapshot() pubSettings {
 // back on the page.
 func (p *publisher) apply(st pubSettings) {
 	p.crop, p.own, p.titleBox = st.Crop, st.Own, st.TitleBox
+	p.thumbTitle, p.titleSeeded = st.ThumbTitle, st.TitleSeeded
 	p.setFrames(st.Frames)
 	// quiet: the title entry re-prints the words when TYPED in, and this is
 	// not typing -- a run or a project load is putting back words that are
@@ -916,11 +960,13 @@ func (p *publisher) reread() {
 	p.aspect = p.a.produceCut().Aspect
 }
 
+// updateOut passes the news to the page's one Outputs group: what this half
+// writes lands in the same folder the video does.
 func (p *publisher) updateOut() {
-	if p == nil || p.out == nil {
+	if p == nil {
 		return
 	}
-	p.out.SetText(summarizeOutputs(p.a.publishDir()))
+	p.a.prod.updateOut()
 }
 
 // ---- choosing the candidate frames -------------------------------------------
@@ -1237,7 +1283,7 @@ func (a *App) publishRedraw() {
 	go func() {
 		var failed error
 		defer func() { a.publishDone("thumbnail drawn", failed) }()
-		failed = a.publishStage(trackSTT, st, aspect, segs, entries, false, written, false)
+		failed = a.publishStage(trackSTT, st, aspect, segs, entries, false, written, false, true)
 	}()
 }
 
@@ -1278,7 +1324,7 @@ func (a *App) publishSuggest() {
 	go func() {
 		var failed error
 		defer func() { a.publishDone("title, instruction and description rewritten", failed) }()
-		failed = a.publishStage(trackSTT, st, aspect, segs, entries, true, written, true)
+		failed = a.publishStage(trackSTT, st, aspect, segs, entries, true, written, true, true)
 	}()
 }
 
@@ -1299,8 +1345,40 @@ func (a *App) publishSuggest() {
 // also meant a run that failed at the drawing rewrote the words it had just
 // written. Deleting publish/ is the deliberate way to start the text over, and
 // "Suggest again" is the way to do it without losing the pictures.
+// drawStamp is what a drawn thumbnail is made of: the images, the instruction,
+// what must stay out of it, the crop and the shape. The words printed on top
+// are not in it -- they are printed onto the plain copy afterwards and cost
+// nothing to redo (printPubWords).
+func (a *App) drawStamp(st pubSettings, aspect string) string {
+	var b strings.Builder
+	for _, f := range st.Frames {
+		fmt.Fprintf(&b, "%s %s\n", f, fileMark(f))
+	}
+	cx, cy := 0.5, 0.5
+	if st.Crop != nil {
+		cx, cy = st.Crop.X, st.Crop.Y
+	}
+	fmt.Fprintf(&b, "%s\n%s\n%g %g %s %v", st.Prompt, st.Negative, cx, cy, aspect, st.Own)
+	sum := sha1.Sum([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+func (a *App) drawStampFile() string { return filepath.Join(a.publishDir(), "thumbnail.stamp") }
+
+// drawStale is whether ▶ has a thumbnail to draw: none on disk, or one drawn
+// from something other than what the page holds now. ↻ over the picture never
+// asks -- an image model asked twice answers differently, which is the whole
+// reason that button exists.
+func (a *App) drawStale(st pubSettings, aspect string) bool {
+	if !exists(a.thumbFile()) || !exists(a.thumbPlain()) {
+		return true
+	}
+	b, err := os.ReadFile(a.drawStampFile())
+	return err != nil || strings.TrimSpace(string(b)) != a.drawStamp(st, aspect)
+}
+
 func (a *App) publishStage(track int, st pubSettings, aspect string, segs []cutSeg,
-	entries []narrEntry, needText, written, textOnly bool) error {
+	entries []narrEntry, needText, written, textOnly, force bool) error {
 	// A starting image on the very first run, so the row is not empty the
 	// first time the page is opened. Nothing chooses between them any more
 	// -- the first is simply the base -- so this is a convenience, not a
@@ -1347,6 +1425,15 @@ func (a *App) publishStage(track int, st pubSettings, aspect string, segs []cutS
 	if textOnly {
 		return nil
 	}
+	// The first thumbnail to exist takes the video's title as the line printed
+	// on it, and nothing seeds it twice (seedThumbTitle says the same thing
+	// for the pictures chosen on the page). After this the two are separate:
+	// a title reworded later leaves the picture alone, and the picture's own
+	// ✎ leaves the upload alone.
+	if !st.TitleSeeded && strings.TrimSpace(st.Title) != "" {
+		st.ThumbTitle, st.TitleSeeded = strings.TrimSpace(st.Title), true
+		a.landPublish(st)
+	}
 	if st.Own {
 		// the thumbnail is a picture that was chosen, and choosing it was the
 		// answer. The words still go on it: they are printed locally from the
@@ -1354,8 +1441,23 @@ func (a *App) publishStage(track int, st pubSettings, aspect string, segs []cutS
 		a.logfIdle("    publish: the thumbnail is a chosen picture — not redrawing it (↻ over it draws)")
 		return a.printPubWords(st)
 	}
+	// ...and a picture that is already this picture is not drawn again. ▶ is
+	// pressed to make the upload, not to spend a GPU on a thumbnail nothing
+	// has changed about; ↻ over it is the button that means "another one".
+	if !force && !a.drawStale(st, aspect) {
+		a.logfIdle("    publish: the thumbnail is already drawn from these images and this instruction — printing the words onto it")
+		return a.printPubWords(st)
+	}
 	a.prog(track, 0.5, "drawing the thumbnail")
-	return a.drawThumbnail(st, aspect)
+	if err := a.drawThumbnail(st, aspect); err != nil {
+		return err
+	}
+	if s := a.drawStamp(st, aspect); s != "" {
+		if err := os.WriteFile(a.drawStampFile(), []byte(s+"\n"), 0o644); err != nil {
+			a.logfIdle("    publish: could not write the thumbnail stamp (%v)", err)
+		}
+	}
+	return nil
 }
 
 // landPublish puts a stage's result on the page from the runner's goroutine and
@@ -1526,7 +1628,7 @@ func (a *App) drawThumbnail(st pubSettings, aspect string) error {
 	// the words go on last, locally: the title across the top band, each
 	// marked text filling its box. A print that fails still has a good
 	// picture in hand, and a thumbnail without its words beats no thumbnail.
-	if err := drawPubTexts(a.thumbPlain(), a.thumbFile(), st.Texts, st.Title, st.titleBox()); err != nil {
+	if err := drawPubTexts(a.thumbPlain(), a.thumbFile(), st.Texts, st.printedTitle(), st.titleBox()); err != nil {
 		a.logfIdle("    publish: printing the words failed (%v) — the plain picture stands", err)
 		return os.WriteFile(a.thumbFile(), img, 0o644)
 	}
@@ -1546,7 +1648,7 @@ func (a *App) printPubWords(st pubSettings) error {
 		// each time would be a log about an empty page.
 		return nil
 	}
-	return drawPubTexts(plain, a.thumbFile(), st.Texts, st.Title, st.titleBox())
+	return drawPubTexts(plain, a.thumbFile(), st.Texts, st.printedTitle(), st.titleBox())
 }
 
 // The two files the thumbnail is, named once. They were spelled out at nine
@@ -1649,10 +1751,10 @@ func (a *App) publishDone(what string, err error) {
 		if err != nil {
 			if !errors.Is(err, errStopped) {
 				a.logf("%s FAILED: %v", what, err)
-				a.progress.SetText(what + " failed — see log")
+				a.setStatus(what + " failed — see log")
 				return
 			}
-			a.progress.SetText(what + " stopped")
+			a.setStatus(what + " stopped")
 			return
 		}
 		// the fresh title is words on the picture too: re-print it onto the
@@ -1662,6 +1764,6 @@ func (a *App) publishDone(what string, err error) {
 			p.recomposite()
 		}
 		a.progress.SetFraction(1)
-		a.progress.SetText(what + " — ▶ renders the video")
+		a.setStatus(what + " — ▶ renders the video")
 	})
 }

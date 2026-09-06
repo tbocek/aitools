@@ -258,7 +258,7 @@ func (a *App) showProg() {
 	}
 	glib.IdleAdd(func() {
 		a.progress.SetFraction(total)
-		a.progress.SetText(text)
+		a.setStatus(text) // the bar is a fraction; the words are the status line's
 		if tip != "" {
 			// a run with nothing queued yet leaves the standing tooltip -- the
 			// one that says how to read the bar -- rather than blanking it

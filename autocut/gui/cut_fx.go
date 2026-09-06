@@ -1412,7 +1412,7 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.LineTo(x1, y+fxLaneH-2)
 			cr.Stroke()
 			if x1-x0 > 40 {
-				mark, label := laneLabel(f, int((x1-x0-16)/5))
+				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
 				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
 			}
 		case "speed":
@@ -1436,7 +1436,7 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.Stroke()
 			ed.drawSndTail(cr, f, y)
 			if x1-x0 > 34 {
-				mark, label := laneLabel(f, int((x1-x0-16)/5))
+				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
 				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
 			}
 		case "text", "svg":
@@ -1463,7 +1463,7 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.LineTo(x1, y+fxLaneH-2)
 			cr.Stroke()
 			if x1-x0 > 40 {
-				mark, label := laneLabel(f, int((x1-x0-16)/5))
+				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
 				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
 			}
 		case "label":
@@ -1487,7 +1487,7 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.Stroke()
 			cr.SetDash(nil, 0)
 			if x1-x0 > 30 {
-				mark, label := laneLabel(f, int((x1-x0-16)/5))
+				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
 				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
 			}
 		case "volume":
@@ -1507,7 +1507,7 @@ func (ed *cutEditor) drawFxLane(cr *cairo.Context, vx0, vx1 float64) {
 			cr.LineTo(x1, y+fxLaneH-2)
 			cr.Stroke()
 			if x1-x0 > 40 {
-				mark, label := laneLabel(f, int((x1-x0-16)/5))
+				mark, label := laneLabel(f, fxLabelRoom(x0, x1))
 				markPlate(cr, x0+3, y+fxLaneH-4, mark, label)
 			}
 		}
@@ -1615,13 +1615,10 @@ func (ed *cutEditor) aspectChanged(s string) {
 	// has answered the question, and a second answer at second nought would
 	// quietly outrank it for every clip before the first one.
 	if placed {
-		ed.a.setStatus(fmt.Sprintf("aspect %s — the whole frame, centred, from the start: "+
-			"that is the ⊕ zoom now on the lane at 0:00, and it holds until another zoom "+
-			"says otherwise. Drag its box on the video to say where to look instead", s))
+		ed.a.setStatus(fmt.Sprintf("aspect %s — a ⊕ zoom at 0:00 holds the whole frame, centred", s))
 		return
 	}
-	ed.a.setStatus(fmt.Sprintf("aspect %s — the framing already on the lane decides what the "+
-		"finished video shows; the outline on the video is what it comes out as", s))
+	ed.a.setStatus(fmt.Sprintf("aspect %s — the zooms on the lane decide the framing", s))
 }
 
 // armFx puts the next drag on the video in charge of creating an effect.
@@ -1809,8 +1806,7 @@ func (a *App) volumeClicked() {
 	a.askVolumeParams(f, true, func(f cutFx) {
 		ed.addFx(f)
 		ed.sel.active = false
-		a.setStatus(f.fxLabel() + " — the sound recorded there is played at that gain and " +
-			"the picture is untouched; ↶ Undo takes it back")
+		a.setStatus(f.fxLabel() + " — the picture is untouched")
 	})
 }
 
@@ -1844,8 +1840,7 @@ func (a *App) labelClicked() {
 		}
 		ed.addFx(f)
 		ed.sel.active = false
-		a.setStatus(f.fxLabel() + " — it changes nothing in the video; the narration " +
-			"writer is told about it (↶ Undo takes it back)")
+		a.setStatus(f.fxLabel() + " — nothing changes in the video; the narration is told about it")
 	})
 }
 

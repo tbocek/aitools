@@ -152,7 +152,8 @@ func TestALanesPictureBeginsWhereTheLaneDoes(t *testing.T) {
 	}
 }
 
-// ...and a SHORT lane has a picture at all. ⇲ Lane makes one out of a copy, and
+// ...and a SHORT lane has a picture at all. The lane button makes one out of a
+// copy, and
 // a copy is a few seconds: measured from the file's frame nought there was no
 // stride inside such a window whatsoever, so the row came out empty -- a lane
 // that was there, correctly placed, and showed nothing.
@@ -696,8 +697,8 @@ func TestTheLaneControlsAreWired(t *testing.T) {
 		"case m.asLane:\n\t\t// a row, not a scene.",
 		"name := a.ed.addLane(file, 0, at, m.dur)",
 		// a copy's other destination, on the bar only while one is in hand
-		`ed.laneBtn = gtk.NewButtonWithLabel("⇲ Lane")`,
-		"ed.laneBtn.SetVisible(ed.copyOn && ed.copyAud == \"\")",
+		`ed.laneBtn = gtk.NewButtonFromIconName("go-down-symbolic")`,
+		"ed.laneBtn.SetSensitive(ed.copyOn && ed.copyAud == \"\")",
 		"name := ed.addLane(v.path, v.at(ed.copyFrom), ed.playhead, ed.copyLen)",
 		// and the ✕ that takes a row away, asked before the clip border it can
 		// sit on: a resize arrow over a button is a lie

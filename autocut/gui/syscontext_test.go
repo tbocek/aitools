@@ -174,16 +174,32 @@ func TestTheSystemContextNamesTheWholePipeline(t *testing.T) {
 				"told what becomes of its answer", s.label)
 		}
 	}
-	// the mechanisms every step shares, said here so no wording has to: the two
-	// clocks a finished video has, and what the five effect kinds do
+	// the mechanism every step shares, said here so no wording has to: the two
+	// clocks a finished video has
 	if !strings.Contains(sysSystem, "a time in the video is not a time in the session") {
 		t.Error("the system context no longer distinguishes the cut's clock from the session's")
 	}
-	for _, kind := range []string{"zoom", "text", "speed", "stop", "volume"} {
-		if !strings.Contains(sysSystem, kind) {
-			t.Errorf("the system context does not say what a %q effect is, so the cut "+
-				"wordings each have to", kind)
+	// ...and what each KIND of effect does is not shared: it is said in the
+	// pass that writes it, because that is the only pass that can act on it.
+	// The context used to define all five to everybody, so the speed pass --
+	// which answers one number per clip -- was told what a zoom does and what
+	// a caption is before being asked for a rate.
+	for _, c := range []struct{ kind, in string }{
+		{"zoom punches in", fxRules},
+		{"stop holds the picture still", fxRules},
+		{"volume sets how loud", fxRules},
+	} {
+		if !strings.Contains(c.in, c.kind) {
+			t.Errorf("the pass that writes it no longer says %q", c.kind)
 		}
+		if strings.Contains(sysSystem, c.kind) {
+			t.Errorf("the system context still defines %q for every job", c.kind)
+		}
+	}
+	// the rate is the one thing the context does say about a kind, because it
+	// is the SCHEMA -- what the number means, where the number is returned
+	if !strings.Contains(speedSystem, "Below 1 is slow motion") {
+		t.Error("the speed pass no longer says what a rate under 1 does")
 	}
 }
 

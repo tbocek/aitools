@@ -27,8 +27,8 @@ import (
 	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
-// buildForm makes the column. It opens empty, saying what it is for -- an empty
-// panel with no explanation reads as a page that failed to load.
+// buildForm makes the column. With no form in it, it is the page's quiet
+// corner: the view controls and the totals (formIdle).
 //
 // Three pieces, and only the middle one scrolls. The heading is pinned to the
 // top and the buttons to the bottom, because a form whose Place button is below
@@ -52,14 +52,17 @@ func (ed *cutEditor) buildForm() *gtk.Box {
 	ed.formHead.Append(ed.formTitle)
 	ed.formHead.Append(shut)
 
-	ed.formIdle = gtk.NewLabel("The prompts this step sends, and the forms its buttons " +
-		"ask with, open here — beside the timeline rather than over it, so what a " +
-		"question is about stays on screen while it is answered.")
-	ed.formIdle.SetXAlign(0)
-	ed.formIdle.SetYAlign(0)
-	ed.formIdle.SetWrap(true)
+	// What the column holds when no form is open: the zoom and the thumbnail
+	// size, and what the cut comes to (filled in by buildCut).
+	//
+	// It used to hold a paragraph explaining that forms open here, which is a
+	// thing you learn the first time a form opens and read for the rest of the
+	// project. The two pairs of buttons are the other half of the same trade:
+	// they are set once and then left, so they do not belong on the bar with
+	// Add, Split and Remove -- and this column is empty except while a form is
+	// up, which is exactly when nobody is zooming the timeline.
+	ed.formIdle = gtk.NewBox(gtk.OrientationVertical, 6)
 	ed.formIdle.SetVExpand(true)
-	ed.formIdle.AddCSSClass("dim-label")
 
 	ed.formBox = gtk.NewBox(gtk.OrientationVertical, 8)
 	ed.formBox.Append(ed.formIdle)
@@ -80,15 +83,46 @@ func (ed *cutEditor) buildForm() *gtk.Box {
 	ed.formFoot = gtk.NewBox(gtk.OrientationVertical, 0)
 
 	col := gtk.NewBox(gtk.OrientationVertical, 8)
-	col.SetMarginTop(10)
-	col.SetMarginBottom(12)
-	col.SetMarginStart(12)
-	col.SetMarginEnd(12)
+	col.SetMarginTop(8)
+	col.SetMarginBottom(8)
+	col.SetMarginStart(6) // the handle's side; the preview beside it matches
+	col.SetMarginEnd(12)  // ...and the window's
 	col.Append(ed.formHead)
 	col.Append(pane)
 	col.Append(ed.formFoot)
 	ed.hideForm() // the heading belongs to a form, and there is none yet
 	return col
+}
+
+// idleRow is one line of the quiet column: what it is, then the thing itself.
+// The readings used to be captions under the buttons they belonged to, in
+// small print on a bar that had no room for them; named and stacked they are a
+// column of numbers, which is a thing to read rather than a label on a control.
+//
+// Every line, including the ones whose "reading" is a control: the thumbnail
+// buttons say how big the pictures are and the dropdown says what shape the
+// video is, and a row with no name in a column of named rows is the row you
+// have to work out.
+func idleRow(name string, w gtk.Widgetter) *gtk.Box {
+	l := gtk.NewLabel(name + ":")
+	l.SetXAlign(0)
+	l.AddCSSClass("dim-label")
+	l.SetWidthChars(13) // one column for the names, whatever the readings measure
+	l.SetVAlign(gtk.AlignCenter)
+	row := gtk.NewBox(gtk.OrientationHorizontal, 6)
+	row.Append(l)
+	row.Append(w)
+	return row
+}
+
+// idleRead is one of that column's readings: left-aligned, dim, and in the
+// numeric face the clock uses, so a column of them lines up digit under digit.
+func idleRead() *gtk.Label {
+	l := gtk.NewLabel("")
+	l.SetXAlign(0)
+	l.AddCSSClass("dim-label")
+	l.AddCSSClass("numeric")
+	return l
 }
 
 // showFormFoot puts a form in the column, in place of whatever was there, with

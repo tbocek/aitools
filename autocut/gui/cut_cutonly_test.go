@@ -113,7 +113,7 @@ func TestTheCutOnlyPreviewIsWired(t *testing.T) {
 		// ▶ never opens on a frame the cut throws away
 		"ed.cutOnlySnap()",
 		// the second play button, and the flag that follows it
-		"ed.cutPlayBtn = gtk.NewButtonWithLabel(\"▶✂\")",
+		"ed.cutPlayIcon = gtk.NewImageFromIconName(\"media-playback-start-symbolic\")",
 		"func (ed *cutEditor) playAs(cut bool) {",
 		"ed.cutOnly = cut",
 		// the clock changes meaning with it, and reads the effects: the
@@ -279,9 +279,9 @@ func TestTheTwoPlayButtonsAreWired(t *testing.T) {
 	}
 	src = readSrc(t, "cut.go")
 	for _, want := range []string{
-		// ⏸✂ only while the cut itself is running
+		// the pause face only while the cut itself is running
 		"if ed.playing() && ed.cutOnly {",
-		"ed.cutPlayBtn.SetLabel(\"⏸✂\")",
+		"ed.cutPlayIcon.SetFromIconName(\"media-playback-pause-symbolic\")",
 		// the lamp: a lit face for as long as the preview is the cut
 		"ed.cutPlayBtn.AddCSSClass(\"suggested-action\")",
 		// each button hands its own idea of the preview to the shared press
@@ -291,5 +291,42 @@ func TestTheTwoPlayButtonsAreWired(t *testing.T) {
 		if !strings.Contains(src, want) {
 			t.Errorf("cut.go no longer contains %q", want)
 		}
+	}
+}
+
+// Pressing play must not move the page.
+//
+// The cut's play button wore a label of two glyphs -- "▶✂" and "⏸✂" -- and
+// those two glyphs do not come from the same font. On an ordinary Linux
+// desktop U+25B6 (▶) is in the text face and U+23F8 (⏸) is not, so Pango falls
+// back to the emoji face for it, which is taller. The button grew a few px the
+// moment the preview started, the toolbar row grew with it, and the whole
+// timeline under it stepped down -- and back up again on pause. The area was
+// the same; everything in it had moved.
+//
+// The play/pause half is an icon now, which is one size in both states, and
+// the ✂ that made it a label in the first place is a label of its own that
+// never changes.
+func TestPressingPlayDoesNotResizeTheButton(t *testing.T) {
+	src := readSrc(t, "cut.go")
+	for _, want := range []string{
+		`ed.cutPlayIcon = gtk.NewImageFromIconName("media-playback-start-symbolic")`,
+		`face.Append(gtk.NewLabel("✂"))`,
+		"ed.cutPlayBtn.SetChild(face)",
+		`ed.cutPlayIcon.SetFromIconName("media-playback-pause-symbolic")`,
+		`ed.cutPlayIcon.SetFromIconName("media-playback-start-symbolic")`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the cut's play button no longer keeps one size: %q is gone", want)
+		}
+	}
+	// the two-glyph label is gone from the button, not merely unused: a
+	// SetLabel anywhere on it puts the resize back
+	if strings.Contains(src, "ed.cutPlayBtn.SetLabel(") {
+		t.Error("the button's face is a label again, so its size follows the font the glyph falls to")
+	}
+	// the other play button was always an icon and stays one
+	if !strings.Contains(src, `ed.playBtn = gtk.NewButtonFromIconName("media-playback-start-symbolic")`) {
+		t.Error("the recording's play button is no longer an icon button")
 	}
 }

@@ -353,10 +353,12 @@ func TestOnlyTheOverlappingPartOfARecordingIsDrawn(t *testing.T) {
 		x    int
 		want bool
 	}{
-		{"the head of the footage, where the recording was already loud", 4, true},
-		{"still loud a few seconds in", 100, true},
-		{"the recorder went quiet (session 50 on)", 260, false},
-		{"past the end of the recording (session 200 on)", 850, false},
+		// px, and the tape starts a strip in from the widget's edge now
+		// (cut_gutter.go): every x below is that offset plus the second it means
+		{"the head of the footage, where the recording was already loud", gutterPx + 4, true},
+		{"still loud a few seconds in", gutterPx + 100, true},
+		{"the recorder went quiet (session 50 on)", gutterPx + 260, false},
+		{"past the end of the recording (session 200 on)", gutterPx + 850, false},
 	} {
 		if got := blueIn(c.x); got != c.want {
 			t.Errorf("%s: blue at px %d = %v, want %v", c.name, c.x, got, c.want)

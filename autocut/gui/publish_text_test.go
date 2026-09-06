@@ -167,10 +167,16 @@ func TestTheMarkedTextsRideTheProjectAndTheRun(t *testing.T) {
 			t.Errorf("publish.go does not contain %q — the marked texts no longer ride the project", want)
 		}
 	}
-	// retyping the title re-prints, a beat after the typing stops, and never
-	// while a run owns the files
-	if !strings.Contains(src, "p.letter.call(p.recomposite)") {
-		t.Error("the title entry no longer re-prints the words when retyped")
+	// retyping the video's title does NOT re-print the picture: the thumbnail
+	// carries its own line, seeded from the title the first time a thumbnail
+	// exists and its own from then on (setThumbTitle). Rewording the picture's
+	// line re-prints, and never while a run owns the files.
+	if strings.Contains(src, "p.letter.call(p.recomposite)") {
+		t.Error("retyping the video's title reprints the thumbnail again")
+	}
+	if !strings.Contains(funcBody(t, "publish_text.go", `func \(p \*publisher\) setThumbTitle\(s string\) \{`),
+		"p.recomposite()") {
+		t.Error("rewording the picture's line does not re-print it")
 	}
 	over := readSrc(t, "publish_text.go")
 	if !strings.Contains(funcBody(t, "publish_text.go", `func \(p \*publisher\) recomposite\(\) \{`),

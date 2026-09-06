@@ -79,19 +79,23 @@ func TestTheFilmedRunsAreTheUnionOfTheRecordings(t *testing.T) {
 
 // ---- the old layout, unchanged -----------------------------------------------
 
-// The compatibility claim. One recording is drawn from x=0 at the zoom, and a
-// second recording after a hole starts exactly one gap past the first's end --
-// which is what relayout did when it laid the files out itself.
+// The compatibility claim. One recording is drawn from the head of the tape at
+// the zoom, and a second recording after a hole starts exactly one gap past
+// the first's end -- which is what relayout did when it laid the files out
+// itself. The head is gutterPx rather than 0 since the switches at the left of
+// every band were given a strip of their own to stand in (cut_gutter.go);
+// everything below is that one offset and nothing else.
 func TestNonOverlappingSourcesLayOutExactlyAsBefore(t *testing.T) {
 	ed := axisEd(t, tlVideo{start: 0, dur: 60}, tlVideo{start: 300, dur: 40})
 	firstW := 60 * ed.pps
-	if ed.xOf(0) != 0 || ed.xOf(60) != firstW {
-		t.Errorf("the first recording runs %.0f–%.0f px, want 0–%.0f", ed.xOf(0), ed.xOf(60), firstW)
+	if ed.xOf(0) != gutterPx || ed.xOf(60) != gutterPx+firstW {
+		t.Errorf("the first recording runs %.0f–%.0f px, want %.0f–%.0f",
+			ed.xOf(0), ed.xOf(60), gutterPx, gutterPx+firstW)
 	}
-	if got, want := ed.xOf(300), firstW+gapPx; got != want {
+	if got, want := ed.xOf(300), gutterPx+firstW+gapPx; got != want {
 		t.Errorf("the second recording starts at %.0f px, want %.0f", got, want)
 	}
-	if got, want := ed.totalW, firstW+gapPx+40*ed.pps; got != want {
+	if got, want := ed.totalW, gutterPx+firstW+gapPx+40*ed.pps; got != want {
 		t.Errorf("the timeline is %.0f px wide, want %.0f", got, want)
 	}
 	// the per-file origins the thumbnails are walked from still agree with the
@@ -103,7 +107,7 @@ func TestNonOverlappingSourcesLayOutExactlyAsBefore(t *testing.T) {
 	}
 	// and the four and a half minutes nobody filmed cost one hole, not
 	// 240 seconds of blank track
-	if ed.totalW > (60+40)*ed.pps+gapPx+0.5 {
+	if ed.totalW > gutterPx+(60+40)*ed.pps+gapPx+0.5 {
 		t.Errorf("the unfilmed stretch is being drawn: %.0f px for 100 s of footage", ed.totalW)
 	}
 }
@@ -115,17 +119,17 @@ func TestOverlappingSourcesShareOneAxis(t *testing.T) {
 	// the whole session is one run, so x is the clock times the zoom all the
 	// way across -- including the twenty seconds both cameras saw
 	for _, tt := range []float64{0, 20, 40, 50, 60, 90} {
-		if got, want := ed.xOf(tt), tt*ed.pps; math.Abs(got-want) > 1e-9 {
+		if got, want := ed.xOf(tt), gutterPx+tt*ed.pps; math.Abs(got-want) > 1e-9 {
 			t.Errorf("session second %.0f is at %.1f px, want %.1f", tt, got, want)
 		}
 	}
-	if got, want := ed.totalW, 90*ed.pps; math.Abs(got-want) > 1e-9 {
+	if got, want := ed.totalW, gutterPx+90*ed.pps; math.Abs(got-want) > 1e-9 {
 		t.Errorf("two overlapping recordings measure %.0f px, want %.0f", got, want)
 	}
 	// the second camera is drawn where its footage actually is, not after the
 	// first one -- the bug this replaced
-	if ed.vids[1].pxOrigin != 40*ed.pps {
-		t.Errorf("the second camera starts at %.0f px, want %.0f", ed.vids[1].pxOrigin, 40*ed.pps)
+	if ed.vids[1].pxOrigin != gutterPx+40*ed.pps {
+		t.Errorf("the second camera starts at %.0f px, want %.0f", ed.vids[1].pxOrigin, gutterPx+40*ed.pps)
 	}
 }
 
@@ -140,7 +144,7 @@ func TestAPixelAndASecondAgree(t *testing.T) {
 	}
 	// inside the hatched hole there is no second to be at, so the x clamps
 	// forward to the next run rather than reporting a time nobody filmed
-	if got := ed.tAt(60*ed.pps + gapPx/2); got != 300 {
+	if got := ed.tAt(gutterPx + 60*ed.pps + gapPx/2); got != 300 {
 		t.Errorf("the middle of the hole reads as %.0f s, want 300", got)
 	}
 	// off the right-hand end is the end of the session
@@ -169,7 +173,10 @@ func TestTheSessionsEndAndLengthCountTimeNotFiles(t *testing.T) {
 		t.Errorf("the filmed stretch measures %.0f s, want 900", got)
 	}
 	ed.viewW = 1800
-	if got, want := ed.minPps(), fitPps(1800, 900, 1); got != want {
+	// the gutter comes off the width the footage may use, like the holes:
+	// fitted to the window itself the fully zoomed-out timeline would be
+	// wider than its window by that strip, and the scrollbar would stay
+	if got, want := ed.minPps(), fitPps(1800-gutterPx, 900, 1); got != want {
 		t.Errorf("zoom-to-fit is %.4f px/s, want %.4f", got, want)
 	}
 	if newTestEd(t).sessEnd() != 0 {

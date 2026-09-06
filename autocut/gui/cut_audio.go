@@ -696,6 +696,10 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 		}
 		y += waveGap
 	}
+	// the black strip at the head of the tape, and the whole-lane switches
+	// standing in it (cut_gutter.go)
+	ed.drawGutter(cr, 0, fh)
+	ed.drawLaneSwitches(cr)
 	// What the cut keeps, in green, exactly as it is said over the thumbnails
 	// -- these seconds are in the video, and the rest is not. It has to be
 	// said in both places: sound is chosen here now, and choosing where a
@@ -816,9 +820,6 @@ func (ed *cutEditor) drawAudio(cr *cairo.Context, w, h int) {
 	// are while the tape moves past, and a lane scrolled far from the start of
 	// its recording would otherwise be an anonymous blue smear
 	cr.SetFontSize(9)
-	// the switches first, so a name can never be drawn over one: they are at
-	// a fixed x and the names are indented past them (laneNameX)
-	ed.drawLaneSwitches(cr)
 	y = wavePad
 	for _, au := range auds {
 		n := ed.lanes(au)
@@ -934,19 +935,37 @@ func (ed *cutEditor) drawPairStrip(cr *cairo.Context, v tlVideo, au tlAudio, y, 
 // chooses a camera -- so the wave has to read as the row's shadow, not as a
 // row of its own between two of them.
 func (ed *cutEditor) drawWaveSpan(cr *cairo.Context, au tlAudio, v tlVideo, wf *waveform, ch int, y, vx0, vx1 float64, dim bool) {
+	// the overlap of this recording with this piece of footage, in session
+	// time
+	t0 := math.Max(au.start, v.start)
+	t1 := math.Min(au.start+au.dur, v.start+v.dur)
+	if t1 <= t0 {
+		return // this recording was not running while this one was
+	}
+	// ...then in px, one CELL at a time: a folded gap inside the overlap is
+	// 32 px standing for minutes, so the wave either side of it is two pieces
+	// at two origins and there is none to draw in between (cut_fold.go). With
+	// nothing folded this is one cell and one pass, as it always was.
+	for _, cell := range ed.cellsOf(t0, t1) {
+		cv := v
+		cv.pxOrigin = cell.px - (cell.t0-v.start)*ed.pps
+		ct0, ct1 := math.Max(t0, cell.t0), math.Min(t1, cell.t1)
+		ed.drawWaveCell(cr, au, cv, wf, ch, y, ct0, ct1,
+			math.Max(vx0, cell.px), math.Min(vx1, cell.px+ed.spanW(cell)), dim)
+	}
+}
+
+// drawWaveCell is that painter for one cell: the stretch [t0,t1] of one
+// channel of one recording, clipped to the px window, at an origin px is
+// linear from.
+func (ed *cutEditor) drawWaveCell(cr *cairo.Context, au tlAudio, v tlVideo, wf *waveform, ch int,
+	y, t0, t1, vx0, vx1 float64, dim bool) {
+
 	bot := y + waveLaneH - 1 // the meter's zero, a hair inside the lane
 	full := waveLaneH - 2    // and how far up full scale reaches
 	alpha := 1.0
 	if dim {
 		alpha = 0.55
-	}
-
-	// the overlap of this recording with this piece of footage, in session
-	// time, then in px
-	t0 := math.Max(au.start, v.start)
-	t1 := math.Min(au.start+au.dur, v.start+v.dur)
-	if t1 <= t0 {
-		return // this recording was not running while this one was
 	}
 	x0 := math.Max(v.pxOrigin+(t0-v.start)*ed.pps, vx0)
 	x1 := math.Min(v.pxOrigin+(t1-v.start)*ed.pps, vx1)

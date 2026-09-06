@@ -67,13 +67,17 @@ func TestRemovingTheHeldEffectOpensTheHand(t *testing.T) {
 	}
 }
 
-func TestTheXSitsAtTheBandsRightEndOnItsOwnRow(t *testing.T) {
+// The ✕ sits in the MIDDLE of the band, on the band's own row -- the green
+// bar's place for it (cut_selband.go), because a band's two ends are the grips
+// that move its start and its end.
+func TestTheXSitsInTheMiddleOfTheBandOnItsOwnRow(t *testing.T) {
 	ed := fxKillEd(t)
-	_, x1 := ed.fxSpanPx(ed.fx[1])
+	x0, x1 := ed.fxSpanPx(ed.fx[1])
+	mid := (x0 + x1) / 2
 	cx, cy, ok := ed.fxKillCentre(1)
-	if !ok || cx != x1-killIn || cy != ed.fxLaneTop()+1.5*fxLaneH {
+	if !ok || cx != mid || cy != ed.fxLaneTop()+1.5*fxLaneH {
 		t.Errorf("the zoom's ✕ is at (%.0f, %.0f) ok=%v, want (%.0f, %.0f) on row 1",
-			cx, cy, ok, x1-killIn, ed.fxLaneTop()+1.5*fxLaneH)
+			cx, cy, ok, mid, ed.fxLaneTop()+1.5*fxLaneH)
 	}
 	if i := ed.fxKillAt(cx, cy); i != 1 {
 		t.Errorf("a press on that spot answers effect %d, want 1", i)

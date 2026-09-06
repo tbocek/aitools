@@ -42,6 +42,5 @@ func (ed *cutEditor) clearCut() {
 	ed.persist()
 	ed.syncSelBtns()
 	ed.redrawTracks()
-	ed.a.setStatus(fmt.Sprintf("cleared %d scene(s) and %d effect(s) — the recordings are "+
-		"untouched, and ↶ Undo brings the cut back", segs, fx))
+	ed.a.setStatus(fmt.Sprintf("cleared %s and %s", plural(segs, "scene"), plural(fx, "effect")))
 }

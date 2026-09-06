@@ -142,7 +142,7 @@ func TestTheEmptyRowsXIsWired(t *testing.T) {
 	src := readSrc(t, "cut.go")
 	for _, want := range []string{
 		"ed.killRow(r)",
-		"ed.drawRowKill(cr, ed.viewX)",
+		"ed.drawRowKill(cr)",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the empty row's ✕ came unwired: %q", want)

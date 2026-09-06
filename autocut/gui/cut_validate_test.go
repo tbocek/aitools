@@ -131,7 +131,7 @@ func TestTheShapeGatesStillHold(t *testing.T) {
 	// and how fast a clip plays has a shape of its own, in the pass that
 	// answers it: the cut's reply is the segments alone
 	sys := readSrc(t, "syscontext.go")
-	if !strings.Contains(sys, `{"speeds":[{"clip":2,"rate":4}`) {
+	if !strings.Contains(sys, `{"speeds":[{"clip":<n>,"rate":<x>}]}`) {
 		t.Error("the system context does not show the speed pass what to answer")
 	}
 	if strings.Contains(sys, `"end":232,"speed":4`) {

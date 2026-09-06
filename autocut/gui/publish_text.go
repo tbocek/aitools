@@ -72,6 +72,12 @@ func (t pubText) box() fxBox { return fxBox{cx: t.Cx, cy: t.Cy, wf: t.Wf, hf: t.
 // to type it a second time as a marked text and leave the band empty.
 var pubTitleBox = fxBox{cx: 0.5, cy: 0.14, wf: 0.94, hf: 0.18}
 
+// printedTitle is what the picture carries: its own line (ThumbTitle), which
+// starts as the video's title and is its own from then on. st.Title is what
+// goes to YouTube, and the two stop being the same sentence the moment either
+// is edited.
+func (st pubSettings) printedTitle() string { return st.ThumbTitle }
+
 // titleBox is where THIS project's title goes: the band it was dragged to, or
 // the default one.
 func (st pubSettings) titleBox() fxBox {
@@ -213,12 +219,16 @@ func (p *publisher) textOverlay(pic *gtk.Picture) gtk.Widgetter {
 	// list. It had none of that: it was printed on the picture with nothing to
 	// take hold of, so a thumbnail showed two blocks of words and the page
 	// could only reach one of them.
-	// ...and only while it HAS words. A box is where words are: a marked one
-	// goes when its words go (editText), and the title's has to go the same
-	// way, or Remove takes the words off the picture and leaves the dashed
-	// rectangle and its ✎ sitting there over nothing. Typing a title puts it
-	// back, which is the same rule read forwards.
-	hasTitle := func() bool { return strings.TrimSpace(p.title.Text()) != "" }
+	// ...and only while it HAS words and is being printed. A box is where
+	// words are: a marked one goes when its words go (editText), and the
+	// title's has to go the same way, or Remove leaves the dashed rectangle
+	// and its ✎ sitting there over nothing.
+	//
+	// The words are the PICTURE's, not the entry's (pubSettings.ThumbTitle).
+	// While they were the entry's, the box could not be got rid of: removing
+	// it cleared the video's title, and typing the title again -- which you
+	// must, it is the video's name -- put the box straight back.
+	hasTitle := func() bool { return strings.TrimSpace(p.thumbTitle) != "" }
 	nbox := func() int {
 		if hasTitle() {
 			return len(p.texts) + 1
@@ -521,23 +531,51 @@ func (p *publisher) setTitleBox(b *pubText) {
 	p.recomposite()
 }
 
-// editTitle is the title band's ✎. The words are the entry's on the other side
-// of the page -- this is the YouTube title first and words on a picture second
-// -- so the dialog edits that entry and the entry's own handler re-prints.
+// editTitle is the title band's ✎: the words ON THE PICTURE, which are the
+// picture's own from the moment it has any. Rewording them here leaves the
+// video's title alone, exactly as rewording the title leaves these alone --
+// they are the same sentence only until one of them is improved.
 //
-// Remove means what it means on every other box: take these words off the
-// picture. It used to put the BAND back to its default instead, which on a
-// band nobody had moved was a complete no-op -- Remove did nothing, visibly or
-// otherwise. Clearing the entry is the honest reading: nothing is printed, the
-// YouTube title is empty, and both say so in the one place the title lives.
-// The band goes back with it, so the next title starts where a title starts.
+// Remove takes the line off the picture and leaves the video its name. It
+// stays off: nothing seeds the words twice (seedThumbTitle), so the next draw
+// does not put them back.
 func (p *publisher) editTitle() {
-	p.a.askPubText(p.title.Text(), func(s string) {
-		p.title.SetText(strings.TrimSpace(s)) // its handler re-prints
+	p.a.askPubText(p.thumbTitle, func(s string) {
+		p.setThumbTitle(strings.TrimSpace(s))
 	}, func() {
-		p.title.SetText("")
-		p.setTitleBox(nil)
+		p.setThumbTitle("")
 	})
+}
+
+// setThumbTitle is the one place the picture's line changes: the state, the
+// overlay's boxes and the printed file all have to agree about what is on the
+// thumbnail.
+//
+// Setting it counts as seeding, whichever way it was set. A line taken off on
+// purpose and a line typed in by hand are both answers, and an answer is not
+// something to overwrite the next time a picture is drawn -- so the line is
+// gone for good, and words wanted on the picture afterwards are drawn as a box
+// like any other (textOverlay).
+func (p *publisher) setThumbTitle(s string) {
+	p.thumbTitle, p.titleSeeded = s, true
+	if p.shotOver != nil {
+		p.shotOver.QueueDraw()
+	}
+	p.recomposite()
+}
+
+// seedThumbTitle gives a picture the video's title as its line, once. Called
+// where a thumbnail comes into existence -- drawn, or chosen from the row --
+// and never again: after that the picture's words are its own.
+func (p *publisher) seedThumbTitle() {
+	if p == nil || p.titleSeeded {
+		return
+	}
+	if t := strings.TrimSpace(p.title.Text()); t != "" {
+		p.setThumbTitle(t)
+		return
+	}
+	p.titleSeeded = false // nothing to seed with yet; the next thumbnail tries again
 }
 
 // editText reopens text i's words. Saving empty removes it -- the words are

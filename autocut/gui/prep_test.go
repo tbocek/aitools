@@ -219,7 +219,8 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 		"the switchable box on the right":  "outer.SetEndChild(bench)",
 		"a right half that grows too":      "outer.SetResizeEndChild(true)",
 		"the handle opening at the middle": "openAtHalf(outer)",
-		"room over the shared bar below":   "outer.SetMarginBottom(6)",
+		"room over the shared bar below":   "outer.SetMarginBottom(8)",
+		"room under the tabs above":        "outer.SetMarginTop(8)",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the page is missing %s (%s)", what, want)
@@ -363,12 +364,13 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 	}
 }
 
-// TestTheOutputsRowSaysHowMuchAndHoverSaysWhen: the count is on the row and
-// its age is on the tooltip -- one folder per step along the bottom bar, and
-// "12 files, newest 3 min ago" on each of them is a paragraph across the page.
+// TestTheOutputsRowSaysHowMuchAndHoverSaysWhen: how many files and how big on
+// the row, the age on the tooltip -- one folder per step along the bottom bar,
+// and "12 files, newest 3 min ago" on each of them is a paragraph across the
+// page.
 func TestTheOutputsRowSaysHowMuchAndHoverSaysWhen(t *testing.T) {
 	dir := t.TempDir()
-	if n, _ := countOutputs(dir); n != 0 {
+	if n, _, _ := countOutputs(dir); n != 0 {
 		t.Errorf("an empty folder counted %d files", n)
 	}
 	if got := summarizeOutputs(dir); got != "nothing yet" {
@@ -385,14 +387,20 @@ func TestTheOutputsRowSaysHowMuchAndHoverSaysWhen(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	n, newest := countOutputs(dir)
+	n, newest, size := countOutputs(dir)
 	if n != 2 {
 		t.Errorf("counted %d files under a folder holding two", n)
 	}
 	if newest.IsZero() {
 		t.Error("no newest time for a folder with files in it")
 	}
-	if got := summarizeOutputs(dir); !strings.HasPrefix(got, "2 files, newest ") {
+	if size != 2 {
+		t.Errorf("two one-byte files measured %d bytes", size)
+	}
+	// how many and how big, and nothing else: the age is a fact about the last
+	// run rather than about what is on disk, and the run that wrote it
+	// finished in front of you
+	if got := summarizeOutputs(dir); got != "2 files, 2 B" {
 		t.Errorf("the one-line form reads %q", got)
 	}
 }

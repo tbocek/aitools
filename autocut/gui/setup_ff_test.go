@@ -139,12 +139,15 @@ func TestEverySettingsSectionSaysWhichAPIItExpects(t *testing.T) {
 		}
 	}
 	// a heading shares its line with the section's first row: it is a column
-	// of the grid, not a row spanning it
+	// of the grid, not a row spanning it -- and the sections are told apart by
+	// a rule between them rather than by a box around each, which would lay
+	// every section's columns out separately
 	for _, want := range []string{
-		`grid.Attach(head("Writing", `, // ...at column 0
-		`), 0, 0, 1, 1)`,               // ...one cell wide, on the Server row
-		`grid.Attach(lbl("Server:"), 1, 0, 1, 1)`,
-		`grid.Attach(server, 2, 0, 1, 1)`,
+		"grid.Attach(head(title, why), 0, row, 1, 1)", // ...at column 0, on the section's first row
+		"rule := gtk.NewSeparator(gtk.OrientationHorizontal)",
+		"grid.Attach(rule, 0, row, 5, 1)", // ...across the whole width
+		`grid.Attach(lbl("Server:"), 1, row, 1, 1)`,
+		`grid.Attach(server, 2, row, 1, 1)`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the settings grid no longer puts a heading beside its first row: %q", want)
@@ -153,8 +156,8 @@ func TestEverySettingsSectionSaysWhichAPIItExpects(t *testing.T) {
 	// and every box is one cell in one column, keys included -- those used to
 	// run wide across the columns the Tests are in, so they were the only rows
 	// whose right edge was somewhere else
-	for _, want := range []string{"grid.Attach(key, 2, 1, 1, 1)",
-		"grid.Attach(ttsKey, 2, 5, 1, 1)", "grid.Attach(sdKey, 2, 13, 1, 1)"} {
+	for _, want := range []string{"grid.Attach(key, 2, row+1, 1, 1)",
+		"grid.Attach(ttsKey, 2, row+1, 1, 1)", "grid.Attach(sdKey, 2, row+1, 1, 1)"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("a key box is not in the value column: %q", want)
 		}
@@ -162,8 +165,8 @@ func TestEverySettingsSectionSaysWhichAPIItExpects(t *testing.T) {
 	// five sections, five titles, and nothing longer than a word or two on
 	// the page itself -- the em-dash subtitles are what moved behind the ⓘ
 	for _, title := range []string{
-		`head("Writing", `, `head("Speaking", `, `head("Cutting", `,
-		`head("Listening", `, `head("Drawing", `,
+		`sec("Writing", `, `sec("Speaking", `, `sec("Cutting", `,
+		`sec("Listening", `, `sec("Drawing", `,
 	} {
 		if strings.Count(s, title) != 1 {
 			t.Errorf("the settings page has %d sections titled %s, want one",

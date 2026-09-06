@@ -61,12 +61,19 @@ const (
 	// The speaker badges already keep this rule (hearIn); this is the same
 	// sentence for the ✕.
 	killIn = edgeGrab + segKillHit
-	// under this a thing has no corner to spare: the target reaches
-	// killIn+segKillHit in from the edge, and anything narrower than twice
-	// that has its MIDDLE inside the ✕ -- so a click meant for the thing
-	// itself would remove the thing. Twice the reach, and a little over, so
-	// the half away from the badge is plain timeline.
-	killMin = 2*(killIn+segKillHit) + 6
+	// ...which is where a badge drawn against an edge sits. The plated ones
+	// are not: a scene's ✕ and an effect's are drawn in the MIDDLE of what
+	// they remove (drawSelBand, fxKillCentre), because the ends of both are
+	// grips and the seam between two of them is the fold's + (cut_fold.go) --
+	// the middle is the one part of a bar no other verb wants. killIn is
+	// still the number that governs them: it is how far the middle has to be
+	// from either end before the badge's target stops overlapping the grips.
+	//
+	// Hence the floor. Under this a thing has no middle to spare -- the ✕
+	// would be pressable from a border -- and it is drawn without one; ⌦
+	// still removes whatever is in hand, which is how a scene of a few frames
+	// goes.
+	killMin = 2 * killIn
 )
 
 // drawKillBadge paints one ✕ centred on cx,cy: a plate, then the arms.
