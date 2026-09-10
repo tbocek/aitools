@@ -1635,6 +1635,73 @@ func (ed *cutEditor) skipGap() bool {
 	return true
 }
 
+// walkOn carries playback from the end of one recording to the next.
+//
+// A row is several files in a line and the timeline is one clock over all of
+// them, so the end of a file is not the end of anything the page shows: ▶ ran
+// out of stream and the line stopped in the hatched strip between two
+// recordings, with the rest of the session still to the right of it.
+//
+// The strip is not played through. Nobody filmed those minutes -- there is
+// nothing there to watch -- and the page does not even draw them to scale
+// (cut_fold.go), so the line lands on the next recording's first frame and
+// keeps going, which is what the same press already does when the cut runs onto
+// another camera (followPlayback).
+//
+// Only after an END. A pause is a decision and stays one, and a stream nobody
+// started has nowhere to walk on to.
+func (ed *cutEditor) walkOn() bool {
+	if ed.player == nil || !ed.player.ended || ed.hold.on {
+		return false
+	}
+	t, v, ok := ed.nextPlay()
+	if !ok {
+		return false // the last recording has played out: that IS the end
+	}
+	if v == ed.playVideo && t <= ed.playhead {
+		return false // the same file at the same second is not somewhere to go
+	}
+	ed.jumped = -1
+	ed.setPlayhead(t)
+	ed.cutOnlySnap() // ▶✂ carries on at the next KEPT clip, not the next frame
+	if !ed.player.playing {
+		// setPlayhead cues the player where it finds it, and it found it
+		// stopped: what ended was the file, not the press
+		ed.player.Toggle()
+	}
+	return true
+}
+
+// nextPlay is where that is: the second the line is already on when another
+// camera is still rolling through it, and otherwise the first frame of the next
+// recording on the timeline. false past the last one.
+//
+// The recording that just ended is never the answer, whatever the clock says.
+// Two files written back to back -- a camera stopped and started again, a
+// recorder splitting by size -- meet at one second, and asking which recording
+// that second belongs to has two answers; the one we have just played out is
+// not the one to play next.
+func (ed *cutEditor) nextPlay() (float64, *tlVideo, bool) {
+	t := ed.playhead
+	if v := ed.videoAt(t); v != nil && v != ed.playVideo {
+		return t, v, true
+	}
+	var best *tlVideo
+	for i := range ed.vids {
+		v := &ed.vids[i]
+		if v == ed.playVideo || v.start < t-0.01 {
+			continue
+		}
+		if best == nil || v.start < best.start {
+			best = v
+		}
+	}
+	if best == nil {
+		return 0, nil, false
+	}
+	return math.Max(best.start, t), best, true
+}
+
 // cutOnlySnap puts the line on kept material before the picture starts, so a ▶
 // pressed with the line standing in a gap does not open on a frame the cut
 // throws away. The tick would move it a moment later anyway; this is only so
@@ -1662,6 +1729,12 @@ func (ed *cutEditor) followPlayback() bool {
 	// follow: the footage is held and the card runs on the wall clock instead
 	if ed.hold.on {
 		ed.tickHold()
+		return true
+	}
+	// the recording under the line has run out with the session still going:
+	// the line walks on to the next one rather than stopping in the strip
+	// between two files (walkOn)
+	if ed.walkOn() {
 		return true
 	}
 	if ed.player == nil || !ed.player.playing || ed.playVideo == nil {

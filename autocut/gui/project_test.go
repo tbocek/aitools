@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A project stores its input and output folders relative to root so that moving
@@ -670,7 +671,7 @@ func TestNewProjectResetsEveryPageThroughApplyProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := regexp.MustCompile(`(?s)func \(a \*App\) newProject\(\) \{.*?\n}\n`).Find(src)
+	body := regexp.MustCompile(`(?s)func \(a \*App\) newProject\(path string\) \{.*?\n}\n`).Find(src)
 	if body == nil {
 		t.Fatal("newProject is gone")
 	}
@@ -711,6 +712,80 @@ func TestNewProjectResetsEveryPageThroughApplyProject(t *testing.T) {
 		if !strings.Contains(body, "a.setProject(") {
 			t.Errorf("%s does not point the session at a file, so the pages keep the last project's folder:\n%s", fn, body)
 		}
+	}
+}
+
+// New Project asks what to call it and where to put it.
+//
+// It used to make session.autocut in the folder autocut was started from --
+// which is the one folder a session's own footage is never in. Every project
+// therefore began in the checkout and had to be moved afterwards by a Save As,
+// and by then the move is a folder with an hour of frames in it.
+func TestNewProjectIsNamedAndPlaced(t *testing.T) {
+	dir := t.TempDir()
+
+	// the name box starts on today's date -- which is how the recorders name
+	// their own files -- and steps past a project already called that rather
+	// than proposing a name that would be refused
+	day := time.Now().Format("2006-01-02")
+	if got, want := freeProjName(dir), day+projExt; got != want {
+		t.Errorf("the name box starts at %q, want %q", got, want)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, day+projExt), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := freeProjName(dir), day+"-2"+projExt; got != want {
+		t.Errorf("with today's name taken the box starts at %q, want %q", got, want)
+	}
+
+	// a name that is a project already is refused, and that project is left
+	// exactly as it was: a blank session lands on disk within the second
+	// (saveProjectNow), and it would land on top of frames, a cut and a
+	// narration it knows nothing about
+	proj := filepath.Join(dir, "raid"+projExt)
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	was := []byte(`{"context":"the project that was there"}`)
+	if err := os.WriteFile(projFile(proj), was, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{root: dir, projPath: filepath.Join(dir, workName)}
+	a.outDir = dataDir(a.projPath)
+	a.newProjectAt(proj)
+	if got, err := os.ReadFile(projFile(proj)); err != nil || string(got) != string(was) {
+		t.Errorf("New on an existing project rewrote it: %q (%v)", got, err)
+	}
+	if a.projPath != filepath.Join(dir, workName) {
+		t.Errorf("the session moved into %s regardless", a.projPath)
+	}
+	// ...including when the extension was not typed, since the name box is
+	// where a folder gets its name and "raid" and "raid.autocut" are one
+	// project (withProjExt)
+	a.newProjectAt(filepath.Join(dir, "raid"))
+	if got, _ := os.ReadFile(projFile(proj)); string(got) != string(was) {
+		t.Errorf("a name typed without the extension started over an existing project: %q", got)
+	}
+
+	// both ways in lead to the box, and the box is a NAME box: a folder
+	// chooser can only pick a folder that already exists, and this one is
+	// being created
+	body := funcBody(t, "project.go", `func \(a \*App\) newProjectDialog\(\) \{`)
+	if strings.Count(body, "a.askNewProject") != 2 {
+		t.Errorf("New does not ask where it goes on both paths:\n%s", body)
+	}
+	if strings.Contains(body, "a.newProject(") {
+		t.Errorf("New still starts a project without asking where:\n%s", body)
+	}
+	ask := funcBody(t, "project.go", `func \(a \*App\) askNewProject\(\) \{`)
+	if !strings.Contains(ask, "a.saveAs(") || strings.Contains(ask, "a.pickFolder(") {
+		t.Errorf("the new project is not named in a name box:\n%s", ask)
+	}
+	// and Add opens where the project was put, not in the checkout's own
+	// input_video, which for a session on a card is a folder with nothing in it
+	if !strings.Contains(funcBody(t, "project.go", `func \(a \*App\) newProject\(path string\) \{`),
+		"a.vidDir, a.audDir = dir, dir") {
+		t.Error("a new project's choosers open in the folder autocut was started from")
 	}
 }
 

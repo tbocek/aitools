@@ -1047,7 +1047,7 @@ func (a *App) build(app *gtk.Application) {
 	// Symbols, like everything else in this bar; the tooltip says what the icon
 	// means. New, then Open, then Save: the order every application uses.
 	newP := gtk.NewButtonFromIconName("document-new-symbolic")
-	newP.SetTooltipText("New project — empty the session and start over")
+	newP.SetTooltipText("New project — name it, put it where you want it, and start over")
 	newP.ConnectClicked(a.newProjectDialog)
 	loadP := gtk.NewButtonFromIconName("document-open-symbolic")
 	loadP.SetTooltipText("Load a project — sources, prompts and settings")

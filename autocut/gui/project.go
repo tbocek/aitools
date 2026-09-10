@@ -708,37 +708,90 @@ func blankProject() Project {
 	}
 }
 
-// newProject empties the session. The named project FILE is not deleted and not
-// written over here: what the autosave follows afterwards is the working copy,
-// so a named project that was open stays on disk exactly as it was, and going
-// back to it is Load, not undo. Its output folder is left alone too -- it is
-// that file's folder now, not this session's.
-func (a *App) newProject() {
+// newProject empties the session into a project of its own at path. The
+// project that was open is not deleted and not written over: it stays on disk
+// exactly as it was, with everything it has written, and going back to it is
+// Load, not undo.
+func (a *App) newProject(path string) {
 	a.applyProject(blankProject())
-	a.setProject(filepath.Join(a.root, workName))
-	// the working copy is now the open project, and that is a decision, not an
-	// absence: without this the next launch reopens the named project this was
-	// meant to get away from (see rememberProject)
+	// where the project was put is where its footage almost certainly is, so
+	// that is where Add opens -- not input_video/ under the folder autocut was
+	// started from, which for a session on a card or a scratch disk is a folder
+	// with nothing in it. The working copy keeps those defaults: nobody chose
+	// where it went.
+	if dir := filepath.Dir(path); dir != a.root {
+		a.vidDir, a.audDir = dir, dir
+	}
+	a.setProject(path)
+	// the new project is now the open one, and that is a decision, not an
+	// absence: without this the next launch reopens the project this was meant
+	// to get away from (see rememberProject)
 	a.rememberProject(a.projPath)
 	a.saveProjectNow()
-	a.setStatus("new project — the session is empty")
-	a.logf(">>> new project -- the session is empty; outputs on disk are untouched")
+	a.setStatus("new project — " + filepath.Base(path))
+	a.logf(">>> new project %s -- the session is empty; outputs on disk are untouched", path)
 }
 
-// newProjectDialog asks first. The session is not a file until Save names one,
-// so New on a session nobody saved throws away work that exists nowhere else --
-// and it is one click from Load and Save in the header bar, which are the two
-// buttons a hand reaching for it is aiming between.
+// newProjectAt is the answer to that dialog: the folder is made and the empty
+// session moves into it.
+//
+// A name that is already a project is refused rather than started over. The
+// blank session would be written into it within the second (saveProjectNow),
+// on top of a project whose frames, cut and narration are all still in that
+// folder and would then belong to a session that knows nothing about them.
+func (a *App) newProjectAt(path string) {
+	path = withProjExt(path)
+	if exists(projFile(path)) {
+		a.setStatus(filepath.Base(path) + " is a project already — open it, or pick another name")
+		a.logf("!!! new project: %s is a project already -- nothing was changed", path)
+		return
+	}
+	a.newProject(path)
+}
+
+// askNewProject asks what to call it and where to put it.
+//
+// New used to make session.autocut in the folder autocut was started from,
+// which is the one folder a session's own footage is never in: every project
+// began in the checkout and had to be moved by a Save As afterwards. A project
+// is a folder you name and place (projExt), and this is where that happens.
+//
+// It opens beside the open project, which is where saveProjectDialog opens and
+// for the same reason -- the last project is nearly always beside the footage
+// this one is about.
+func (a *App) askNewProject() {
+	dir := filepath.Dir(a.projPath)
+	a.saveAs("New project", dir, freeProjName(dir), nil, a.newProjectAt)
+}
+
+// freeProjName is what the name box starts with: today's date, which is how the
+// recorders name their own files, and a number after it when a project of that
+// name is already there -- a second session in one day is not a mistake worth
+// a refusal.
+func freeProjName(dir string) string {
+	day := time.Now().Format("2006-01-02")
+	name := day + projExt
+	for i := 2; exists(filepath.Join(dir, name)); i++ {
+		name = fmt.Sprintf("%s-%d%s", day, i, projExt)
+	}
+	return name
+}
+
+// newProjectDialog asks first, and then asks where (askNewProject). The
+// session is not a file until Save names one, so New on a session nobody saved
+// throws away work that exists nowhere else -- and it is one click from Load
+// and Save in the header bar, which are the two buttons a hand reaching for it
+// is aiming between.
 //
 // Nothing to lose, no question: an empty session being emptied is not a
-// decision worth interrupting anyone for.
+// decision worth interrupting anyone for. The name dialog still comes.
 func (a *App) newProjectDialog() {
 	if a.running {
 		a.setStatus("stop the run first — a new project would pull its inputs out from under it")
 		return
 	}
 	if len(a.srcList.items) == 0 && a.sessionCtx() == "" {
-		a.newProject()
+		a.askNewProject()
 		return
 	}
 	detail := "The sources, the session context and every prompt edit go back to empty. " +
@@ -750,7 +803,9 @@ func (a *App) newProjectDialog() {
 		detail += "\n\nThis session has never been saved under a name of its own, " +
 			"so there is nothing to come back to."
 	}
-	a.confirm("Start a new project?", detail, "Start new", a.newProject)
+	// the ellipsis is the promise that the press is not the last word: what
+	// follows is the box that names the new project and puts it somewhere
+	a.confirm("Start a new project?", detail, "Start new…", a.askNewProject)
 }
 
 // confirm is a modal yes/no with the red button: what the left button does
