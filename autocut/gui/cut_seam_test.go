@@ -1,71 +1,178 @@
 package main
 
-// Which recording a session-second belongs to.
+// The seams a reply does not mean to open, and the pictures that must not beat
+// a pause.
 //
-// One question, asked from two places that must not disagree: the preview cues
-// a file and an offset from it (cut.go), and the render walks a snapshot of the
-// same timeline with no editor behind it (produce.go). A cut made while looking
-// at one clip and rendered as the other is the sort of mistake that is only
-// noticed in the finished file, so both go through pickVideo and this is what
-// pickVideo promises.
+// Both are about the same fault from opposite ends: the timeline is stamped in
+// whole seconds, so the finest cut a reply can express is one second, and our
+// own snapping then decides what that second means. One run asked for 21 holes,
+// eleven of them exactly one second, and eight of those eleven had a word in
+// the middle of them.
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-// The seam is the whole of it. Two recordings laid end to end share an instant
-// -- the second one's first frame and the second past the first one's last are
-// the same session-second -- and exactly one of them has to own it.
+func seamRows() []tsvRow {
+	return []tsvRow{
+		{s: 80, e: 86.4, spk: "SPEAKER_00", text: "The team did not invent"},
+		{s: 86.4, e: 87.2, spk: "SPEAKER_00", text: "new algorithms."},
+		{s: 87.2, e: 95, spk: "SPEAKER_00", text: "They used the general number field sieve."},
+		{s: 96, e: 104, spk: "EVENT", text: "Calm; the article stays open."},
+		{s: 120, e: 128, spk: "SPEAKER_00", text: "and it finished in around three weeks."},
+	}
+}
+
+// A one-second hole with a word in it is the model saying "this carries on".
+// Closing it is a repair: without it the word is simply missing from the video,
+// mid-sentence, with the cut keeping both sides of it.
+func TestASeamWithAWordInItIsClosed(t *testing.T) {
+	rows := seamRows()
+	got := joinSeams([]cutSeg{{S: 80, E: 86}, {S: 87, E: 95}}, rows)
+	if len(got) != 1 || got[0].S != 80 || got[0].E != 95 {
+		t.Fatalf("the seam over %q was left open: %+v", "new algorithms.", got)
+	}
+
+	// ...and one with nothing but silence in it may well be a trim: those
+	// seconds are seconds nobody spoke in, and the reply is allowed to mean it
+	quiet := joinSeams([]cutSeg{{S: 80, E: 95}, {S: 96, E: 104}}, rows)
+	if len(quiet) != 2 {
+		t.Errorf("a silent seam was closed as if it were a rounding slip: %+v", quiet)
+	}
+
+	// a real hole stays a real hole, however much is said inside it
+	big := joinSeams([]cutSeg{{S: 80, E: 95}, {S: 120, E: 128}}, rows)
+	if len(big) != 2 {
+		t.Errorf("a %g s hole was closed: %+v", 120-95.0, big)
+	}
+
+	// and a cut of one clip comes back as it went in
+	if one := joinSeams([]cutSeg{{S: 80, E: 95}}, rows); len(one) != 1 {
+		t.Errorf("a single clip did not survive: %+v", one)
+	}
+	// the suggestion goes through it before its edges are placed, so the
+	// repair is deliberate rather than a side effect of two edges happening to
+	// snap to the same pause
+	src := readSrc(t, "cut_suggest.go")
+	i, j := strings.Index(src, "segs = joinSeams(segs, rows)"), strings.Index(src, "a.ed.snapEdge(s.S, true)")
+	if i < 0 || j < 0 || i > j {
+		t.Error("the seams are repaired after the edges are snapped, or not at all")
+	}
+}
+
+// A frame where the picture changed is a fine place to cut, unless somebody is
+// speaking there. Frames sit on the extraction interval -- one second on this
+// footage -- so a visual peak at a whole second is exactly where a reply's
+// rounded boundary already is, and it wins against the pause beside it.
+func TestAPictureDoesNotBeatAPause(t *testing.T) {
+	ed := newTestEd(t)
+	ed.talk = [][2]float64{{342.2, 350.36}, {351.16, 353.88}}
+
+	if !ed.talking(350.0) {
+		t.Error("a second in the middle of a sentence was called silent")
+	}
+	if !ed.talking(350.5) {
+		t.Errorf("a second %g s after the last word was called silent -- the ear does not agree", 350.5-350.36)
+	}
+	if ed.talking(350.9) {
+		t.Error("the pause between two sentences was called speech")
+	}
+	if ed.talking(400) {
+		t.Error("a second with no speech anywhere near it was called speech")
+	}
+	// the visual candidates are offered only where the talking is not
+	body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) snapEdge\(`)
+	if !strings.Contains(body, "ed.scores[v.base]; sc != nil && !ed.talking(t)") {
+		t.Errorf("a frame can still outscore a pause in the middle of a word:\n%s", body)
+	}
+	// ...and the speech that answers it is the same reading the silences come
+	// from, so the two halves cannot disagree
+	if !strings.Contains(readSrc(t, "cut.go"), "ed.talk = speech") {
+		t.Error("the speech spans are built from some other list than the gaps")
+	}
+}
+
+// The marks are not a hint to the model, they are a fact about the material:
+// those seconds were said again, and no arrangement of segments may keep them.
 //
-// It is the one starting there. Half-open, [start, start+dur): closing the far
-// end instead would hand the seam to the recording ENDING on it, and a preview
-// cued at second `dur` of a file is cued one frame past its last, which is
-// black. What anyone scrubbing onto a seam wants to see is the next clip.
-func TestASeamBelongsToTheRecordingThatStartsOnIt(t *testing.T) {
-	vids := []tlVideo{
-		{base: "a", start: 0, dur: 60},
-		{base: "b", start: 60, dur: 30},  // butted straight onto a
-		{base: "c", start: 100, dur: 10}, // ...and after a ten-second gap
+// Hiding them from the brief was not enough. The model answers in RANGES, and a
+// range spanning a folded stretch keeps every second of it -- one run came back
+// with 39.28-108.44 and 113.28-164.00 around a mark at 106.16-111.36, having
+// aimed at the seam and missed it by two seconds. Two seconds is the whole of a
+// doubled sentence.
+func TestAMarkedStretchCannotSurviveInTheCut(t *testing.T) {
+	segs := []cutSeg{{S: 39.28, E: 108.44}, {S: 113.28, E: 164}}
+	marks := []retake{{S: 106.16, E: 111.36, Again: 114.56}}
+	if n := dropMarked(&segs, marks); n != 1 {
+		t.Fatalf("the mark acted on %d scenes, want 1", n)
 	}
-	for _, c := range []struct {
-		t    float64
-		want string // "" means no recording is playing then
-	}{
-		{0, "a"},    // the very first instant is inside the first recording
-		{59.9, "a"}, // ...and so is the last one before the seam
-		{60, "b"},   // the seam itself: the one starting here, not the one ending
-		{89.9, "b"},
-		{90, ""},   // the gap between two recordings is nobody's
-		{95, ""},   // ...for all of it
-		{100, "c"}, // and picks up again on the far side
-		{110, ""},  // past the end of the last: the session is over
-		{-1, ""},   // and before the start of the first
-	} {
-		got := pickVideo(vids, c.t)
-		name := ""
-		if got != nil {
-			name = got.base
-		}
-		if name != c.want {
-			t.Errorf("second %g plays %q, want %q", c.t, name, c.want)
-		}
+	if len(segs) != 2 || segs[0].E != 106.16 || segs[1].S != 113.28 {
+		t.Fatalf("the marked seconds are still in the cut: %+v", segs)
 	}
 
-	// no footage at all is a question with an answer, not a crash: the Cut page
-	// is reachable before a reload has found anything to put on it
-	if pickVideo(nil, 0) != nil {
-		t.Error("a session with no recordings claims to be playing one")
+	// a scene that spans one comes apart into the two halves either side
+	segs = []cutSeg{{S: 90, E: 130}}
+	dropMarked(&segs, marks)
+	if len(segs) != 2 || segs[0].E != 106.16 || segs[1].S != 111.36 {
+		t.Fatalf("a scene across the mark did not come apart: %+v", segs)
 	}
 
-	// a zero-length recording is empty on both sides of its own start, or the
-	// seam rule would make it swallow the instant the next one begins on
-	if v := pickVideo([]tlVideo{{base: "z", start: 5}, {base: "y", start: 5, dur: 1}}, 5); v == nil ||
-		v.base != "y" {
-		t.Error("a zero-length recording took the second the one after it starts on")
+	// what is left too short to be a scene goes with it: a sliver either side
+	// of a stumble is not a shot
+	segs = []cutSeg{{S: 106, E: 112}}
+	if dropMarked(&segs, marks); len(segs) != 0 {
+		t.Errorf("slivers of a stumble survived as scenes: %+v", segs)
 	}
 
-	// and the editor asks the same question of its own timeline -- one
-	// implementation, so the preview cannot drift from the render
-	ed := &cutEditor{vids: vids}
-	if v := ed.videoAt(60); v == nil || v.base != "b" {
-		t.Error("videoAt disagrees with pickVideo about the seam")
+	// an insert is a file, not seconds of the session, and is never cut
+	segs = []cutSeg{{S: 107, E: 107, Ins: "card.svg", Dur: 4}}
+	if dropMarked(&segs, marks); len(segs) != 1 {
+		t.Errorf("a card placed by hand was removed by a mark: %+v", segs)
+	}
+
+	// and it runs AFTER the snapping: snapEdge moves an end outward by up to
+	// five seconds to find a silence, and outward from a mark's border is into
+	// the mark
+	src := readSrc(t, "cut_suggest.go")
+	snap := strings.Index(src, "a.ed.snapEdge(s.S, true)")
+	drop := strings.Index(src, "dropMarked(&a.ed.segs, marks)")
+	if snap < 0 || drop < 0 || drop < snap {
+		t.Error("the marks are applied before the snapping, which can put them back")
+	}
+}
+
+// A cut inside a phrase has one place it can go: the gap between two words.
+// No silence marks it — there is none between "art" and "and", only a closure —
+// so a silence midpoint cannot find it and a frame boundary lands wherever the
+// extraction interval happened to fall. The aligner's word edges can.
+func TestAnEdgeSnapsToAWordBoundary(t *testing.T) {
+	ed := newTestEd(t)
+	ed.words = []srcWord{
+		{s: 105.52, e: 105.70, w: "art"},
+		{s: 105.86, e: 106.04, w: "and"},
+		{s: 106.10, e: 106.30, w: "the"},
+	}
+	got := ed.wordEdges(105.9)
+	if len(got) != 6 {
+		t.Fatalf("the words near the point came back as %v", got)
+	}
+	// far away, nothing: a boundary five seconds off is not this boundary
+	if far := ed.wordEdges(300); len(far) != 0 {
+		t.Errorf("words %v were offered to a point %g s away", far, 300-106.3)
+	}
+	// and they are offered to the snap above a silence midpoint's score,
+	// because a midpoint is a guess at exactly this
+	body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) snapEdge\(`)
+	iw, ig := strings.Index(body, "ed.wordEdges(t)"), strings.Index(body, "ed.gaps[v.base]")
+	if iw < 0 || ig < 0 {
+		t.Fatalf("snapEdge no longer offers both candidates:\n%s", body)
+	}
+	if !strings.Contains(body, "try(w, 0.9)") {
+		t.Error("a word boundary does not outrank a silence midpoint (0.8)")
+	}
+	// the words are the aligner's, read through the one door
+	if !strings.Contains(readSrc(t, "cut.go"), "ed.words = a.sessionWords(paths)") {
+		t.Error("the page reads word times from somewhere other than sessionWords")
 	}
 }

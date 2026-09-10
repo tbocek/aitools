@@ -5,6 +5,8 @@
   "device": 0,
   "threads": 8,
   "lazy_load": true,
+  "max_loaded_models": 3,
+  "idle_unload_ms": 300000,
   "voice_dir": "/home/arch/audio.cpp/models/voices",
   "models": [
     {
@@ -47,6 +49,27 @@
       "session_options": {
         "sortformer_diar.graph_capacity_mode": "grow"
       }
+    },
+    {
+      "id": "mms-aligner",
+      "family": "mms_forced_aligner",
+      "path": "/home/arch/audio.cpp/models/MMS-Forced-Aligner-GGUF/mms-forced-aligner-f16.gguf",
+      "task": "align",
+      "mode": "offline"
+    },
+    {
+      "id": "qwen3-aligner",
+      "family": "qwen3_forced_aligner",
+      "path": "/home/arch/audio.cpp/models/Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-f16.gguf",
+      "task": "align",
+      "mode": "offline"
+    },
+    {
+      "id": "qwen3-asr",
+      "family": "qwen3_asr",
+      "path": "/home/arch/audio.cpp/models/Qwen3-ASR-1.7B-GGUF/qwen3-asr-1.7b-q8_0.gguf",
+      "task": "asr",
+      "mode": "offline"
     }
   ]
 }

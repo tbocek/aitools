@@ -736,9 +736,9 @@ func laneName(ch, lanes, chans int) string {
 // drawLane paints one channel of one recording across the footage it overlaps.
 //
 // Per video rather than straight across the timeline, because the timeline is
-// not one continuous clock: recordings are laid out with a fixed-width hatched
-// hole between them (gapPx) and tAt clamps inside those holes, so a column
-// walked blindly across one would smear the same instant over the whole gap.
+// not one continuous clock: time nobody filmed is not laid out at all, so a
+// column walked blindly across the width would put one recording's samples
+// over the stretch before it started rolling.
 func (ed *cutEditor) drawLane(cr *cairo.Context, au tlAudio, wf *waveform, ch int, y, vx0, vx1 float64) {
 	for _, v := range ed.vids {
 		ed.drawWaveSpan(cr, au, v, wf, ch, y, vx0, vx1, false)

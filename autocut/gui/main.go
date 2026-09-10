@@ -476,6 +476,11 @@ type App struct {
 	running    bool
 	audioNoted string // the audio.cpp server already reported in the log
 	ttsModel   string // the model id that server serves, asked for once
+	// which aligner answered. A catalog entry is a claim rather than a working
+	// model (alignModels) -- a server lists one whose family the engine it is
+	// running was not built with -- so the run remembers the one that worked
+	// instead of spending a failed request per source to learn it again.
+	alignPick string
 
 	// The Prepare page's own controls -- the settings a run reads off it,
 	// which is everything on that page a runner needs and nothing it draws.

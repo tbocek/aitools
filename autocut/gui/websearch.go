@@ -468,7 +468,7 @@ func webTools() []map[string]any {
 	return []map[string]any{
 		{"type": "function", "function": map[string]any{
 			"name":        "web_search",
-			"description": "Look a fact up before writing it: what a named thing is, does or costs, a name's spelling, a number. Use it for a detail the material does not show and you would otherwise guess. Give three queries at once, from broad to narrow -- the game, the game and the thing, the thing's exact name -- and you get the narrowest one that found anything.",
+			"description": "Look up a fact you are about to write into the video and would otherwise guess: what a named thing is, does or costs, a name's spelling, a number. Only for something the material does not contain, and only when the user context asks for a detail you do not have -- not to understand the session, not to check what you have already been told. Give three queries at once, from broad to narrow -- the game, the game and the thing, the thing's exact name -- and you get the narrowest one that found anything.",
 			"parameters": map[string]any{"type": "object", "properties": map[string]any{
 				"broad":  map[string]any{"type": "string", "description": "the general subject, e.g. the game"},
 				"medium": map[string]any{"type": "string", "description": "the subject and the thing"},

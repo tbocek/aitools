@@ -22,7 +22,7 @@ services:
       /home/arch/llama.cpp/build/bin/llama-server
       --device ${LLAMA_DEVICE:-ROCM0}
       --device-draft ${LLAMA_DEVICE:-ROCM0}
-      --models-preset /mnt/models/config.ini
+      --models-preset /mnt/models/config-llamacpp.ini
       --models-max 1
       --host 0.0.0.0
       --port 9001
@@ -110,7 +110,7 @@ services:
       # API and browser UI both live here -- http://127.0.0.1:8765/
       - "127.0.0.1:8765:8080"
     environment:
-      # the backend comes from audiocpp-server.json ("hip"), and so does
+      # the backend comes from config-audiocpp.json ("hip"), and so does
       # "threads": 8. That file takes no comments, so the reason lives here: the
       # server defaults it to 1, and every model's STFT/ISTFT is host code sized
       # by it, so separation was running its whole FFT half on one core of
@@ -133,12 +133,21 @@ services:
       # our files. autocut POSTs the bytes to /v1/ui/upload and names the path
       # that comes back, so a project anywhere on disk works. Driving the server
       # by hand with a path is the one thing that still needs a mount added here.
-      - ./audiocpp-server.json:/etc/audiocpp-server.json:ro
+      - ./config-audiocpp.json:/etc/config-audiocpp.json:ro
     # --ui serves the browser UI off this same port; --ui-management lets it
     # load and unload models, which is the only way to change what this server
-    # offers without editing audiocpp-server.json and recreating the service.
+    # offers without editing config-audiocpp.json and recreating the service.
+    #
+    # The config's memory keys matter as much as the model list, and JSON has
+    # nowhere to say why: lazy_load loads on first use rather than all eight at
+    # boot; max_loaded_models 3 is the most Prepare rotates through for one
+    # recording (ASR, aligner, diarizer), so it never evicts one it is about to
+    # want back, and the separator and the TTS stop squatting on memory the run
+    # needs; idle_unload_ms hands everything back after five idle minutes,
+    # which is the backstop for whoever is not autocut -- the browser UI, or a
+    # run that died before it could ask (freeAudioModels).
     command: >-
       build/bin/audiocpp_server
-      --config /etc/audiocpp-server.json
+      --config /etc/config-audiocpp.json
       --ui
       --ui-management

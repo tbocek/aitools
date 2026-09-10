@@ -103,49 +103,36 @@ func TestCutPersistRoundTrip(t *testing.T) {
 
 // TestZoomedOutTimelineFitsItsWindow: at the zoom floor the whole session is on
 // screen, so the scrollbar has nothing to move and (being Automatic) is not
-// there at all. The floor used to be window/duration, which forgot that the
-// hatched gap between two recordings is a fixed 26px and does not shrink with
-// the zoom -- so a session of five recordings stayed 104px too wide however far
-// you zoomed out, and the bar still slid.
+// there at all. It used to be possible to zoom out and still be too wide, when
+// the timeline carried a fixed 26 px of hatching between every two recordings
+// and that width did not shrink with the zoom -- five recordings stayed 104 px
+// past the window however far you went. Unfilmed time is laid out at no width
+// now, so the fit is the duration and nothing else, and this holds it there.
 func TestZoomedOutTimelineFitsItsWindow(t *testing.T) {
-	for _, c := range []struct {
-		view, dur float64
-		n         int
-	}{
-		{1200, 3600, 1},   // one long recording
-		{1200, 3600, 5},   // four gaps between five
-		{640, 90, 12},     // narrow window, mostly gaps
-		{1200, 0.5, 3},    // shorter than the window is wide
-		{300, 7200, 40},   // gaps alone already wider than the window
-		{1200, 3600, 100}, // and far past it
+	for _, c := range []struct{ view, dur float64 }{
+		{1200, 3600},  // an hour
+		{640, 90},     // narrow window
+		{1200, 0.5},   // shorter than the window is wide
+		{300, 7200},   // two hours through a keyhole
+		{1200, 0.001}, // and a duration that rounds to nothing
 	} {
-		gaps := float64(c.n-1) * gapPx
-		pps := fitPps(c.view, c.dur, c.n)
-		w := int(c.dur*pps+gaps) + 1 // exactly what relayout lays out with that pps
-		switch {
-		case gaps+1 >= c.view:
-			// the gaps are a fixed width by design (a 30 minute break is not 30
-			// minutes of scrollbar), so enough of them cannot be zoomed away.
-			// Here the bar moves because there really is timeline out of sight.
-			if float64(w) <= c.view {
-				t.Errorf("view %g, %d recordings: %g px of gaps somehow fit in %d px",
-					c.view, c.n, gaps, w)
-			}
-		case float64(w) > c.view:
-			t.Errorf("view %g, %g s over %d recordings: zoomed out to %g px/s the timeline "+
-				"is %d px wide -- the scrollbar still moves", c.view, c.dur, c.n, pps, w)
+		pps := fitPps(c.view, c.dur)
+		w := int(c.dur*pps) + 1 // exactly what relayout lays out with that pps
+		if float64(w) > c.view {
+			t.Errorf("view %g, %g s: zoomed out to %g px/s the timeline is %d px wide "+
+				"-- the scrollbar still moves", c.view, c.dur, pps, w)
 		}
 		if pps < 0 {
-			t.Errorf("view %g, %g s over %d recordings: negative zoom %g", c.view, c.dur, c.n, pps)
+			t.Errorf("view %g, %g s: negative zoom %g", c.view, c.dur, pps)
 		}
 	}
 	// before the first allocation there is no width to fit into, and nothing
 	// loaded has no duration to fit: both must be a floor of zero rather than a
 	// division by it
-	if got := fitPps(0, 3600, 2); got != 0 {
+	if got := fitPps(0, 3600); got != 0 {
 		t.Errorf("with no allocation yet, floor = %g, want 0", got)
 	}
-	if got := fitPps(1200, 0, 0); got != 0 {
+	if got := fitPps(1200, 0); got != 0 {
 		t.Errorf("with nothing loaded, floor = %g, want 0", got)
 	}
 }

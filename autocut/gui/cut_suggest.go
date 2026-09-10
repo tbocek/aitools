@@ -34,18 +34,28 @@ func (a *App) suggestClicked() {
 		a.setStatus("run Describe first — the suggestion reads the session timeline, and there is none")
 		return
 	}
-	session := sessionText(rows, a.narratorMic())
+	// the marks Prepare left on the timeline (retake.go): a stretch that was
+	// said again is one line saying so, so the cut never chooses seconds the
+	// speaker had already thrown away
+	marks := a.loadRetakes()
+	session := sessionText(rows, a.narratorMic(), marks)
 	// how long the finished video should be, as the user context names it:
 	// "about 12 min", "a 90 s teaser". It was a box on the Cut page's toolbar,
 	// which is a second place to say a thing the context already says -- and
 	// the two disagreed for a week of runs, the box quietly winning while the
 	// sentence beside it read 12 minutes. One place, and it is the one the
 	// person writes in. Nothing named, and the default stands.
-	target := defTargetSecs
+	// 0 is "no target", and it is the ordinary answer: a session whose context
+	// names no length has no length, not a secret default one. It used to fall
+	// back to 300 s and the request then told the model that 300 was "the
+	// length named in the user context" -- which nobody had named. A script
+	// read out in full came back cut to a third of itself, with the rest left
+	// for a speed pass the same context had forbidden.
+	target := 0.0
 	if want, ok := ctxLength(a.sessionCtx()); ok {
 		target = want
 	} else {
-		a.logf(">>> suggest: the user context names no length — aiming at %s", mmss(target))
+		a.logf(">>> suggest: the user context names no length — everything worth keeping goes in")
 	}
 	// how long the session runs, which is the denominator the choosing half of
 	// the bar counts against (see suggestCut)
@@ -56,7 +66,11 @@ func (a *App) suggestClicked() {
 
 	a.startRun()
 	a.saveProjectNow() // the run is a moment worth a file
-	a.logf(">>> suggest: target %.0f s — three calls: the cut, its captions, its effects", target)
+	if target > 0 {
+		a.logf(">>> suggest: target %.0f s — three calls: the cut, its captions, its effects", target)
+	} else {
+		a.logf(">>> suggest: no target length — three calls: the cut, its captions, its effects")
+	}
 	// Both calls are streamed, but the model thinks for minutes before the first
 	// segment, so the bar pulses until the first finished segment's own fraction
 	// stops it (same shape as publish). The queue's first word, not the bar's:
@@ -113,9 +127,30 @@ func (a *App) suggestClicked() {
 			// was never told they exist, and an answer that does not mention them
 			// is not an answer that dropped them.
 			a.ed.segs = insertsOf(a.ed.segs)
+			segs = joinSeams(segs, rows)
 			for _, s := range segs {
 				a.ed.segs = append(a.ed.segs, cutSeg{
 					S: a.ed.snapEdge(s.S, true), E: a.ed.snapEdge(s.E, false)})
+			}
+			// ...and then the marks, last and over the top of the snapping.
+			//
+			// Hiding a stretch from the brief is not the same as keeping it out
+			// of the cut: the model answers in RANGES, and a range that spans a
+			// folded stretch keeps every second of it. One run came back with
+			// 39.28-108.44 and 113.28-164.00 either side of a mark at
+			// 106.16-111.36 -- it had clearly aimed at the seam and missed it by
+			// two seconds, which is the whole of the doubled sentence.
+			//
+			// After the snap and not before it, because snapEdge moves an end
+			// outward by up to five seconds to find a silence, and outward from
+			// the border of a marked stretch is INTO it.
+			if n := dropMarked(&a.ed.segs, marks); n > 0 {
+				a.logf(">>> %d marked stretch(es) taken out of the cut — said twice, kept once", n)
+			}
+			// ...and the stretches where nothing was said at all, which are
+			// nobody else's job (dropDeadAir)
+			if gone := dropDeadAir(&a.ed.segs, a.ed.talk); gone > 0 {
+				a.logf(">>> %s of silence taken out of the cut — nothing was said in it", mmss(gone))
 			}
 			a.ed.coalesce()
 			// snapEdge and coalesce just moved the boundaries the effects
@@ -404,25 +439,34 @@ func fxFrom(in []sugFx, cap int) []cutFx {
 
 func (a *App) suggestCut(session string, target, span float64) ([]cutSeg, []cutFx, error) {
 	system := a.sysPrompt("cut")
-	// The range, not just the number: told "300 seconds" alone, a model spends
-	// the call adding and dropping segments to hit it exactly and runs out of room
-	// for the answer (once: 85 kB of arithmetic, no JSON). From the same function
-	// the validator uses, so prompt and gate cannot drift.
-	lo, hi := a.footageWindow(target)
-	// ...and how long the session it is choosing from actually runs. The
-	// timeline is written in mm:ss and the answer is in seconds, and nothing
+	// With a target: the range, not just the number. Told "300 seconds" alone, a
+	// model spends the call adding and dropping segments to hit it exactly and
+	// runs out of room for the answer (once: 85 kB of arithmetic, no JSON). From
+	// the same function the validator uses, so prompt and gate cannot drift.
+	//
+	// With none: say there is none. A length nobody asked for is not a weaker
+	// instruction than a real one -- it is the instruction, and the model obeys
+	// it by leaving out material the person wanted in.
+	length := "NO TARGET LENGTH. The user context names none, so there is none: keep every " +
+		"moment worth keeping and the video is as long as that comes to. Nothing is dropped to " +
+		"reach a length, and nothing is kept to fill one."
+	if target > 0 {
+		lo, hi := a.footageWindow(target)
+		length = fmt.Sprintf("TARGET LENGTH: %.0f seconds of finished video, which is the length "+
+			"named in the user context. The dull stretches are played fast afterwards, so KEEP "+
+			"between %.0f and %.0f seconds of footage, in at most %d segments. Stop at the "+
+			"first set of moments that lands in that range.", target, lo, hi, maxSuggestSegs(target))
+	}
+	// ...and how long the session it is choosing from actually runs. Nothing
 	// used to state where the session ENDS: three attempts in a row once came
 	// back with segments marching to 28999 -- eight hours of a 28-minute
 	// recording -- because a model that has lost its place has nothing in the
-	// request to lose its place against. Both spellings, since the conversion
-	// between them is where a run of plausible numbers turns into nonsense.
+	// request to lose its place against. Both spellings here as on every
+	// timeline line (stamp), since a clock read as a count of seconds is where
+	// a run of plausible numbers turns into nonsense.
 	user := a.ctxBlockFor("cut") + fmt.Sprintf("SESSION LENGTH: %.0f seconds, which the timeline "+
 		"writes as %s. Every start and end you give is a number of SECONDS between 0 and "+
-		"%.0f.\n\nTARGET LENGTH: %.0f seconds of finished video, which is the length named "+
-		"in the user context. The dull stretches are played fast afterwards, so KEEP "+
-		"between %.0f and %.0f seconds of footage, in at most %d segments. Stop at the "+
-		"first set of moments that lands in that range.\n\nSESSION TIMELINE:\n%s",
-		span, mmss(span), span, target, lo, hi, maxSuggestSegs(target), session)
+		"%.0f.\n\n%s\n\nSESSION TIMELINE:\n%s", span, mmss(span), span, length, session)
 	msgs := []map[string]any{msg("system", system), msg("user", user)}
 	// the web, for a caption that names a thing the timeline does not explain
 	tools, ffx := a.webToolsFor("suggest")
@@ -589,7 +633,10 @@ func (a *App) checkCutReply(reply string, target, span float64, attempt int) ([]
 	for _, s := range segs {
 		raw += s.E - s.S
 	}
-	if lo, hi := a.footageWindow(target); raw < lo || raw > hi {
+	// only against a target the user named: with none there is no range, and a
+	// cut that keeps the whole of a script is the right answer rather than an
+	// answer that missed one
+	if lo, hi := a.footageWindow(target); target > 0 && (raw < lo || raw > hi) {
 		probs = append(probs, fmt.Sprintf("%.0f s of footage, where %.0f to %.0f is accepted "+
 			"(the dull stretches are played fast afterwards, which is what makes the "+
 			"upper end reachable)", raw, lo, hi))
@@ -966,4 +1013,178 @@ func speedsFromReply(segs []cutSeg, capped []int, reply string) ([]cutFx, string
 		in = append(in, sugFx{Kind: "speed", Start: segs[i].S, End: segs[i].E, Rate: sp.Rate})
 	}
 	return joinSpeeds(fxFrom(in, 0)), ""
+}
+
+// seamMax is the widest hole that can be a rounding artifact rather than an
+// edit. The timeline is stamped in whole seconds, so the finest cut a reply can
+// express is one -- and "this stretch carries on" comes out as ...86], [87...
+// with whatever fell in that second falling out of the video.
+const seamMax = 1.5
+
+// joinSeams closes the holes a reply did not mean to open.
+//
+// One run asked for 21 holes. Eleven were exactly one second, and eight of
+// those had a WORD in them -- "new algorithms.", "deprecated.", "once,",
+// "that wallet", "global North" -- each of them the middle of a sentence the
+// cut kept both sides of. They are not edits; they are the model saying the
+// stretch continues in the only vocabulary it has.
+//
+// Ten of the eleven were closed anyway, by luck: both edges usually snap to the
+// same pause and coalesce joins what touches. The one where they did not lost
+// the word "once". This is that repair done on purpose, before the snapping
+// rather than as a side effect of it.
+//
+// A short hole with nothing but silence in it is left alone: that one may well
+// be a trim, and the seconds it drops are seconds nobody spoke in.
+func joinSeams(segs []cutSeg, rows []tsvRow) []cutSeg {
+	if len(segs) < 2 {
+		return segs
+	}
+	out := []cutSeg{segs[0]}
+	for _, s := range segs[1:] {
+		last := &out[len(out)-1]
+		if s.S-last.E > 0 && s.S-last.E <= seamMax && wordsBetween(rows, last.E, s.S) {
+			last.E = s.E
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// wordsBetween is whether anybody was talking between two seconds of the
+// session -- the EVENT lines are the picture and say nothing about that.
+func wordsBetween(rows []tsvRow, t0, t1 float64) bool {
+	for _, r := range rows {
+		if r.spk != "EVENT" && r.e > t0 && r.s < t1 {
+			return true
+		}
+	}
+	return false
+}
+
+// dropMarked takes every marked stretch out of the cut, cutting the scenes that
+// span one in two, and says how many it acted on.
+//
+// The marks are facts about the material (retake.go): those seconds were said
+// again, and no arrangement of segments may keep them. What is left too short
+// to be a scene goes with them -- a sliver either side of a stumble is not a
+// shot, it is the frames the stumble was wearing.
+// dropDeadAir takes the long silences out of the clips, and returns how much
+// went. Nothing else does.
+//
+// A retake is found by the words that are said twice, and a man who stops
+// talking for half a minute and then carries on has said nothing twice: there
+// is no repeat to find. The cut will not do it either. Asked with no target
+// length its whole editorial act turns out to be leaving out what the markers
+// name -- one run answered with five segments running end to end across the
+// entire session, which is not a cut at all -- so a session's dead ends come
+// through it untouched. One recording here held 31 seconds of nobody speaking
+// in the middle of a sentence, another 13 at the end of a take, and both were
+// in the finished video.
+//
+// A beat is LEFT where each one was (deadAirKeep). Cutting from the last word
+// straight to the next is a jump; a breath is what the pause was before it
+// went on too long.
+func dropDeadAir(segs *[]cutSeg, talk [][2]float64) float64 {
+	var out []cutSeg
+	gone := 0.0
+	for _, s := range *segs {
+		if s.isInsert() {
+			out = append(out, s)
+			continue
+		}
+		at := s.S
+		for _, q := range quietWithin(talk, s.S, s.E) {
+			if q[1]-q[0] < deadAirMax {
+				continue
+			}
+			e, next := q[0]+deadAirKeep/2, q[1]-deadAirKeep/2
+			if e > at {
+				out = append(out, cutSeg{S: at, E: e, Cam: s.Cam, Quiet: s.Quiet})
+			}
+			gone += next - math.Max(at, e)
+			at = next
+		}
+		if s.E > at {
+			out = append(out, cutSeg{S: at, E: s.E, Cam: s.Cam, Quiet: s.Quiet})
+		}
+	}
+	var keep []cutSeg
+	for _, s := range out {
+		if s.isInsert() || s.E-s.S >= minSegLn {
+			keep = append(keep, s)
+		}
+	}
+	*segs = keep
+	return gone
+}
+
+// quietWithin is the stretches of t0..t1 with no speech in them: the
+// complement of talk, which is every line of the transcript on the session
+// clock and is already sorted (loadSources).
+func quietWithin(talk [][2]float64, t0, t1 float64) [][2]float64 {
+	var out [][2]float64
+	at := t0
+	for _, sp := range talk {
+		if sp[1] <= at || sp[0] >= t1 {
+			continue
+		}
+		if sp[0] > at {
+			out = append(out, [2]float64{at, math.Min(sp[0], t1)})
+		}
+		if at = math.Max(at, sp[1]); at >= t1 {
+			return out
+		}
+	}
+	return append(out, [2]float64{at, t1})
+}
+
+const (
+	// silence past this inside a clip is not a pause, it is a man who has
+	// stopped talking. Measured on a session of somebody reading to camera:
+	// the pauses between sentences cluster under 2 s and the two stretches
+	// that were plainly mistakes ran 13 s and 31 s, with nothing in between
+	// them -- so this is a floor with room under it, and not a judgment about
+	// how fast a video should feel.
+	deadAirMax = 2.5
+	// ...and what is left of one where it goes.
+	deadAirKeep = 0.5
+)
+
+func dropMarked(segs *[]cutSeg, marks []retake) int {
+	hit := 0
+	for _, m := range marks {
+		to := m.To
+		if to < m.E {
+			to = m.E // a mark written before the edges were placed
+		}
+		var out []cutSeg
+		cut := false
+		for _, s := range *segs {
+			if s.isInsert() || s.E <= m.S || s.S >= to {
+				out = append(out, s)
+				continue
+			}
+			cut = true
+			if s.S < m.S-0.001 {
+				out = append(out, cutSeg{S: s.S, E: m.S, Cam: s.Cam, Quiet: s.Quiet})
+			}
+			if s.E > to+0.001 {
+				out = append(out, cutSeg{S: to, E: s.E, Cam: s.Cam, Quiet: s.Quiet})
+			}
+		}
+		if cut {
+			hit++
+		}
+		*segs = out
+	}
+	var keep []cutSeg
+	for _, s := range *segs {
+		if s.isInsert() || s.E-s.S >= minSegLn {
+			keep = append(keep, s)
+		}
+	}
+	*segs = keep
+	return hit
 }

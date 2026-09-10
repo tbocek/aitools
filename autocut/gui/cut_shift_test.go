@@ -563,8 +563,8 @@ func TestTheRightButtonSlidesTheTimeline(t *testing.T) {
 		"slideSegs = append([]cutSeg(nil), ed.segs...)",
 		// anywhere else on the pictures it is the whole row
 		"slideSrcs = ed.laneSrcs(l)",
-		// pixels over the zoom, NOT tAtView: a hatched hole is a fixed width
-		// however many minutes it stands for
+		// pixels over the zoom, NOT tAtView: unfilmed time takes no width, so a
+		// drag whose pixels cross a seam would read as a jump of minutes
 		"d := ox / ed.pps",
 		"ed.pushUndo() // the whole gesture is one step back",
 		"ed.shiftTo(slideSrcs, slideFrom, d)",

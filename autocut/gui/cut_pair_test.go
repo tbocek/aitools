@@ -87,16 +87,20 @@ func TestTheStripKnowsWhoseSoundItIs(t *testing.T) {
 	}
 	// two sources sharing a row each bring the stretch under their own
 	// pictures, so whose sound the press is about is answered by x -- and a
-	// press in the hatch between them is the nearest, audAtY's rule
+	// press on the stretch of the row neither of them covers is the nearest,
+	// audAtY's rule. The third camera is what opens that stretch: it overlaps
+	// both, so it takes a row of its own and its fifty seconds are laid out --
+	// leaving row 0 with a hole in it that IS drawn, unlike unfilmed time.
 	ed = axisEd(t,
 		tlVideo{base: "one", path: "/f/one.mp4", start: 0, dur: 50},
+		tlVideo{base: "mid", path: "/f/mid.mp4", start: 40, dur: 70},
 		tlVideo{base: "two", path: "/f/two.mp4", start: 100, dur: 50})
 	ed.auds = []tlAudio{
 		{base: "one", path: "/f/one.mp4", start: 0, dur: 50, chans: 1, master: true},
 		{base: "two", path: "/f/two.mp4", start: 100, dur: 50, chans: 1, master: true},
 	}
-	if ed.laneN != 1 {
-		t.Fatalf("two recordings an hour apart landed on %d rows, want 1", ed.laneN)
+	if ed.laneN != 2 {
+		t.Fatalf("three recordings, one overlapping both, landed on %d rows, want 2", ed.laneN)
 	}
 	y := ed.picTop() + ed.laneH() + 1
 	for _, c := range []struct {
@@ -104,9 +108,9 @@ func TestTheStripKnowsWhoseSoundItIs(t *testing.T) {
 		want string
 	}{
 		{40, "one"},
-		{ed.vids[1].pxOrigin + 40, "two"},
-		{ed.vids[0].pxOrigin + ed.vids[0].dur*ed.pps + 2, "one"}, // the hatch, near one
-		{ed.vids[1].pxOrigin - 2, "two"},                         // the hatch, near two
+		{ed.xOf(140), "two"},
+		{ed.xOf(52), "one"}, // the row's own hole, near one
+		{ed.xOf(98), "two"}, // ...and near two
 	} {
 		if got := ed.pairAudAt(c.px, y); got != c.want {
 			t.Errorf("pairAudAt(%g) = %q, want %q", c.px, got, c.want)

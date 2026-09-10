@@ -206,6 +206,11 @@ func (a *App) startRun() {
 func (a *App) endRun() {
 	a.running = false
 	a.updateRunControls()
+	// ...and the machine's half: whatever the run left loaded on the audio
+	// server is memory nothing is waiting on any more (freeAudioModels). Off
+	// the GUI thread, because it is a request over the network and the window
+	// has to come back to life now, not when the server answers.
+	go a.freeAudioModels()
 }
 
 // prog is how far this track has got and what its task is doing: the fraction

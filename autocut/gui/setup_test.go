@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -139,7 +140,7 @@ func TestTestAudioModel(t *testing.T) {
 		t.Fatal("a missing model passed its test")
 	}
 	for _, want := range []string{"sortformer-diar", "index-tts2",
-		"audiocpp-server.json", "force-recreate"} {
+		"config-audiocpp.json", "force-recreate"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error drops %q: %v", want, err)
 		}
@@ -414,10 +415,10 @@ func TestTestAllIsEveryTestOnce(t *testing.T) {
 			t.Errorf("setup.go does not contain %q", want)
 		}
 	}
-	// one registration per Test button: ten rows have one, and Fetch models
+	// one registration per Test button: eleven rows have one, and Fetch models
 	// is not a test and must not be swept into a run against a typed-half URL
-	if got := strings.Count(src, "hook(test"); got != 10 {
-		t.Errorf("setup.go hooks %d test buttons, want 10 — if a row was added, "+
+	if got := strings.Count(src, "hook(test"); got != 11 {
+		t.Errorf("setup.go hooks %d test buttons, want 11 — if a row was added, "+
 			"check its Test joined runAll (it does if it went through hook)", got)
 	}
 	// at the right, after the spring: the dialog has no Save and no Cancel to
@@ -641,5 +642,49 @@ func TestTheMachinesSettingsAreReadAtLaunch(t *testing.T) {
 			t.Error("the project is flushed without the prompts, so an edited " +
 				"wording is only kept if the session ends the other way")
 		}
+	}
+}
+
+// Every box on the settings page is both saved and watched.
+//
+// Two ways to get this wrong, and the aligner box arrived with both. Left out
+// of writeConf, a box is not merely unsaved: writeConf writes the WHOLE file,
+// so the next save of any other box erases what was typed in it. Left out of
+// the ConnectChanged list, typing in it never asks for a save at all — the
+// value sits on screen looking stored and is gone with the window.
+func TestEverySettingsBoxIsSavedAndWatched(t *testing.T) {
+	src := readSrc(t, "setup.go")
+	// the boxes that ask for a save, read off the list that wires them
+	m := regexp.MustCompile(`ConnectChanged\(func\(\)\) glib\.SignalHandle\s*\}\{([^}]*)\}`).
+		FindStringSubmatch(src)
+	if m == nil {
+		t.Fatal("the list that wires the boxes to the autosave is gone")
+	}
+	watched := strings.Split(m[1], ",")
+
+	body := funcBody(t, "setup.go", `writeConf := func\(\) \{`)
+	if body == "" {
+		b := strings.Index(src, "writeConf := func() {")
+		e := strings.Index(src[b:], "\n\t}\n")
+		body = src[b : b+e]
+	}
+	for _, w := range watched {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		if !strings.Contains(body, w+".Text()") {
+			t.Errorf("%s asks for a save but is not carried into it — the next save of "+
+				"any other box erases what was typed in it", w)
+		}
+	}
+	// ...and the other direction, for the boxes the conf holds
+	for _, f := range []string{"ASRModel", "DiarModel", "SepModel", "AlignModel", "TTSModel"} {
+		if !strings.Contains(body, f+":") {
+			t.Errorf("writeConf does not carry %s, so it is erased on the next save", f)
+		}
+	}
+	if !strings.Contains(src, "sepModel, alignModel, ttsm") {
+		t.Error("the aligner box does not ask for a save when it is typed in")
 	}
 }

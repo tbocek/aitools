@@ -344,9 +344,14 @@ func TestARowsNameIsPinnedAndNamesWhatIsUnderTheEdge(t *testing.T) {
 	if strings.Contains(src, "plateText(cr, v.pxOrigin+4") {
 		t.Error("the row's name travels with the tape again")
 	}
-	// the yellow boundary is still at the file's own start: where a recording
-	// BEGINS is a place on the tape, where its name is drawn is not
-	if !strings.Contains(src, "cr.MoveTo(v.pxOrigin, lt)") {
-		t.Error("the file boundary no longer marks where the file starts")
+	// the yellow border is still the file's own start -- where a recording
+	// BEGINS is a place on the tape, where its name is drawn is not -- and it
+	// is drawn just inside the footage, so the mark is on the picture and
+	// never on the hole beside it
+	if !strings.Contains(src, "x0, x1 := v.pxOrigin+srcEdgeIn, ed.xOf(v.start+v.dur)-srcEdgeIn") {
+		t.Error("the file boundary no longer marks where the file starts, inset into it")
+	}
+	if srcEdgeIn <= 0 {
+		t.Error("the border is drawn on the seam again")
 	}
 }

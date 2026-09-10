@@ -3,7 +3,7 @@ package main
 // The audio.cpp server: one endpoint for listening (ASR, diarization) and
 // speaking (TTS). Paths in requests are the SERVER's -- it runs in a container
 // -- so files go up via serverFile first. A model id names family, task,
-// weights and session options (audiocpp-server.json), never per-request flags.
+// weights and session options (config-audiocpp.json), never per-request flags.
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // audioURL is where an audio.cpp server is expected. AUDIOCPP_SERVER is
@@ -200,6 +201,33 @@ func catalogIDs(cat map[string]audioModel) string {
 	return strings.Join(sortedKeys(cat), ", ")
 }
 
+// freeAudioModels asks the audio server to let go of everything it is holding.
+//
+// It loads a model on first use and then keeps it, for as long as it runs. So a
+// Prepare that separates, transcribes, aligns and diarizes leaves four of them
+// resident afterwards -- gigabytes of a shared GPU held for work that finished
+// -- and the next thing that needs room competes with models nobody is going
+// to ask another question of until the user presses something. That press can
+// afford the reload; the machine cannot afford the wait.
+//
+// Quiet on purpose, and it never starts a server to say this. A run that used
+// no audio at all still ends here, and a server that is not running is already
+// holding nothing: both are the same silence.
+func (a *App) freeAudioModels() {
+	req, err := http.NewRequest("POST", a.audioURL()+"/v1/tasks/unload_all_models", nil)
+	if err != nil {
+		return
+	}
+	bearer(req, a.readConf().TTSKey)
+	// a deadline, unlike every other call here: this one is housekeeping after
+	// the answer the user wanted is already on disk, and nothing waits on it
+	r, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return
+	}
+	r.Body.Close()
+}
+
 // audioRun posts one job and hands back the answer verbatim. Verbatim matters:
 // what comes back is what gets written to words.json and turns.json, and every
 // reader of those walks whatever shape it finds rather than a fixed one.
@@ -323,7 +351,7 @@ func (a *App) ensureAudioModels(sep bool) error {
 					"python3 tools/model_manager_v2.py install %s --models-root models)", want.pkg)
 			}
 			return fmt.Errorf("the audio.cpp server at %s serves %s, but not %q -- add it on "+
-				"that server's own model page in the browser, or in the audiocpp-server.json "+
+				"that server's own model page in the browser, or in the config-audiocpp.json "+
 				"it reads at startup followed by docker compose up -d --force-recreate audio%s",
 				a.audioURL(), catalogIDs(cat), want.id, how)
 		}

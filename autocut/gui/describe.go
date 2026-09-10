@@ -40,7 +40,19 @@ What not to write. Nothing you were not shown or told: no genre, title, place or
 
 The two lines:
 EVENT: what happens in these seconds and how hectic or calm it is -- present tense, concrete, specific. Up to 35 words when something happens; when nothing meaningful changes, the pace and a few words, twelve at most -- "Calm; same view, the tower keeps firing" is a whole line. The cut reads hundreds of these in one go and chooses by what CHANGES, so a long line about nothing is a long line in the way. Do not restate the STATE.
-STATE: the running state after these seconds, at most 50 words: where this is, what is being done, who else is present, the ongoing goal. Carry forward what is still true, drop what has stopped being true, keep it readable on its own.`
+STATE: the running state after these seconds, at most 50 words: where this is, what is being done, who else is present, the ongoing goal. Carry forward what is still true, drop what has stopped being true, keep it readable on its own.
+
+Both labels, every time, including when nothing happened. Written out, when something does:
+
+EVENT: Hectic; the red car spins at the hairpin, clips the barrier and stops across the track.
+STATE: Lap 3 of 5, the red car last after the spin, yellow flags at the hairpin.
+
+...and when nothing does, which is most of the frames you will see:
+
+EVENT: Calm; same view, the driver keeps talking.
+STATE: Lap 4 of 5, the red car last, the track clear again.
+
+Both examples are invented and none of it is in the session you are given.`
 
 type tsvRow struct {
 	s, e float64
@@ -73,14 +85,56 @@ func tlLabel(r tsvRow, narr string) string {
 }
 
 // sessionText renders the merged timeline as the cut reads it: one line each,
-// [mm:ss] from the session start (minutes past 59), label, text. Built from
-// session.tsv at request time, so a change here reaches old projects.
-func sessionText(rows []tsvRow, narr string) string {
+// stamped, then label, then text. Built from session.tsv at request time, so a
+// change here reaches old projects.
+//
+// The stamp says the same instant TWICE -- seconds, then mm:ss -- because the
+// answer is in seconds and the reasoning is in minutes, and the step between
+// them was being taken by hand three hundred times a run. Once was enough to
+// lose five seconds of a video: a cut read the marker [01:45] as 145 seconds
+// rather than 105, dropped a sentence that was never a stumble, and kept the
+// stumble it had been told about. Nothing needs converting now.
+//
+// A stretch marked abandoned (retake.go) comes out as ONE line saying so, with
+// everything inside it -- what was said and what was on screen -- left out. It
+// is not hidden: the line says the seconds are there and were said again, which
+// is what stops a model choosing a moment inside them, and the transcript still
+// holds every word.
+//
+// It says ALREADY REMOVED because it is: dropMarked subtracts the stretch from
+// whatever the cut answers, on the word. Told only that the stretch was "not
+// kept", a model helpfully ends its segment in front of it -- and its own
+// boundary is a whole second coarser than the mark, so every marker cost a
+// word off the end of the sentence before it ("...the previous public state
+// of", "...through apps, not").
+func sessionText(rows []tsvRow, narr string, marks []retake) string {
 	var b strings.Builder
+	done := map[int]bool{}
 	for _, r := range rows {
-		fmt.Fprintf(&b, "[%02d:%02d] %s: %s\n", int(r.s)/60, int(r.s)%60, tlLabel(r, narr), r.text)
+		if i := retakeAt(marks, r); i >= 0 {
+			if !done[i] {
+				done[i] = true
+				m := marks[i]
+				again := ""
+				if m.Again > 0 {
+					again = ", said again at " + stamp(m.Again)
+				}
+				fmt.Fprintf(&b, "%s (abandoned attempt to %s%s -- already removed, read straight past it)\n",
+					stamp(m.S), stamp(m.E), again)
+			}
+			continue
+		}
+		fmt.Fprintf(&b, "%s %s: %s\n", stamp(r.s), tlLabel(r, narr), r.text)
 	}
 	return b.String()
+}
+
+// stamp is one instant as a timeline line wears it: the seconds a model answers
+// with, then the mm:ss it reads the session's shape by. Truncated, not rounded,
+// so a stamp never names a second the line had not reached.
+func stamp(t float64) string {
+	n := int(t)
+	return fmt.Sprintf("[%ds | %02d:%02d]", n, n/60, n%60)
 }
 
 // How much speech rides along with a chunk of frames, and how far from it a
@@ -175,6 +229,48 @@ func speechBlock(srcs []speechSrc, narr string, chunkStart, chunkEnd float64) st
 	section("--- spoken during these frames ---", "(no speech during these frames)", during)
 	section("--- context after (do not describe) ---", "(none)", after)
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// eventState reads one describe reply into its two lines.
+//
+// Lenient about the first label and only the first. A run of six chunks in one
+// recording wrote the description straight out and labelled the STATE
+// correctly underneath it -- the words were right and the "EVENT:" in front of
+// them was missing -- and the whole reply was then filed as the event: a
+// sixty-word line about nothing, with the state repeated inside it, in the
+// brief the cut reads. What comes before the STATE line is the event, which is
+// what it plainly was.
+//
+// The wording asks for both labels and shows them (describeSystem). This is the
+// floor under that, not a second opinion about it: an example makes the model
+// right more often, and cannot make it right always.
+func eventState(reply string) (event, state string) {
+	rest, anchored := reply, false
+	// the state first: its label is what says where the event ends when the two
+	// came back on one line, which is how they came back
+	if i := strings.Index(rest, "STATE:"); i >= 0 {
+		state = flatten(rest[i+len("STATE:"):])
+		rest, anchored = rest[:i], true
+	}
+	if i := strings.Index(rest, "EVENT:"); i >= 0 {
+		rest, anchored = rest[i+len("EVENT:"):], true
+	}
+	event = flatten(rest)
+	// leniency needs an anchor. Words in front of a STATE line are the event
+	// that lost its label; words with no label anywhere near them are a reply
+	// that came back in some shape nobody asked for, and saying so in the log
+	// beats filing a refusal as a description of the footage.
+	if event == "" || !anchored {
+		event = "(no event line: " + flatten(reply) + ")"
+	}
+	return event, state
+}
+
+// flatten is one line of whatever it is given: events.tsv is a line per event
+// with tabs between its fields, so a description that came back on two lines
+// would otherwise be two rows, the second of them nonsense.
+func flatten(s string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\t", " ")), " ")
 }
 
 // loadTSVRows reads both timeline files: a recording's transcript (start, end,
@@ -429,6 +525,7 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 		state = strings.TrimSpace(string(b))
 	}
 
+	cached := 0
 	for c := 0; c < p.chunks; c++ {
 		if err := a.checkpoint(); err != nil {
 			return err
@@ -489,28 +586,29 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 			content = append(content, txtPart(fmt.Sprintf("[%+.1fs] FRAME %d of %d",
 				float64(i)*p.interval, i+1, hi-lo)), part)
 		}
-		reply, err := a.llmChatRetry("describe", []map[string]any{
-			msg("system", a.sysPrompt("describe")), msg("user", content),
-		}, false)
-		if err != nil {
-			if errors.Is(err, errStopped) {
-				return errStopped
+		// the same frames, the same state, the same wording: the same answer
+		// (llmcache.go). The pictures are inside content as data URLs, so a
+		// frame that changed by one pixel is a different question.
+		sys := a.sysPrompt("describe")
+		ask := askKey(sys, content)
+		reply, hit := a.cachedReply("describe", ask)
+		if hit {
+			cached++
+		} else {
+			var err error
+			reply, err = a.llmChatRetry("describe", []map[string]any{
+				msg("system", sys), msg("user", content),
+			}, false)
+			if err != nil {
+				if errors.Is(err, errStopped) {
+					return errStopped
+				}
+				return fmt.Errorf("describe %s t=%.0f: %w", p.base, t0, err)
 			}
-			return fmt.Errorf("describe %s t=%.0f: %w", p.base, t0, err)
+			a.keepReply("describe", ask, reply)
 		}
 
-		event, newState := "", ""
-		for _, l := range strings.Split(reply, "\n") {
-			if v, ok := strings.CutPrefix(l, "EVENT:"); ok {
-				event = strings.TrimSpace(v)
-			}
-			if v, ok := strings.CutPrefix(l, "STATE:"); ok {
-				newState = strings.TrimSpace(v)
-			}
-		}
-		if event == "" {
-			event = "(no event line: " + strings.ReplaceAll(reply, "\n", " ") + ")"
-		}
+		event, newState := eventState(reply)
 		if newState != "" {
 			state = newState
 		}
@@ -528,6 +626,11 @@ func (a *App) describeVideo(p *videoPlan, comm []speechSrc, chunkOff, chunkTotal
 			recent = recent[1:]
 		}
 	}
-	a.logfIdle(">>> [%s] event log complete (%d chunks)", p.base, p.chunks)
+	if cached > 0 {
+		a.logfIdle(">>> [%s] event log complete (%d chunks, %d answered from the cache)",
+			p.base, p.chunks, cached)
+	} else {
+		a.logfIdle(">>> [%s] event log complete (%d chunks)", p.base, p.chunks)
+	}
 	return nil
 }

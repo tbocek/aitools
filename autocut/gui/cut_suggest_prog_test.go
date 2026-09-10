@@ -13,6 +13,8 @@ package main
 // job, it has got.
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -140,7 +142,7 @@ func TestTheModelIsToldTheRangeItWillBeJudgedBy(t *testing.T) {
 	// different number from the one the gate measures
 	cut := readSrc(t, "cut.go")
 	for _, want := range []string{
-		"the footage they come to -- end minus start, added up -- lands in the range you were given",
+		"the footage they come to, end minus start added up, lands in it",
 		"Anywhere inside it is right; do not trim towards its middle.",
 	} {
 		if !strings.Contains(cut, want) {
@@ -177,7 +179,7 @@ func TestARunawayAnswerIsRejectedForItsShape(t *testing.T) {
 	for _, want := range []string{
 		"} else if n := maxSuggestSegs(target); len(out.Segments) > n {",
 		`"%d segments, which is not a cut -- keep it under %d, "`,
-		"maxSuggestSegs(target), session)", // and the model is told the ceiling
+		"maxSuggestSegs(target))", // and the model is told the ceiling
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("cut_suggest.go no longer contains %q", want)
@@ -278,10 +280,10 @@ func TestTheLengthComesFromTheUserContext(t *testing.T) {
 	}
 	src := readSrc(t, "cut_suggest.go")
 	for _, want := range []string{
-		"target := defTargetSecs",
+		"target := 0.0", // no length named is no length, not a default one
 		"if want, ok := ctxLength(a.sessionCtx()); ok {",
 		"the user context names no length",
-		"which is the length named ",
+		"named in the user context",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("cut_suggest.go no longer contains %q", want)
@@ -290,5 +292,109 @@ func TestTheLengthComesFromTheUserContext(t *testing.T) {
 	// and there is no second place to say it
 	if strings.Contains(readSrc(t, "cut.go"), "ed.target") {
 		t.Error("the target box is back on the Cut page's toolbar")
+	}
+}
+
+// A session whose context names no length has no length.
+//
+// It used to fall back to 300 s and then tell the model, in the request, that
+// 300 was "the length named in the user context" -- which nobody had named. A
+// 12.7-minute script read out in full came back cut to a third of itself, the
+// rest left to a speed pass that the same context had forbidden. The default
+// is gone: no length named, no target, no range, and nothing to add up.
+func TestNoLengthNamedMeansNoTarget(t *testing.T) {
+	src := readSrc(t, "cut_suggest.go")
+	for _, want := range []string{
+		"NO TARGET LENGTH",                     // the request says so in as many words
+		"if target > 0 {",                      // ...and the range paragraph is the other branch
+		"target > 0 && (raw < lo || raw > hi)", // the gate has nothing to judge by
+		"everything worth keeping goes in",     // and the log says which way it went
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("cut_suggest.go no longer contains %q", want)
+		}
+	}
+	// the promise of a speed pass belongs to the target, not to every cut: it
+	// is what makes a model leave a dull stretch in, and a session with no
+	// target has no reason to hear it
+	j := strings.Index(src, "NO TARGET LENGTH")
+	k := strings.Index(src[j:], "if target > 0 {")
+	if j < 0 || k < 0 || strings.Contains(src[j:j+k], "fast") {
+		t.Error("the no-target request still promises the speed pass that makes a model " +
+			"leave a dull stretch in")
+	}
+	// and the wording stops assuming there is always a range
+	if !strings.Contains(readSrc(t, "cut.go"), "Given no range, there is nothing to add up") {
+		t.Error("the cut wording still asks for a total against a range that may not exist")
+	}
+}
+
+// The web tools are for a fact that gets written down, not for reading up on
+// the session. One run spent 11m33s thinking, asked for three searches about
+// the topics, and then did the whole 13 minutes of thinking again with the
+// results in hand -- for a job whose answer is a list of numbers.
+func TestTheToolsAreForFactsThatGetWrittenDown(t *testing.T) {
+	sys := readSrc(t, "syscontext.go")
+	for _, want := range []string{
+		"about to WRITE DOWN",
+		"never on a job whose answer is numbers rather than words",
+		"the reasoning that led to it is done again from the start",
+	} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("the TOOLS section no longer says %q", want)
+		}
+	}
+	if !strings.Contains(readSrc(t, "websearch.go"), "only when the user context asks for a detail you do not have") {
+		t.Error("the tool's own description no longer defers to the user context")
+	}
+}
+
+// The cut will not take out a silence, and the retake pass cannot: a man who
+// stops talking for half a minute and carries on has said nothing twice, so
+// there is no repeat to find. One run answered with five segments running end
+// to end over the whole session -- not a cut at all -- and 31 s of nobody
+// speaking mid-sentence went into the video with it.
+func TestTheLongSilencesComeOutOfTheClips(t *testing.T) {
+	// one clip with a 31 s hole in it, the shape that survived three runs
+	talk := [][2]float64{{100, 162.5}, {193.9, 250}}
+	segs := []cutSeg{{S: 100, E: 250}}
+	gone := dropDeadAir(&segs, talk)
+	if len(segs) != 2 {
+		t.Fatalf("the hole left the clip in %d piece(s), want 2: %+v", len(segs), segs)
+	}
+	if math.Abs(segs[0].E-162.75) > 1e-9 || math.Abs(segs[1].S-193.65) > 1e-9 {
+		t.Errorf("the clip breaks at %.2f and resumes at %.2f, want 162.75 and 193.65", segs[0].E, segs[1].S)
+	}
+	// a beat is left where it was, half on each side: a cut from the last word
+	// straight to the next is a jump, and the pause was a breath before it
+	// went on too long. In the VIDEO, which is the two clips played one after
+	// the other -- the session seconds between them are the part that went.
+	if left := (segs[0].E - 162.5) + (193.9 - segs[1].S); math.Abs(left-deadAirKeep) > 1e-9 {
+		t.Errorf("%.2fs of the pause is left in the video, want %.2f", left, deadAirKeep)
+	}
+	if math.Abs(gone-(193.9-162.5-deadAirKeep)) > 1e-9 {
+		t.Errorf("it reports %.2fs taken out, want %.2f", gone, 193.9-162.5-deadAirKeep)
+	}
+
+	// an ordinary pause between two sentences is not touched, whatever else is
+	segs = []cutSeg{{S: 0, E: 60}}
+	if gone := dropDeadAir(&segs, [][2]float64{{0, 29}, {30.9, 60}}); gone != 0 || len(segs) != 1 {
+		t.Errorf("a %.1fs pause between sentences was cut out too: %+v", 1.9, segs)
+	}
+	// ...and a card is not footage and has no silence in it to find
+	segs = []cutSeg{{S: 5, E: 5, Ins: "a.png", Dur: 3}}
+	if dropDeadAir(&segs, nil); len(segs) != 1 {
+		t.Error("a spliced card was thrown away as dead air")
+	}
+	// the complement itself, which is where an off-by-one would put the breaks
+	got := quietWithin([][2]float64{{10, 20}, {30, 40}}, 5, 50)
+	want := [][2]float64{{5, 10}, {20, 30}, {40, 50}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("the quiet inside 5..50 reads %v, want %v", got, want)
+	}
+	// and it runs where the suggestion is assembled, after the marks
+	src := readSrc(t, "cut_suggest.go")
+	if !strings.Contains(src, "dropDeadAir(&a.ed.segs, a.ed.talk)") {
+		t.Error("the suggestion never has its silences taken out")
 	}
 }

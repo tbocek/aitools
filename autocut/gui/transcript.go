@@ -427,15 +427,30 @@ func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 		fmt.Fprintf(&stv, "%.2f\t%.2f\t%s\t%s\t%s\n", r.g, r.ge, r.src, r.spk, r.text)
 		tl = append(tl, tsvRow{s: r.g, e: r.ge, src: r.src, spk: r.spk, text: r.text})
 	}
-	stx := sessionText(tl, a.narratorMic())
 	if err := os.WriteFile(filepath.Join(trDir, "session.tsv"), []byte(stv.String()), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(trDir, "session.txt"), []byte(stx), 0o644); err != nil {
+	a.logfIdle(">>> session timeline: %d rows across %d source(s)", len(rows), len(srcs))
+	// ...and then the one question that needs the whole session in one stream
+	// and the text already fixed: which of it was said twice (retake.go). Last
+	// in Prepare, so everything after it -- the cut, its captions, the
+	// narration, the toolbar -- reads the marks rather than asking again.
+	marks, err := a.findRetakes(tl)
+	if err != nil {
+		if errors.Is(err, errStopped) {
+			return err
+		}
+		// a marking, not the step: the timeline is written and usable, and a
+		// pass that could not run leaves it exactly as unmarked as it was
+		a.logfIdle("!!! retakes: %v -- the timeline stands unmarked", err)
+	}
+	// session.txt is what the cut reads, marks and all, so what you open is
+	// what it opens (sessionText)
+	if err := os.WriteFile(filepath.Join(trDir, "session.txt"),
+		[]byte(sessionText(tl, a.narratorMic(), marks)), 0o644); err != nil {
 		return err
 	}
 	a.qDone(trackFix, span)
-	a.logfIdle(">>> session timeline: %d rows across %d source(s)", len(rows), len(srcs))
 	return nil
 }
 
@@ -453,6 +468,7 @@ func contains(list []string, s string) bool {
 // twice keeps its original lines, loudly.
 func (a *App) fixRows(s *src, ctxFor func(*src, float64, float64) string,
 	done *int, total int, span float64) ([]seg4, error) {
+	cached := 0
 
 	system := a.sysPrompt("fix")
 	var out []seg4
@@ -479,9 +495,24 @@ Transcript lines to clean (%d lines, return exactly %d):
 
 		ok := false
 		for try := 0; try < 2 && !ok; try++ {
-			reply, err := a.llmChatRetry("transcript", []map[string]any{
-				msg("system", system), msg("user", user),
-			}, false)
+			// the same block, the same context, the same wording: the same
+			// answer (llmcache.go). Only the first attempt is cached -- a
+			// second attempt is asked BECAUSE the first came back unusable, and
+			// serving it from the file would repeat the failure for ever.
+			ask := ""
+			var reply string
+			if try == 0 {
+				ask = askKey(system, user)
+				if r, hit := a.cachedReply("transcript", ask); hit {
+					reply, cached = r, cached+1
+				}
+			}
+			var err error
+			if reply == "" {
+				reply, err = a.llmChatRetry("transcript", []map[string]any{
+					msg("system", system), msg("user", user),
+				}, false)
+			}
 			if err != nil {
 				if errors.Is(err, errStopped) {
 					return nil, errStopped
@@ -511,6 +542,11 @@ Transcript lines to clean (%d lines, return exactly %d):
 					}
 				}
 				if match {
+					// kept only when it passed: a block whose answer was
+					// refused is one the next run has to ask about again
+					if ask != "" {
+						a.keepReply("transcript", ask, reply)
+					}
 					out = append(out, got...)
 					ok = true
 				}
@@ -520,6 +556,9 @@ Transcript lines to clean (%d lines, return exactly %d):
 			a.logfIdle(">>> [%s] block %d/%d failed validation, keeping original lines", s.base, b+1, nblocks)
 			out = append(out, blk...)
 		}
+	}
+	if cached > 0 {
+		a.logfIdle(">>> [%s] %d block(s) answered from the cache", s.base, cached)
 	}
 	return out, nil
 }

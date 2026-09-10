@@ -36,6 +36,10 @@ var promptDefs = []promptDef{
 	{key: "system", def: strings.TrimSpace(sysSystem)},
 	{key: "describe", def: strings.TrimSpace(describeSystem)},
 	{key: "fix", def: strings.TrimSpace(fixSystem)},
+	// last in Prepare, on the merged timeline: the stretches that were said
+	// twice (retake.go). Before the cut and not inside it -- a retake is a
+	// fact about what was said, not a judgment about the video.
+	{key: "retake", def: strings.TrimSpace(retakeSystem)},
 	// the cut, then the three passes that follow it clip by clip: captions,
 	// speed, decorations. "audit" was here -- a second long call that moved
 	// borders by seconds; removed, not renamed, so a project's edited copy is a

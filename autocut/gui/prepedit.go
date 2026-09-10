@@ -54,6 +54,11 @@ func prepRows() []prepRow {
 		{"Transcript", "fix", fmt.Sprintf(
 			"The fixer: %d transcript lines per request, each block given what every "+
 				"other source showed or said at the same moment.", fixBlock)},
+		{"Retakes", "retake", "Last in Prepare, on the merged timeline: which " +
+			"stretches were said, broken off and said again. Marked, never deleted — " +
+			"the transcript keeps every word, and the cut is handed one line saying " +
+			"those seconds were an attempt. The user context's script, where there is " +
+			"one, says what was meant to be said."},
 		{"Cut", "cut", "How ▶ Suggest chooses the moments: read what the session is, " +
 			"place what the context names, fill the rest, shape the whole. It assumes " +
 			"nothing about the kind of video — that is what the context above is for."},

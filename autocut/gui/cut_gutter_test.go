@@ -23,7 +23,7 @@ func TestTheTapeStartsPastTheGutter(t *testing.T) {
 	// window itself, the zoomed-out timeline would be wider than its window by
 	// this strip and the scrollbar would stay for nothing
 	ed.viewW = 1200
-	if got, want := ed.minPps(), fitPps(1200-gutterPx, ed.filmedDur(), 1); got != want {
+	if got, want := ed.minPps(), fitPps(1200-gutterPx, ed.filmedDur()); got != want {
 		t.Errorf("zoom-to-fit is %g px/s, want %g", got, want)
 	}
 	// an empty page has no tape, and so no strip in front of one

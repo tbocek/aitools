@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -49,7 +50,7 @@ type appConf struct {
 	// the Narrate step, next to a scrolling list of voices; the list is a
 	// dropdown now and the row went with it, because pointing at a folder is
 	// not how a voice gets used here -- "Add file…" copies one in. Model weights are
-	// not read from anywhere here; their paths are audiocpp-server.json's
+	// not read from anywhere here; their paths are config-audiocpp.json's
 	// business, on the server's side. The model ids are the server's own --
 	// what that json calls them -- and they are here rather than compiled in
 	// because the models get replaced faster than the code does.
@@ -57,6 +58,13 @@ type appConf struct {
 	ASRModel, DiarModel string
 	TTSModel            string
 	SepModel            string
+	// which model places cut points on the word. Empty is not a missing
+	// setting: it means "whichever one on that server does align", which is
+	// the ordinary answer when a server has one aligner. It is a box rather
+	// than a rule because a server can have two, and because one of them can
+	// be registered and unserviceable -- and then a rule leaves nothing to do
+	// about it.
+	AlignModel string
 
 	// Which ffmpeg to shell out to. Blank -- the ordinary answer -- means the
 	// name alone, resolved off PATH like any other tool. A path is for the
@@ -123,6 +131,9 @@ func (c appConf) withDefaults() appConf {
 	c.DiarModel = or(c.DiarModel, defDiarModel)
 	c.TTSModel = or(c.TTSModel, defTTSModel)
 	c.SepModel = or(c.SepModel, defSepModel)
+	// AlignModel has no default on purpose: no aligner is a working setup, so
+	// naming one that may not be there would put a red badge on a row that is
+	// allowed to be empty.
 	return c
 }
 
@@ -235,6 +246,8 @@ func (a *App) readGlobal() globalConf {
 			c.DiarModel = v
 		case "AUDIOCPP_SEP_MODEL":
 			c.SepModel = v
+		case "AUDIOCPP_ALIGN_MODEL":
+			c.AlignModel = v
 		case "FFMPEG":
 			c.FFmpeg = v
 		case "FIREFOX":
@@ -339,7 +352,7 @@ AUDIOCPP_API_KEY=%q
 # ones into here, and the folder is chosen on the Narrate step, beside the list
 # it fills. The compose file mounts this same folder into the server as its
 # voice library. Nothing else is read from disk: model weights and their paths
-# are audiocpp-server.json's business, on the server's side.
+# are config-audiocpp.json's business, on the server's side.
 AUDIOCPP_VOICES=%q
 # The ids the server lists for its four jobs -- transcribe, tell speakers
 # apart, speak the narration, and split a voice off a recording. Only the last
@@ -348,6 +361,12 @@ AUDIOCPP_ASR_MODEL=%q
 AUDIOCPP_DIAR_MODEL=%q
 AUDIOCPP_TTS_MODEL=%q
 AUDIOCPP_SEP_MODEL=%q
+
+# ...and the one that places a cut point on the word rather than on a silence.
+# Empty means whichever model that server declares for "align", which is the
+# answer whenever it has exactly one. Name it when there are two, or when the
+# one it picks is registered but the engine will not serve it.
+AUDIOCPP_ALIGN_MODEL=%q
 
 # Which ffmpeg every step shells out to; empty means whichever one is on PATH,
 # which is what it should be unless this machine has more than one. ffprobe is
@@ -366,7 +385,7 @@ FIREFOX=%q
 SD_SERVER=%q
 SD_API_KEY=%q
 `, c.Server, c.Model, c.Key, ttsPort, c.TTS, c.TTSKey,
-		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel, c.SepModel, c.FFmpeg,
+		c.Voices, c.ASRModel, c.DiarModel, c.TTSModel, c.SepModel, c.AlignModel, c.FFmpeg,
 		c.Firefox, sdPort, c.SD, c.SDKey)
 	body += rememberedBody(g)
 	return os.WriteFile(p, []byte(body), 0o600)
@@ -580,6 +599,54 @@ func testTTS(url, key string) (string, error) {
 		float64(took.Milliseconds()), clone, len(cat)), nil
 }
 
+// testAligner reports which model on that server does forced alignment, and
+// says what it means when none does.
+//
+// No box goes with it, and that is the point. Every other model here is asked
+// for by id because the request carries one; the aligner is asked for by TASK
+// (align.go), so the catalog is the whole of the answer and a box beside it
+// could only ever disagree with the server. The same deal the drawing server
+// gets: name what is loaded rather than hold it to a name.
+//
+// Not having one is not a failure. It is a smaller tool -- the joins fall back
+// to the waveform, which places a cut wherever there is a silence to place it
+// in, and cannot cut between two words of one breath.
+func testAligner(url, key, want string) (string, error) {
+	cat, took, err := audioProbe(url, key)
+	if err != nil {
+		return "", err
+	}
+	if want = strings.TrimSpace(want); want != "" {
+		m, ok := cat[want]
+		if !ok {
+			return "", fmt.Errorf("no model %q on %s -- it serves %s", want, url, catalogIDs(cat))
+		}
+		if m.Task != "" && m.Task != "align" {
+			return "", fmt.Errorf("%q is declared task %q, and cannot align", want, m.Task)
+		}
+		return fmt.Sprintf("%s (%s) places the cut points, on the word (%s)", want, m.Family, took), nil
+	}
+	var ids []string
+	for id, m := range cat {
+		if m.Task == "align" {
+			ids = append(ids, fmt.Sprintf("%s (%s)", id, m.Family))
+		}
+	}
+	sort.Strings(ids)
+	switch len(ids) {
+	case 0:
+		return fmt.Sprintf("no model on %s does forced alignment, so cut points come off the "+
+			"waveform: clean wherever there is a silence to cut in, and unable to cut between "+
+			"two words of one breath. Register one with task \"align\" in config-audiocpp.json "+
+			"to place them on the words instead (%s)", url, took), nil
+	case 1:
+		return fmt.Sprintf("%s places the cut points, on the word (%s)", ids[0], took), nil
+	default:
+		return fmt.Sprintf("%s answer for alignment on %s; the first is used, so leave one "+
+			"registered to be sure which (%s)", strings.Join(ids, " and "), url, took), nil
+	}
+}
+
 // testAudioModel asks the server whether one id is in the catalog and declared
 // for the task we will ask of it -- one id per button, so the verdict names
 // which. Learned over HTTP only, so the error can name the two ways a catalog
@@ -593,7 +660,7 @@ func testAudioModel(url, key, id, task, what string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("no model %q to %s -- the server serves %s. Add it either in "+
 			"the server's own browser UI at %s (its model page installs and loads one live, "+
-			"if the server was started with --ui-management), or in the audiocpp-server.json "+
+			"if the server was started with --ui-management), or in the config-audiocpp.json "+
 			"it reads at startup, followed by docker compose up -d --force-recreate audio "+
 			"-- recreate, because a restarted container can keep a stale copy of the edited file",
 			id, what, catalogIDs(cat), url)
@@ -979,7 +1046,7 @@ func (a *App) setupDialog() {
 
 	// Prepare's side of the same server: which of its models does which job.
 	// Model ids, not paths -- what the weights are and how they run is settled
-	// in audiocpp-server.json, where the server can act on it.
+	// in config-audiocpp.json, where the server can act on it.
 	entry := func(text, placeholder, tip string) *gtk.Entry {
 		e := gtk.NewEntry()
 		e.SetText(text)
@@ -999,6 +1066,10 @@ func (a *App) setupDialog() {
 	diarModel := entry(c.DiarModel, defDiarModel, "Id of the diarization model — the one that tells speakers apart")
 	sepModel := entry(c.SepModel, defSepModel,
 		"Id of the separation model — the one that lifts the voice off a recording")
+	alignModel := entry(c.AlignModel, "",
+		"Id of the forced aligner, which places a cut point on the word rather than on the "+
+			"nearest silence. Empty means whichever model the server declares for \"align\"; "+
+			"name one when it serves two, or when the one it picks will not load")
 
 	// the other local binary: the browser the model looks facts up through.
 	// Empty is the one on PATH, "off" is no search at all -- and the
@@ -1051,6 +1122,19 @@ func (a *App) setupDialog() {
 			}
 	})
 
+	testAlignBtn := gtk.NewButtonWithLabel("Test")
+	testAlignBtn.SetTooltipText("Ask the server which model places cut points on the word, if any")
+	alignBadge := newTestBadge()
+	hook(testAlignBtn, alignBadge, "aligner", func() (string, func() (string, error)) {
+		url, k, id := audioTarget(), ttsKey.Text(), strings.TrimSpace(alignModel.Text())
+		what := "what aligns"
+		if id != "" {
+			what = fmt.Sprintf("%q", id)
+		}
+		return fmt.Sprintf("asking %s for %s …", url, what),
+			func() (string, error) { return testAligner(url, k, id) }
+	})
+
 	testSepBtn := gtk.NewButtonWithLabel("Test")
 	testSepBtn.SetTooltipText("Check that the audio.cpp server really serves this model, declared for separation")
 	sepBadge := newTestBadge()
@@ -1092,15 +1176,16 @@ func (a *App) setupDialog() {
 			// carried through, not read off a widget: there is no box for the
 			// voices folder anywhere in the GUI, and Save writes the whole file
 			// -- so anything not carried is silently erased on the next Save
-			Voices:    c.Voices,
-			ASRModel:  asrModel.Text(),
-			DiarModel: diarModel.Text(),
-			SepModel:  strings.TrimSpace(sepModel.Text()),
-			TTSModel:  strings.TrimSpace(ttsm.Text()),
-			SD:        strings.TrimRight(strings.TrimSpace(sd.Text()), "/"),
-			SDKey:     sdKey.Text(),
-			FFmpeg:    strings.TrimSpace(ff.Text()),
-			Firefox:   strings.TrimSpace(fx.Text()),
+			Voices:     c.Voices,
+			ASRModel:   asrModel.Text(),
+			DiarModel:  diarModel.Text(),
+			SepModel:   strings.TrimSpace(sepModel.Text()),
+			AlignModel: strings.TrimSpace(alignModel.Text()),
+			TTSModel:   strings.TrimSpace(ttsm.Text()),
+			SD:         strings.TrimRight(strings.TrimSpace(sd.Text()), "/"),
+			SDKey:      sdKey.Text(),
+			FFmpeg:     strings.TrimSpace(ff.Text()),
+			Firefox:    strings.TrimSpace(fx.Text()),
 		}
 		if err := a.writeConf(cc); err != nil {
 			logExp.SetExpanded(true)
@@ -1136,7 +1221,7 @@ func (a *App) setupDialog() {
 	})
 	for _, e := range []interface {
 		ConnectChanged(func()) glib.SignalHandle
-	}{server, model, tts, asrModel, diarModel, sepModel, ttsm, sd, ff, fx} {
+	}{server, model, tts, asrModel, diarModel, sepModel, alignModel, ttsm, sd, ff, fx} {
 		e.ConnectChanged(touched)
 	}
 	key.ConnectChanged(touched)
@@ -1278,7 +1363,7 @@ func (a *App) setupDialog() {
 		"Empty means the compose service on loopback. Autocut only ever talks to it over "+
 		"HTTP -- starting it is the job of whoever runs the stack.\n\n"+
 		"The four model boxes are ids as the server lists them, not files: which weights "+
-		"they are, and on which backend, is set in audiocpp-server.json. Blank means the "+
+		"they are, and on which backend, is set in config-audiocpp.json. Blank means the "+
 		"built-in default. The server opens the project folder itself, so it has to see "+
 		"it at this same path.", true)
 	grid.Attach(lbl("Server:"), 1, row, 1, 1)
@@ -1305,6 +1390,18 @@ func (a *App) setupDialog() {
 		grid.Attach(r.btn, 4, row+i, 1, 1)
 	}
 	row += 4
+
+	// Empty is the ordinary answer here, unlike every box above it: the catalog
+	// says which model aligns, and on a server with one that is the whole
+	// answer. The box is for the two cases a rule cannot handle -- a server
+	// with two aligners, where picking by name is picking blind, and one whose
+	// aligner is registered but which the engine will not serve, where a rule
+	// leaves nothing to do about it. Test names whichever one will be used.
+	grid.Attach(lbl("Forced aligner:"), 1, row, 1, 1)
+	grid.Attach(alignModel, 2, row, 1, 1)
+	grid.Attach(alignBadge.stack, 3, row, 1, 1)
+	grid.Attach(testAlignBtn, 4, row, 1, 1)
+	row++
 
 	// the last step's server. No model row: unlike audio.cpp above, there is
 	// no model id to send per request, so there is nothing here to choose. Test

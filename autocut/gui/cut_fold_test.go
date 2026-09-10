@@ -306,18 +306,17 @@ func TestAHoldOpensTheSeamsAroundItAndTheReleaseShutsThem(t *testing.T) {
 	}
 }
 
-// The drawing: a seam is not the unfilmed hole's hatch, and it is not a strip
-// either. A hole is footage nobody FILMED and is drawn as a fixed hatch,
-// because something has to stand where the recordings stop; a fold is footage
-// that exists and that the cut drops, and the page has nothing to say about it
-// beyond the + -- so the clips meet, and there is no band of anything between
-// them.
+// The drawing: a seam is not a strip of anything. A fold is footage that exists
+// and that the cut drops, and the page has nothing to say about it beyond the +
+// -- so the clips meet, and there is no band between them. Nor is there one
+// where nobody filmed at all: that is drawn as the two takes touching, each
+// with its own border.
 func TestASeamLeavesNoGap(t *testing.T) {
 	src := readSrc(t, "cut_fold.go")
 	if !strings.Contains(src, "func (ed *cutEditor) drawFoldBadges(") {
 		t.Error("cut_fold.go does not draw the badges")
 	}
-	for _, no := range []string{"gapPx", "hatchBand", "drawFolds"} {
+	for _, no := range []string{"hatchStrokes", "drawFolds"} {
 		if strings.Contains(src, no) {
 			t.Errorf("the seam is drawn as a strip of its own (%s)", no)
 		}

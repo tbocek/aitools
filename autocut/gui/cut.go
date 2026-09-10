@@ -1,9 +1,9 @@
 package main
 
 // Cut: the session timeline. Thumbnails with the kept stretches tinted green,
-// the waveform lanes under them. Holes nobody filmed collapse to a fixed hatch
-// (gapPx); folded gaps to nothing (cut_fold.go). cut/cut.json holds the
-// segments in session seconds.
+// the waveform lanes under them. Time nobody filmed takes no width at all, so
+// two recordings meet with a border each; folded gaps likewise (cut_fold.go).
+// cut/cut.json holds the segments in session seconds.
 
 import (
 	"context"
@@ -34,9 +34,16 @@ const (
 	// not 16: the green bar wears a 14 px plated ✕ (drawKillBadge) that has to
 	// sit inside the row.
 	selBandH = 22
-	gapPx    = 26  // display width of an unfilmed hole between two runs
 	laneGap  = 3   // px between two cameras' rows of the picture band
 	snapTol  = 5.0 // seconds the Add edges may move to find a better cut point
+	// how far inside its own pictures a recording's border is drawn: half the
+	// line, so the two pixels of it lie on the footage and none on the seam
+	srcEdgeIn = 1.0
+	// ...and how deep into them the stripes behind it reach (srcEdgeMark).
+	// Wide enough for a diagonal to read as a diagonal, narrow enough that two
+	// of them are a mark on the footage rather than a band across it.
+	srcEdgeW = 9.0
+	talkPad  = 0.2 // ...and how close to a word still counts as inside it
 	minSegLn = 1.0 // segments shorter than this are dropped when editing
 	undoDeep = 50  // how many edits back Undo reaches
 	edgeGrab = 6.0 // px either side of a clip edge that hovers and trims it
@@ -74,8 +81,6 @@ const (
 	// and asked again up to three times -- where the captions and the effects
 	// see only the kept clips and answer in a minute.
 	suggestChooseShare = 0.7
-	// how long a cut aims at when the user context names no length.
-	defTargetSecs = 300.0
 	// the most segments the cut prompt asks for. Only a fallback denominator,
 	// for a reply whose segments have no readable end to place them by.
 	suggestMaxSegs = 20.0
@@ -98,7 +103,11 @@ Work in this order.
 
 4. Shape the whole. The first segment establishes what this is: wherever the speakers say what they are doing or what they are after. Set busy stretches (EVENT says hectic) against calm ones. Finish on something that reads as an ending -- the result, the verdict, the last word.
 
-Each segment starts a beat before the first word you want and ends after the reaction to it. About one segment per 20 seconds of target length, never fewer than two.` + cutReply
+Each segment starts a beat before the first word you want and ends after the reaction to it. About one segment per 20 seconds of target length, never fewer than two.
+
+A line reading (abandoned attempt ...) has ALREADY been taken out of the video for you, to the word. Read it as though it were not there: the line before it and the line after it are one continuous sentence.
+
+This does not change your job. You still choose which stretches the video keeps and which it drops, here as everywhere else, and a session with no target length still has silences, dead ends and stretches worth nothing in it that it is YOUR job to leave out. Answering with segments that run end to end over the whole session is not a cut. All the marker means is that you never have to aim a boundary at one: that particular cut is already made, more exactly than a boundary of yours can be.` + cutReply
 
 // fxRules is the effects pass's wording (reply shape: cutReply); the user
 // context leads because "speed up the boring parts" is about segments too.
@@ -173,7 +182,7 @@ A segment ends on the payoff, never just before it, and a moment that only makes
 
 Answer with SEGMENTS, and nothing else in the reply. How fast each plays, what is captioned over it and what is drawn on it are asked for afterwards, clip by clip, once the cut stands.
 
-Check before you answer: every segment has an EVENT line inside it, every start is later than the end before it, everything the user context names is in, and the footage they come to -- end minus start, added up -- lands in the range you were given. Anywhere inside it is right; do not trim towards its middle.`
+Check before you answer: every segment has an EVENT line inside it, every start is later than the end before it, everything the user context names is in, and -- if you were given a range -- the footage they come to, end minus start added up, lands in it. Anywhere inside it is right; do not trim towards its middle. Given no range, there is nothing to add up: keep what is worth keeping and stop.`
 
 // cutSeg is one piece of the finished video: a stretch of session S..E, or an
 // insert (Ins) that plays in that slot. An overwriting insert costs the session
@@ -541,6 +550,14 @@ type cutEditor struct {
 	cardSnd string
 	scores  map[string][]float64 // per video: visual change per frame
 	gaps    map[string][]float64 // per video: session-time speech-gap points
+	// every stretch anybody was talking in, session time, in order. The gaps
+	// above are the silences BETWEEN these; this is the other half of the same
+	// reading, and what answers "is a word sounding here" (talking).
+	talk [][2]float64
+	// and the words themselves, timed by the aligner where there is one
+	// (align.go). What a cut inside a phrase is placed by: the boundary
+	// between two words, which no silence marks.
+	words []srcWord
 
 	// the two hand-made corrections to the timeline (cut_shift.go): how many
 	// seconds each source's clock was out, and the rows as they were when the
@@ -807,6 +824,9 @@ func (ed *cutEditor) reload() error {
 		}
 	}
 	sort.Slice(speech, func(i, j int) bool { return speech[i][0] < speech[j][0] })
+	ed.talk = speech
+	// the words, on the session clock, for the edges that fall inside a phrase
+	ed.words = a.sessionWords(paths)
 	for vi := range ed.vids {
 		v := &ed.vids[vi]
 		var pts []float64
@@ -937,7 +957,7 @@ func framePostage(file string) []byte {
 
 // tlSpan is one filmed stretch of the session and where it is drawn. The axis
 // is TIME, not the recordings laid end to end: two cameras rolling through the
-// same minute share one x. Unfilmed time collapses to gapPx.
+// same minute share one x. Unfilmed time collapses to nothing.
 type tlSpan struct {
 	t0, t1 float64 // the session seconds this run covers
 	px     float64 // where t0 is on the timeline
@@ -945,10 +965,6 @@ type tlSpan struct {
 	// the footage either side of it meets (cut_fold.go). A filmed run is cut
 	// into cells at its folded gaps, so a span is a run or a piece of one.
 	fold bool
-	// ...and a hole comes before this one: the run it belongs to is not the
-	// one before it. The hatch is drawn on that, and only that -- the pieces a
-	// fold cuts a run into are the same run and have nothing between them.
-	hole bool
 }
 
 // dur is the run's length in seconds.
@@ -1079,9 +1095,6 @@ func (ed *cutEditor) layoutPx() {
 	// of every band stand in rather than on the footage (cut_gutter.go)
 	x := gutterPx
 	for i := range ed.spans {
-		if ed.spans[i].hole {
-			x += gapPx
-		}
 		ed.spans[i].px = x
 		x += ed.spanW(ed.spans[i])
 	}
@@ -1227,7 +1240,8 @@ func (ed *cutEditor) pairAt(y float64) int {
 // pairAudAt is WHOSE sound that strip is at timeline-x px: two sources sharing
 // a row each bring the stretch under their own pictures, so the answer is the
 // one under the pointer -- or the nearest along the row, audAtY's rule, so a
-// press in the hatch between them is a miss and not a void.
+// press on the stretch of the row neither of them covers is a miss and not a
+// void.
 func (ed *cutEditor) pairAudAt(px, y float64) string {
 	row := ed.pairAt(y)
 	if row < 0 {
@@ -1630,9 +1644,45 @@ func (ed *cutEditor) skipGap() bool {
 		ed.a.updateRunControls()
 	case next != ed.jumped:
 		ed.jumped = next
-		ed.setPlayhead(ed.segs[next].S)
+		ed.setPlayhead(ed.playable(ed.segs[next].S))
+	default:
+		// jumped here already and the line is STILL in the gap. Playback used
+		// to sit here for good: the guard is there so a seek that has not
+		// landed yet is not fought tick after tick, but a seek that can never
+		// land is not a seek in flight. It happens when the clip starts where
+		// nobody filmed -- setPlayhead finds no recording, leaves the player
+		// running on the old file, and the position it reads back is inside
+		// this same gap again. Ask once more, from the first second there is
+		// footage for, and if there is none, stop rather than pretend to play.
+		if to := ed.playable(ed.segs[next].S); ed.videoAt(to) != nil {
+			ed.setPlayhead(to)
+		} else {
+			ed.jumped = -1
+			ed.player.Pause()
+			ed.a.updateRunControls()
+		}
 	}
 	return true
+}
+
+// playable is t, or the first second at or after it that a recording covers.
+// A cut may name a second nobody filmed -- the model chooses from a timeline
+// where unfilmed time is written down as plainly as the rest -- and the player
+// has nothing to seek to there.
+func (ed *cutEditor) playable(t float64) float64 {
+	if ed.videoAt(t) != nil {
+		return t
+	}
+	best := math.Inf(1)
+	for i := range ed.vids {
+		if v := &ed.vids[i]; v.start >= t && v.start < best {
+			best = v.start
+		}
+	}
+	if math.IsInf(best, 1) {
+		return t
+	}
+	return best
 }
 
 // walkOn carries playback from the end of one recording to the next.
@@ -1812,18 +1862,56 @@ func (ed *cutEditor) tAt(x float64) float64 {
 	}
 	for _, s := range ed.spans {
 		if x < s.px {
-			return s.t0 // inside a hatched hole: clamp to the next run's start
+			return s.t0 // left of the first run: the gutter, which is not tape
 		}
-		if w := ed.spanW(s); x <= s.px+w {
-			if s.fold {
-				// a seam is one x standing for the whole gap; a press on it is
-				// its first second, which is where the footage stops being kept
-				return s.t0
-			}
+		w := ed.spanW(s)
+		if s.fold && x <= s.px+w {
+			// a seam is one x standing for the whole gap; a press on it is
+			// its first second, which is where the footage stops being kept
+			return s.t0
+		}
+		// half-open on the right, because unfilmed time takes no width: the x
+		// where one recording stops is the x where the next one starts, and it
+		// reads as the second the LATER one begins. A press there is a press
+		// on the take you can see there.
+		if x < s.px+w {
 			return s.t0 + (x-s.px)/ed.pps
 		}
 	}
 	return ed.spans[len(ed.spans)-1].t1
+}
+
+// ontoFilm is the nearest second to t that a recording covers, in the direction
+// the edge is facing: a start moves FORWARD to where the next take begins, an
+// end moves BACK to where the last one stopped, so an edge never crosses the
+// footage it belongs to on its way out of a hole.
+func (ed *cutEditor) ontoFilm(t float64, isStart bool) float64 {
+	best, dist := t, math.Inf(1)
+	for i := range ed.vids {
+		v := &ed.vids[i]
+		c := v.start
+		if !isStart {
+			c = v.start + v.dur
+		}
+		if isStart && c < t || !isStart && c > t {
+			continue
+		}
+		if d := math.Abs(c - t); d < dist {
+			best, dist = c, d
+		}
+	}
+	if math.IsInf(dist, 1) {
+		// nothing that way: the other way is better than a second of nothing
+		for i := range ed.vids {
+			v := &ed.vids[i]
+			for _, c := range []float64{v.start, v.start + v.dur} {
+				if d := math.Abs(c - t); d < dist {
+					best, dist = c, d
+				}
+			}
+		}
+	}
+	return best
 }
 
 // tAtView is the same for an x on the widget, which is a window onto the
@@ -2020,7 +2108,14 @@ func (ed *cutEditor) monStatus() {
 func (ed *cutEditor) snapEdge(t float64, isStart bool) float64 {
 	v := ed.videoAt(t)
 	if v == nil {
-		return t
+		// nobody filmed this second. It used to be left where it was, and a
+		// clip that BEGINS there is a clip the player cannot open: it seeks to
+		// a file that is not under the line, finds nothing, and playback stops
+		// dead in the gap (skipGap). The cut sees a timeline where the minutes
+		// between two takes are written down as plainly as the rest, so it
+		// will name one; the page has to answer with the nearest second there
+		// is footage for.
+		return ed.ontoFilm(t, isStart)
 	}
 	best, bestScore := t, 0.35 // a candidate must beat "just leave it"
 	try := func(c, score float64) {
@@ -2039,7 +2134,28 @@ func (ed *cutEditor) snapEdge(t float64, isStart bool) float64 {
 	for _, g := range ed.gaps[v.base] {
 		try(g, 0.8)
 	}
-	if sc := ed.scores[v.base]; sc != nil {
+	// ...and the word boundaries themselves, which beat a silence midpoint
+	// because they ARE the thing a midpoint is a guess at. Timed by the
+	// aligner in Prepare (align.go): 0.02 s from the sound where the ASR's own
+	// stamps sit 0.29 s behind it.
+	//
+	// This is what takes the aligner from a retake feature to a property of
+	// the page: every edge placed here is placed with it -- the ends of a
+	// suggested segment, and the selection you draw by hand with ＋ Add.
+	for _, w := range ed.wordEdges(t) {
+		try(w, 0.9)
+	}
+	// ...and only then the pictures. A frame candidate can score up to 1.0
+	// against a speech gap's 0.8, and frames sit on the extraction interval --
+	// one second on a talking head -- so a visual peak at a whole second beats
+	// the pause beside it and takes the cut into the middle of a word. That is
+	// where "…multiple wallet makers at" came from: the end snapped to a frame
+	// at 350.00 while the start of the next clip found the pause at 350.76, and
+	// the word "once" fell into the hole between them.
+	//
+	// Where nobody is talking they are still the best answer there is, which is
+	// most of a screen capture and all of a silent one.
+	if sc := ed.scores[v.base]; sc != nil && !ed.talking(t) {
 		mean := 0.0
 		for _, s := range sc {
 			mean += s
@@ -2054,6 +2170,37 @@ func (ed *cutEditor) snapEdge(t float64, isStart bool) float64 {
 		}
 	}
 	return best
+}
+
+// wordEdges is the ends of words near session second t, in session time: where
+// one word stops and the next has not started. The gap between two words is the
+// only place inside a phrase a cut can go, and it is a place a silence midpoint
+// cannot find -- there is no silence between "art" and "and", only a closure.
+//
+// Both edges of every word in reach, since which of the two a cut wants depends
+// on which side of it the footage is kept: try() picks by distance and by the
+// side the caller is on.
+func (ed *cutEditor) wordEdges(t float64) []float64 {
+	var out []float64
+	for _, w := range ed.words {
+		if w.e < t-snapTol || w.s > t+snapTol {
+			continue
+		}
+		out = append(out, w.s, w.e)
+	}
+	return out
+}
+
+// talking is whether anybody was speaking at session second t, with a little
+// either side: a cut a fifth of a second from a word is a cut in that word as
+// far as the ear is concerned.
+func (ed *cutEditor) talking(t float64) bool {
+	for _, sp := range ed.talk {
+		if t >= sp[0]-talkPad && t <= sp[1]+talkPad {
+			return true
+		}
+	}
+	return false
 }
 
 // rangePieces is what Add would keep out of the stretch t0..t1: a selection may
@@ -3547,7 +3694,7 @@ func (ed *cutEditor) updateInputs() {
 			speech+events, speech, events)
 		// the same string the request will carry, so the size is the real one
 		detail += fmt.Sprintf("\n\nprepare/transcript/session.txt — %d kB, sent whole with the cut prompt",
-			(len(sessionText(rows, ed.a.narratorMic()))+512)/1024)
+			(len(sessionText(rows, ed.a.narratorMic(), ed.a.loadRetakes()))+512)/1024)
 	}
 	// the context rides along with every request this page makes -- in the
 	// tooltip, not on the row: the box is on the page before this one and the
@@ -3570,20 +3717,48 @@ func (ed *cutEditor) updateOut() {
 
 // ---- drawing ---------------------------------------------------------------
 
-// hatchBand paints "the footage stops here": a dark ground with dashed yellow
-// diagonals, clipped to the band. Used for holes between recordings and for
-// the point a spliced insert opens a clip.
-func hatchBand(cr *cairo.Context, x, w, top, h float64) {
-	cr.SetSourceRGB(0.22, 0.2, 0.16)
-	cr.Rectangle(x, top, w, h)
-	cr.Fill()
-	hatchStrokes(cr, x, w, top, h)
+// srcEdgeMark paints one end of a recording ON its own pictures: a band of
+// amber diagonals with the border line down its outer side. dir is +1 for a
+// beginning and -1 for an end, so the band always lies inside the footage it
+// belongs to and never over the take next door.
+//
+// Striped and not a plain line, because a line only says WHERE. What happened
+// here is that the camera stopped, and the minutes it was off take no width on
+// this timeline at all -- so if the mark does not say it, nothing does. Two
+// takes that meet are two striped bands back to back, and that reads as a
+// break in the footage the way two plain lines never did.
+//
+// room is how much of this recording there is to draw on; a take narrower than
+// two bands gets what fits rather than a band over its neighbour.
+func srcEdgeMark(cr *cairo.Context, x, dir, top, h, room float64) {
+	w := math.Min(srcEdgeW, math.Max(1, room/2))
+	cr.Save()
+	cr.Rectangle(math.Min(x, x+dir*w), top, w, h)
+	cr.Clip()
+	// through the stripes, because what is under them is the frame this take
+	// begins on and covering it is a worse trade than a fainter mark
+	cr.SetSourceRGBA(0.9, 0.7, 0.2, 0.7)
+	cr.SetLineWidth(1.5)
+	for dy := -w; dy < h; dy += 5 {
+		cr.MoveTo(x, top+dy+w)
+		cr.LineTo(x+dir*w, top+dy)
+		cr.Stroke()
+	}
+	cr.Restore()
+	// and the edge itself solid, so the boundary is still a boundary: the
+	// stripes say what happened, this says exactly where
+	cr.SetSourceRGB(0.9, 0.7, 0.2)
+	cr.SetLineWidth(2)
+	cr.MoveTo(x, top)
+	cr.LineTo(x, top+h)
+	cr.Stroke()
 }
 
-// hatchStrokes is the marks without the ground, for a band that is already
-// painted something -- the splice marker is violet first, because it says two
-// things at once, and hatching drawn under that violet would be tinted by it
-// until it was no longer the same marks.
+// hatchStrokes paints "the footage stops here": dashed yellow diagonals,
+// clipped to the band. Marks only and no ground of their own, because the one
+// thing they mark is already painted something -- the splice marker is violet
+// first, since it says two things at once, and hatching drawn under that
+// violet would be tinted by it until it was no longer the same marks.
 func hatchStrokes(cr *cairo.Context, x, w, top, h float64) {
 	cr.Save()
 	defer cr.Restore()
@@ -3659,17 +3834,8 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 	cr.Translate(-ed.viewX, 0)
 	defer cr.Restore()
 
-	// the hatched holes: every stretch nobody filmed, whatever its real length,
-	// drawn as the one gap width. On the runs and not on the recordings, because
-	// two overlapping files have no hole between them to draw
-	for _, sp := range ed.spans {
-		if sp.hole && sp.px >= vx0 && sp.px-gapPx <= vx1 {
-			hatchBand(cr, sp.px-gapPx, gapPx, top, bandH)
-		}
-	}
-
 	for _, v := range ed.vids {
-		if v.pxOrigin > vx1 || v.pxOrigin+v.dur*ed.pps < vx0-gapPx {
+		if v.pxOrigin > vx1 || v.pxOrigin+v.dur*ed.pps < vx0 {
 			continue // this recording is off screen entirely
 		}
 		lt := ed.laneTop(v.lane)        // this camera's row
@@ -3712,13 +3878,26 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 			}
 		}
 
-		// where this recording begins, which is the one thing about it that
-		// IS a place on the tape. Its name is not: that is pinned, below.
-		cr.SetSourceRGB(0.9, 0.7, 0.2)
-		cr.SetLineWidth(2)
-		cr.MoveTo(v.pxOrigin, lt)
-		cr.LineTo(v.pxOrigin, lt+ed.laneH())
-		cr.Stroke()
+		// where this recording begins and ends, drawn just INSIDE its own
+		// pictures rather than between them (srcEdgeMark).
+		//
+		// Between them the mark is about the GAP, and the gap is the one thing
+		// here that is not footage: two takes with a stretch nobody filmed in
+		// between came out as a band of hatching with a line down each side of
+		// it -- the emptiest part of the page wearing the loudest mark on it.
+		// So unfilmed time is laid out at no width at all and the borders are
+		// on the pictures: two takes that meet are two bordered pictures
+		// touching, and what shows is the border, not the space.
+		//
+		// Its name is not a place on the tape at all: that is pinned, below.
+		x0, x1 := v.pxOrigin+srcEdgeIn, ed.xOf(v.start+v.dur)-srcEdgeIn
+		srcEdgeMark(cr, x0, 1, lt, ed.laneH(), x1-x0)
+		// ...and the far end only where the two marks would be the same two
+		// pixels: a recording drawn narrower than its own borders is one
+		// border, and drawing it twice only thickens it
+		if x1-x0 > 3*srcEdgeIn {
+			srcEdgeMark(cr, x1, -1, lt, ed.laneH(), x1-x0)
+		}
 
 		if au := ed.pairAud(v.base); au != nil {
 			// and the row's own sound directly under its pictures, edge to
@@ -5447,18 +5626,17 @@ func (ed *cutEditor) minPps() float64 {
 	// the gutter comes off the width the footage may use, exactly as the holes
 	// do: it is drawn at a fixed width and does not shrink with the zoom
 	// (cut_gutter.go)
-	return fitPps(ed.viewW-gutterPx, ed.filmedDur(), len(ed.runs()))
+	return fitPps(ed.viewW-gutterPx, ed.filmedDur())
 }
 
 // fitPps is that floor without a widget in the way: the zoom at which dur
-// seconds spread over n filmed runs come to exactly view pixels, gaps and the
-// rounding in relayout included.
-func fitPps(view, dur float64, n int) float64 {
+// seconds come to exactly view pixels, the rounding in relayout included. The
+// runs cost nothing to lie between, so only their total length counts.
+func fitPps(view, dur float64) float64 {
 	if view <= 0 || dur <= 0 {
 		return 0 // no allocation yet, or nothing loaded: no width to fit into
 	}
-	gaps := float64(max(0, n-1)) * gapPx
-	return math.Max(0, (view-gaps-1)/dur) // -1: relayout rounds the width up
+	return math.Max(0, (view-1)/dur) // -1: relayout rounds the width up
 }
 
 // sessEnd is the far end of the session: the moment the last recording stops.

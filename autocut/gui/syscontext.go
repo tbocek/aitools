@@ -25,16 +25,16 @@ Read by a machine, not a person: exactly what the job asks for and nothing aroun
 THE MATERIAL
 One session -- pictures and microphones, all on one clock -- written as stamped lines:
 
-  [12:04] EVENT: what the picture showed in those seconds, and whether it was hectic or calm
-  [12:07] SPEAKER_01: something said out loud, which the video plays
-  [12:11] NARRATOR: something said on a microphone the video does not play, so only a job that uses it is heard
+  [724s | 12:04] EVENT: what the picture showed in those seconds, and whether it was hectic or calm
+  [727s | 12:07] SPEAKER_01: something said out loud, which the video plays
+  [731s | 12:11] NARRATOR: something said on a microphone the video does not play, so only a job that uses it is heard
 
 A clip's block may also carry MARKED: the editor's own name for a moment in it -- not something said and not something the picture showed, but what they call it.
 
 THE CLOCKS
 Every line is stamped, and the request says which clock. Answer on the same one.
 
-  [12:04] session time, mm:ss from its start, minutes counting past 59 -- [72:30] is 4350 seconds. Times you return on it are session seconds: mm*60+ss.
+  [724s | 12:04] session time, the same instant written twice: the seconds, then mm:ss from the session start with minutes counting past 59. Times you return on this clock are the SECONDS, and you take them off the line -- never work them out from the mm:ss, and never answer with an mm:ss.
   [+2.0s] an offset from the start of what the request is about -- these frames, this clip. Negative is before it.
   A bare number in a column is seconds on one recording's own timeline: copied, never recomputed.
 
@@ -57,6 +57,9 @@ WHAT EACH JOB IS GIVEN, AND WHAT IT ANSWERS WITH -- nothing around the answer:
     EVENT: Calm; the tower fires into the crowd and a health bar empties.
     STATE: On the second map, defending the left lane with the new tower.
   transcript: a context block, then N lines of TSV -- start, end, speaker, text. Answers exactly those N lines in order, start, end and speaker copied character for character and only the text changed. No line merged, split, dropped, added or emptied; no tabs in the text; no line numbers. Any difference in count, order, times or speakers discards the block.
+  retake: every spoken line of the session, numbered, each with its own seconds, the pause in front of it and the seams between recordings. Answers ABANDONED, strict JSON and nothing else:
+    {"abandoned":[{"from":<n>,"to":<n>,"again":<n>}]}
+    <n> is a line number exactly as the request gave it. "from" to "to" is the stretch that was abandoned, inclusive; "again" is the line where the attempt that was kept begins, or 0 when it was broken off and never picked up. Nothing to mark is a whole answer: {"abandoned":[]}.
   cut: the footage range and the session timeline. Answers SEGMENTS, strict JSON and nothing else:
     {"segments":[{"start":<sec>,"end":<sec>}]}
     <sec> is session seconds, a number. Segments in order, never overlapping, and inside the range the request gives.
@@ -76,7 +79,7 @@ WHAT EACH JOB IS GIVEN, AND WHAT IT ANSWERS WITH -- nothing around the answer:
   upload text: the clips, each with where it starts in the finished video, what was seen and said in each, and the narration over it. Answers three parts with a blank line between them -- the title on one line prefixed exactly "TITLE: ", the thumbnail instruction on one line prefixed exactly "THUMBNAIL: ", then the description as prose. No JSON. The instruction goes to an image model that edits the first frame it is given, the others as references named by position ("the ship from the second image"); the title is printed onto the finished picture afterwards, so ask for no text, no lettering and no logo, and for the part it lands in to stay calm and uncluttered.
 
 TOOLS
-Some jobs are offered web_search and web_read. They are for a fact about a named thing you would otherwise guess -- what a tower does, what an item costs, how a name is spelled. A fact you write is one the material shows or one you looked up; with no tool offered, a fact you do not have is one you do not write.
+Some jobs are offered web_search and web_read. They are for a fact about a named thing you are about to WRITE DOWN and would otherwise guess -- what a tower does, what an item costs, how a name is spelled -- and only when the material does not contain it. Not to understand the session, not to confirm what the material already tells you, and never on a job whose answer is numbers rather than words: a search costs minutes, and the reasoning that led to it is done again from the start with the results in hand. A fact you write is one the material shows or one you looked up; with no tool offered, a fact you do not have is one you do not write.
 
 NEVER INVENT
 Only what the material shows. Never invent a time, a name, a score, a moment or an outcome -- not even one the user context leads you to expect: a stretch the lines do not cover did not happen, and only stretches with EVENT lines have footage behind them.`
@@ -203,6 +206,7 @@ const sysJobsHead = "WHAT EACH JOB IS GIVEN"
 var sysSections = map[string]map[string]bool{
 	"describe": sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", sysJobsHead, "NEVER INVENT"),
 	"fix":      sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", sysJobsHead, "NEVER INVENT"),
+	"retake":   sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", sysJobsHead, "NEVER INVENT"),
 	"cut":      sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE FOUR STEPS", "THE CUT", sysJobsHead, "TOOLS", "NEVER INVENT"),
 	"captions": sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE CUT", sysJobsHead, "NEVER INVENT"),
 	"speed":    sysSet("THE ANSWER", "THE CUT", sysJobsHead),

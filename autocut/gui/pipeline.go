@@ -55,10 +55,11 @@ const (
 	// The ASR encoders have a position table a session is far past (Nemotron
 	// refuses well before 12 minutes; others run full context over the whole
 	// recording). Long audio goes in as chunks, cut where nobody is talking.
-	asrChunkMax = 300.0 // longest audio in one ASR request
-	asrCutSeek  = 20.0  // how far from an even cut a silence is worth taking
-	asrQuietDB  = -35   // what counts as quiet, in dBFS
-	asrQuietMin = 0.4   // and for how long
+	asrChunkMax  = 300.0 // longest audio in one ASR request
+	asrChunkQwen = 60.0  // ...and for a model that allocates by the second (asrChunk)
+	asrCutSeek   = 20.0  // how far from an even cut a silence is worth taking
+	asrQuietDB   = -35   // what counts as quiet, in dBFS
+	asrQuietMin  = 0.4   // and for how long
 
 	// segment building
 	mergeGap     = 0.7  // silence that ends a segment
@@ -612,6 +613,35 @@ func (a *App) transcribe(input, inDir string, base, unit float64) error {
 		a.logfIdle(">>> [%s] ASR already done", name)
 	}
 
+	// ...and when it was said, which is a different question and a better
+	// answer (align.go). It runs here because the segments below are built
+	// from word times: an ASR that returns none -- the best of the three does
+	// -- has no transcript at all without this.
+	if models := a.alignModels(); len(models) > 0 {
+		if !exists(alignedWords(out)) {
+			a.prog(trackSTT, base+0.9*unit, "timing the words")
+			a.logfIdle(">>> [%s] aligning (%s)", name, a.alignModel())
+		}
+		if err := a.alignInput(out, wav, models); err != nil {
+			// what a failure costs depends on what the ASR gave. With its own
+			// word times, alignment is an improvement and losing it is a
+			// warning: the times stand where they stood before this existed.
+			//
+			// With none -- which is what the best transcriber answers -- it is
+			// the only source of times there is, and the transcript below is
+			// built from times. Failing here with the aligner's own words beats
+			// failing two steps later with a sentence about a missing aligner
+			// that is plainly registered.
+			if len(wordTimes(out)) > 0 {
+				a.logfIdle("!!! [%s] align: %v -- the ASR's own times stand", name, err)
+			} else if strings.TrimSpace(readFileString(filepath.Join(out, "transcript.txt"))) != "" {
+				return fmt.Errorf("align: %w\n\n%s answers with no word times of its own, so the "+
+					"aligner is the only thing that can time them and this recording cannot be "+
+					"transcribed without it", err, a.readConf().ASRModel)
+			}
+		}
+	}
+
 	if err := a.checkpoint(); err != nil {
 		return err
 	}
@@ -639,10 +669,12 @@ func (a *App) transcribe(input, inDir string, base, unit float64) error {
 // of the same shape. The cuts slide to the middle of a silence, where a
 // decoder losing its context costs nothing.
 func (a *App) asrLong(wav string, dur float64, name string, base, unit float64) ([]byte, string, error) {
-	if dur <= asrChunkMax {
+	limit := a.asrChunk()
+	if dur <= limit {
 		return a.asrJSON(wav)
 	}
-	edges := append(append([]float64{0}, asrCuts(dur, a.quietSpots(wav), asrChunkMax, asrCutSeek)...), dur)
+	seek := math.Min(asrCutSeek, limit/3)
+	edges := append(append([]float64{0}, asrCuts(dur, a.quietSpots(wav), limit, seek)...), dur)
 	n := len(edges) - 1
 	a.logfIdle(">>> [%s] too long for one request -- %d ASR chunks", name, n)
 
@@ -693,6 +725,25 @@ func (a *App) asrLong(wav string, dur float64, name string, base, unit float64) 
 	}
 	done = true
 	return append(b, '\n'), text, nil
+}
+
+// asrChunk is how much audio one ASR request may hold, which is not one number
+// for every model.
+//
+// The encoders differ in what they accept, and on a shared GPU in what they can
+// GET: Qwen3-ASR allocates a classification graph sized by the clip in front of
+// it -- about 1.5 GB per 20 s, measured here -- so a 96 s take asks for seven
+// gigabytes in one piece and dies with "failed to allocate Qwen3 ASR thinker
+// classification graph", on a machine where Nemotron reads the same take whole.
+// The model that will do the reading decides how much it is handed.
+func (a *App) asrChunk() float64 {
+	c := a.readConf()
+	if cat, err := audioCatalog(a.audioURL(), c.TTSKey); err == nil {
+		if strings.HasPrefix(cat[c.ASRModel].Family, "qwen3") {
+			return asrChunkQwen
+		}
+	}
+	return asrChunkMax
 }
 
 // asrCuts divides dur into pieces and returns the times between them. Even
@@ -1084,32 +1135,37 @@ func (a *App) diarize(out string, dur float64, name string, base, unit float64) 
 // ---- words + turns -> speaker-tagged segments ------------------------------
 
 func (a *App) mergeSegments(out string) error {
-	v, err := loadJSON(filepath.Join(out, "words.json"))
-	if err != nil {
-		return err
-	}
 	type word struct {
 		s, e float64
 		w    string
 	}
 	var words []word
 	seen := 0
-	walkObjects(v, func(m map[string]any) {
-		w, ok := m["word"].(string)
-		if ok {
-			seen++
+	for _, w := range wordTimes(out) {
+		seen++
+		if w.End > w.Start {
+			words = append(words, word{float64(w.Start) / sampleRate, float64(w.End) / sampleRate, w.Word})
 		}
-		ss, okS := m["start_sample"].(float64)
-		es, okE := m["end_sample"].(float64)
-		if ok && okS && okE {
-			words = append(words, word{ss / sampleRate, es / sampleRate, w})
-		}
-	})
+	}
 	// no words at all is silence, which becomes an empty transcript below; words
-	// whose times cannot be read is the ASR answer changing shape, which has to
-	// stop here rather than quietly emptying every transcript after it
+	// whose times cannot be read is an answer changing shape, which has to stop
+	// here rather than quietly emptying every transcript after it
 	if len(words) == 0 && seen > 0 {
-		return fmt.Errorf("words.json holds %d words but none carry start_sample/end_sample -- the ASR answer changed shape", seen)
+		return fmt.Errorf("%d words carry no usable start_sample/end_sample -- the answer changed shape", seen)
+	}
+	// ...and no words where there IS speech is the case this used to make
+	// impossible: an ASR that answers with text alone (Qwen3-ASR) and no
+	// aligner registered to time it. Said plainly, because every transcript
+	// after it would otherwise come out empty for no visible reason.
+	if len(words) == 0 {
+		if b, err := os.ReadFile(filepath.Join(out, "transcript.txt")); err == nil && strings.TrimSpace(string(b)) != "" {
+			how := "no aligner is registered to time them -- register one (task \"align\")"
+			if len(a.alignModels()) > 0 {
+				how = "and the aligner left no times either, which the line above this one says why"
+			}
+			return fmt.Errorf("%s transcribed this recording but timed no words, %s -- or use an "+
+				"ASR that answers with word timings", a.readConf().ASRModel, how)
+		}
 	}
 
 	turns, _ := loadSpans(filepath.Join(out, "turns.json"))

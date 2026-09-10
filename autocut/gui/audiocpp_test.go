@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -311,7 +312,7 @@ func TestEnsureAudioModelsNamesWhatIsMissing(t *testing.T) {
 
 	// the narration server before anyone added the step-1 entries
 	fail(t, `{"id":"index-tts2","family":"index_tts2","task":"clon"}`,
-		defASRModel, "index-tts2", "audiocpp-server.json")
+		defASRModel, "index-tts2", "config-audiocpp.json")
 	// the id is there but points at the wrong thing -- a copied entry with the
 	// task left as it was
 	fail(t, `{"id":"nemotron-asr","family":"nemotron_asr","task":"asr"},`+
@@ -332,7 +333,7 @@ func TestTheSeparationModelIsOnlyRequiredWhenSomethingAskedToBeSplit(t *testing.
 	if err == nil {
 		t.Fatal("a session that asked to be split started without a model to split with")
 	}
-	for _, w := range []string{defSepModel, "bs_roformer_q8_0", "audiocpp-server.json"} {
+	for _, w := range []string{defSepModel, "bs_roformer_q8_0", "config-audiocpp.json"} {
 		if !strings.Contains(err.Error(), w) {
 			t.Errorf("the error drops %q: %v", w, err)
 		}
@@ -683,4 +684,49 @@ func srcWav(t *testing.T, dir, name string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// The server loads a model on first use and keeps it. After a Prepare that
+// transcribed, aligned and diarized, three of them sat resident for the rest of
+// the day on a machine whose GPU memory is shared with everything else -- which
+// is what the user saw: the bar stays high after the work is done. So a run
+// ending hands the memory back.
+func TestAFinishedRunHandsBackTheModels(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tasks/unload_all_models" || r.Method != "POST" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer k" {
+			t.Errorf("the unload went unauthenticated: %q", got)
+		}
+		atomic.AddInt32(&hits, 1)
+		w.Write([]byte(`{"unloaded":["qwen3-asr"]}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	a := &App{root: dir, outDir: dir}
+	if err := a.writeConf(appConf{TTS: srv.URL, TTSKey: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	a.freeAudioModels()
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Error("a finished run leaves the models loaded")
+	}
+
+	// ...and a run that never touched audio ends the same way, so this cannot
+	// be left to the callers to remember. Nothing is listening there, and that
+	// has to be silence rather than an error on the way out of a good run
+	b := &App{root: t.TempDir(), outDir: t.TempDir()}
+	if err := b.writeConf(appConf{TTS: "http://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	b.freeAudioModels()
+
+	// the one place it is asked from: every ▶ and ↻ ends through endRun, and
+	// six call sites each remembering to do it themselves is six chances not to
+	if !strings.Contains(funcBody(t, "runqueue.go", `func \(a \*App\) endRun\(`), "go a.freeAudioModels()") {
+		t.Error("endRun does not free the models -- some runs will leave them loaded")
+	}
 }

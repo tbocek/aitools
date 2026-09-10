@@ -296,7 +296,7 @@ func TestThePageSplitsEvenlyAndTheBoxHoldsContextAndPrompts(t *testing.T) {
 	// in the other
 	at := -1
 	for _, want := range []string{`"User Context", ""`, `"Describe", "describe"`,
-		`"Transcript", "fix"`, `"Cut", "cut"`,
+		`"Transcript", "fix"`, `"Retakes", "retake"`, `"Cut", "cut"`,
 		`"Narration", "narrate"`, `"Upload text", "youtube"`} {
 		i := strings.Index(rows, want)
 		if i < at {
@@ -414,7 +414,7 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	a := &App{root: t.TempDir()}
 	got := a.prepEditNames()
 	want := []string{"User Context", "System context", "Describe", "Transcript",
-		"Cut", "Captions", "Speed", "Effects", "Narration", "Upload text"}
+		"Retakes", "Cut", "Captions", "Speed", "Effects", "Narration", "Upload text"}
 	if len(got) != len(want) {
 		t.Fatalf("the menu offers %v, want %v", got, want)
 	}

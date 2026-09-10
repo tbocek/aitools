@@ -20,6 +20,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -79,23 +80,23 @@ func TestTheFilmedRunsAreTheUnionOfTheRecordings(t *testing.T) {
 
 // ---- the old layout, unchanged -----------------------------------------------
 
-// The compatibility claim. One recording is drawn from the head of the tape at
-// the zoom, and a second recording after a hole starts exactly one gap past
-// the first's end -- which is what relayout did when it laid the files out
-// itself. The head is gutterPx rather than 0 since the switches at the left of
-// every band were given a strip of their own to stand in (cut_gutter.go);
-// everything below is that one offset and nothing else.
-func TestNonOverlappingSourcesLayOutExactlyAsBefore(t *testing.T) {
+// One recording is drawn from the head of the tape at the zoom, and a second
+// recording after a hole starts exactly where the first one ended: the four
+// and a half minutes nobody filmed are not on the timeline at all, so the two
+// takes touch and each wears its own border. The head is gutterPx rather than
+// 0 since the switches at the left of every band were given a strip of their
+// own to stand in (cut_gutter.go).
+func TestUnfilmedTimeTakesNoWidth(t *testing.T) {
 	ed := axisEd(t, tlVideo{start: 0, dur: 60}, tlVideo{start: 300, dur: 40})
 	firstW := 60 * ed.pps
 	if ed.xOf(0) != gutterPx || ed.xOf(60) != gutterPx+firstW {
 		t.Errorf("the first recording runs %.0f–%.0f px, want %.0f–%.0f",
 			ed.xOf(0), ed.xOf(60), gutterPx, gutterPx+firstW)
 	}
-	if got, want := ed.xOf(300), gutterPx+firstW+gapPx; got != want {
+	if got, want := ed.xOf(300), gutterPx+firstW; got != want {
 		t.Errorf("the second recording starts at %.0f px, want %.0f", got, want)
 	}
-	if got, want := ed.totalW, gutterPx+firstW+gapPx+40*ed.pps; got != want {
+	if got, want := ed.totalW, gutterPx+firstW+40*ed.pps; got != want {
 		t.Errorf("the timeline is %.0f px wide, want %.0f", got, want)
 	}
 	// the per-file origins the thumbnails are walked from still agree with the
@@ -105,9 +106,7 @@ func TestNonOverlappingSourcesLayOutExactlyAsBefore(t *testing.T) {
 			t.Errorf("a recording's origin is %.0f px but its start reads as %.0f", v.pxOrigin, ed.xOf(v.start))
 		}
 	}
-	// and the four and a half minutes nobody filmed cost one hole, not
-	// 240 seconds of blank track
-	if ed.totalW > gutterPx+(60+40)*ed.pps+gapPx+0.5 {
+	if ed.totalW > gutterPx+(60+40)*ed.pps+0.5 {
 		t.Errorf("the unfilmed stretch is being drawn: %.0f px for 100 s of footage", ed.totalW)
 	}
 }
@@ -137,15 +136,17 @@ func TestOverlappingSourcesShareOneAxis(t *testing.T) {
 
 func TestAPixelAndASecondAgree(t *testing.T) {
 	ed := axisEd(t, tlVideo{start: 0, dur: 60}, tlVideo{start: 300, dur: 40})
-	for _, tt := range []float64{0, 1, 30, 60, 300, 320, 340} {
+	for _, tt := range []float64{0, 1, 30, 300, 320, 340} {
 		if got := ed.tAt(ed.xOf(tt)); math.Abs(got-tt) > 1e-9 {
 			t.Errorf("%.0f s reads back as %.3f s", tt, got)
 		}
 	}
-	// inside the hatched hole there is no second to be at, so the x clamps
-	// forward to the next run rather than reporting a time nobody filmed
-	if got := ed.tAt(gutterPx + 60*ed.pps + gapPx/2); got != 300 {
-		t.Errorf("the middle of the hole reads as %.0f s, want 300", got)
+	// 60 is the one second that does not read back, and cannot: with the four
+	// unfilmed minutes taking no width, the x where the first take stops IS
+	// the x where the second one starts. It reads as the take you can see
+	// there, which is the later one.
+	if got := ed.tAt(ed.xOf(60)); got != 300 {
+		t.Errorf("the seam reads as %.0f s, want 300 -- the take drawn there", got)
 	}
 	// off the right-hand end is the end of the session
 	if got := ed.tAt(ed.totalW + 500); got != 340 {
@@ -173,13 +174,125 @@ func TestTheSessionsEndAndLengthCountTimeNotFiles(t *testing.T) {
 		t.Errorf("the filmed stretch measures %.0f s, want 900", got)
 	}
 	ed.viewW = 1800
-	// the gutter comes off the width the footage may use, like the holes:
-	// fitted to the window itself the fully zoomed-out timeline would be
-	// wider than its window by that strip, and the scrollbar would stay
-	if got, want := ed.minPps(), fitPps(1800-gutterPx, 900, 1); got != want {
+	// the gutter comes off the width the footage may use: fitted to the window
+	// itself the fully zoomed-out timeline would be wider than its window by
+	// that strip, and the scrollbar would stay
+	if got, want := ed.minPps(), fitPps(1800-gutterPx, 900); got != want {
 		t.Errorf("zoom-to-fit is %.4f px/s, want %.4f", got, want)
 	}
 	if newTestEd(t).sessEnd() != 0 {
 		t.Error("an empty session does not end at zero")
+	}
+}
+
+// ---- what the seam looks like -------------------------------------------------
+
+// The complaint this came from: the camera stops, minutes pass, the camera
+// starts again, and the page answered with a band of hatching between the two
+// takes -- the emptiest part of the page wearing the loudest mark on it, and
+// the amber that says "this recording begins here" reading as a frame around
+// the nothing rather than a mark on the footage.
+//
+// So the nothing is not laid out, and each take wears its own mark just inside
+// its own pictures: amber diagonals with the border line down the outer side.
+// Where two takes meet that is two striped bands back to back, and nothing
+// between them.
+func TestTwoTakesMeetAsTwoStripedBandsAndNoGap(t *testing.T) {
+	ed := axisEd(t, tlVideo{base: "one", path: "/f/one.mp4", start: 0, dur: 60},
+		tlVideo{base: "two", path: "/f/two.mp4", start: 300, dur: 40})
+	const w, h = 600, 220
+	ed.viewW, ed.viewX = w, 0
+	at := renderTrack(t, ed, w, h)
+	seam := int(math.Round(ed.xOf(300)))
+	top := int(ed.picTop())
+	y := top + 4
+
+	solid := func(x, y int) bool {
+		r, g, b := at(x, y)
+		return r > 200 && g > 150 && b < 90
+	}
+	// the border on each take: two px for the take that stops here, two for
+	// the take that starts, and nothing wider than that
+	for _, x := range []int{seam - 2, seam - 1, seam, seam + 1} {
+		if !solid(x, y) {
+			r, g, b := at(x, y)
+			t.Errorf("x=%d (seam%+d) is rgb(%d,%d,%d), want the border's amber", x, x-seam, r, g, b)
+		}
+	}
+	for _, x := range []int{seam - 4, seam + 3} {
+		if solid(x, y) {
+			t.Errorf("x=%d (seam%+d) is solid amber too -- the border is a band", x, x-seam)
+		}
+	}
+	// ...and the stripes behind it, on the footage of BOTH takes: a mark that
+	// only said "here" left the break itself unsaid, now that the minutes the
+	// camera was off take no width to say it with
+	for _, side := range []struct {
+		what   string
+		x0, x1 int
+	}{{"the take that stops", seam - int(srcEdgeW), seam - 3}, {"the take that starts", seam + 2, seam + int(srcEdgeW)}} {
+		n := 0
+		for x := side.x0; x <= side.x1; x++ {
+			for dy := 2; dy < 16; dy++ {
+				if r, g, b := at(x, top+dy); r > 110 && g > 80 && b < 90 && !solid(x, top+dy) {
+					n++
+				}
+			}
+		}
+		if n < 8 {
+			t.Errorf("%s wears %d striped pixels beside the seam, want a hatch", side.what, n)
+		}
+	}
+	// and nothing of the old hatch's dark ground, which is what used to stand
+	// between the two takes
+	for x := seam - 20; x <= seam+20; x++ {
+		if r, g, b := at(x, y); r > 40 && r < 75 && g > 35 && g < 70 && b > 25 && b < 60 {
+			t.Fatalf("x=%d (seam%+d) is rgb(%d,%d,%d) -- the hatched ground is back", x, x-seam, r, g, b)
+		}
+	}
+}
+
+// ---- a boundary nobody filmed -------------------------------------------------
+
+// A cut names seconds off a timeline where the minutes between two takes are
+// written down as plainly as the rest, so sooner or later it names one nobody
+// filmed. It did: a clip began at 203.5 in a 4.5 s hole between two recordings,
+// and playback ran into it and STOPPED -- setPlayhead found no recording under
+// the line, left the player rolling on the old file, and read back a position
+// inside the same gap on every tick after that. The line sat there for good.
+func TestAnEdgeIsPulledOutOfUnfilmedTime(t *testing.T) {
+	// two takes with a hole between them, exactly the shape that froze it
+	ed := axisEd(t, tlVideo{base: "a", path: "/f/a.mp4", start: 193, dur: 6.5},
+		tlVideo{base: "b", path: "/f/b.mp4", start: 204, dur: 100})
+	if ed.videoAt(203.5) != nil {
+		t.Fatal("203.5 is filmed after all -- this test proves nothing")
+	}
+	// a start moves forward onto the next take, an end back onto the last one:
+	// an edge never crosses its own footage on the way out of a hole
+	for _, c := range []struct {
+		at   float64
+		st   bool
+		want float64
+	}{
+		{203.5, true, 204},    // a clip that begins in the hole
+		{200.5, false, 199.5}, // ...and one that ends in it
+		{193, true, 193},      // filmed already: untouched
+	} {
+		if got := ed.snapEdge(c.at, c.st); math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("snapEdge(%.1f, start=%v) = %.2f, want %.2f", c.at, c.st, got, c.want)
+		}
+	}
+	// and the player is given somewhere it can actually seek to
+	if got := ed.playable(203.5); got != 204 {
+		t.Errorf("playable(203.5) = %.2f, want 204 -- the first second there is footage for", got)
+	}
+	if got := ed.playable(250); got != 250 {
+		t.Errorf("playable(250) = %.2f, want it left alone -- that second is filmed", got)
+	}
+	// the freeze itself: the guard that stops skipGap fighting a seek in
+	// flight must not stop it retrying a seek that can never land
+	body := funcBody(t, "cut.go", `func \(ed \*cutEditor\) skipGap\(`)
+	if !strings.Contains(body, "default:") || !strings.Contains(body, "ed.playable(ed.segs[next].S)") {
+		t.Error("skipGap still has one answer for a jump that did not move the line: nothing")
 	}
 }

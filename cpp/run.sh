@@ -134,7 +134,7 @@ download_models() {
             current_url=""
         fi
 
-    done < "$SCRIPT_DIR/config.ini"
+    done < "$SCRIPT_DIR/config-llamacpp.ini"
 }
 
 # Expose the voice changer output as a virtual mic for other apps (Discord,
@@ -166,7 +166,7 @@ setup_virtual_mic() {
 # Create bind-mount dirs up front: docker would create missing ones as root,
 # but the containers run as uid 1000 and could not write into them.
 mkdir -p "${MODELS_DIR}"/{sd,ace,vc,audiocpp,meanvc2} "${MODELS_DIR}"/applio/{models,logs}
-cp "$SCRIPT_DIR/config.ini" "${MODELS_DIR}/config.ini"
+cp "$SCRIPT_DIR/config-llamacpp.ini" "${MODELS_DIR}/config-llamacpp.ini"
 
 download_models &
 DOWNLOAD_PID=$!

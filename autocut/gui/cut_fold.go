@@ -98,22 +98,23 @@ func (ed *cutEditor) wholeRun(t0, t1 float64) bool {
 // footage around it, and cutting there would be a boundary nothing needs.
 func (ed *cutEditor) cells() []tlSpan {
 	var out []tlSpan
-	for i, run := range ed.runs() {
-		at, first := run.t0, true
+	for _, run := range ed.runs() {
+		at := run.t0
 		for _, g := range ed.foldGaps() {
 			if !g.on || g.t1 <= at || g.t0 >= run.t1 {
 				continue
 			}
 			t0, t1 := math.Max(g.t0, at), math.Min(g.t1, run.t1)
 			if t0 > at {
-				out = append(out, tlSpan{t0: at, t1: t0, hole: first && i > 0})
-				first = false
+				out = append(out, tlSpan{t0: at, t1: t0})
 			}
-			out = append(out, tlSpan{t0: t0, t1: t1, fold: true, hole: first && i > 0})
-			first, at = false, t1
+			out = append(out, tlSpan{t0: t0, t1: t1, fold: true})
+			at = t1
 		}
-		if at < run.t1 || first {
-			out = append(out, tlSpan{t0: at, t1: run.t1, hole: first && i > 0})
+		// at == run.t0 is "nothing folded here": the run is one cell, and it is
+		// emitted even if it has no length at all
+		if at < run.t1 || at == run.t0 {
+			out = append(out, tlSpan{t0: at, t1: run.t1})
 		}
 	}
 	return out

@@ -38,7 +38,7 @@ func TestOneRowIsLabelledTheSameEverywhere(t *testing.T) {
 	}
 	const narr = "his-own-mic"
 
-	timeline := sessionText(rows, narr)
+	timeline := sessionText(rows, narr, nil)
 	brief := clipBriefs([]cutSeg{{S: 10, E: 20}}, rows, nil, narr)
 	var speech []speechSrc
 	for _, src := range []string{"capture-0", "his-own-mic"} {
@@ -152,14 +152,50 @@ func TestTheCutRendersTheTimelineItSends(t *testing.T) {
 	if strings.Contains(string(cut), `"session.txt"`) {
 		t.Error("the cut step is reading session.txt again -- an old project's file is in the old format")
 	}
-	if !strings.Contains(string(cut), "sessionText(rows, a.narratorMic())") {
+	if !strings.Contains(string(cut), "sessionText(rows, a.narratorMic(), marks)") {
 		t.Error("the cut no longer renders the timeline from session.tsv")
 	}
 	tr, err := os.ReadFile("transcript.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(tr), "sessionText(tl, a.narratorMic())") {
+	if !strings.Contains(string(tr), "sessionText(tl, a.narratorMic(), marks)") {
 		t.Error("session.txt is written some other way than the string the cut is sent")
+	}
+}
+
+// Every stamp on the timeline says the same instant twice: the seconds the
+// answer is in, then the mm:ss the session's shape is read by. Not decoration
+// -- the step between the two was being taken by hand three hundred times a
+// run, and taking it once wrong cost a video five seconds of good speech: a cut
+// read the marker [01:45] as 145 seconds instead of 105, dropped a sentence
+// that was never a stumble, and swallowed the stumble it had been warned about.
+func TestEveryStampSaysTheSecondsAndTheClock(t *testing.T) {
+	rows := []tsvRow{
+		{s: 105, e: 108, spk: "EVENT", text: "a chest sits on the sand"},
+		{s: 146, e: 148, spk: "SPEAKER_01", text: "the human set goals, built benchmarks"},
+		{s: 724.9, e: 726, spk: "SPEAKER_01", text: "open this chest"},
+	}
+	out := sessionText(rows, "", []retake{{S: 145, E: 149, Again: 154}})
+	for _, want := range []string{
+		"[105s | 01:45] EVENT:",  // the very stamp that was misread
+		"[724s | 12:04] SPEAKER", // past a minute, and truncated not rounded
+		"[145s | 02:25] (abandoned attempt to [149s | 02:29], said again at [154s | 02:34]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no line reads %q:\n%s", want, out)
+		}
+	}
+	// ...and the contract every job is handed says which of the two to answer
+	// with, since a line carrying both numbers is worse than one carrying the
+	// wrong one if nothing says which is which
+	ctx := readSrc(t, "syscontext.go")
+	for _, want := range []string{"[724s | 12:04] session time", "Times you return on this clock are the SECONDS"} {
+		if !strings.Contains(ctx, want) {
+			t.Errorf("the shared clock contract does not say %q", want)
+		}
+	}
+	if strings.Contains(ctx, "mm*60+ss") {
+		t.Error("the contract still asks for the conversion that the stamp exists to remove")
 	}
 }
