@@ -180,6 +180,6 @@ if [ "$skip_build" = false ]; then
     docker buildx build $no_cache_llama $buildx_args -t acestep:latest -f "$SCRIPT_DIR/Dockerfile.acestep" "$SCRIPT_DIR"
 fi
 setup_virtual_mic
-docker compose up -d llama sd audio acestep
+docker compose up -d llama sd audio acestep halogen
 
 wait "$DOWNLOAD_PID"

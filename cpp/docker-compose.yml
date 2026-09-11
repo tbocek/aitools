@@ -34,8 +34,15 @@ services:
       - /dev/kfd
       - /dev/dri
     group_add:
-      - render
-      - video
+      # the HOST's gids, numerically. group_add resolves a NAME against the
+      # container's /etc/group, not the host's, and this image is Debian-based
+      # with no "render" group at all -- which is what "unable to find group
+      # render: no matching entries in group file" means. A number needs no
+      # lookup, and these are the two that own the device nodes:
+      #   /dev/kfd, /dev/dri/renderD128  render(989)
+      #   /dev/dri/card1                 video(985)
+      - "989"
+      - "985"
     security_opt:
       - seccomp=unconfined
     ipc: host
