@@ -107,12 +107,23 @@ func TestTheTitleIsPrintedAcrossTheUpperPart(t *testing.T) {
 	if !inked(img, 0, 0, 1, 0.3) {
 		t.Error("the title did not land in the upper part of the picture")
 	}
-	if inked(img, 0, 0.45, 1, 1) {
-		t.Error("the title reached below the upper part -- its band has moved")
+	// the box is the upper HALF, and never more: the lower half of a
+	// thumbnail is the picture, and a title printed into it covers the thing
+	// the title is about
+	if inked(img, 0, 0.55, 1, 1) {
+		t.Error("the title reached into the lower half -- its box has moved")
 	}
-	if pubTitleBox.cy+pubTitleBox.hf/2 > 0.35 {
-		t.Errorf("pubTitleBox reaches %.2f down the frame; the upper part it was promised ends well above the middle",
-			pubTitleBox.cy+pubTitleBox.hf/2)
+	if bottom := pubTitleBox.cy + pubTitleBox.hf/2; bottom > 0.5+1e-9 {
+		t.Errorf("pubTitleBox reaches %.2f down the frame, past the half it is given", bottom)
+	}
+	if top := pubTitleBox.cy - pubTitleBox.hf/2; top > 1e-9 {
+		t.Errorf("pubTitleBox starts %.2f down the frame; the half it is given begins at the top", top)
+	}
+	// ...and it is a CEILING rather than a fill: four to seven words in a box
+	// half the picture tall are set as large as they fit, and the rest of the
+	// half is left alone (fitText)
+	if !inked(img, 0, 0, 1, 0.3) || inked(img, 0, 0.45, 1, 0.5) {
+		t.Error("the title fills the whole half instead of taking what it needs")
 	}
 }
 

@@ -55,17 +55,23 @@ func TestNoNarrationTakesAwayWhatOnlyANarrationNeeds(t *testing.T) {
 	if i < 0 || j < 0 || i > j {
 		t.Error("the narration run does not check the tick before it starts")
 	}
-	// Produce hides the three controls that carry a voice-over, and writes no
-	// subtitle track at all
+	// Produce hides the one control that is about the voice-over alone -- how
+	// loud the game sits under it. The subtitle choice STAYS: with no
+	// narration the track carries what was said in the clips instead
+	// (captionLines), so it is about something either way.
 	prod := readSrc(t, "produce.go")
 	for _, want := range []string{
 		"func (a *App) syncNarrOff() {",
-		"p.subs, p.subsLbl, p.gvol, p.gvolLbl,",
-		`st.Subs = "none"`,
+		"p.gvol, p.gvolLbl,",
 		"defer a.syncNarrOff()", // a project that loaded before the page was built
 	} {
 		if !strings.Contains(prod, want) {
 			t.Errorf("produce.go no longer contains %q", want)
+		}
+	}
+	for _, gone := range []string{"p.subs, p.subsLbl, p.gvol, p.gvolLbl,", `st.Subs = "none" // no lines, no track`} {
+		if strings.Contains(prod, gone) {
+			t.Errorf("no narration still takes the subtitles away: %q", gone)
 		}
 	}
 	// and it is safe before either page exists: a project loads first

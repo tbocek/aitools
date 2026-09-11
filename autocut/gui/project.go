@@ -36,6 +36,15 @@ type Project struct {
 	Audios     []string `json:"audios,omitempty"`
 	Interval   float64  `json:"interval"` // seconds between frames; 0 = every frame
 	FrameScale string   `json:"frame_scale,omitempty"`
+	// which pipeline the session runs through (textedit.go): "read" for a
+	// read to camera, edited as text with the picture never described; blank
+	// for a session, described and its moments picked -- so every project
+	// written before this reads as the latter.
+	Style string `json:"style,omitempty"`
+	// which steps the ▶▶ beside the play button runs, in pipeline order
+	// (runchain.go). Absent -- every project written before this -- means all
+	// of them, which is what "run it all" is for.
+	RunSteps []string `json:"run_steps,omitempty"`
 	// what the ASR model is told this session is spoken in. It was a setting --
 	// one language for the machine, however many languages its sessions were in
 	// -- and it is a property of the footage, so it belongs to the project that
@@ -235,6 +244,8 @@ func (a *App) currentProject() Project {
 		Sources:    srcs,
 		Interval:   a.frameInterval(),
 		FrameScale: scaleName,
+		Style:      a.videoStyleName(),
+		RunSteps:   a.chainPicked(),
 		Language:   a.projectLanguage(),
 		// the cut's wording IS the style: the dropdown lists that job's
 		// wordings and every other job followed it. Written even
@@ -681,6 +692,8 @@ func (a *App) applyProject(p Project) {
 	if p.FrameScale != "" {
 		a.setFrameScale(p.FrameScale)
 	}
+	a.applyStyle(p.Style)
+	a.applyChain(p.RunSteps)
 	a.applyLanguage(p.Language)
 	a.adoptProjectPrompts(p.Prompts)
 	a.applySessionCtx(p.Context)

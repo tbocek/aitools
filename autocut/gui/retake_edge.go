@@ -21,6 +21,7 @@ package main
 // the other.
 
 import (
+	"math"
 	"path/filepath"
 	"sort"
 )
@@ -35,7 +36,93 @@ const (
 	// how far behind its sound a stamp may run and still be that sound's:
 	// half a second was measured on a take's opening word
 	lateStamp = 0.6
+
+	// With ALIGNED words the envelope's job changes: the words fence the cut
+	// and the sound only chooses where inside the fence it falls.
+	//
+	// how far below a word's own level its tail still counts as the word.
+	// On the meter scale the envelope is drawn in (-70..0 dBFS over 0..255),
+	// a breath sits 20 dB or more under the word it follows, and a trailing
+	// consonant a few dB under; twelve tells them apart.
+	edgeTailDB = 12.0
+	// how far past the aligner's edge a word's own sound is followed. The
+	// aligner is within a fiftieth on an onset and can be a touch early on
+	// a trailing s or k; a quarter second is that, and not the breath after.
+	edgeTailMax = 0.25
+	// how far into the gap the quietest moment is looked for. Past the
+	// word's own tail the gap is breath and room; the cut goes where that
+	// is lowest, and a trough further off than this is a different gap.
+	troughReach = 0.4
 )
+
+// endAfter is where the cut ends after a word that stays, given the word and
+// how far the cut may go (the next word's start, which it never reaches):
+// the word's own sound followed to where it drops (edgeTailMax), then the
+// quietest moment after that (troughReach). The words fence it; the sound
+// chooses inside the fence. Without an envelope, a hair after the word.
+func (e *edges) endAfter(w srcWord, limit float64) float64 {
+	if limit <= w.e {
+		return w.e
+	}
+	i0, i1 := e.at(w.s), e.at(w.e)
+	lim := e.at(limit)
+	if e == nil || i0 < 0 || i1 < 0 {
+		return math.Min(w.e+wordPad, limit)
+	}
+	if lim < 0 {
+		lim = len(e.wf.chans[0]) - 1
+	}
+	thr := e.tailLevel(i0, i1)
+	end := i1
+	for stop := min(lim, i1+int(edgeTailMax*e.wf.hz)); end < stop && e.sound(end, thr); end++ {
+	}
+	best := end
+	for k := end; k <= min(lim, end+int(troughReach*e.wf.hz)); k++ {
+		if e.wf.chans[0][k] < e.wf.chans[0][best] {
+			best = k
+		}
+	}
+	return math.Min(limit, math.Max(w.e, e.off+float64(best)/e.wf.hz))
+}
+
+// startBefore is the same the other way: where the cut resumes before a word
+// that starts again, given how far back it may go (the last dropped word's
+// end, which it never reaches).
+func (e *edges) startBefore(w srcWord, limit float64) float64 {
+	if limit >= w.s {
+		return w.s
+	}
+	i0, i1 := e.at(w.s), e.at(w.e)
+	lim := e.at(limit)
+	if e == nil || i0 < 0 || i1 < 0 {
+		return math.Max(w.s-wordPad, limit)
+	}
+	if lim < 0 {
+		lim = 0
+	}
+	thr := e.tailLevel(i0, i1)
+	start := i0
+	for stop := max(lim, i0-int(edgeTailMax*e.wf.hz)); start > stop && e.sound(start-1, thr); start-- {
+	}
+	best := start
+	for k := start; k >= max(lim, start-int(troughReach*e.wf.hz)); k-- {
+		if e.wf.chans[0][k] < e.wf.chans[0][best] {
+			best = k
+		}
+	}
+	return math.Max(limit, math.Min(w.s, e.off+float64(best)/e.wf.hz))
+}
+
+// tailLevel is what still counts as the word between buckets i0 and i1: its
+// own peak less edgeTailDB, and never under the room (floor).
+func (e *edges) tailLevel(i0, i1 int) uint8 {
+	peak := uint8(0)
+	for k := i0; k <= i1 && k < len(e.wf.chans[0]); k++ {
+		peak = max(peak, e.wf.chans[0][k])
+	}
+	thr := int(peak) - int(math.Round(edgeTailDB*255/70))
+	return uint8(max(thr, int(e.floor(e.off+float64(i0)/e.wf.hz))))
+}
 
 // edges is the envelope of one source, mono, with the source's place in the
 // session so a session second can be looked up in it.

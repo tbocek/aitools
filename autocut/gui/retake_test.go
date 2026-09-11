@@ -82,10 +82,23 @@ func TestAnImpossibleRetakeIsRefusedNotApplied(t *testing.T) {
 		}
 	}
 
-	// two answers over the same lines: the second is refused rather than
-	// stacked, or one stretch would be dropped twice
-	if got, _ := keepRetakes(rows, []ans{{2, 4, 5}, {3, 4, 5}}); len(got) != 1 {
-		t.Errorf("overlapping stretches both applied: %+v", got)
+	// two answers over the same lines both come through -- three pooled runs
+	// name one stretch three ways -- and are folded into one AFTER each has
+	// been verified on its own (mergeMarks), so nothing is dropped twice.
+	// Refusing the second here used to empty the pool: one run's marks
+	// pushed the cursor to the session's last line, and every other run's
+	// then read as overlap.
+	got, _ = keepRetakes(rows, []ans{{2, 4, 5}, {3, 4, 5}})
+	if len(got) != 2 {
+		t.Fatalf("the second answer over the same lines was refused up front: %+v", got)
+	}
+	if merged := mergeMarks(got); len(merged) != 1 || merged[0].S != 99.1 || merged[0].E != 111.4 {
+		t.Errorf("two answers over one stretch did not fold into one mark: %+v", merged)
+	}
+	// ...and a mark whose retake lies INSIDE it is not a mark at all: one run
+	// answers every stretch that way, "again" set to its own last line
+	if got, notes := keepRetakes(rows, []ans{{2, 4, 4}}); len(got) != 0 {
+		t.Errorf("a retake inside the stretch it replaces was applied: %+v (%v)", got, notes)
 	}
 
 	// a sentence said again three minutes later is a callback, not a retake
@@ -188,7 +201,7 @@ func TestTheMarksAreWrittenAndReadBack(t *testing.T) {
 func TestTheRetakePassRunsOnTheMergedTimeline(t *testing.T) {
 	src := readSrc(t, "transcript.go")
 	merge := strings.Index(src, `"session.tsv"`)
-	call := strings.Index(src, "a.findRetakes(tl)")
+	call := strings.Index(src, "a.findMarks(tl)")
 	if merge < 0 || call < 0 || call < merge {
 		t.Error("the retakes are looked for before the timeline they are about is merged")
 	}
@@ -290,23 +303,48 @@ func TestAMarkIsTrimmedToWhatComesBack(t *testing.T) {
 	}
 
 	ws = append(heard("so they used on already existing project", 194), heard("and the more it got away from that", 205)...)
-	// ...with the rest of its own take still around it, so it is part of
-	// something rather than a take that failed
+	// ...not said again but REPHRASED, and broken off: a short tail that ends
+	// its take, with a full line of the take in front of it. The tail goes and
+	// the full line stays (tailFragments). This used to be refused outright
+	// as "part of something said once", and "...they forked, the project."
+	// followed by thirty seconds of silence went into the video three runs
+	// running on the strength of it.
 	mid := []tsvRow{
 		{s: 180, e: 193, src: "take4", text: "the sentence before it"},
 		{s: 194, e: 196.4, src: "take4", text: "so they used on already existing project"},
 		{s: 205, e: 208, src: "take5", text: "and the more it got away from that"},
 	}
 	got, refused, notes := trimToRepeat([]retake{{S: 194, E: 196.4, Again: 205}}, ws, mid)
-	if len(got) != 0 {
-		t.Errorf("a stretch that is not said again was still marked: %+v", got)
+	if len(got) != 1 || got[0].S != 194 || got[0].Again != 205 {
+		t.Errorf("the broken-off tail was not marked: %+v (%v)", got, notes)
+	}
+	if len(refused) != 0 {
+		t.Errorf("a mark that verified was handed back for a second hearing: %+v", refused)
+	}
+	// the model sweeping the full line in front of it into the mark does not
+	// take the full line with it. (With another line of the take in front of
+	// both: a mark that IS the whole take is a take that was redone, and that
+	// goes whole -- wholeTake, and the test below.)
+	more := append([]tsvRow{{s: 170, e: 179, src: "take4", text: "the line before that"}}, mid...)
+	got, _, notes = trimToRepeat([]retake{{S: 180, E: 196.4, Again: 205}}, ws, more)
+	if len(got) != 1 || got[0].S != 194 {
+		t.Errorf("the full line before the fragment went with it: %+v (%v)", got, notes)
+	}
+	// and a tail that is a whole line -- twelve seconds of script -- is not a
+	// fragment, so with nothing repeated it is refused and handed back
+	long := []tsvRow{
+		{s: 180, e: 193, src: "take4", text: "the sentence before it"},
+		{s: 194, e: 206, src: "take4", text: "twelve seconds of a sentence that was only ever said once"},
+		{s: 207, e: 210, src: "take5", text: "and the more it got away from that"},
+	}
+	lws := append(heard("twelve seconds of a sentence that was only ever said once", 194),
+		heard("and the more it got away from that", 207)...)
+	got, refused, notes = trimToRepeat([]retake{{S: 194, E: 206, Again: 207}}, lws, long)
+	if len(got) != 0 || len(refused) != 1 {
+		t.Errorf("a whole line not said again was cut on the model's word alone: %+v (%v)", got, notes)
 	}
 	if len(notes) == 0 || !strings.Contains(notes[0], "not said again") {
 		t.Errorf("the refusal was not said out loud: %v", notes)
-	}
-	// ...and handed back, so a second hearing can be asked about it
-	if len(refused) != 1 {
-		t.Errorf("the refused mark was not handed back: %+v", refused)
 	}
 
 	// with no words at all -- a project prepared before words.json was kept --
@@ -339,21 +377,23 @@ func TestATakeThatIsNothingButAFalseStartGoes(t *testing.T) {
 		t.Errorf("the reason was not said out loud: %v", notes)
 	}
 
-	// ...but the same words with the rest of their take around them are part of
-	// something, and what they are part of was said once
+	// ...and the same words with the rest of their take in front of them are
+	// still a broken-off tail -- 5.5 s, ending the take, rephrased at 205 --
+	// so they go too, and the retake they point at stays on the mark
 	with := append([]tsvRow{{s: 180, e: 193, src: "take4", text: "the sentence this belongs to"}}, only...)
 	with[1].src = "take4"
-	if got, _, _ := trimToRepeat([]retake{{S: 194, E: 199.5, Again: 205}}, ws, with); len(got) != 0 {
-		t.Errorf("a stretch with more of its own take around it was dropped anyway: %+v", got)
+	if got, _, _ := trimToRepeat([]retake{{S: 194, E: 199.5, Again: 205}}, ws, with); len(got) != 1 || got[0].Again != 205 {
+		t.Errorf("a broken-off tail with its take around it was left in: %+v", got)
 	}
 
-	// and a stretch spanning two recordings is not one take's failure
+	// two fragments across two recordings -- a stop, a second try, a second
+	// stop -- are two false starts in a row, and both go
 	two := []tsvRow{
 		{s: 194, e: 196, src: "take4", text: "so they used on"},
 		{s: 197, e: 199.5, src: "take5", text: "already existing project and as"},
 	}
-	if got, _, _ := trimToRepeat([]retake{{S: 194, E: 199.5, Again: 205}}, ws, two); len(got) != 0 {
-		t.Errorf("a stretch across two takes was called one take's false start: %+v", got)
+	if got, _, _ := trimToRepeat([]retake{{S: 194, E: 199.5, Again: 205}}, ws, two); len(got) != 1 || got[0].S != 194 {
+		t.Errorf("two false starts in a row were left in: %+v", got)
 	}
 }
 
@@ -456,14 +496,25 @@ func TestARetakeEdgeNeverCrossesAWordThatStays(t *testing.T) {
 			t.Errorf("lastWordEnd(%.2f) = %.2f, want %.2f", c.at, got, c.want)
 		}
 	}
-	// and the placement itself takes the later of the two, so the envelope can
-	// only ever move the edge FORWARD of the last word that stays
-	body := funcBody(t, "retake.go", `func \(a \*App\) placeEdges\(`)
-	if !strings.Contains(body, "math.Max(e.endBefore(m.S), floor)") {
-		t.Error("the sound can still take the edge back over a word that stays")
+	// and the placement itself, with words to place by: the sound is not
+	// consulted at all. A breath is sound, and the envelope keeps it on both
+	// sides of every cut -- "after the sound before the abandoned word stops"
+	// is after the breath, "where the retake starts to sound" is at the
+	// breath. That was every deep breath heard at a join.
+	a := &App{}
+	spoken := []tsvRow{{s: 103, e: 109.2, src: "t3", text: "state of the art and the whole run"},
+		{s: 114.08, e: 120, src: "t4", text: "and the whole run took roughly"}}
+	words = append(words, srcWord{s: 114.08, e: 114.16, w: "and"})
+	got, notes := a.placeEdges([]retake{{S: 105.79, E: 109.2, Again: 114.08, To: 109.2}}, nil, spoken, words)
+	if math.Abs(got[0].S-(105.47+wordPad)) > 1e-9 {
+		t.Errorf("the cut ends at %.3f, want %.3f -- a hair after %q (%v)", got[0].S, 105.47+wordPad, "art", notes)
 	}
-	if !strings.Contains(body, "math.Min(math.Max(e.startAt(m.Again), m.E), m.Again)") {
-		t.Error("the far edge can still run past the first word of the retake")
+	if math.Abs(got[0].To-(114.08-wordPad)) > 1e-9 {
+		t.Errorf("the cut resumes at %.3f, want %.3f -- a hair before the retake's %q (%v)", got[0].To, 114.08-wordPad, "and", notes)
+	}
+	body := funcBody(t, "retake.go", `func \(a \*App\) placeEdges\(`)
+	if !strings.Contains(body, "if len(words) > 0 {") {
+		t.Error("the envelope still has a say when there are words to place by")
 	}
 }
 
@@ -517,5 +568,34 @@ func TestTheRetakePassIsToldToMarkATailRepeat(t *testing.T) {
 	// ...and the rule it used to be read past by now says what makes it one
 	if !strings.Contains(retakeSystem, "with no pause and no seam in the middle of it") {
 		t.Error(`"a phrase repeated inside one flowing sentence" still excuses a repeat with a pause in it`)
+	}
+}
+
+// The pass is sampled, so one run's answer drifts against the next -- twelve
+// marks, then ten, one inverted. Asked three times and pooled, a retake is
+// found if any run found it; every mark is verified before it counts, so a
+// wrong one is refused whichever run it came from.
+func TestTheRetakePassIsAskedMoreThanOnceAndPooled(t *testing.T) {
+	if retakeRuns < 3 {
+		t.Errorf("the pass is asked %d time(s); one answer is one sample", retakeRuns)
+	}
+	body := funcBody(t, "retake.go", `func \(a \*App\) findRetakes\(`)
+	for _, want := range []string{"for run := 0; run < retakeRuns; run++", "keepRetakes(spoken, found)", "mergeMarks(marks)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the runs are not pooled: want %q", want)
+		}
+	}
+	// three runs naming one stretch three ways come out as one mark
+	got := mergeMarks([]retake{
+		{S: 105.5, E: 109.2, Again: 114.1, To: 114.0},
+		{S: 103.5, E: 109.2, Again: 114.1, To: 114.0}, // the line before it swept in
+		{S: 106.0, E: 108.0, Again: 114.1, To: 114.0}, // a piece of it
+		{S: 585.7, E: 591.1, Again: 594.2, To: 594.2}, // somewhere else entirely
+	})
+	if len(got) != 2 {
+		t.Fatalf("three answers for one stretch came out as %d marks: %+v", len(got), got)
+	}
+	if got[0].S != 103.5 || got[0].E != 109.2 || got[0].To != 114.0 || got[1].S != 585.7 {
+		t.Errorf("merged wrong: %+v", got)
 	}
 }

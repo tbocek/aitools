@@ -59,6 +59,9 @@ func prepRows() []prepRow {
 			"the transcript keeps every word, and the cut is handed one line saying " +
 			"those seconds were an attempt. The user context's script, where there is " +
 			"one, says what was meant to be said."},
+		{"Text edit", "textedit", "The edit of a read to camera, as text: every word that was said, " +
+			"answered with the words the finished video says -- the retakes and the false starts " +
+			"removed, nothing added. The session's style decides whether this or Retakes runs."},
 		{"Cut", "cut", "How ▶ Suggest chooses the moments: read what the session is, " +
 			"place what the context names, fill the rest, shape the whole. It assumes " +
 			"nothing about the kind of video — that is what the context above is for."},
@@ -73,6 +76,9 @@ func prepRows() []prepRow {
 		{"Narration", "narrate", "The craft the narration is written to: what a line is " +
 			"about, how it is placed, how a pause is made. Who the voice IS comes from " +
 			"the context above."},
+		{"Translate", "translate", "The subtitle track in another language: the finished " +
+			"video's own lines, numbered, answered one for one with the times untouched. " +
+			"Which languages is chosen on the Produce page."},
 		{"Upload text", "youtube", "Gets the cut and the narration — no images — and " +
 			"answers with the YouTube title, the thumbnail instruction and the description."},
 	}

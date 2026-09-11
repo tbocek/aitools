@@ -40,6 +40,8 @@ var promptDefs = []promptDef{
 	// twice (retake.go). Before the cut and not inside it -- a retake is a
 	// fact about what was said, not a judgment about the video.
 	{key: "retake", def: strings.TrimSpace(retakeSystem)},
+	// ...or, for a read to camera, the edit itself as text (textedit.go)
+	{key: "textedit", def: strings.TrimSpace(textSystem)},
 	// the cut, then the three passes that follow it clip by clip: captions,
 	// speed, decorations. "audit" was here -- a second long call that moved
 	// borders by seconds; removed, not renamed, so a project's edited copy is a
@@ -53,6 +55,9 @@ var promptDefs = []promptDef{
 	// edit and wrote the instruction for it. Removed, not renamed -- the key is
 	// gone from the registry, so a project that saved an edited copy of it just
 	// keeps a dead key nobody reads.
+	// the subtitle track in another language (translate.go): the same cues,
+	// the same times, one line out for every line in
+	{key: "translate", def: strings.TrimSpace(translateSystem)},
 	{key: "youtube", def: strings.TrimSpace(youtubeSystem)},
 	// "improve" was here, and before that it had already come off the bench:
 	// the Improve button asked the model why a step decided what it did and

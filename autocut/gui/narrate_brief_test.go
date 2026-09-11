@@ -569,7 +569,10 @@ func TestTheLineLandsWhereTheWriterPutIt(t *testing.T) {
 	if !strings.Contains(src, "adelay=%d:all=1") || !strings.Contains(src, "delayMS(ln.delay)") {
 		t.Error("encodeClip no longer delays each voice to its line's placement")
 	}
-	if !strings.Contains(src, "srtTime(cum+ln.delay)") || !strings.Contains(src, "srtTime(ln.delay)") {
+	// the whole-video track builds its cue at cum+ln.delay before tidyCues
+	// holds the lines against each other; the burned-in one, per clip, at
+	// ln.delay. Both are the placement the mix delays the voice by.
+	if !strings.Contains(src, "cues = append(cues, subCue{s: cum + ln.delay,") || !strings.Contains(src, "srtTime(ln.delay)") {
 		t.Error("the subtitles no longer start where the voice does")
 	}
 	if !strings.Contains(src, "ln.delay = math.Max(narrLead, ln.at)") {

@@ -763,3 +763,46 @@ func TestEveryKillBadgeKeepsTheSameRoomForTheHandle(t *testing.T) {
 		t.Errorf("a band of %g px has its middle inside its own ✕", selMinBand)
 	}
 }
+
+// A selection drawn on the pictures has its ends there, and a hand that
+// reaches for one there found the press start a fresh selection instead,
+// every time: the grip was the selection row's alone. Now an end is taken from
+// wherever it is, and the pointer says so before the press.
+func TestASelectionEndIsGrabbableFromThePictures(t *testing.T) {
+	ed := axisEd(t, tlVideo{base: "a", path: "/f/a.mp4", start: 0, dur: 200})
+	ed.sel.active, ed.sel.t0, ed.sel.t1 = true, 100, 160
+	x1 := ed.xOf(160)
+	y := ed.picTop() + 10
+	if !ed.hitPics(y) {
+		t.Fatal("y is not on the pictures")
+	}
+	if got := ed.wantCursor(x1-ed.viewX, y); got != "ew-resize" {
+		t.Errorf("over the selection's right end on the pictures the pointer is %q, want ew-resize", got)
+	}
+	for _, at := range []float64{130, 180} { // inside the blue, and clear of it
+		if got := ed.wantCursor(ed.xOf(at)-ed.viewX, y); got == "ew-resize" {
+			t.Errorf("at %.0f s, clear of both ends, the pointer still promises a grip", at)
+		}
+	}
+	// a little off the edge -- the width of the grip drawn there -- is still
+	// the edge: the band's six px are for grips you can see
+	if got := ed.wantCursor(x1-ed.viewX+selGripPicsPx-1, y); got != "ew-resize" {
+		t.Errorf("%.0f px off the end on the pictures the pointer is %q, want ew-resize", selGripPicsPx-1, got)
+	}
+	// the press itself, in the handler: the end is taken before a new
+	// selection can be started
+	body := readSrc(t, "cut.go")
+	i := strings.Index(body, "part := ed.selPartNear(x+ed.viewX, selGripPicsPx); part == selStart || part == selEnd")
+	j := strings.Index(body, "ed.sel.t0 = ed.tAtView(x)\n")
+	if i < 0 || j < 0 || i > j {
+		t.Error("a press on a selection end on the pictures still starts a new selection")
+	}
+	// ...and before every badge and switch the picture band answers with,
+	// which is where the press kept going: a grip drawn under the pointer
+	// is what the press means
+	for _, badge := range []string{"ed.hearAt(", "ed.camBadgeAt(", "ed.laneKillAt(", "ed.pairSwitchAt("} {
+		if k := strings.Index(body, badge); k >= 0 && k < i {
+			t.Errorf("%s is asked before the selection's end, and takes the press from it", badge)
+		}
+	}
+}

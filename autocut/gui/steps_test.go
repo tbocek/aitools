@@ -187,50 +187,52 @@ func TestEveryStepSaysWhatItReadsTheSameWay(t *testing.T) {
 	}
 }
 
-// A screen capture with nobody talking over it has no words to fix and nothing
-// to correct, so the describing half of Prepare is run for one reason
-// only: it wrote the file the Cut tab was unlocked by. It is not what the Cut
-// page reads. The tracks are built from the sources and the frames the first
-// half pulled out of them, and the session timeline is text printed ON those
-// tracks -- so no timeline is an empty track, and the page opens either way.
-func TestCutOpensOnFramesSoASilentCaptureNeedNotBeDescribed(t *testing.T) {
+// A recording is a LANE before it is a transcript. Everything the lane is made
+// of -- where it starts, how long it runs, what shape it is, what it sounds
+// like -- is in the file, so the page opens on the footage alone: laying the
+// session out, seeing where the takes fall against each other, shifting one by
+// hand, hearing it, is work that comes before describing anything. The frames
+// are the pictures drawn ON the lane, and the session timeline is text printed
+// on it; without either the page is a lane with no pictures and no words, not
+// a page that cannot be opened.
+//
+// What still waits for Prepare is the SUGGESTION, and it says so itself.
+func TestCutOpensOnTheFootageAlone(t *testing.T) {
 	root := t.TempDir()
 	vid := filepath.Join(root, "capture.mp4")
 	if err := os.WriteFile(vid, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	a := &App{root: root, outDir: root}
+	if a.canCut() {
+		t.Error("the page opened with no footage at all")
+	}
 	a.selVid = []string{vid} // the snapshot a runner works from; no widgets here
-	if a.canCut() {
-		t.Error("the page opened with no frames behind it")
-	}
-
-	// Describe's own output does not stand in for them
-	if err := os.MkdirAll(a.transcriptDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(a.transcriptDir(), "session.tsv"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if a.canCut() {
-		t.Error("a session timeline unlocked the page with no footage to show")
-	}
-
-	fdir := a.framesDir("capture")
-	if err := os.MkdirAll(fdir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fdir, ".interval"), []byte("1|original"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if a.canCut() {
-		t.Error("the marker file in the frame folder counted as a frame")
-	}
-	if err := os.WriteFile(filepath.Join(fdir, "000010.jpg"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	if !a.canCut() {
-		t.Error("frames are on disk and the Cut page is still locked")
+		t.Error("footage on the Prepare step did not open the page")
+	}
+	// no frames, no timeline, and it still opens: neither is what a lane is
+	if exists(a.framesDir("capture")) || exists(filepath.Join(a.transcriptDir(), "session.tsv")) {
+		t.Fatal("this session has been prepared after all -- the test proves nothing")
+	}
+	// ...and the suggestion is where the timeline is actually needed
+	if !strings.Contains(funcBody(t, "cut_suggest.go", `func \(a \*App\) suggestClicked\(`), "run Describe first") {
+		t.Error("nothing says where a session timeline is needed")
+	}
+	// the tab's own words say what it waits for, which is footage
+	for _, s := range steps {
+		if s.name == "cut" && !strings.Contains(s.wait, "Add footage") {
+			t.Errorf("the Cut tab still says %q", s.wait)
+		}
+	}
+	// a lane with no frames draws no pictures rather than dividing by their
+	// spacing (thumbStep, frameRange)
+	v := &tlVideo{base: "capture", path: vid, dur: 60}
+	if step := v.thumbStep(48, 10); step < 1 {
+		t.Errorf("a frameless lane steps %d frames at a time", step)
+	}
+	if first, last := v.frameRange(10, 0, 500, v.thumbStep(48, 10)); first != 0 || last != 0 {
+		t.Errorf("a frameless lane painted frames %d..%d", first, last)
 	}
 }
 

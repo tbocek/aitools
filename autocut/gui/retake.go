@@ -80,6 +80,19 @@ type retake struct {
 }
 
 const (
+	// how many times the pass is asked, its answers pooled (findRetakes)
+	retakeRuns = 3
+	// how much room a cut leaves a word: the aligner's edges are within a
+	// fiftieth of a second, and a word's last moment is quieter than its
+	// middle, so a cut ON the edge clips it. Small, because what is on the
+	// other side of it is the breath this is here to take out.
+	wordPad = 0.08
+	// the longest a line can be and still be a FRAGMENT: something broken off
+	// rather than said. The broken-off tails of a scripted read run under two
+	// seconds -- "the project.", "Browser for", "keep" -- and the one that ran
+	// five was "so they used an already existing project, and". A full line
+	// of the script is ten or twelve.
+	retakeFrag = 6.0
 	// how far apart an attempt and its replacement may be. A retake follows the
 	// thing it replaces -- stop the camera, start it again, say the sentence --
 	// and two similar sentences ten minutes apart are two sentences.
@@ -116,20 +129,40 @@ func (a *App) findRetakes(rows []tsvRow) ([]retake, error) {
 	brief := retakeBrief(spoken, a.narratorMic())
 	user := a.ctxBlockFor("retake") + fmt.Sprintf("WHAT WAS SAID, line by line:\n%s", brief)
 	msgs := []map[string]any{msg("system", a.sysPrompt("retake")), msg("user", user)}
-	var out struct {
-		Abandoned []struct {
-			From, To, Again int
-		} `json:"abandoned"`
+	// Asked MORE THAN ONCE, and every answer pooled. The call is sampled, and
+	// one run's answer drifts against the next -- twelve marks, then ten, one
+	// of them inverted -- so a retake missed is a retake missed by luck. It is
+	// a short call, and every mark it names is verified below before it
+	// counts (trimToRepeat), so pooling the runs costs seconds and risks
+	// nothing: a wrong mark is refused whichever run it came from.
+	var found []struct{ From, To, Again int }
+	seen := map[[3]int]bool{}
+	for run := 0; run < retakeRuns; run++ {
+		var out struct {
+			Abandoned []struct {
+				From, To, Again int
+			} `json:"abandoned"`
+		}
+		reply, err := a.llmChatRetry("retake", msgs, false)
+		if err != nil {
+			if run == 0 {
+				return nil, err
+			}
+			a.logfIdle("!!! retakes: run %d: %v -- going on with %d", run+1, err, run)
+			break
+		}
+		if p := jsonReply(reply, &out); p != "" {
+			a.logfIdle("!!! retakes: run %d: %s -- its answer is set aside", run+1, p)
+			continue
+		}
+		for _, x := range out.Abandoned {
+			if k := [3]int{x.From, x.To, x.Again}; !seen[k] {
+				seen[k] = true
+				found = append(found, x)
+			}
+		}
 	}
-	reply, err := a.llmChatRetry("retake", msgs, false)
-	if err != nil {
-		return nil, err
-	}
-	if p := jsonReply(reply, &out); p != "" {
-		a.logfIdle("!!! retakes: %s -- nothing is marked", p)
-		return nil, a.writeRetakes(nil)
-	}
-	marks, notes := keepRetakes(spoken, out.Abandoned)
+	marks, notes := keepRetakes(spoken, found)
 	// ...and then the half the model cannot be taken at its word on: a retake
 	// is usually the tail of a line, and dropping the whole line takes content
 	// with it (trimToRepeat).
@@ -152,6 +185,10 @@ func (a *App) findRetakes(rows []tsvRow) ([]retake, error) {
 	// between the words on either side of it, and never across one.
 	marks, more = a.placeEdges(marks, paths, spoken, words)
 	notes = append(notes, more...)
+	// three runs name the same stretch three ways -- one line, two lines, the
+	// line and a half before it -- and after trimming they are one mark, or
+	// two that overlap. One mark per stretch (mergeMarks).
+	marks = mergeMarks(marks)
 	for _, n := range notes {
 		a.logfIdle(">>> retakes: %s", n)
 	}
@@ -177,19 +214,33 @@ func (a *App) findRetakes(rows []tsvRow) ([]retake, error) {
 func keepRetakes(spoken []tsvRow, in []struct{ From, To, Again int }) ([]retake, []string) {
 	var out []retake
 	var notes []string
-	last := -1
+	// Overlaps are allowed through here. The answers of several runs are
+	// pooled (findRetakes), and three runs name one stretch three ways; each
+	// is verified on its own below and the survivors are folded into one
+	// afterwards (mergeMarks). Refusing the later ones used to leave the
+	// pool with nothing: one run's marks set a cursor at the last line of
+	// the session, and every mark of every other run then read as overlap.
 	for _, r := range in {
 		f, t := r.From-1, r.To-1 // the brief numbers from 1
 		if f < 0 || t < f || t >= len(spoken) {
 			notes = append(notes, fmt.Sprintf("lines %d-%d are not lines of this timeline", r.From, r.To))
 			continue
 		}
-		if f <= last {
-			notes = append(notes, fmt.Sprintf("lines %d-%d overlap a stretch already marked", r.From, r.To))
-			continue
-		}
 		m := retake{S: spoken[f].s, E: spoken[t].e, To: spoken[t].e, Text: spoken[f].text}
-		if g := r.Again - 1; g > t && g < len(spoken) {
+		if g := r.Again - 1; g >= 0 {
+			if g <= t {
+				// the retake INSIDE the stretch it replaces. One run answers
+				// every mark this way -- "again" set to the mark's own last
+				// line -- and read as "never picked up" that is a claim the
+				// model did not make, which then fails for the wrong reason
+				notes = append(notes, fmt.Sprintf("lines %d-%d say they are said again at line %d, which is inside them -- not a mark",
+					r.From, r.To, r.Again))
+				continue
+			}
+			if g >= len(spoken) {
+				notes = append(notes, fmt.Sprintf("lines %d-%d are said again at line %d, which is not a line", r.From, r.To, r.Again))
+				continue
+			}
 			// the replacement has to follow the thing it replaces, and follow
 			// it soon: a sentence said again three minutes later is a callback
 			if spoken[g].s-m.E > retakeReach {
@@ -199,7 +250,6 @@ func keepRetakes(spoken []tsvRow, in []struct{ From, To, Again int }) ([]retake,
 			}
 			m.Again = spoken[g].s
 		}
-		last = t
 		out = append(out, m)
 	}
 	return out, notes
@@ -361,6 +411,12 @@ func retakeJSON(marks []retake) string {
 type srcWord struct {
 	s, e float64
 	w    string
+	// the word as it is WRITTEN, case and punctuation kept: w is bared and
+	// lowercased for matching, and matching is not reading. The subtitles are
+	// built from these (wordCues), so they have to say "Eastern University"
+	// and not "eastern university".
+	raw string
+	src string // the recording it was said in (baseName), for the seams
 }
 
 // againReach is how much of the later take is read for the repeat: a retake
@@ -422,6 +478,26 @@ func trimToRepeat(marks []retake, words []srcWord, spoken []tsvRow) (out, refuse
 					mmss(m.S), mmss(m.E), shortWords(said)))
 				continue
 			}
+			// ...or a REPHRASE: the retake says the same thing in other
+			// words, so nothing repeats and there is no word to trim to. What
+			// there is instead is the shape of the stop: the mark ends in
+			// fragments -- a line or two too short to be anything but broken
+			// off -- and the take ends right after them. Those go; the full
+			// lines the model swept up in front of them stay (tailFragments).
+			// "...they forked, the project." and then thirty seconds of
+			// silence is this, and it went into the video three runs running.
+			if s := tailFragments(m, spoken); s >= 0 {
+				if s > m.S {
+					notes = append(notes, fmt.Sprintf("%s-%s trimmed to %s: not said again, but that is where it breaks off",
+						mmss(m.S), mmss(m.E), mmss(s)))
+					m.S = s
+				}
+				if goesWith(m, spoken) < retakeMin {
+					continue
+				}
+				out = append(out, m)
+				continue
+			}
 			notes = append(notes, fmt.Sprintf("%s-%s is not said again at %s -- left in (%q)",
 				mmss(m.S), mmss(m.E), mmss(m.Again), shortWords(said)))
 			refused = append(refused, m)
@@ -452,6 +528,63 @@ func trimToRepeat(marks []retake, words []srcWord, spoken []tsvRow) (out, refuse
 // it went wrong, it stopped. The seam either side is what makes it readable as
 // one -- a stretch with more of its own take around it is part of something,
 // and what it is part of was said once.
+// mergeMarks folds marks that overlap into one: the earliest start, the latest
+// end, and the retake the later of them points at. Sorted on the way.
+func mergeMarks(marks []retake) []retake {
+	sort.Slice(marks, func(i, j int) bool { return marks[i].S < marks[j].S })
+	var out []retake
+	for _, m := range marks {
+		if n := len(out); n > 0 && m.S <= math.Max(out[n-1].E, out[n-1].To)+0.01 {
+			p := &out[n-1]
+			p.E = math.Max(p.E, m.E)
+			p.To = math.Max(p.To, m.To)
+			if m.Again > p.Again {
+				p.Again = m.Again
+			}
+			if p.Text == "" {
+				p.Text = m.Text
+			}
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// tailFragments is where a mark's broken-off tail begins, or -1 when it has
+// none: the mark has to END its take -- that is the stop -- and the lines at
+// the end of it have to be fragments (retakeFrag). Walked back from the end,
+// so a full line the model marked in front of the fragments is not one.
+func tailFragments(m retake, spoken []tsvRow) float64 {
+	var in []tsvRow
+	for _, r := range spoken {
+		if mid := (r.s + r.e) / 2; mid >= m.S && mid <= m.E {
+			in = append(in, r)
+		}
+	}
+	if len(in) == 0 || !endsTake(in[len(in)-1], spoken) {
+		return -1
+	}
+	i := len(in)
+	for i > 0 && in[i-1].e-in[i-1].s < retakeFrag {
+		i--
+	}
+	if i == len(in) {
+		return -1 // the last thing said is a whole line, not a fragment
+	}
+	return in[i].s
+}
+
+// endsTake is whether r is the last thing said in its recording.
+func endsTake(r tsvRow, spoken []tsvRow) bool {
+	for _, o := range spoken {
+		if o.src == r.src && o.s > r.s {
+			return false
+		}
+	}
+	return true
+}
+
 func wholeTake(m retake, spoken []tsvRow) bool {
 	src, n, in := "", 0, 0
 	for _, r := range spoken {
@@ -626,11 +759,51 @@ func (a *App) sessionWords(paths []string) []srcWord {
 	var out []srcWord
 	for _, p := range paths {
 		base := baseName(p)
-		out = append(out, glueWords(wordTimes(filepath.Join(a.inputsDir(), base)), at[p]-zero)...)
+		dir := filepath.Join(a.inputsDir(), base)
+		mine := glueWords(wordTimes(dir), at[p]-zero)
+		dressWords(mine, readFileString(filepath.Join(dir, "transcript.txt")))
+		for _, w := range mine {
+			w.src = base
+			if w.raw == "" {
+				w.raw = w.w
+			}
+			out = append(out, w)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].s < out[j].s })
 	return out
 }
+
+// dressWords gives each word its spelling back: case and punctuation, off the
+// transcript the aligner was handed.
+//
+// The aligner answers in bare lowercase -- it is matching sound to text and
+// hands back what it matched rather than what it was given -- so the times are
+// right and the writing is gone: "welcome back this is a weekly summary" for a
+// transcript that reads "Welcome back. This is a weekly summary". The
+// subtitles are built from these words (wordCues), and a subtitle is read.
+//
+// The transcript IS what the aligner was given, word for word and in order, so
+// the two are walked together. A word the walk cannot place keeps the bare
+// form: a caption missing a capital is a smaller fault than one missing a word.
+func dressWords(words []srcWord, text string) {
+	fields := strings.Fields(text)
+	j := 0
+	for i := range words {
+		for k := j; k < len(fields) && k-j < dressReach; k++ {
+			if bareWord(fields[k]) == words[i].w {
+				words[i].raw = fields[k]
+				j = k + 1
+				break
+			}
+		}
+	}
+}
+
+// dressReach is how far ahead in the transcript a word is looked for: the
+// aligner drops one here and there, and past a few the walk has lost its place
+// and every word after it would be dressed in the wrong one.
+const dressReach = 8
 
 // asrToken is one entry of the server's words list.
 type asrToken struct {
@@ -664,22 +837,52 @@ func glueWords(toks []asrToken, off float64) []srcWord {
 	brk := true
 	for _, w := range toks {
 		bare := bareWord(w.Word)
+		raw := strings.TrimSpace(w.Word)
 		t0, t1 := off+float64(w.Start)/sampleRate, off+float64(w.End)/sampleRate
 		if bare == "" {
-			// a comma or a full stop is text and not sound; a space is the
-			// boundary before the next word
+			// a comma or a full stop is text and not sound, but it is still
+			// text: it belongs to the word in front of it, which is what the
+			// subtitles read back. A space is the boundary before the next.
+			if raw != "" && len(out) > 0 && !brk {
+				out[len(out)-1].raw += raw
+			}
 			brk = brk || strings.TrimSpace(w.Word) == ""
 			continue
 		}
 		if !pieces || strings.HasPrefix(w.Word, " ") || brk || len(out) == 0 {
-			out = append(out, srcWord{s: t0, e: t1, w: bare})
+			out = append(out, srcWord{s: t0, e: t1, w: bare, raw: raw})
 			brk = false
 			continue
 		}
 		out[len(out)-1].e = t1
 		out[len(out)-1].w += bare
+		out[len(out)-1].raw += raw
 	}
 	return out
+}
+
+// edgeLookup is the envelope under a session second, loaded once per source:
+// which recording is under t is the timeline's to say (srcOf), and the
+// recording's envelope is read or built on the first ask (loadEdges).
+func (a *App) edgeLookup(paths []string, spoken []tsvRow) func(t float64) *edges {
+	at, zero := srcClock(paths)
+	byBase := map[string]string{}
+	for _, p := range paths {
+		byBase[baseName(p)] = p
+	}
+	env := map[string]*edges{}
+	return func(t float64) *edges {
+		base := srcOf(spoken, t)
+		p, ok := byBase[base]
+		if !ok {
+			return nil
+		}
+		if e, ok := env[p]; ok {
+			return e
+		}
+		env[p] = a.loadEdges(p, at[p]-zero)
+		return env[p]
+	}
 }
 
 // goesWith is how much of the session this mark actually takes out, which is
@@ -697,6 +900,28 @@ func goesWith(m retake, spoken []tsvRow) float64 {
 		return m.Again - m.S
 	}
 	return m.E - m.S
+}
+
+// lastWord is the last word that ends at or before t.
+func lastWord(words []srcWord, t float64) (srcWord, bool) {
+	var out srcWord
+	ok := false
+	for _, w := range words {
+		if w.e <= t+0.01 && (!ok || w.e > out.e) {
+			out, ok = w, true
+		}
+	}
+	return out, ok
+}
+
+// wordAt is the word that starts at t, if one does.
+func wordAt(words []srcWord, t float64) (srcWord, bool) {
+	for _, w := range words {
+		if math.Abs(w.s-t) < 0.01 {
+			return w, true
+		}
+	}
+	return srcWord{}, false
 }
 
 // lastWordEnd is where the last word that ends at or before t ends, or 0 when
@@ -734,55 +959,58 @@ func srcOf(spoken []tsvRow, t float64) string {
 // removal starts where the last kept sound ends, and -- when there is a retake
 // and nothing else was said before it -- ends where the retake's sound begins.
 func (a *App) placeEdges(marks []retake, paths []string, spoken []tsvRow, words []srcWord) ([]retake, []string) {
-	at, zero := srcClock(paths)
-	byBase := map[string]string{}
-	for _, p := range paths {
-		byBase[baseName(p)] = p
-	}
-	env := map[string]*edges{}
-	edgeOf := func(t float64) *edges {
-		base := srcOf(spoken, t)
-		p, ok := byBase[base]
-		if !ok {
-			return nil
-		}
-		if e, ok := env[p]; ok {
-			return e
-		}
-		env[p] = a.loadEdges(p, at[p]-zero)
-		return env[p]
-	}
+	edgeOf := a.edgeLookup(paths, spoken)
 	var notes []string
 	for i := range marks {
 		m := &marks[i]
-		// how far back the sound is allowed to take this edge: the end of the
-		// last word that is NOT part of what was abandoned.
-		//
-		// The envelope alone used to decide, and it cannot tell a breath from
-		// a word it has never been told about. Where the abandonment starts
-		// mid-sentence -- no camera stop, no pause worth the name -- it steps
-		// back over the quiet in front of the mark and lands in the middle of
-		// the word before it, or past it. That is where "the previous public
-		// state of the art" came out as "state of", and "through apps, not a
-		// browser" as "through apps, not". A word said once and kept is not
-		// something an edge may cross.
-		floor := lastWordEnd(words, m.S)
+		if len(words) > 0 {
+			// The WORDS fence both edges, and the sound chooses inside the
+			// fence (endAfter, startBefore).
+			//
+			// The envelope alone used to place them, for ASR stamps that ran
+			// half a second late -- and it cannot tell a breath from a word.
+			// A breath is sound: asked where the sound before the abandoned
+			// word stops it answered "after the breath", and the breath was
+			// kept; that was every deep breath heard at a join. Now the
+			// aligner's edges say which words the cut may touch -- none --
+			// and between the last word that stays and the first that was
+			// abandoned the sound only says where the quietest moment is,
+			// with the word's own tail followed first so a trailing s is not
+			// shaved. Everything between the two edges goes.
+			if w, ok := lastWord(words, m.S); ok && w.e < m.S {
+				s := math.Min(m.S, w.e+wordPad)
+				if e := edgeOf(w.e); e != nil {
+					s = e.endAfter(w, m.S)
+				}
+				notes = append(notes, fmt.Sprintf("%s: the cut ends %.2fs earlier, after the last word that stays", mmss(m.S), m.S-s))
+				m.S = s
+			}
+			if m.Again > m.E && len(wordsIn(words, m.E, m.Again)) == 0 {
+				// nothing said between: it all goes, up to the retake's own
+				// first word
+				to := math.Max(m.E, m.Again-wordPad)
+				if w, ok := wordAt(words, m.Again); ok {
+					if e := edgeOf(m.Again); e != nil {
+						to = e.startBefore(w, m.E)
+					}
+				}
+				if to > m.To {
+					notes = append(notes, fmt.Sprintf("%s: the cut resumes at %s, just before the retake's first word", mmss(m.S), mmss(to)))
+					m.To = to
+				}
+			}
+			continue
+		}
+		// no word times: the sound is all there is to place an edge by
 		if e := edgeOf(m.S); e != nil {
-			if s := math.Max(e.endBefore(m.S), floor); s != m.S {
+			if s := e.endBefore(m.S); s != m.S {
 				notes = append(notes, fmt.Sprintf("%s: the cut ends %.2fs earlier, where the sound before it stops", mmss(m.S), m.S-s))
 				m.S = s
 			}
-		} else if floor > 0 && floor < m.S {
-			notes = append(notes, fmt.Sprintf("%s: the cut ends %.2fs earlier, after the last word that stays", mmss(m.S), m.S-floor))
-			m.S = floor
 		}
 		if m.Again > 0 && !wordsBetween(spoken, m.E, m.Again) {
-			// nothing but the seam between the two: it all goes, up to the
-			// retake's own onset
 			to := m.Again
 			if e := edgeOf(m.Again); e != nil {
-				// ...and the same the other way: never past the first word of
-				// the retake, which is the one word this edge exists to keep
 				to = math.Min(math.Max(e.startAt(m.Again), m.E), m.Again)
 			}
 			if to > m.To {

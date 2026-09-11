@@ -178,8 +178,8 @@ func TestEveryStampSaysTheSecondsAndTheClock(t *testing.T) {
 	}
 	out := sessionText(rows, "", []retake{{S: 145, E: 149, Again: 154}})
 	for _, want := range []string{
-		"[105s | 01:45] EVENT:",  // the very stamp that was misread
-		"[724s | 12:04] SPEAKER", // past a minute, and truncated not rounded
+		"[105s-108s | 01:45] EVENT:",  // the very stamp that was misread -- start AND end
+		"[724s-726s | 12:04] SPEAKER", // past a minute; the start truncated, the end rounded up
 		"[145s | 02:25] (abandoned attempt to [149s | 02:29], said again at [154s | 02:34]",
 	} {
 		if !strings.Contains(out, want) {

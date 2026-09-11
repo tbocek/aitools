@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -650,7 +651,10 @@ func TestANewProjectStartsFromTheDefaultsNotFromZero(t *testing.T) {
 	if p.Produce == nil {
 		t.Fatal("a new project has no produce settings -- the page would load zeroes")
 	}
-	if *p.Produce != defaultProdSettings() {
+	// reflect, not ==: the settings carry a list now (SubLangs), and a struct
+	// holding one cannot be compared. A new project's list is empty -- one
+	// subtitle track, in the session's own language, translated into nothing.
+	if !reflect.DeepEqual(*p.Produce, defaultProdSettings()) {
 		t.Errorf("a new project renders with %+v, want %+v", *p.Produce, defaultProdSettings())
 	}
 	// everything else is legitimately empty: a new project is an empty session
@@ -933,16 +937,21 @@ func TestNothingChoosesTheOutputFolder(t *testing.T) {
 	}
 }
 
-// A project no longer says what KIND of video it is: the Style dropdown that
-// picked one is gone, and so are the three keys behind it. What kind of video
-// this session is, is a fact about the session like its notes and its sources,
-// and it goes in the context with them (prompts.go).
+// A project no longer carries a WORDING style: the Style dropdown that turned
+// every prompt to a wording of one name is gone, and so are the keys behind
+// it. What kind of video this session is, as a matter of wording, goes in the
+// context (prompts.go). What it carries instead is which PIPELINE the session
+// runs through (textedit.go) -- a read to camera is edited as text and never
+// described -- and that is a fact the app acts on, not a wording it sends.
 func TestAProjectNoLongerCarriesAStyle(t *testing.T) {
 	src := readSrc(t, "project.go")
-	for _, gone := range []string{"style,omitempty", "prompt_styles", "prompt_pick", "applyStyle"} {
+	for _, gone := range []string{"prompt_styles", "prompt_pick"} {
 		if strings.Contains(src, gone) {
 			t.Errorf("a project still carries %q", gone)
 		}
+	}
+	if !strings.Contains(src, "Style string `json:\"style,omitempty\"`") {
+		t.Error("a project does not say which pipeline it runs through")
 	}
 	// the one prompt key it still reads is the oldest: one string per job,
 	// which is the shape the prompts have again, adopted where this machine

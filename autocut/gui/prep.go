@@ -213,6 +213,23 @@ func (a *App) buildSources() *gtk.Box {
 	bottom.Append(a.scalePick)
 	bottom.Append(gtk.NewLabel("Language:"))
 	bottom.Append(a.langEntry)
+	// What kind of video this is, mechanically: a read to camera is edited as
+	// text and its picture is never described; a session is described and
+	// its moments picked. Not a wording -- the old Style dropdown below was
+	// one, and went to the context box -- but which PIPELINE runs, and that
+	// is this page's to say, since it is this page's ▶ that runs it.
+	a.stylePick = gtk.NewDropDownFromStrings(styleLabels)
+	a.stylePick.SetTooltipText("Lecture: a read to camera -- the speech is the video, cut by removing " +
+		"the words said twice and the false starts. Gaming: a session -- the cut picks the " +
+		"moments worth keeping. Both describe the picture; only what the cut is chosen from differs.")
+	a.stylePick.SetVAlign(gtk.AlignCenter)
+	a.stylePick.NotifyProperty("selected", func() {
+		if !a.styleQuiet {
+			a.saveProjectNow()
+		}
+	})
+	bottom.Append(gtk.NewLabel("Style:"))
+	bottom.Append(a.stylePick)
 	// The Style dropdown was here, after Language: which kind of video ▶
 	// Suggest built -- highlights, a rating, a Short -- turning every prompt
 	// at once to a wording of that name. It is gone. What kind of video this
@@ -510,6 +527,12 @@ func (a *App) prepare(videos, audios []string, interval float64, scaleName, scal
 }
 
 func (a *App) understand(videos, audios []string) error {
+	// Every style is described, Lecture included. Its CUT does not need the
+	// picture -- the words are the video (textedit.go) -- and this step used
+	// to skip it on that ground, which was half the story: Publish picks the
+	// thumbnail by what is ON a frame, and a frame nobody described is a
+	// frame nothing can find. A lecture's title slide is the thumbnail.
+	//
 	// two jobs, one after the other, and the bar says which of the two it is
 	// on: this page's ▶ is the longest press in the app, and "1/2" is the
 	// difference between halfway through and nearly done.
@@ -534,4 +557,24 @@ func openAtHalf(p *gtk.Paned) {
 		split = true
 		glib.IdleAdd(func() { p.SetPosition(p.AllocatedWidth() / 2) })
 	})
+}
+
+// videoStyleName is the style as the page shows it, or as the project said
+// before the page existed.
+func (a *App) videoStyleName() string {
+	if a.stylePick != nil {
+		return styleOf(a.stylePick.Selected())
+	}
+	return a.videoStyle
+}
+
+// applyStyle is the project's answer, put on the page without saving it back.
+func (a *App) applyStyle(name string) {
+	a.videoStyle = name
+	if a.stylePick == nil {
+		return
+	}
+	a.styleQuiet = true
+	a.stylePick.SetSelected(styleIndex(name))
+	a.styleQuiet = false
 }

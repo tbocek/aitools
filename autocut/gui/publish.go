@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"image/jpeg"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +67,13 @@ The title.
 - Say the specific thing that happens in THIS video: the moment, the mistake, the win, the thing nobody expected. A title that would fit any session like it is a wasted title.
 - Plain words people say out loud. No colons splitting a subtitle off, no clickbait punctuation, no ALL CAPS -- it is drawn in large letters already.
 - Never promise something the clips do not contain: a title is a claim about the video, and this one is the claim most people will only ever read.
+
+The thumbnail.
+
+There are two ways to answer for it, and the user context decides which.
+
+- Where the context asks for a picture the video ALREADY CONTAINS -- a slide, a title card, a particular moment, anything phrased as "use the frame that shows ...", "pick one", "do not generate" -- answer a line "frame: <seconds>" naming the second of the session where it is, read off the EVENT lines, and leave the thumbnail instruction EMPTY. The editor takes that frame as it is and prints the title onto it. This is the better answer whenever the context offers it: a frame out of the video cannot promise something the video does not contain.
+- Otherwise, no frame line, and the thumbnail instruction below.
 
 The thumbnail instruction.
 
@@ -994,23 +1002,31 @@ func (a *App) publishBrief(segs []cutSeg, entries []narrEntry) string {
 // quote cannot throw a good reply away. The instruction is a suggestion in an
 // editable box; picking the base frame stays the user's.
 func (a *App) writeUpload(brief string) (title, instr, desc string, err error) {
+	title, instr, _, desc, err = a.writeUploadAt(brief)
+	return title, instr, desc, err
+}
+
+// writeUploadAt is writeUpload with the thumbnail's own second: where the user
+// context asks for a picture the video already contains, the answer names the
+// moment instead of describing one to draw (youtubeSystem). -1 for no moment.
+func (a *App) writeUploadAt(brief string) (title, instr string, at float64, desc string, err error) {
 	msgs := []map[string]any{
 		msg("system", a.sysPrompt("youtube")),
 		msg("user", a.ctxBlockFor("youtube")+brief),
 	}
 	if err := a.checkpoint(); err != nil {
-		return "", "", "", err
+		return "", "", -1, "", err
 	}
 	tools, ffx := a.webToolsFor("publish") // the description may name what the game is
 	reply, err := a.llmChatRetryTools("publish", msgs, true, tools, a.webRunner("publish", ffx), nil)
 	if err != nil {
-		return "", "", "", err
+		return "", "", -1, "", err
 	}
-	title, instr, desc = splitUpload(reply)
+	title, instr, at, desc = splitUploadAt(reply)
 	if desc == "" {
-		return "", "", "", fmt.Errorf("the model answered with nothing")
+		return "", "", -1, "", fmt.Errorf("the model answered with nothing")
 	}
-	return title, instr, desc, nil
+	return title, instr, at, desc, nil
 }
 
 // splitUpload peels the labelled lines off the front of the reply: the title
@@ -1018,12 +1034,21 @@ func (a *App) writeUpload(brief string) (title, instr, desc string, err error) {
 // -- an empty box is easier to notice than a wrong line. The rest goes through
 // cleanDescription.
 func splitUpload(reply string) (title, instr, desc string) {
+	title, instr, _, desc = splitUploadAt(reply)
+	return title, instr, desc
+}
+
+// splitUploadAt is splitUpload with the thumbnail's own second: the moment the
+// picture is to be taken FROM, where the answer names one rather than
+// describing a picture to draw (youtubeSystem). -1 when it does not.
+func splitUploadAt(reply string) (title, instr string, at float64, desc string) {
 	// A fenced reply puts the fence before the labelled lines, so it has to come
 	// off here rather than in cleanDescription: by the time they are peeled the
 	// text no longer *starts* with a fence, and the closing one would be left
 	// sitting at the bottom of the description.
 	s := unfence(strings.TrimSpace(reply))
-	for i := 0; i < 2; i++ {
+	at = -1
+	for i := 0; i < 3; i++ {
 		if v, rest, ok := peelLabel(s, "title:"); ok {
 			title, s = v, rest
 			continue
@@ -1032,9 +1057,43 @@ func splitUpload(reply string) (title, instr, desc string) {
 			instr, s = v, rest
 			continue
 		}
+		if v, rest, ok := peelLabel(s, "frame:"); ok {
+			s = rest
+			// "frame: 12" or "frame: 0:12", and a line that names no number
+			// at all is an answer that meant to leave it out
+			at = labelSecs(v)
+			continue
+		}
 		break
 	}
-	return title, instr, cleanDescription(s)
+	return title, instr, at, cleanDescription(s)
+}
+
+// labelSecs reads a second off a labelled line: a plain number, or mm:ss as
+// the timeline writes one. -1 when there is no number in it.
+func labelSecs(v string) float64 {
+	v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), "\"'"))
+	if v == "" {
+		return -1
+	}
+	if m, rest, ok := strings.Cut(v, ":"); ok {
+		var mm, ss float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(m), "%f", &mm); err != nil {
+			return -1
+		}
+		if _, err := fmt.Sscanf(strings.TrimSpace(rest), "%f", &ss); err != nil {
+			return -1
+		}
+		return mm*60 + ss
+	}
+	var f float64
+	if _, err := fmt.Sscanf(v, "%f", &f); err != nil {
+		return -1
+	}
+	if f < 0 {
+		return -1
+	}
+	return f
 }
 
 // peelLabel takes "NAME: value" off the front when the first line carries it,
@@ -1217,9 +1276,20 @@ func (a *App) publishStage(track int, st pubSettings, aspect string, segs []cutS
 		brief := a.publishBrief(segs, entries)
 		a.logCtx("publish")
 		a.prog(track, 0, "writing the title, the instruction and the description")
-		title, instr, desc, err := a.writeUpload(brief)
+		title, instr, at, desc, err := a.writeUploadAt(brief)
 		if err != nil {
 			return err
+		}
+		// ...and where the answer named a MOMENT rather than a picture to
+		// draw, that frame becomes the thumbnail as it is: cropped to the
+		// shape, with the title printed on it and nothing generated (Own).
+		// The context is what asks for this -- "use the frame that shows the
+		// title slide" -- and a frame out of the video cannot promise
+		// something the video does not contain.
+		if at >= 0 {
+			if err := a.takeFrameAt(&st, at, aspect); err != nil {
+				a.logfIdle("    publish: %v -- the thumbnail is drawn instead", err)
+			}
 		}
 		// a reply that forgot one of its labelled lines still has a good
 		// description in it, and an empty box is easier to notice than a
@@ -1274,6 +1344,41 @@ func (a *App) publishStage(track int, st pubSettings, aspect string, segs []cutS
 			a.logfIdle("    publish: could not write the thumbnail stamp (%v)", err)
 		}
 	}
+	return nil
+}
+
+// takeFrameAt makes the extracted frame nearest session second t the
+// thumbnail, as it is: cropped to the aspect, never drawn over. The same thing
+// pressing "use as thumbnail" on the page does (useAsThumbnail), from the
+// runner rather than the hand.
+func (a *App) takeFrameAt(st *pubSettings, t float64, aspect string) error {
+	shots := a.publishShots()
+	if len(shots) == 0 {
+		return fmt.Errorf("no frames were extracted, so there is none to take")
+	}
+	best := shots[0]
+	for _, s := range shots {
+		if math.Abs(s.t-t) < math.Abs(best.t-t) {
+			best = s
+		}
+	}
+	if err := os.MkdirAll(a.publishDir(), 0o755); err != nil {
+		return err
+	}
+	w, h := pubBox(aspect)
+	srcA, outA := imageAspect(best.path), float64(w)/float64(h)
+	if err := pubWriteCropped(best.path, st.cropRect(srcA, outA), srcA, outA, w, h, a.thumbPlain()); err != nil {
+		return err
+	}
+	// the frame goes to the head of the row as well, so the page shows what
+	// was taken and ↻ over it has something to draw FROM
+	st.Frames = append([]string{a.storePath(best.path)}, st.Frames...)
+	if len(st.Frames) > maxPubFrames {
+		st.Frames = st.Frames[:maxPubFrames]
+	}
+	st.Own = true
+	st.Prompt = "" // nothing is drawn, so there is no instruction to be stale
+	a.logfIdle("    publish: the thumbnail is the frame at %s, as it is — no model, no GPU", mmss(best.t))
 	return nil
 }
 

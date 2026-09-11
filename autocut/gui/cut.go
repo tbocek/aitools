@@ -105,6 +105,8 @@ Work in this order.
 
 Each segment starts a beat before the first word you want and ends after the reaction to it. About one segment per 20 seconds of target length, never fewer than two.
 
+Every line is stamped with the seconds it STARTS and the seconds it ENDS: [733s-745s | 12:13] runs from 733 to 745. A SPEAKER line is a sentence or a phrase being said for the whole of that range, so a boundary inside it cuts a sentence in half -- the stretch you drop begins after a line's end and finishes before the next line's start, never between the two numbers of one line. The EVENT lines describe the picture and say nothing reliable about when speech stops: where an EVENT line and a SPEAKER line disagree about whether someone is talking, the SPEAKER line is right.
+
 A line reading (abandoned attempt ...) has ALREADY been taken out of the video for you, to the word. Read it as though it were not there: the line before it and the line after it are one continuous sentence.
 
 This does not change your job. You still choose which stretches the video keeps and which it drops, here as everywhere else, and a session with no target length still has silences, dead ends and stretches worth nothing in it that it is YOUR job to leave out. Answering with segments that run end to end over the whole session is not a cut. All the marker means is that you never have to aim a boundary at one: that particular cut is already made, more exactly than a boundary of yours can be.` + cutReply
@@ -725,9 +727,15 @@ func (ed *cutEditor) reload() error {
 	ed.vids = nil
 	ed.film = nil // another project's card is not this one's
 	for _, s := range all[:len(vids)] {
+		// no frames is not a reason to refuse the page: a recording is a lane
+		// before it is a transcript, and everything the lane is made of --
+		// where it starts, how long it runs, what shape it is, what it sounds
+		// like -- is in the file. The frames are the pictures drawn ON the
+		// lane, and without them the lane is drawn without pictures
+		// (frameRange already answers nothing for a row that has none).
 		p, err := a.planVideo(s.path, a.describeDir())
 		if err != nil {
-			return err
+			p = &videoPlan{base: baseName(s.path), video: s.path}
 		}
 		dur, _ := ffprobeDur(s.path)
 		vw, vh, _ := ffprobeSize(s.path)
@@ -1935,6 +1943,9 @@ func (v *tlVideo) thumbStep(th, pps float64) int {
 	if v.w > 0 && v.h > 0 {
 		ar = float64(v.w) / float64(v.h)
 	}
+	if v.interval <= 0 || pps <= 0 {
+		return 1 // no frames to step between: frameRange answers nothing anyway
+	}
 	return max(1, int(th*ar/(pps*v.interval)))
 }
 
@@ -2144,6 +2155,18 @@ func (ed *cutEditor) snapEdge(t float64, isStart bool) float64 {
 	// suggested segment, and the selection you draw by hand with ＋ Add.
 	for _, w := range ed.wordEdges(t) {
 		try(w, 0.9)
+	}
+	// ...and above those, the ends and starts of whole LINES -- a sentence, a
+	// phrase -- because a boundary on a word edge in the middle of a sentence
+	// is exact and still wrong. Only just above: the distance term decides,
+	// so a boundary a breath away from a line's end goes to the line's end,
+	// and one four seconds away stays on its word.
+	for _, sp := range ed.talk {
+		if isStart {
+			try(sp[0], 0.95)
+		} else {
+			try(sp[1], 0.95)
+		}
 	}
 	// ...and only then the pictures. A frame candidate can score up to 1.0
 	// against a speech gap's 0.8, and frames sit on the extraction interval --
@@ -4206,8 +4229,26 @@ func (ed *cutEditor) drawTrack(cr *cairo.Context, w, h int) {
 		// on the row it was drawn on: the blue says which picture ＋ Add is
 		// about to keep, so it has to be over that picture
 		cr.SetSourceRGBA(0.3, 0.55, 0.9, 0.45)
-		cr.Rectangle(x0, ed.laneTop(ed.sel.lane), x1-x0, ed.laneH())
+		lt, lh := ed.laneTop(ed.sel.lane), ed.laneH()
+		cr.Rectangle(x0, lt, x1-x0, lh)
 		cr.Fill()
+		// ...and its two ENDS drawn as ends, with a grip at mid-height: a
+		// press on either takes that end from here exactly as it does from
+		// the band, and a hand cannot aim at an edge that is only where a
+		// wash stops. Lit while the pointer is on one (selHov), as the band
+		// lights its own grips.
+		cr.SetSourceRGBA(0.45, 0.7, 1, 0.95)
+		cr.SetLineWidth(2)
+		if ed.selHov {
+			cr.SetLineWidth(3)
+		}
+		for _, x := range []float64{x0, x1} {
+			cr.MoveTo(x, lt)
+			cr.LineTo(x, lt+lh)
+			cr.Stroke()
+			cr.Rectangle(x-3, lt+lh/2-7, 6, 14)
+			cr.Fill()
+		}
 	}
 
 	// which sound is in hand, said on the wave itself: a selection drawn on a
@@ -4897,6 +4938,25 @@ func (a *App) buildCut() gtk.Widgetter {
 					ed.dropFx() // a press on the empty lane puts it down
 				}
 				return
+			}
+			// a press ON an end of the blue selection, from the pictures or
+			// the sound under them, takes that end -- the same grip the
+			// selection row gives it, and asked BEFORE every badge and switch
+			// below: where a grip is drawn under the pointer, that is what the
+			// press means, and a badge that happens to share the pixels does
+			// not get to make it a fresh selection. Only the ends: a press
+			// inside the blue still starts a new selection, since drawing one
+			// inside another is a thing a hand does, and sliding the whole
+			// band is the row's job. The gutter's controls are not the tape
+			// and keep their answer (cut_gutter.go).
+			if !ed.gutterCtl(x+ed.viewX, y) {
+				if part := ed.selPartNear(x+ed.viewX, selGripPicsPx); part == selStart || part == selEnd {
+					selPart = part
+					ed.holdSel(selPart)
+					a, _ := ed.selSpan()
+					grabAt = ed.tAtView(x) - a
+					return
+				}
 			}
 			// a green border under the press: the drag trims it (hovering
 			// highlighted it first, so one button is enough). Lane badges are

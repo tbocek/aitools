@@ -60,6 +60,8 @@ WHAT EACH JOB IS GIVEN, AND WHAT IT ANSWERS WITH -- nothing around the answer:
   retake: every spoken line of the session, numbered, each with its own seconds, the pause in front of it and the seams between recordings. Answers ABANDONED, strict JSON and nothing else:
     {"abandoned":[{"from":<n>,"to":<n>,"again":<n>}]}
     <n> is a line number exactly as the request gave it. "from" to "to" is the stretch that was abandoned, inclusive; "again" is the line where the attempt that was kept begins, or 0 when it was broken off and never picked up. Nothing to mark is a whole answer: {"abandoned":[]}.
+  translate: the numbered lines of one video's subtitle track. Answers exactly those lines, in order, translated -- one line out for every line in, each beginning with its own number and a tab.
+  textedit: every word spoken in the session, in order, with the seams between recordings and the long pauses marked. Answers the TEXT OF THE FINISHED VIDEO and nothing else: the same words in the same order and spelling, with words removed and none added.
   cut: the footage range and the session timeline. Answers SEGMENTS, strict JSON and nothing else:
     {"segments":[{"start":<sec>,"end":<sec>}]}
     <sec> is session seconds, a number. Segments in order, never overlapping, and inside the range the request gives.
@@ -204,15 +206,17 @@ var sysKnownHeads = []string{
 const sysJobsHead = "WHAT EACH JOB IS GIVEN"
 
 var sysSections = map[string]map[string]bool{
-	"describe": sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", sysJobsHead, "NEVER INVENT"),
-	"fix":      sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", sysJobsHead, "NEVER INVENT"),
-	"retake":   sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", sysJobsHead, "NEVER INVENT"),
-	"cut":      sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE FOUR STEPS", "THE CUT", sysJobsHead, "TOOLS", "NEVER INVENT"),
-	"captions": sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE CUT", sysJobsHead, "NEVER INVENT"),
-	"speed":    sysSet("THE ANSWER", "THE CUT", sysJobsHead),
-	"effects":  sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE CUT", sysJobsHead, "NEVER INVENT"),
-	"narrate":  sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE FOUR STEPS", sysJobsHead, "TOOLS", "NEVER INVENT"),
-	"youtube":  sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE FOUR STEPS", sysJobsHead, "TOOLS", "NEVER INVENT"),
+	"describe":  sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", sysJobsHead, "NEVER INVENT"),
+	"fix":       sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", sysJobsHead, "NEVER INVENT"),
+	"retake":    sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", sysJobsHead, "NEVER INVENT"),
+	"textedit":  sysSet("THE ANSWER", sysJobsHead, "NEVER INVENT"),
+	"cut":       sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE FOUR STEPS", "THE CUT", sysJobsHead, "TOOLS", "NEVER INVENT"),
+	"captions":  sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE CUT", sysJobsHead, "NEVER INVENT"),
+	"speed":     sysSet("THE ANSWER", "THE CUT", sysJobsHead),
+	"effects":   sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE CUT", sysJobsHead, "NEVER INVENT"),
+	"narrate":   sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE FOUR STEPS", sysJobsHead, "TOOLS", "NEVER INVENT"),
+	"translate": sysSet("THE ANSWER", sysJobsHead, "NEVER INVENT"),
+	"youtube":   sysSet("THE ANSWER", "THE MATERIAL", "THE CLOCKS", "THE FOUR STEPS", sysJobsHead, "TOOLS", "NEVER INVENT"),
 }
 
 func sysSet(heads ...string) map[string]bool {

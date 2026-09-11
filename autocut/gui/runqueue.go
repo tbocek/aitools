@@ -206,6 +206,10 @@ func (a *App) startRun() {
 func (a *App) endRun() {
 	a.running = false
 	a.updateRunControls()
+	// ...and the next step of a chain, if one is under way (runchain.go).
+	// Before the model unload below, which is housekeeping: the next step
+	// usually wants the same models back.
+	defer a.chainDone()
 	// ...and the machine's half: whatever the run left loaded on the audio
 	// server is memory nothing is waiting on any more (freeAudioModels). Off
 	// the GUI thread, because it is a request over the network and the window

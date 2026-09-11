@@ -24,8 +24,11 @@ const (
 )
 
 const (
-	selGripPx = 6.0  // px either side of an end that grabs that end
-	selKillW  = 12.0 // the blue band's ✕ target, narrower than a plated one's
+	selGripPx = 6.0 // px either side of an end that grabs that end
+	// ...and on the pictures, where the band's grips are not drawn and the
+	// eye aims at a line: wider, since there is nothing to see the six px by
+	selGripPicsPx = 10.0
+	selKillW      = 12.0 // the blue band's ✕ target, narrower than a plated one's
 	// ...and centred at killIn from the right end like every other ✕. Two flat
 	// strokes, no plate: it throws away a SELECTION, the plated ones remove
 	// footage. Under selMinBand the band is all grips and the ✕ is not drawn.
@@ -78,15 +81,19 @@ func (ed *cutEditor) selSpanPx() (float64, float64) {
 // of. The ✕ sits inboard of the right grip rather than under it -- they would
 // otherwise be the same twelve pixels, and "throw it away" is not something a
 // hand aiming at "make it a bit shorter" should be able to hit by accident.
-func (ed *cutEditor) selPartAt(px float64) int {
+func (ed *cutEditor) selPartAt(px float64) int { return ed.selPartNear(px, selGripPx) }
+
+// selPartNear is selPartAt with the ends' reach given: the band's own grips
+// are selGripPx; on the pictures the reach is wider (selGripPicsPx).
+func (ed *cutEditor) selPartNear(px, grip float64) int {
 	if !ed.sel.active {
 		return selNone
 	}
 	x0, x1 := ed.selSpanPx()
 	switch {
-	case math.Abs(px-x0) <= selGripPx:
+	case math.Abs(px-x0) <= grip:
 		return selStart
-	case math.Abs(px-x1) <= selGripPx:
+	case math.Abs(px-x1) <= grip:
 		return selEnd
 	case x1-x0 >= selMinBand && math.Abs(px-(x1-killIn)) <= selKillW/2:
 		return selKill
@@ -353,6 +360,14 @@ func (ed *cutEditor) hoverTracks(x, y float64) {
 	ed.hoverFx(x, y)
 	ed.hoverFxKill(x, y)
 	on := x >= 0 && ed.hitSelBand(y) && ed.selPartAt(x+ed.viewX) != selNone
+	// ...and over either END of the selection on the pictures, where the
+	// press takes that end too: the band lights the same way, so the hand
+	// sees the grip before it reaches
+	if x >= 0 && !ed.hitSelBand(y) {
+		if p := ed.selPartNear(x+ed.viewX, selGripPicsPx); p == selStart || p == selEnd {
+			on = true
+		}
+	}
 	gOn, gKill := false, -1
 	if x >= 0 && !on && ed.hitSelBand(y) {
 		// the green bar highlights only where the blue does not answer first:
@@ -504,6 +519,12 @@ func (ed *cutEditor) wantCursor(x, y float64) string {
 			return "pointer"
 		}
 		if _, _, ok := ed.edgeAt(x + ed.viewX); ok {
+			return "ew-resize"
+		}
+		// ...and the blue selection's own ends, which the press takes from
+		// here exactly as the selection row does; the hand has to be able
+		// to see that before it reaches
+		if p := ed.selPartNear(x+ed.viewX, selGripPicsPx); p == selStart || p == selEnd {
 			return "ew-resize"
 		}
 	}

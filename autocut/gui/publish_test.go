@@ -438,7 +438,7 @@ func TestOneCallAnswersWithAllThreeParts(t *testing.T) {
 // after rewording the instruction.
 func TestPublishWritesTheTextBeforeItDraws(t *testing.T) {
 	body := funcBody(t, "publish.go", `func \(a \*App\) publishStage\(`)
-	iDesc := strings.Index(body, "a.writeUpload(brief)")
+	iDesc := strings.Index(body, "a.writeUploadAt(brief)")
 	iDraw := strings.Index(body, "drawThumbnail")
 	if iDesc < 0 || iDraw < 0 {
 		t.Fatalf("publishStage no longer does both: %d %d", iDesc, iDraw)
@@ -1252,5 +1252,61 @@ func TestTheThumbnailsLineIsSeededOnceAndThenItsOwn(t *testing.T) {
 	off := pubSettings{Title: "a name", TitleOff: true}.migrate()
 	if off.ThumbTitle != "" || !off.TitleSeeded || off.TitleOff {
 		t.Errorf("a project that had taken the line off reads as %+v, want it still off", off)
+	}
+}
+
+// A thumbnail can be a picture the video ALREADY CONTAINS. Where the user
+// context asks for one -- "use the frame that shows the title slide, do not
+// generate" -- the answer names the moment instead of describing a picture to
+// draw, and that frame becomes the thumbnail as it is: cropped, with the title
+// printed on it locally, nothing generated.
+func TestTheThumbnailCanBeAFramePickedOutOfTheVideo(t *testing.T) {
+	// the answer's fourth labelled line, in either spelling of a stamp
+	for _, c := range []struct {
+		reply string
+		want  float64
+	}{
+		{"title: A Title\nframe: 42\n\nThe description.", 42},
+		{"title: A Title\nframe: 1:23\n\nThe description.", 83},
+		{"frame: \"0:07\"\ntitle: A Title\n\nThe description.", 7},
+		{"title: A Title\nthumbnail: draw it\n\nThe description.", -1}, // no frame line
+		{"title: A Title\nframe: soon\n\nThe description.", -1},        // no number in it
+		{"title: A Title\nframe: -3\n\nThe description.", -1},          // nor a second before the video
+	} {
+		title, _, at, desc := splitUploadAt(c.reply)
+		if at != c.want {
+			t.Errorf("%q named second %v, want %v", c.reply, at, c.want)
+		}
+		if title != "A Title" || !strings.Contains(desc, "The description.") {
+			t.Errorf("peeling the frame line ate the rest: %q / %q", title, desc)
+		}
+	}
+	// naming a frame and describing a picture are alternatives, and the one
+	// that names a frame leaves nothing for the image model to be stale about
+	body := funcBody(t, "publish.go", `func \(a \*App\) takeFrameAt\(`)
+	for _, want := range []string{"st.Own = true", `st.Prompt = ""`, "pubWriteCropped(", "a.thumbPlain()"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("takeFrameAt does not %q", want)
+		}
+	}
+	// Own is what already means "chosen, not drawn": the words still go on it,
+	// printed locally, and ▶ never redraws it
+	stage := funcBody(t, "publish.go", `func \(a \*App\) publishStage\(`)
+	if !strings.Contains(stage, "if at >= 0 {") || !strings.Contains(stage, "a.takeFrameAt(&st, at, aspect)") {
+		t.Error("a named moment does not become the thumbnail")
+	}
+	if !strings.Contains(stage, "if st.Own {") || !strings.Contains(stage, "a.printPubWords(st)") {
+		t.Error("a chosen thumbnail is redrawn, or loses its words")
+	}
+	// ...and a video with no frames says so and draws instead of failing
+	if !strings.Contains(body, "no frames were extracted") {
+		t.Error("a video with no frames takes one anyway")
+	}
+	// the prompt offers the choice, and says which to prefer
+	if !strings.Contains(youtubeSystem, `answer a line "frame: <seconds>"`) {
+		t.Error("the prompt never mentions naming a frame")
+	}
+	if !strings.Contains(youtubeSystem, "cannot promise something the video does not contain") {
+		t.Error("the prompt does not say why a real frame is the better answer")
 	}
 }

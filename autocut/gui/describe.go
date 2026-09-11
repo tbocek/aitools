@@ -8,6 +8,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -124,9 +125,20 @@ func sessionText(rows []tsvRow, narr string, marks []retake) string {
 			}
 			continue
 		}
-		fmt.Fprintf(&b, "%s %s: %s\n", stamp(r.s), tlLabel(r, narr), r.text)
+		fmt.Fprintf(&b, "%s %s: %s\n", stampSpan(r.s, r.e), tlLabel(r, narr), r.text)
 	}
 	return b.String()
+}
+
+// stampSpan is a line's stamp: where it starts AND where it ends. The end is
+// the half a cut needs and the half the line never carried. Told only where a
+// line begins, a model guesses where it ends from the length of the text and
+// the picture lines around it, and one guess ended a segment four seconds
+// inside a sentence of the script -- an EVENT line said he "finishes the point
+// and pauses" at 737, the sentence ran to 744, and the description won.
+func stampSpan(s, e float64) string {
+	a, b := int(s), int(math.Ceil(e))
+	return fmt.Sprintf("[%ds-%ds | %02d:%02d]", a, b, a/60, a%60)
 }
 
 // stamp is one instant as a timeline line wears it: the seconds a model answers

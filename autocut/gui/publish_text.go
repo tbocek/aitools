@@ -34,11 +34,17 @@ type pubText struct {
 // box is the pubText as the drawing code speaks it, kept on the frame.
 func (t pubText) box() fxBox { return fxBox{cx: t.Cx, cy: t.Cy, wf: t.Wf, hf: t.Hf}.clamp() }
 
-// pubTitleBox is where the title goes before anybody moves it: a band across
-// the upper part of the picture, which is what the image model is asked to
-// leave calm (pubNoLettering). It moves; the instruction says where it is
+// pubTitleBox is where the title goes before anybody moves it: the UPPER HALF
+// of the picture, which is what the image model is asked to leave calm
+// (pubNoLettering). It moves; the instruction says where it is
 // (pubTitleWhere).
-var pubTitleBox = fxBox{cx: 0.5, cy: 0.14, wf: 0.94, hf: 0.18}
+//
+// Half and not the band it was: a thumbnail title is four to seven words read
+// at the size of a phone's sidebar, and a band a sixth of the picture tall
+// sets those words small enough to be a caption. Given the half, fitText uses
+// as much of it as the words need and leaves the rest -- the box is a ceiling,
+// not a fill.
+var pubTitleBox = fxBox{cx: 0.5, cy: 0.25, wf: 0.94, hf: 0.5}
 
 // printedTitle is what the picture carries: its own line (ThumbTitle), which
 // starts as the video's title and is its own from then on. st.Title is what

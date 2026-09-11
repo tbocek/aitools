@@ -435,7 +435,7 @@ func (a *App) fixTranscripts(videos, audios []string, span float64) error {
 	// and the text already fixed: which of it was said twice (retake.go). Last
 	// in Prepare, so everything after it -- the cut, its captions, the
 	// narration, the toolbar -- reads the marks rather than asking again.
-	marks, err := a.findRetakes(tl)
+	marks, err := a.findMarks(tl)
 	if err != nil {
 		if errors.Is(err, errStopped) {
 			return err
@@ -561,4 +561,13 @@ Transcript lines to clean (%d lines, return exactly %d):
 		a.logfIdle(">>> [%s] %d block(s) answered from the cache", s.base, cached)
 	}
 	return out, nil
+}
+
+// findMarks is the pass that says which seconds go, by style: a read to camera
+// is edited as text (textedit.go), a session has its retakes found (retake.go).
+func (a *App) findMarks(tl []tsvRow) ([]retake, error) {
+	if a.videoStyleName() == styleRead {
+		return a.findTextEdit(tl)
+	}
+	return a.findRetakes(tl)
 }

@@ -10,6 +10,7 @@ package main
 // the middle of them.
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -174,5 +175,41 @@ func TestAnEdgeSnapsToAWordBoundary(t *testing.T) {
 	// the words are the aligner's, read through the one door
 	if !strings.Contains(readSrc(t, "cut.go"), "ed.words = a.sessionWords(paths)") {
 		t.Error("the page reads word times from somewhere other than sessionWords")
+	}
+}
+
+// A boundary on a word edge in the middle of a sentence is exact and still
+// wrong. The model ended a clip at 740 inside "Performance is still behind the
+// old C implementation, but they're catching up" (733.7-744.4) -- it had to
+// GUESS where the line ended, because the brief never said, and a picture
+// line claiming he "finishes the point and pauses" at 737 won the guess. So a
+// line carries its end now, the cut is told what the two numbers mean, and a
+// boundary a breath from a line's end snaps to the line's end over the word.
+func TestALineCarriesItsEndAndABoundaryPrefersIt(t *testing.T) {
+	if got := stampSpan(733.71, 744.43); got != "[733s-745s | 12:13]" {
+		t.Errorf("a line's stamp reads %q, want [733s-745s | 12:13] -- start floored, end ceiled", got)
+	}
+	for _, want := range []string{
+		"the seconds it STARTS and the seconds it ENDS",
+		"never between the two numbers of one line",
+		"the SPEAKER line is right",
+	} {
+		if !strings.Contains(cutSystem, want) {
+			t.Errorf("the cut is not told what a line's two stamps mean: want %q", want)
+		}
+	}
+	// the snap: an end asked for 0.6 s short of a line's end lands on the
+	// line's end, not on the word edge nearer to it
+	ed := axisEd(t, tlVideo{base: "a", path: "/f/a.mp4", start: 700, dur: 60})
+	ed.talk = [][2]float64{{733.71, 744.43}, {746.51, 748.19}}
+	ed.words = []srcWord{{s: 743.08, e: 743.48, w: "but"}, {s: 743.56, e: 743.72, w: "they're"},
+		{s: 743.88, e: 744.2, w: "catching"}, {s: 744.28, e: 744.43, w: "up"}}
+	if got := ed.snapEdge(743.8, false); math.Abs(got-744.43) > 1e-9 {
+		t.Errorf("an end 0.6 s inside the sentence snapped to %.2f, want 744.43 -- the end of the line", got)
+	}
+	// ...but four seconds inside it, the line's end is too far to claim it,
+	// and the boundary stays where the words put it (the brief's job now)
+	if got := ed.snapEdge(740.0, false); math.Abs(got-744.43) < 1e-9 {
+		t.Error("a boundary four seconds inside a line was dragged to its end -- that is not a snap")
 	}
 }

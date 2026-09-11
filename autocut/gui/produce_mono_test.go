@@ -97,7 +97,7 @@ func TestTheMonoToggleIsWired(t *testing.T) {
 	src := string(b)
 	for _, want := range []string{
 		`p.mono = gtk.NewCheckButtonWithLabel("mono")`,
-		`check(0, 2, "Channels:", p.mono)`, // named in the label column, like every other row
+		`check(0, 1, "Channels:", p.mono)`, // named in the label column, like every other row
 		`Mono:      p.mono.Active(),`,
 		`p.mono.SetActive(st.Mono)`,
 		`audLayout(st)`,
@@ -135,12 +135,12 @@ func TestTheProduceSettingsAreThreeColumns(t *testing.T) {
 		"low := gtk.NewGrid()",
 		"box.Append(low)",
 		// the narration's own row, which goes when the narration does
-		`p.subsLbl = lbl(low, 0, 0, "Subtitles:", p.subs)`,
-		`p.gvolLbl = lbl(low, 1, 0, "Game audio:", p.gvol)`,
+		`p.subsLbl = lbl(subs, 0, 0, "Subtitles:", subRow)`,
+		`p.gvolLbl = lbl(subs, 1, 0, "Game audio:", p.gvol)`,
 		// ...and the ticks, which are rows like any other: the subject in the
 		// label column, dim, and the answer on the tick
 		"check := func(col, row int, name string, w *gtk.CheckButton) {",
-		`check(1, 1, "Frame timing:", p.vfr)`, // on the CRF row, beside it
+		`check(1, 0, "Frame timing:", p.vfr)`, // on the CRF row, beside it
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the settings grid no longer contains %q", want)
@@ -155,8 +155,8 @@ func TestTheProduceSettingsAreThreeColumns(t *testing.T) {
 		}
 	}
 	// VFR shares the row with the CRF slider it was two rows under
-	crf := strings.Index(body, `lbl(low, 0, 1, "Quality (CRF):", p.crf)`)
-	vfr := strings.Index(body, `check(1, 1, "Frame timing:", p.vfr)`)
+	crf := strings.Index(body, `lbl(low, 0, 0, "Quality (CRF):", p.crf)`)
+	vfr := strings.Index(body, `check(1, 0, "Frame timing:", p.vfr)`)
 	if crf < 0 || vfr < 0 {
 		t.Fatal("the CRF slider and the VFR tick are not both placed")
 	}
@@ -182,5 +182,32 @@ func TestTheProduceSettingsAreThreeColumns(t *testing.T) {
 	// the app's own way of saying a control is dead
 	if !strings.Contains(readSrc(t, "main.go"), "scale value, scale marks label { color: @theme_fg_color; }") {
 		t.Error("a slider's value and marks are back in the dimmed colour")
+	}
+}
+
+// Each column as wide as what is in it. Filling the page, a grid hands the
+// slack to whichever column has a child that will take it -- so "Quality
+// (CRF)" and "Frame timing" sat a hand's width apart with nothing between
+// them, on a page that is mostly empty to the right of both.
+func TestTheSettingsColumnsTakeTheirOwnWidth(t *testing.T) {
+	src := readSrc(t, "produce.go")
+	for _, want := range []string{
+		"grid.SetHAlign(gtk.AlignStart)",
+		"grid.SetHExpand(false)",
+		"low.SetHAlign(gtk.AlignStart)",
+		"low.SetHExpand(false)",
+		"low.SetColumnHomogeneous(false)",
+		// the subtitle row is in a grid of ITS OWN: it is much wider than the
+		// rows under it, and sharing a grid it set their column width and
+		// pushed the right-hand pair a hand's width away
+		"subs.SetHAlign(gtk.AlignStart)",
+		"box.Append(subs)",
+		// and nothing inside a cell claims the slack either
+		"l.SetHExpand(false)",
+		"e.SetHExpand(false)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("produce.go does not contain %q -- the columns spread again", want)
+		}
 	}
 }

@@ -26,6 +26,32 @@ services:
       --models-max 1
       --host 0.0.0.0
       --port 9001
+
+  # Qwen3.8-Flash-Next on this machine's own GPU. 
+  halogen:
+    image: ghcr.io/peonist-ai/halogen-flash-server:0.5.6
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - render
+      - video
+    security_opt:
+      - seccomp=unconfined
+    ipc: host
+    ulimits:
+      memlock: -1
+    restart: unless-stopped
+    ports:
+      - "8731:8731"
+    environment:
+      - HALOGEN_API_PORT=8731
+      - HALOGEN_CTX=${HALOGEN_CTX:-262144}
+      - HALOGEN_VISION_TOWER=${HALOGEN_VISION_TOWER:-1}
+    volumes:
+      - /mnt/models/halogen:/models
+      - /tmp:/tmp
+
   sd:
     build:
       context: .
@@ -88,10 +114,6 @@ services:
       fi &&
       /home/arch/acestep.cpp.${ACE_BACKEND:-vulkan}/build/ace-server --models /mnt/models/acestep --host 0.0.0.0 --port 8082"
   audio:
-    # One process: audiocpp_server serves both the HTTP API and the web UI, on
-    # the same port. This used to be two -- the server, plus a Python/Gradio
-    # WebUI on 7860 that had to be pointed at it -- until upstream compiled the
-    # UI into the binary and deleted the Python one.
     build:
       context: .
       dockerfile: Dockerfile.audio

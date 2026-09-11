@@ -376,10 +376,15 @@ func TestTheLongSilencesComeOutOfTheClips(t *testing.T) {
 		t.Errorf("it reports %.2fs taken out, want %.2f", gone, 193.9-162.5-deadAirKeep)
 	}
 
-	// an ordinary pause between two sentences is not touched, whatever else is
-	segs = []cutSeg{{S: 0, E: 60}}
-	if gone := dropDeadAir(&segs, [][2]float64{{0, 29}, {30.9, 60}}); gone != 0 || len(segs) != 1 {
-		t.Errorf("a %.1fs pause between sentences was cut out too: %+v", 1.9, segs)
+	// a pause between two sentences is not touched, whatever else is -- and
+	// on a read to camera that pause is 3.7 s between WORDS, breath included,
+	// which is what this measures. At 2.5 s this cut a session into
+	// twenty-eight pieces.
+	for _, pause := range []float64{1.9, 3.7, 5.0} {
+		segs = []cutSeg{{S: 0, E: 60}}
+		if gone := dropDeadAir(&segs, [][2]float64{{0, 29}, {29 + pause, 60}}); gone != 0 || len(segs) != 1 {
+			t.Errorf("a %.1fs pause between sentences was cut out too: %+v", pause, segs)
+		}
 	}
 	// ...and a card is not footage and has no silence in it to find
 	segs = []cutSeg{{S: 5, E: 5, Ins: "a.png", Dur: 3}}

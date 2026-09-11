@@ -74,7 +74,7 @@ var steps = []struct{ name, label, icon, tip, wait, help string }{
 			"the rest of the footage under the new wording and leave the first half " +
 			"under the old."},
 	{"cut", "Cut", "edit-cut-symbolic", "Choose the clips the video is made of",
-		"Run Prepare first — the cut works on the footage and its frames",
+		"Add footage on the Prepare step first — the cut is laid out from the recordings",
 		"The footage over the session timeline, with everything the cut keeps tinted " +
 			"green over it, and a waveform lane per sound below. The row above the pictures " +
 			"is the cut in bars: a green bar per kept stretch, the one the red line is in " +
@@ -487,7 +487,20 @@ type App struct {
 	srcList   *sourceList // the session's files, and what each one is for
 	interval  *freqPick
 	scalePick *gtk.DropDown
-	langEntry *gtk.Entry // what the ASR is told this session is spoken in
+	// which pipeline this session runs through (textedit.go): the page's
+	// dropdown, and the project's word for it before the page exists
+	// the steps ▶▶ runs one after another (runchain.go)
+	chainPick  *gtk.MenuButton
+	chainBtn   *gtk.Button
+	chainTicks map[string]*gtk.CheckButton
+	chain      []string // what is left of the chain under way
+	chainSteps []string // ...and a project's answer, before the ticks exist
+	chainQuiet bool
+
+	stylePick  *gtk.DropDown
+	videoStyle string
+	styleQuiet bool       // applyStyle is setting the dropdown, not the hand
+	langEntry  *gtk.Entry // what the ASR is told this session is spoken in
 
 	// One controller per page, in tab order (steps). Each is nil until its page
 	// has been built, which is what every headless test is and also what the
@@ -704,6 +717,9 @@ func (a *App) setLanguage(s string) {
 	a.promptMu.Lock()
 	a.langTxt = s
 	a.promptMu.Unlock()
+	// the subtitle translations are offered in every language but this one,
+	// and this is where it changes (syncLangs)
+	a.syncSubLangs()
 }
 
 // applyLanguage loads a project's language into the box as well as the cache.
@@ -820,21 +836,23 @@ func (a *App) framesDir(base string) string {
 // -- not session.tsv. A silent capture or a session nobody wants described is
 // cut by hand; what Describe adds is text ON the timeline, and having none is
 // an empty track, not a locked page.
+// canCut is whether there is anything to lay on the tracks: one source marked
+// as footage, and nothing more.
+//
+// It used to be "somebody has extracted frames", which locked the page until
+// Prepare had run. But a recording is a lane before it is a transcript: its
+// length, its shape and its sound are in the file itself, and laying the
+// session out -- seeing where the takes fall against each other, shifting one
+// by hand, hearing it -- is work that comes BEFORE describing anything. The
+// frames are the pictures drawn on the lane, and a lane without them is a lane
+// with no pictures on it, not a page that cannot be opened.
+//
+// What still needs Prepare is the SUGGESTION, and suggestClicked says so in
+// the one place it is true: "run Describe first -- the suggestion reads the
+// session timeline, and there is none".
 func (a *App) canCut() bool {
 	vids, _ := a.snapSources()
-	for _, v := range vids {
-		ents, err := os.ReadDir(a.framesDir(baseName(v)))
-		if err != nil {
-			continue
-		}
-		for _, e := range ents {
-			// the same rule planVideo reads them by: jpgs, never the marker
-			if strings.HasSuffix(e.Name(), ".jpg") && !strings.HasPrefix(e.Name(), ".") {
-				return true
-			}
-		}
-	}
-	return false
+	return len(vids) > 0
 }
 
 func main() {
@@ -1225,6 +1243,7 @@ func (a *App) build(app *gtk.Application) {
 	margins(ctlRow, 4, 2, 8, 8)
 	ctlRow.Append(a.playBtn)
 	ctlRow.Append(a.stopBtn)
+	ctlRow.Append(a.buildChainMenu())
 	// No volume slider on this bar. It was here for one page: Produce, which
 	// used to watch its own result and had no transport of its own to hang a
 	// slider off. Produce no longer plays anything -- the finished file is
@@ -1339,8 +1358,15 @@ func (a *App) updateGates() {
 	// the tracks and what the suggestion reads, and a session can be cut by
 	// hand without it
 	a.cutLocked = !a.canCut()
-	a.narrateLocked = !exists(a.cutPath())
-	a.produceLocked = !exists(a.cutPath())
+	// ...and nothing else is locked. Narrate and Produce used to wait for a
+	// cut to exist, which is true of RUNNING them and not of opening them:
+	// the resolution, the container, which languages the subtitles are
+	// translated into and whether there is a narration at all are answers you
+	// give BEFORE the run, and a tab that cannot be opened is a setting that
+	// cannot be reached until the thing it governs has already happened.
+	// Their own ▶ refuses with "no cut yet" (narrateRun, produceRun), which
+	// is the honest place for that to be said.
+	a.narrateLocked, a.produceLocked = false, false
 	for i, s := range steps {
 		w := gtk.BaseWidget(a.tabs[i].Child()) // the label, so the button keeps its frame
 		if a.stepLocked(i) {

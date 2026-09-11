@@ -38,6 +38,17 @@ func (a *App) suggestClicked() {
 	// said again is one line saying so, so the cut never chooses seconds the
 	// speaker had already thrown away
 	marks := a.loadRetakes()
+	// a read to camera was cut in Prepare, as text: every filmed second minus
+	// the marks. No model here -- there is nothing left for one to choose
+	if a.videoStyleName() == styleRead {
+		// ...unless the text was edited by hand since: then the text is the
+		// edit, and the marks follow it (marksFromText)
+		if m, ok := a.marksFromText(); ok {
+			marks = m
+		}
+		a.cutByText(marks)
+		return
+	}
 	session := sessionText(rows, a.narratorMic(), marks)
 	// how long the finished video should be, as the user context names it:
 	// "about 12 min", "a 90 s teaser". It was a box on the Cut page's toolbar,
@@ -1142,12 +1153,15 @@ func quietWithin(talk [][2]float64, t0, t1 float64) [][2]float64 {
 
 const (
 	// silence past this inside a clip is not a pause, it is a man who has
-	// stopped talking. Measured on a session of somebody reading to camera:
-	// the pauses between sentences cluster under 2 s and the two stretches
-	// that were plainly mistakes ran 13 s and 31 s, with nothing in between
-	// them -- so this is a floor with room under it, and not a judgment about
-	// how fast a video should feel.
-	deadAirMax = 2.5
+	// stopped talking. A BACKSTOP, and a high one: the pass measures the gap
+	// between transcribed words, and a breath or a click of the tongue is
+	// audible without being a word, so between two sentences of a read to
+	// camera that gap runs 2.5 to 3.7 s as a matter of course. Set at 2.5 it
+	// cut a session into twenty-eight pieces. The stretches that were plainly
+	// mistakes ran 5 to 31 s -- and every one of those a retake mark now
+	// covers, so what is left for this to find is the one nobody said
+	// anything twice around, and that one is long.
+	deadAirMax = 8.0
 	// ...and what is left of one where it goes.
 	deadAirKeep = 0.5
 )

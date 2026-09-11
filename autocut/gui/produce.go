@@ -7,7 +7,7 @@ package main
 // encode.
 //
 // produce/clips/c000.<ext>   per-clip encodes
-// produce/final.srt          subtitles on the produced timeline
+// produce/clips/final.srt    subtitles on the produced timeline (scratch)
 // produce/final.<container>  the upload
 
 import (
@@ -79,9 +79,14 @@ type prodSettings struct {
 	// Stored the wrong way round on purpose: the blurred backdrop is the
 	// default, and a project written before this setting existed has to keep
 	// getting it.
-	Bare    bool   `json:"bare,omitempty"`
-	Subs    string `json:"subs"` // burn | mux | sidecar | none
-	OutFile string `json:"out_file"`
+	Bare bool   `json:"bare,omitempty"`
+	Subs string `json:"subs"` // burn | mux | sidecar | none
+	// the languages the subtitles are also written in (translate.go). The
+	// session's own language is always there and is not in this list, so an
+	// empty list -- every project written before this -- is one track and no
+	// translation.
+	SubLangs []string `json:"sub_langs,omitempty"`
+	OutFile  string   `json:"out_file"`
 	// There was a second subtitle setting here: what the track CARRIES -- the
 	// narration, or the transcript of what the people in the recording said.
 	// It is gone, and the track is the narration.
@@ -98,9 +103,102 @@ type prodSettings struct {
 
 // captionLines is what the subtitle track carries for one clip: the narration
 // lines the writer put on it.
+// captionLines is what the subtitle track carries for a clip: the narration's
+// lines where there is a narration, and otherwise what was SAID in the clip,
+// off the transcript (transcriptSubs). The track used to be the voice-over's
+// alone, so a session with nobody narrating -- a read to camera, where the
+// speech IS the video -- asked for a track in the file and got a file with no
+// track in it, and nothing said why.
 func captionLines(c prodClip) []prodLine {
-	return c.lines
+	if len(c.lines) > 0 {
+		return c.lines
+	}
+	return c.subs
 }
+
+// transcriptSubs puts each footage clip's own speech on it as caption-only
+// lines, in the clip's output seconds. Rows are the session timeline's
+// (sessionRows): a row overlapping the clip is clipped to it, and a row on the
+// narrator's own microphone is not a subtitle, since the video does not play
+// that microphone (tlLabel).
+func transcriptSubs(clips []prodClip, words []srcWord, narr string) {
+	for i := range clips {
+		c := &clips[i]
+		if c.video == nil || c.ins != "" || c.freeze {
+			continue
+		}
+		s0, s1 := c.sessS, c.sessS+c.length*c.speed()
+		var mine []srcWord
+		for _, w := range words {
+			if w.s >= s0-0.01 && w.e <= s1+0.01 && (narr == "" || w.src != narr) {
+				mine = append(mine, w)
+			}
+		}
+		c.subs = wordCues(mine, s0, c.speed(), c.length)
+	}
+}
+
+// wordCues groups one clip's words into caption lines, in the clip's own
+// output seconds.
+//
+// Per WORD and not per transcript line, because a transcript line is not what
+// the video says. The lines come off Prepare, before the cut, and the cut
+// removes stretches inside them: a line clipped to the clip kept its whole
+// text, so the join at 1:45 read "…public state of the art, and the whole run
+// took roughly 13" over footage that says "…public state of the art" -- words
+// that are not in the video, and are read AGAIN when the retake plays. Eleven
+// of that session's eighty-one lines were cut into. Built from the words that
+// survive, the subtitles say what the video says, and there is nothing left
+// for them to be wrong about.
+//
+// A cue ends at a breath (subBreak), or when it has as much on it as two rows
+// hold, or after subCueMax seconds -- a player wraps what it is given at its
+// own font size, so a cue longer than two rows is one it will break into four.
+func wordCues(words []srcWord, s0, speed, length float64) []prodLine {
+	var out []prodLine
+	var cur []srcWord
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		var txt []string
+		for _, w := range cur {
+			txt = append(txt, w.raw)
+		}
+		at := math.Max(0, (cur[0].s-s0)/speed)
+		end := math.Min(length, (cur[len(cur)-1].e-s0)/speed)
+		if end > at {
+			out = append(out, prodLine{text: strings.Join(txt, " "), at: at, delay: at, dur: end - at})
+		}
+		cur = nil
+	}
+	n := 0
+	for i, w := range words {
+		if len(cur) > 0 {
+			long := n+1+len(w.raw) > 2*subRowChars
+			if w.s-cur[len(cur)-1].e >= subBreak || long || (w.e-cur[0].s)/speed >= subCueMax {
+				flush()
+				n = 0
+			}
+		}
+		cur = append(cur, w)
+		n += len(w.raw) + 1
+		_ = i
+	}
+	flush()
+	return out
+}
+
+const (
+	// a gap between two words this long ends a caption: past it they are two
+	// thoughts, and a caption that spans the pause is one the eye has already
+	// finished reading
+	subBreak = 0.6
+	// how many characters a row of a caption holds (wrapSub wraps at this),
+	// and how long one may stay up before the next takes over
+	subRowChars = 42
+	subCueMax   = 6.0
+)
 
 var (
 	prodContainers = []string{"mp4", "mkv", "webm"}
@@ -117,6 +215,12 @@ type producer struct {
 	a *App
 
 	container, codec, preset, height, fps, abr, subs *gtk.DropDown
+	// which languages the subtitles are also written in: a menu of ticks, and
+	// the button that says which are on (syncLangs)
+	langs     *gtk.MenuButton
+	langsLbl  *gtk.Label
+	langBox   *gtk.Popover
+	langTicks map[string]*gtk.CheckButton
 	// the two controls that exist to carry a narration, with their labels: how
 	// loud the game sits UNDER the voice, and what becomes of the voice's
 	// subtitles. With no narration they are about nothing, and they go
@@ -165,9 +269,12 @@ func (a *App) syncNarrOff() {
 	if p == nil || p.subs == nil {
 		return
 	}
+	// the game-volume slider only: the subtitles are no longer the
+	// narration's alone (captionLines), so their choice stays whatever the
+	// narration does
 	on := !a.narrOff
 	for _, w := range []interface{ SetVisible(bool) }{
-		p.subs, p.subsLbl, p.gvol, p.gvolLbl,
+		p.gvol, p.gvolLbl,
 	} {
 		if w != nil {
 			w.SetVisible(on)
@@ -228,6 +335,7 @@ func (a *App) prodSettings() prodSettings {
 		Bare:      !p.blur.Active(),
 		GameVol:   p.gvol.Value(),
 		Subs:      prodSubsKey[int(p.subs.Selected())],
+		SubLangs:  p.pickedLangs(),
 		OutFile:   p.outFile,
 	}
 	// webm carries neither h264 nor aac; silently producing an unplayable
@@ -258,6 +366,14 @@ func (a *App) applyProdSettings(st *prodSettings) {
 			p.subs.SetSelected(uint(i))
 		}
 	}
+	on := map[string]bool{}
+	for _, c := range st.SubLangs {
+		on[c] = true
+	}
+	for code, t := range p.langTicks {
+		t.SetActive(on[code])
+	}
+	p.syncLangs()
 	if st.CRF > 0 {
 		p.crf.SetValue(float64(st.CRF))
 	}
@@ -322,7 +438,8 @@ func (p *producer) syncExt() {
 func (a *App) buildProduce() gtk.Widgetter {
 	p := &producer{a: a}
 	a.prod = p
-	defer a.syncNarrOff() // a project loaded before this page was built has already said
+	defer a.syncNarrOff()  // a project loaded before this page was built has already said
+	defer a.syncSubLangs() // ...and said which language it is spoken in
 
 	// no paragraph at the top: what this step does is in the ⓘ in the header bar
 	// (steps[].help), which the settings below it can now have the space of
@@ -330,13 +447,35 @@ func (a *App) buildProduce() gtk.Widgetter {
 	grid.SetColumnSpacing(10)
 	grid.SetRowSpacing(6)
 	grid.SetColumnHomogeneous(false)
+	// each column as wide as what is in it, and the whole grid as wide as its
+	// columns. Filling the page, the grid hands the slack to whichever column
+	// has a child that will take it -- so "Quality (CRF)" and "Frame timing"
+	// ended up a hand's width apart with nothing between them, on a page that
+	// is mostly empty to the right of both.
+	grid.SetHAlign(gtk.AlignStart)
+	grid.SetHExpand(false)
 	// The second grid: the same rows, two across. The six menus are one kind of
 	// thing and fit three across; a dropdown with a slider, a slider with a tick
 	// and two ticks are wider, so three rows of two. One grid for both put the
 	// ticks against the far edge with a hand's width of nothing before them.
 	low := gtk.NewGrid()
+	// ...and a third for the subtitles, ALONE. A grid column is as wide as
+	// the widest thing in it, so the subtitle row -- a dropdown, a word and a
+	// menu -- set the width of the column the CRF slider and the mono tick sit
+	// in, and pushed "Frame timing" and "Frame edges" a hand's width to the
+	// right of them. A row whose answer is that much wider than the rest
+	// belongs in a grid of its own.
+	subs := gtk.NewGrid()
+	subs.SetColumnSpacing(10)
+	subs.SetRowSpacing(6)
+	subs.SetColumnHomogeneous(false)
+	subs.SetHAlign(gtk.AlignStart)
+	subs.SetHExpand(false)
 	low.SetColumnSpacing(10)
 	low.SetRowSpacing(6)
+	low.SetColumnHomogeneous(false)
+	low.SetHAlign(gtk.AlignStart)
+	low.SetHExpand(false)
 	// One width per label column, shared by both grids, every label flush left:
 	// right-aligned across two grids of different widths, the labels came out on
 	// four different left edges.
@@ -357,6 +496,12 @@ func (a *App) buildProduce() gtk.Widgetter {
 		// everything else in that row was being stretched to match. A dropdown
 		// three times its own height reads as a text field somebody typed into.
 		l.SetVAlign(gtk.AlignCenter)
+		l.SetHExpand(false)
+		// ...and the answer takes its own width too: a child that expands
+		// makes its column swallow the row (see the grid's own halign)
+		if e, ok := w.(interface{ SetHExpand(bool) }); ok {
+			e.SetHExpand(false)
+		}
 		g.Attach(l, col*2, row, 1, 1)
 		g.Attach(w, col*2+1, row, 1, 1)
 		return l
@@ -391,6 +536,38 @@ func (a *App) buildProduce() gtk.Widgetter {
 	p.abr = dd(prodABR, 0, "audio bitrate in kbit/s")
 	p.subs = dd(prodSubsLbl, 2, "what to do with the subtitles: burned "+
 		"into the picture, a separate track inside the file, an .srt beside it, or nothing")
+
+	// ...and which languages they are also written in. A menu of ticks rather
+	// than a dropdown: more than one at a time is the whole point, and the
+	// button says which are on so the answer is readable with the menu shut.
+	p.langBox = gtk.NewPopover()
+	langs := gtk.NewBox(gtk.OrientationVertical, 4)
+	langs.SetMarginTop(6)
+	langs.SetMarginBottom(6)
+	langs.SetMarginStart(10)
+	langs.SetMarginEnd(10)
+	p.langTicks = map[string]*gtk.CheckButton{}
+	for _, l := range subLangs {
+		l := l
+		c := gtk.NewCheckButtonWithLabel(l.name)
+		c.ConnectToggled(func() {
+			p.syncLangs()
+			if !p.guard {
+				a.saveProjectNow()
+			}
+		})
+		p.langTicks[l.code] = c
+		langs.Append(c)
+	}
+	p.langBox.SetChild(langs)
+	p.langs = gtk.NewMenuButton()
+	p.langs.SetPopover(p.langBox)
+	p.langs.SetHAlign(gtk.AlignStart)
+	p.langs.SetVAlign(gtk.AlignCenter)
+	p.langs.SetTooltipText("Also write the subtitles in these languages, translated. " +
+		"The language the session is spoken in is always written and is not offered here. " +
+		"Each becomes a track of its own in the file, or an .srt of its own beside it.")
+	p.syncLangs()
 
 	// VFR makes the rate above a ceiling. Capture from a headset is variable by
 	// nature -- it renders what it can, and the rate above is the peak it
@@ -450,13 +627,23 @@ func (a *App) buildProduce() gtk.Widgetter {
 	// (syncNarrOff) rather than leaving labelled holes in the middle of the
 	// form. Then the quality, with the frame timing that qualifies the rate
 	// two rows above it, and last the two ticks about the finished file.
-	p.subsLbl = lbl(low, 0, 0, "Subtitles:", p.subs)
-	p.gvolLbl = lbl(low, 1, 0, "Game audio:", p.gvol)
+	// the two subtitle answers on one row -- what becomes of them, and which
+	// languages they are also written in. One is about the other, and a row
+	// apart they read as two unrelated settings.
+	subRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	subRow.Append(p.subs)
+	p.langsLbl = gtk.NewLabel("Translate:")
+	p.langsLbl.AddCSSClass("dim-label")
+	p.langsLbl.SetVAlign(gtk.AlignCenter)
+	subRow.Append(p.langsLbl)
+	subRow.Append(p.langs)
+	p.subsLbl = lbl(subs, 0, 0, "Subtitles:", subRow)
+	p.gvolLbl = lbl(subs, 1, 0, "Game audio:", p.gvol)
 
-	lbl(low, 0, 1, "Quality (CRF):", p.crf)
-	check(1, 1, "Frame timing:", p.vfr)
-	check(0, 2, "Channels:", p.mono)
-	check(1, 2, "Frame edges:", p.blur)
+	lbl(low, 0, 0, "Quality (CRF):", p.crf)
+	check(1, 0, "Frame timing:", p.vfr)
+	check(0, 1, "Channels:", p.mono)
+	check(1, 1, "Frame edges:", p.blur)
 
 	// Where the video is written is not a question: produce/final with the
 	// container's extension (syncExt). The Outputs group already opens the folder.
@@ -511,6 +698,7 @@ func (a *App) buildProduce() gtk.Widgetter {
 	box.Append(a.heading("Transcode", "How the finished video is encoded, and where it goes: "+
 		"produce/final, beside everything else this step writes", p.save, p.again))
 	box.Append(grid)
+	box.Append(subs)
 	box.Append(low)
 
 	a.updateProduceInfo() // the rows say something before anything is clicked
@@ -932,7 +1120,11 @@ type prodClip struct {
 	length float64 // slot length after growing for the narration
 	tempo  float64
 	lines  []prodLine // empty = original audio only
-	mix    []prodMix  // separate recordings running under this clip
+	// the clip's own speech as caption-only lines, for the subtitle track when
+	// there is no narration (transcriptSubs). Never in the mix: lines above is
+	// what says a clip carries a voice-over, and this must not.
+	subs []prodLine
+	mix  []prodMix // separate recordings running under this clip
 
 	// the effects (cut_fx.go), already resolved into per-clip terms by the
 	// planning: rate is the playback rate (1 = normal, 0.5 = half speed --
@@ -1716,13 +1908,14 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		}
 	}
 
-	// 3. subtitles, on the produced timeline. None at all when this video has
-	// no narration: the track carries the voice-over's lines, and the page
-	// hides the choice for the same reason (syncNarrOff).
-	srt, cum := "", 0.0
-	cue := 0
-	if a.narrOff {
-		st.Subs = "none" // no lines, no track (produceEntries)
+	// 3. subtitles, on the produced timeline: the narration's lines where
+	// there is a narration, and what was said in the clips where there is
+	// not (captionLines)
+	cum := 0.0
+	var cues []subCue
+	if st.Subs != "none" {
+		vids, auds := a.snapSources()
+		transcriptSubs(clips, a.sessionWords(append(vids, auds...)), a.narratorMic())
 	}
 	for _, c := range clips {
 		caps := captionLines(c)
@@ -1734,15 +1927,31 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 					end = cum + caps[k+1].delay
 				}
 			}
-			cue++
-			srt += fmt.Sprintf("%d\n%s --> %s\n%s\n\n", cue,
-				srtTime(cum+ln.delay), srtTime(math.Min(end, cum+c.length)), subText(ln))
+			cues = append(cues, subCue{s: cum + ln.delay, e: math.Min(end, cum+c.length), text: subText(ln)})
 		}
 		cum += c.length
 	}
-	srtPath := filepath.Join(dir, "final.srt")
+	cues = tidyCues(cues)
+	srt := srtText(cues)
+	cue := len(cues)
+	// under clips/, with the scratch: beside the video and named for it, a
+	// player picks it up as a second subtitle track of its own accord --
+	// VLC did, next to the one muxed in -- and the sidecar choice below is
+	// where a file beside the video is asked for
+	srtPath := filepath.Join(clipDir, "final.srt")
+	// ...and the one an older build left beside the video is taken away, or
+	// it stays a second track forever: the sidecar choice writes its own
+	// below, when it is chosen
+	os.Remove(strings.TrimSuffix(st.OutFile, filepath.Ext(st.OutFile)) + ".srt")
 	if err := os.WriteFile(srtPath, []byte(srt), 0o644); err != nil {
 		return err
+	}
+	// ...and the same track in the other languages asked for (translate.go).
+	// Only where there is somewhere to put them: burned into the picture there
+	// is one picture, and none where there are no subtitles at all.
+	tracks := []subTrack{{code: a.asrLanguage(), tag: "und", path: srtPath}}
+	if cue > 0 && (st.Subs == "mux" || st.Subs == "sidecar") {
+		tracks = a.subTracks(cues, clipDir, st.SubLangs)
 	}
 
 	// 4. encode each clip -- the only video encode in the whole pipeline
@@ -1827,7 +2036,9 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 	args := []string{"-v", "error", "-y", "-i", joined}
 	muxSubs := st.Subs == "mux" && st.Container != "webm" && cue > 0
 	if muxSubs {
-		args = append(args, "-i", srtPath)
+		for _, t := range tracks {
+			args = append(args, "-i", t.path)
+		}
 	}
 	args = append(args, "-map", "0:v", "-map", "0:a", "-c:v", "copy",
 		"-af", loudFlt, "-ar", "48000")
@@ -1837,12 +2048,23 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		if st.Container == "mp4" {
 			codec = "mov_text"
 		}
-		args = append(args, "-map", "1:0", "-c:s", codec,
-			"-metadata:s:s:0", "language=eng")
+		for i, t := range tracks {
+			// each its own input, each tagged with its own language, so a
+			// player's Sub Track menu names them rather than listing two
+			// "Track 1 - [English]"
+			args = append(args, "-map", fmt.Sprintf("%d:0", i+1), "-c:s", codec,
+				fmt.Sprintf("-metadata:s:s:%d", i), "language="+t.tag)
+			if t.name != "" {
+				args = append(args, fmt.Sprintf("-metadata:s:s:%d", i), "title="+t.name)
+			}
+		}
 	}
 	args = append(args, st.OutFile)
 	if err := a.runCmd(ffTool("ffmpeg"), args...); err != nil {
 		return err
+	}
+	if st.Subs != "none" && cue == 0 {
+		a.logfIdle("!!! subtitles were asked for (%s) and there is nothing to write: no narration, and no speech in the clips", st.Subs)
 	}
 
 	switch {
@@ -1850,11 +2072,23 @@ func (a *App) produce(segs []cutSeg, entries []narrEntry, st prodSettings, srcVi
 		a.logfIdle("webm cannot carry an srt track — subtitles written next to the video instead")
 		fallthrough
 	case st.Subs == "sidecar":
-		side := strings.TrimSuffix(st.OutFile, filepath.Ext(st.OutFile)) + ".srt"
-		if err := os.WriteFile(side, []byte(srt), 0o644); err != nil {
-			return err
+		stem := strings.TrimSuffix(st.OutFile, filepath.Ext(st.OutFile))
+		for i, t := range tracks {
+			// the first beside the video under its own name, the rest with
+			// their language in it -- which is how every player finds them
+			side := stem + ".srt"
+			if i > 0 {
+				side = stem + "." + t.code + ".srt"
+			}
+			b, err := os.ReadFile(t.path)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(side, b, 0o644); err != nil {
+				return err
+			}
+			a.logfIdle(">>> subtitles: %s", side)
 		}
-		a.logfIdle(">>> subtitles: %s", side)
 	}
 	return nil
 }
@@ -2791,4 +3025,121 @@ func ffEscape(p string) string {
 	return strings.NewReplacer(
 		`\`, `\\`, `:`, `\:`, `'`, `\'`, `[`, `\[`, `]`, `\]`, `,`, `\,`,
 	).Replace(p)
+}
+
+// subCue is one line of the subtitle track on the produced timeline.
+type subCue struct {
+	s, e float64
+	text string
+}
+
+// tidyCues makes the track watchable: it holds each line until the next one
+// begins, drops the ones too short to read, and never lets two overlap.
+//
+// The cues come off the transcript one line each, and the gap between two
+// lines of the same sentence is the breath between them -- five, twenty,
+// eighty milliseconds. At thirty frames a second every one of those is the
+// text blanking for a frame and coming back, and a sentence of six lines
+// flickers six times. Nobody means those gaps to be seen: a subtitle that
+// disappears between two words is a fault of the clock, not a choice. So a
+// gap under subHold is closed by holding the line that is already up.
+//
+// A line's own length is left alone where the gap is a real pause -- a held
+// caption over silence is what an editor would do anyway -- except at the very
+// end, where nothing follows to hold it against.
+func tidyCues(in []subCue) []subCue {
+	var out []subCue
+	for _, c := range in {
+		if c.e < c.s {
+			c.e = c.s
+		}
+		if n := len(out); n > 0 {
+			p := &out[n-1]
+			if c.s < p.e {
+				p.e = c.s // no two on screen at once, whatever the clocks said
+			}
+			if c.s-p.e < subHold {
+				p.e = c.s // the breath between two lines is not a blank screen
+			}
+			if p.e-p.s < subMin {
+				// too short to read even after the hold: fold its words into
+				// the line that follows rather than flashing them
+				c.s, c.text = p.s, p.text+"\n"+c.text
+				out = out[:n-1]
+			}
+		}
+		out = append(out, c)
+	}
+	// ...and the last line has nothing to hold against, so it is given the
+	// time a reader needs rather than the time it was spoken in
+	if n := len(out); n > 0 && out[n-1].e-out[n-1].s < subMin {
+		out[n-1].e = out[n-1].s + subMin
+	}
+	return out
+}
+
+const (
+	// a gap between two lines shorter than this is a breath, not a blank
+	// screen: the line already up is held across it
+	subHold = 1.2
+	// ...and no line is on screen for less than this, however briefly it was
+	// said: under it a reader sees a flash rather than a word
+	subMin = 0.8
+)
+
+// pickedLangs is the languages ticked, in the order the menu lists them. The
+// language the session is SPOKEN in is never among them, whatever a tick says:
+// its track is written anyway, and translating a language into itself is a
+// call that costs a minute and answers with what it was given.
+func (p *producer) pickedLangs() []string {
+	// asrLanguage and not projectLanguage: the box on the Prepare page is
+	// EMPTY by default and shows "en" as a placeholder, so the project's own
+	// answer is "" until somebody types in it -- and "" matches no language,
+	// which is why English stayed in the menu of an English session.
+	own := p.a.asrLanguage()
+	var out []string
+	for _, l := range subLangs {
+		if l.code == own {
+			continue
+		}
+		if t := p.langTicks[l.code]; t != nil && t.Active() {
+			out = append(out, l.code)
+		}
+	}
+	return out
+}
+
+// syncLangs takes the session's own language out of the menu and puts the
+// answer on the button, so the menu can stay shut. Called when the language
+// changes as well as when a tick does: the box that says which language this
+// is, is on another page, and this menu has to follow it.
+func (p *producer) syncLangs() {
+	if p.langs == nil {
+		return
+	}
+	own := p.a.asrLanguage()
+	for _, l := range subLangs {
+		if t := p.langTicks[l.code]; t != nil {
+			t.SetVisible(l.code != own)
+		}
+	}
+	var names []string
+	for _, c := range p.pickedLangs() {
+		if _, n, ok := subLangOf(c); ok {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		p.langs.SetLabel("none")
+		return
+	}
+	p.langs.SetLabel(strings.Join(names, ", "))
+}
+
+// syncSubLangs is that from anywhere, and safe before the page exists: a
+// project loads before Produce is built, and the language box is on Prepare.
+func (a *App) syncSubLangs() {
+	if a.prod != nil {
+		a.prod.syncLangs()
+	}
 }

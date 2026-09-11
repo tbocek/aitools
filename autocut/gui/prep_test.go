@@ -414,7 +414,7 @@ func TestTheSwitchMenuNamesItsRowsAndMarksAnEditedPrompt(t *testing.T) {
 	a := &App{root: t.TempDir()}
 	got := a.prepEditNames()
 	want := []string{"User Context", "System context", "Describe", "Transcript",
-		"Retakes", "Cut", "Captions", "Speed", "Effects", "Narration", "Upload text"}
+		"Retakes", "Text edit", "Cut", "Captions", "Speed", "Effects", "Narration", "Translate", "Upload text"}
 	if len(got) != len(want) {
 		t.Fatalf("the menu offers %v, want %v", got, want)
 	}
