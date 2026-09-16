@@ -1,3 +1,14 @@
+# RENDER_GID / VIDEO_GID are the gids that own the GPU device nodes, read off
+# the nodes themselves by run.sh and exported before `docker compose up`. The
+# defaults are this machine's, so a bare `docker compose up` still works.
+#
+# Numbers, not names, and not the host's group NAMES either: group_add resolves
+# a name against the CONTAINER's /etc/group. The images here disagree about it
+# -- the Arch ones have render/video but at Arch's gids, which are not this
+# host's, and halogen is Debian-based with no "render" group at all, which is
+# what "unable to find group render: no matching entries in group file" means.
+# A number needs no lookup anywhere, and the gid that owns the node is the only
+# one that grants access to it.
 services:
   llama:
     build:
@@ -8,8 +19,8 @@ services:
       - /dev/kfd
       - /dev/dri
     group_add:
-      - render
-      - video
+      - "${RENDER_GID:-989}"
+      - "${VIDEO_GID:-985}"
     security_opt:
       - seccomp=unconfined
     restart: unless-stopped
@@ -29,20 +40,13 @@ services:
 
   # Qwen3.8-Flash-Next on this machine's own GPU. 
   halogen:
-    image: ghcr.io/peonist-ai/halogen-flash-server:0.6.3
+    image: ghcr.io/peonist-ai/halogen-flash-server:0.11.1
     devices:
       - /dev/kfd
       - /dev/dri
     group_add:
-      # the HOST's gids, numerically. group_add resolves a NAME against the
-      # container's /etc/group, not the host's, and this image is Debian-based
-      # with no "render" group at all -- which is what "unable to find group
-      # render: no matching entries in group file" means. A number needs no
-      # lookup, and these are the two that own the device nodes:
-      #   /dev/kfd, /dev/dri/renderD128  render(989)
-      #   /dev/dri/card1                 video(985)
-      - "989"
-      - "985"
+      - "${RENDER_GID:-989}"
+      - "${VIDEO_GID:-985}"
     security_opt:
       - seccomp=unconfined
     ipc: host
@@ -68,8 +72,8 @@ services:
       - /dev/kfd
       - /dev/dri
     group_add:
-      - render
-      - video
+      - "${RENDER_GID:-989}"
+      - "${VIDEO_GID:-985}"
     security_opt:
       - seccomp=unconfined
     ipc: host
@@ -104,8 +108,8 @@ services:
       - /dev/kfd
       - /dev/dri
     group_add:
-      - render
-      - video
+      - "${RENDER_GID:-989}"
+      - "${VIDEO_GID:-985}"
     security_opt:
       - seccomp=unconfined
     restart: unless-stopped
@@ -129,8 +133,8 @@ services:
       - /dev/kfd
       - /dev/dri
     group_add:
-      - render
-      - video
+      - "${RENDER_GID:-989}"
+      - "${VIDEO_GID:-985}"
     security_opt:
       - seccomp=unconfined
     restart: unless-stopped

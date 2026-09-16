@@ -65,6 +65,29 @@ done
 export LLAMA_DEVICE
 export SD_ARGS="$sd_args"
 
+# The gids the containers need to reach the GPU, read off the device nodes
+# themselves.
+#
+# Not group NAMES: group_add resolves a name inside the CONTAINER, and the
+# images disagree about them -- the Arch ones carry render/video at Arch's own
+# gids (which are not this host's, so the supplementary group grants nothing),
+# and halogen is Debian-based with no "render" group at all, which fails the
+# run outright with "unable to find group render: no matching entries in group
+# file". A gid needs no lookup anywhere, and the one that owns the node is the
+# only one that opens it. Read from the node rather than from `getent group`
+# so a host that numbers or names them differently still works.
+dev_gid() { # dev_gid <fallback> <path>...; first path that exists wins
+    local fallback="$1"; shift
+    local d
+    for d in "$@"; do
+        [[ -e "$d" ]] && { stat -c %g "$d"; return 0; }
+    done
+    echo "$fallback"
+}
+export RENDER_GID="$(dev_gid 989 /dev/dri/renderD* /dev/kfd)"
+export VIDEO_GID="$(dev_gid 985 /dev/dri/card*)"
+echo "GPU gids: render=${RENDER_GID} video=${VIDEO_GID}"
+
 # sd-server has no --device flag; parse SD_DEVICE (e.g. ROCM0, Vulkan0) and
 # hide the unwanted backend via env vars. Empty string disables: ggml-vulkan
 # parses GGML_VK_VISIBLE_DEVICES as unsigned and throws on -1; HIP runtime
