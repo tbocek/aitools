@@ -188,7 +188,8 @@ setup_virtual_mic() {
 
 # Create bind-mount dirs up front: docker would create missing ones as root,
 # but the containers run as uid 1000 and could not write into them.
-mkdir -p "${MODELS_DIR}"/{sd,ace,vc,audiocpp,meanvc2} "${MODELS_DIR}"/applio/{models,logs}
+# The list is exactly the compose file's bind sources under /mnt/models.
+mkdir -p "${MODELS_DIR}"/{sd,acestep,vc,audiocpp,halogen}
 cp "$SCRIPT_DIR/config-llamacpp.ini" "${MODELS_DIR}/config-llamacpp.ini"
 
 download_models &
