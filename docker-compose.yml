@@ -172,9 +172,15 @@ services:
       # that comes back, so a project anywhere on disk works. Driving the server
       # by hand with a path is the one thing that still needs a mount added here.
       - ./config-audiocpp.json:/etc/config-audiocpp.json:ro
-    # --ui serves the browser UI off this same port; --ui-management lets it
-    # load and unload models, which is the only way to change what this server
-    # offers without editing config-audiocpp.json and recreating the service.
+    # --ui serves the browser UI off this same port. --ui-management -- the
+    # UI's own load/unload/download of models -- is gone: since upstream
+    # 6ed72259 (Aug 2026) it needs a build with
+    # -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON, which pulls in cpp-httplib and
+    # BoringSSL, and the server refuses to start with the flag but without
+    # the build. Nothing here needs it: naivepost uploads through /v1/ui/upload
+    # and frees memory through /v1/tasks/unload_all_models, and neither route
+    # is gated on it (checked at the pinned ref). What the server offers is
+    # config-audiocpp.json, as it always was for a scripted client.
     #
     # The config's memory keys matter as much as the model list, and JSON has
     # nowhere to say why: lazy_load loads on first use rather than all eight at
@@ -188,4 +194,3 @@ services:
       build/bin/audiocpp_server
       --config /etc/config-audiocpp.json
       --ui
-      --ui-management
