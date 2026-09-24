@@ -40,7 +40,7 @@ services:
 
   # Qwen3.8-Flash-Next on this machine's own GPU. 
   halogen:
-    image: ghcr.io/peonist-ai/halogen-flash-server:0.11.7
+    image: ghcr.io/peonist-ai/halogen-flash-server:0.13.8
     devices:
       - /dev/kfd
       - /dev/dri
@@ -59,7 +59,11 @@ services:
       - HALOGEN_API_PORT=8731
       - HALOGEN_CTX=${HALOGEN_CTX:-262144}
       - HALOGEN_VISION_TOWER=${HALOGEN_VISION_TOWER:-1}
-      - HALOGEN_CHECKPOINT=/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+      - HALOGEN_REASONING_EFFORT=medium
+      - HALOGEN_WEIGHTS_LOCK=1
+      - HALOGEN_KV_POOL_POSITIONS=393216
+      - HALOGEN_HOST_RESERVE_GIB=28
+      - HALOGEN_DOWNLOAD=peonist-ai/halogen-qwen3.8-flash-next
     volumes:
       - /mnt/models/halogen:/models
       - /tmp:/tmp

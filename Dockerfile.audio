@@ -16,7 +16,11 @@ RUN sudo pacman -Sy --noconfirm && \
 # Python/Gradio WebUI with a UI compiled into the server binary, a rebuild that
 # had changed nothing here stopped working: the files this Dockerfile patched
 # were gone. Moving forward is now a deliberate edit of this line.
-ARG AUDIOCPP_REF=04ba4375ed53bbd718bd2697e190007f6a19f426
+# 4d88768f (2026-09-23): adds the nemotron_3_diar family. The one local patch
+# this tree carried (transcription timings on the upload route) landed
+# upstream by this commit, so the patches folder is empty and the loop below
+# is a no-op until the next one.
+ARG AUDIOCPP_REF=4d88768f
 RUN git -c http.version=HTTP/1.1 clone https://github.com/0xShug0/audio.cpp && \
     cd audio.cpp && git checkout --detach ${AUDIOCPP_REF}
 
@@ -32,8 +36,8 @@ RUN git -c http.version=HTTP/1.1 clone https://github.com/0xShug0/audio.cpp && \
 # This COPY sits above the build on purpose, so editing a patch recompiles --
 # the whole compile, not an incremental one. There is no cheaper way to change a
 # source file, and a patch that did not force a rebuild would be worse.
-COPY *.patch /home/arch/patches/
-RUN cd /home/arch/audio.cpp && for p in /home/arch/patches/*.patch; do \
+COPY patches/ /home/arch/patches/
+RUN cd /home/arch/audio.cpp && for p in /home/arch/patches/*.patch; do [ -e "$p" ] || continue; \
         echo "applying $(basename $p)" && git apply --verbose "$p" || exit 1; \
     done
 

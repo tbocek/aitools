@@ -70,6 +70,13 @@
       "path": "/home/arch/audio.cpp/models/Qwen3-ASR-1.7B-GGUF/qwen3-asr-1.7b-q8_0.gguf",
       "task": "asr",
       "mode": "offline"
+    },
+    {
+      "id": "nemotron-diar",
+      "family": "nemotron_3_diar",
+      "path": "/home/arch/audio.cpp/models/Nemotron-3-Diarization-GGUF/nemotron-3-diarization-bf16.gguf",
+      "task": "diar",
+      "mode": "offline"
     }
   ]
 }

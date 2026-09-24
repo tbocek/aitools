@@ -41,9 +41,8 @@ The compose project is named after this folder, `aitools`.
 | `Dockerfile.arch` | the base every built image starts `FROM arch:latest`: Arch Linux, a build toolchain, Vulkan (RADV), and ROCm for gfx1151 from the AUR (`rocm-gfx1151-bin`). Runs as user `arch`, uid 1000. |
 | `Dockerfile.llama` | llama.cpp with both the HIP and Vulkan backends, and its web UI. |
 | `Dockerfile.sd` | stable-diffusion.cpp's `sd-server` and its frontend. |
-| `Dockerfile.audio` | audio.cpp at a pinned ref, with every `*.patch` in this folder applied. A patch that no longer applies fails the build rather than being fuzzed in. |
+| `Dockerfile.audio` | audio.cpp at a pinned ref, with every `patches/*.patch` applied. A patch that no longer applies fails the build rather than being fuzzed in. The folder is empty at the moment: the last patch landed upstream. |
 | `Dockerfile.acestep` | acestep.cpp built twice, once per backend (`acestep.cpp.rocm`, `acestep.cpp.vulkan`). |
-| `audiocpp-transcriptions-timing.patch` | makes audio.cpp's `/v1/audio/transcriptions` return the word timings it already computes. |
 | `docker-compose.yml` | the five services. |
 | `run.sh` | build, download, start. |
 | `config-llamacpp.ini` | the models `llama` offers (`--models-preset`), one section each, with the weights path and a `# url =` line `run.sh` downloads from. Copied to `/mnt/models/` on every run. |
@@ -86,13 +85,12 @@ All weights live under `/mnt/models` on the host. None are in any image.
 | `audio` | `/mnt/models/audiocpp/`, and RVC voices from `/mnt/models/vc/` | `config-audiocpp.json` |
 | `acestep` | `/mnt/models/acestep/` | downloaded by the container on first start |
 
-**halogen** runs unsloth's `UD-Q4_K_XL` GGUF rather than its own 118 GiB
-checkpoint (`HALOGEN_CHECKPOINT`). The four shards are hard links to the ones
-`llama` reads in `/mnt/models`, so the file is on disk once. Beside them it
-needs its own draft head (`qwen38-flash-next-mtp.hgn`), the `tokenizer/`
-directory, and the vision tower (`qwen38-flash-next-vision.hgn`) for images.
-One caveat of the hard links: if the downloader ever replaces a shard with a
-new file, the copy in `halogen/` keeps pointing at the old one.
+**halogen** runs its own checkpoint: `qwen38-flash-next-w4b.hgn` (115.5 GiB)
+with its quality sidecar, the draft head, the `tokenizer/` directory and the
+vision tower. `HALOGEN_DOWNLOAD` fetches all of it into `/mnt/models/halogen/`
+on the first start (resumable) and never opens an outbound connection after
+that. It can run unsloth's GGUF instead (`HALOGEN_CHECKPOINT`, plus the head
+and tokenizer beside it), at ~28% slower decode.
 
 **llama** holds one model at a time (`--models-max 1`) and loads whichever one a
 request names.
@@ -101,7 +99,7 @@ request names.
 (`max_loaded_models`), and unloads everything after five idle minutes
 (`idle_unload_ms`). Its registry currently holds ASR (`qwen3-asr`,
 `nemotron-asr`, `parakeet-tdt`), forced alignment (`qwen3-aligner`,
-`mms-aligner`), diarization (`sortformer-diar`), separation (`bs-roformer`)
+`mms-aligner`), diarization (`nemotron-diar`, `sortformer-diar`), separation (`bs-roformer`)
 and voice cloning TTS (`index-tts2`).
 
 ## Host requirements
@@ -111,8 +109,8 @@ and voice cloning TTS (`index-tts2`).
 - **Kernel 7.0 or newer** for halogen, per its README: it registers the
   checkpoint with the GPU as a read-only mapping, which older kernels refuse.
 - **The device nodes** `/dev/kfd` and `/dev/dri`, passed to every service.
-- **`/mnt/models`** with room for the weights: the halogen/llama GGUF alone is
-  ~104 GiB.
+- **`/mnt/models`** with room for the weights: halogen's checkpoint is 118 GiB
+  and the llama GGUF another ~104 GiB.
 - For `audio`: a PipeWire/Pulse session for uid 1000 at
   `/run/user/1000/pulse/native`, and its cookie. The compose file names the
   cookie by its path under `/home/draft`, so another user has to edit that line.
