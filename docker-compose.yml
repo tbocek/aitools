@@ -61,7 +61,7 @@ services:
       - HALOGEN_VISION_TOWER=${HALOGEN_VISION_TOWER:-1}
       - HALOGEN_REASONING_EFFORT=medium
       - HALOGEN_WEIGHTS_LOCK=1
-      - HALOGEN_KV_POOL_POSITIONS=393216
+      - HALOGEN_MAX_TOK=16384
       - HALOGEN_HOST_RESERVE_GIB=28
       - HALOGEN_DOWNLOAD=peonist-ai/halogen-qwen3.8-flash-next
     volumes:
