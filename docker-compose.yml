@@ -40,7 +40,7 @@ services:
 
   # Qwen3.8-Flash-Next on this machine's own GPU. 
   halogen:
-    image: ghcr.io/peonist-ai/halogen-flash-server:0.13.8
+    image: ghcr.io/peonist-ai/halogen-flash-server:0.15.1
     devices:
       - /dev/kfd
       - /dev/dri
@@ -63,6 +63,7 @@ services:
       - HALOGEN_WEIGHTS_LOCK=1
       - HALOGEN_MAX_TOK=16384
       - HALOGEN_HOST_RESERVE_GIB=28
+      - HALOGEN_CHECKPOINT=/models/qwen38-flash-next-v2.hgn
       - HALOGEN_DOWNLOAD=peonist-ai/halogen-qwen3.8-flash-next
     volumes:
       - /mnt/models/halogen:/models
