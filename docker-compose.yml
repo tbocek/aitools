@@ -40,7 +40,7 @@ services:
 
   # Qwen3.8-Flash-Next on this machine's own GPU. 
   halogen:
-    image: ghcr.io/peonist-ai/halogen-flash-server:0.15.1
+    image: ghcr.io/peonist-ai/halogen-flash-server:0.16.0
     devices:
       - /dev/kfd
       - /dev/dri
