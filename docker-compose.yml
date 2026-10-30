@@ -40,7 +40,7 @@ services:
 
   # Qwen3.8-Flash-Next on this machine's own GPU. 
   halogen:
-    image: ghcr.io/peonist-ai/halogen-flash-server:0.18.17
+    image: ghcr.io/peonist-ai/halogen-flash-server:0.18.20
     devices:
       - /dev/kfd
       - /dev/dri
@@ -148,7 +148,7 @@ services:
     ports:
       # loopback only: this speaks for the GPU, nothing on the LAN needs it.
       # API and browser UI both live here -- http://127.0.0.1:8765/
-      - "127.0.0.1:8765:8080"
+      - "8765:8080"
     environment:
       # the backend comes from config-audiocpp.json ("hip"), and so does
       # "threads": 8. That file takes no comments, so the reason lives here: the

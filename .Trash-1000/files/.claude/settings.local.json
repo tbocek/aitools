@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build *)",
+      "Bash(echo \"BUILD_EXIT=$?\")",
+      "Bash(go vet *)",
+      "Bash(echo \"VET_EXIT=$?\")",
+      "Bash(go test *)",
+      "Read(//home/draft/.config/autocut/prompts/**)",
+      "Read(//home/draft/.config/autocut/**)",
+      "Bash(gofmt -l .)",
+      "Bash(gofmt -w cut_edge_test.go)",
+      "Bash(python3 -)",
+      "Bash(awk '/^func minSuggestSegs/,/^}/' cut_suggest.go)",
+      "Bash(awk '/^func suggestWindow/,/^}/' cut_suggest.go)",
+      "Bash(awk '/^func speechBlock/,/^}/' describe.go)",
+      "Bash(awk '/ctxFor := func/,/^\\\\t}$/' transcript.go)",
+      "Bash(awk '/^func \\\\\\(a \\\\*App\\\\\\) suggestWindow/,/^}/' cut_suggest.go)",
+      "Bash(awk '/^type sugFx struct/,/^}/' cut_suggest.go)",
+      "Bash(grep -n \"^const \\\\|^\\\\` + \\\\|^\t{shortsStyleName\\\\|cutSpeech + fxRules\\\\|\\\\` + cutSpeech$\" cut.go)",
+      "Read(//home/draft/git/**)",
+      "Read(//home/draft/git/codehalter/**)",
+      "Bash(git -C /home/draft/git/aitools/autocut log --oneline -8)",
+      "Bash(gofmt -w cut_shorts_test.go)",
+      "Bash(git -C /home/draft/git/aitools/autocut log --oneline -12)",
+      "Read(//home/draft/go/pkg/mod/github.com/coder/**)",
+      "Read(//home/draft/go/pkg/mod/cache/download/github.com/coder/websocket/@v/**)",
+      "Bash(GOFLAGS=-mod=mod GOPROXY=off go get github.com/coder/websocket@v1.8.14)",
+      "Bash(gofmt -w player.go)",
+      "Bash(gofmt -w player.go websearch.go cut.go)",
+      "Bash(sed -n '/^type Player struct/,/^}/p' player.go)",
+      "Bash(gofmt -w setup.go)",
+      "Bash(awk '/^func rateSpans/,/^}/' cut_fx.go)",
+      "Bash(awk '/^func \\\\\\(.*\\\\\\) applied\\\\\\(\\\\\\)/,/^}/' cut_fx.go)",
+      "Bash(awk '/^type cutFx struct/,/^}/' cut_fx.go)",
+      "Bash(gofmt -w cut_fx_test.go)"
+    ]
+  }
+}
