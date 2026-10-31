@@ -3,10 +3,11 @@ FROM arch:latest
 #https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md
 #https://github.com/halo-box/strix-llama.cpp
 #https://github.com/julianmb/haloq38flash/tree/main
-RUN git clone https://github.com/halo-box/strix-llama.cpp.git
+#RUN git clone https://github.com/halo-box/strix-llama.cpp.git
+RUN git clone https://github.com/ggml-org/llama.cpp
 
 # Tests/examples off + single target: only llama-server and the libs it needs
 # (the ggml HIP/Vulkan kernels still dominate compile time -- those are
 # dependencies of the server, not skippable).
-RUN cd /home/arch/strix-llama.cpp && cmake -B build -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release \
+RUN cd /home/arch/llama.cpp && cmake -B build -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release --parallel --target llama-server
